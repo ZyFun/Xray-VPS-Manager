@@ -16,7 +16,7 @@ CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 INBOUND_TAG = "vless-reality"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-04 14:54 UTC"
+MENU_UPDATED = "2026-06-04 15:12 UTC"
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 GREEN = "\033[32m"
@@ -114,6 +114,10 @@ def client_menu_actions():
         ("6", "Удалить клиента"),
         ("7", "Вывести ссылку клиента"),
         ("8", "Проверить просроченных клиентов"),
+        ("9", "Показать лимиты трафика"),
+        ("10", "Установить лимит трафика"),
+        ("11", "Убрать лимит трафика"),
+        ("12", "Проверить лимиты трафика"),
         ("0", "Назад"),
     ]
 
@@ -1116,6 +1120,42 @@ def ask_access_days():
     return value or "0"
 
 
+def choose_limit_period():
+    print("Период лимита трафика.")
+    print("1) День: лимит сбрасывается каждый календарный день в 00:00 по времени сервера.")
+    print("2) Месяц: лимит сбрасывается в начале следующего календарного месяца.")
+    while True:
+        value = input("Период [1-день, 2-месяц]: ").strip()
+        if value == "1":
+            return "daily"
+        if value == "2":
+            return "monthly"
+        print("Выбери 1 для дневного лимита или 2 для месячного лимита.")
+
+
+def update_selected_client_limit():
+    name = choose_client("установки лимита трафика", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    period = choose_limit_period()
+    print("LIMIT_GB: лимит общего трафика IN+OUT в гигабайтах.")
+    print("Пример: 15. Пустой ввод отменяет изменение, 0 убирает лимит.")
+    value = input("LIMIT_GB: ").strip()
+    if not value:
+        print("Действие отменено.")
+        return
+    call(["xray-client", "set-limit", name, period, value])
+
+
+def clear_selected_client_limit():
+    name = choose_client("снятия лимита трафика", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    call(["xray-client", "clear-limit", name])
+
+
 def call_client_command(command, action, mode="all"):
     name = choose_client(action, mode)
     if not name:
@@ -1177,6 +1217,10 @@ def client_menu_handlers():
         "6": ("Удалить клиента", lambda: call_client_command("remove", "удаления", "all")),
         "7": ("Вывести ссылку клиента", lambda: call_client_command("link", "вывода ссылки", "all")),
         "8": ("Проверить просроченных клиентов", lambda: call(["xray-client", "expire-due"])),
+        "9": ("Показать лимиты трафика", lambda: call(["xray-client", "limit-list"])),
+        "10": ("Установить лимит трафика", update_selected_client_limit),
+        "11": ("Убрать лимит трафика", clear_selected_client_limit),
+        "12": ("Проверить лимиты трафика", lambda: call(["xray-client", "enforce-limits", "--sync"])),
     }
 
 

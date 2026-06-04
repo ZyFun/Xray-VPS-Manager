@@ -457,6 +457,7 @@ ConditionPathExists=/usr/local/etc/xray/config.json
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/xray-traffic-sync --quiet
+ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet
 EOF
 
 cat >/etc/systemd/system/xray-traffic-sync.timer <<'EOF'

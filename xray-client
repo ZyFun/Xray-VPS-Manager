@@ -20,6 +20,7 @@ STATS_SERVER = "127.0.0.1:10085"
 TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 DEFAULT_SERVER_ADDR = ""
 ONLINE_WINDOW_SECONDS = 300
+BYTES_IN_GB = 1024 ** 3
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 CONNECTION_NAME_RE = re.compile(r"^[^\r\n|]{1,64}$")
 FINGERPRINTS = {
@@ -115,6 +116,105 @@ def set_entry_expiry(entry, days):
         entry.pop("accessDays", None)
         entry.pop("expiredAt", None)
         entry.pop("disabledReason", None)
+
+
+def parse_limit_gb(value):
+    raw = (value or "").strip().replace(",", ".").lower()
+    if raw in ("", "0", "none", "no", "unlimited", "forever", "без лимита", "бессрочно"):
+        return None
+    if raw.endswith("gb"):
+        raw = raw[:-2].strip()
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", raw):
+        die("Traffic limit must be a number in GB. Empty or 0 means no limit.")
+    gb = float(raw)
+    if gb <= 0:
+        return None
+    if gb > 1048576:
+        die("Traffic limit is too large. Use a value up to 1048576 GB.")
+    return int(gb * BYTES_IN_GB)
+
+
+def validate_limit_period(value):
+    value = (value or "").strip().lower()
+    aliases = {
+        "day": "daily",
+        "daily": "daily",
+        "d": "daily",
+        "день": "daily",
+        "сутки": "daily",
+        "month": "monthly",
+        "monthly": "monthly",
+        "m": "monthly",
+        "месяц": "monthly",
+    }
+    period = aliases.get(value)
+    if period is None:
+        die("Traffic limit period must be daily or monthly.")
+    return period
+
+
+def set_entry_traffic_limit(entry, period, limit_bytes):
+    if limit_bytes is None:
+        entry.pop("trafficLimit", None)
+        entry.pop("trafficLimitExceededAt", None)
+        entry.pop("trafficLimitExceededPeriod", None)
+        entry.pop("trafficLimitExceededBytes", None)
+        if entry.get("disabledReason") == "traffic-limit":
+            entry.pop("disabledReason", None)
+        return
+
+    entry["trafficLimit"] = {
+        "period": validate_limit_period(period),
+        "bytes": int(limit_bytes),
+        "setAt": utc_now_iso(),
+    }
+
+
+def traffic_limit(entry):
+    limit = entry.get("trafficLimit")
+    if not isinstance(limit, dict):
+        return None
+    period = limit.get("period")
+    try:
+        limit_bytes = int(limit.get("bytes", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if period not in ("daily", "monthly") or limit_bytes <= 0:
+        return None
+    return {"period": period, "bytes": limit_bytes}
+
+
+def traffic_limit_period_key(period, now=None):
+    now = now or local_now()
+    if period == "daily":
+        return now.date().isoformat()
+    if period == "monthly":
+        return now.strftime("%Y-%m")
+    die("Traffic limit period must be daily or monthly.")
+
+
+def traffic_limit_reset_time(period, now=None):
+    now = now or local_now()
+    if period == "daily":
+        reset = datetime.combine(now.date() + timedelta(days=1), time.min, tzinfo=now.tzinfo)
+    elif period == "monthly":
+        year = now.year + (1 if now.month == 12 else 0)
+        month = 1 if now.month == 12 else now.month + 1
+        reset = datetime(year, month, 1, tzinfo=now.tzinfo)
+    else:
+        die("Traffic limit period must be daily or monthly.")
+    return reset.isoformat(timespec="minutes")
+
+
+def traffic_limit_period_label(period):
+    return "day" if period == "daily" else "month"
+
+
+def format_traffic_limit(entry):
+    limit = traffic_limit(entry)
+    if limit is None:
+        return "без лимита"
+    return f"{format_traffic(limit['bytes'])}/{traffic_limit_period_label(limit['period'])}"
 
 
 def prompt_access_days():
@@ -333,7 +433,18 @@ def db_entry_from_client(item, created="", enabled=True, previous=None):
         "enabled": enabled,
         "client": dict(item),
     }
-    for key in ("expiresAt", "accessDays", "expiredAt", "disabledReason", "disabledAt"):
+    for key in (
+        "expiresAt",
+        "accessDays",
+        "expiredAt",
+        "disabledReason",
+        "disabledAt",
+        "trafficLimit",
+        "trafficLimitExceededAt",
+        "trafficLimitExceededPeriod",
+        "trafficLimitExceededBytes",
+        "trafficLimitResetAt",
+    ):
         if key in previous:
             entry[key] = previous[key]
     if "connection" in previous:
@@ -687,6 +798,35 @@ def month_total(entry, month_key):
     return incoming, outgoing
 
 
+def traffic_limit_usage(entry, period, now=None):
+    now = now or local_now()
+    if period == "daily":
+        incoming, outgoing = day_total(entry, now.date())
+    elif period == "monthly":
+        incoming, outgoing = month_total(entry, now.strftime("%Y-%m"))
+    else:
+        die("Traffic limit period must be daily or monthly.")
+    return incoming + outgoing
+
+
+def traffic_limit_status(db_entry, traffic_db_entry, now=None):
+    limit = traffic_limit(db_entry)
+    if limit is None:
+        return None
+    now = now or local_now()
+    used = traffic_limit_usage(traffic_db_entry, limit["period"], now)
+    remaining = max(0, limit["bytes"] - used)
+    return {
+        "period": limit["period"],
+        "periodKey": traffic_limit_period_key(limit["period"], now),
+        "limitBytes": limit["bytes"],
+        "usedBytes": used,
+        "remainingBytes": remaining,
+        "resetAt": traffic_limit_reset_time(limit["period"], now),
+        "exceeded": used >= limit["bytes"],
+    }
+
+
 def all_time_total(entry):
     return int(entry.get("incoming", 0) or 0), int(entry.get("outgoing", 0) or 0)
 
@@ -736,7 +876,7 @@ def table_row(values, widths, color_indexes=None):
 
 
 def print_client_table(rows):
-    headers = ["NAME", "STATUS", "ONLINE", "IN", "OUT", "TOTAL", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
+    headers = ["NAME", "STATUS", "ONLINE", "IN", "OUT", "TOTAL", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
     color_indexes = {headers.index("STATUS"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
     widths = [len(header) for header in headers]
     for row in rows:
@@ -936,6 +1076,7 @@ def cmd_list():
             incoming, outgoing = traffic_for(traffic_db, stats, row)
             total = None if incoming is None or outgoing is None else incoming + outgoing
             online, last_online = online_state(row, traffic_db)
+            db_entry = db_clients(db).get(row["name"], {})
             table_rows.append(
                 [
                     row["name"],
@@ -944,6 +1085,7 @@ def cmd_list():
                     format_traffic(incoming),
                     format_traffic(outgoing),
                     format_traffic(total),
+                    format_traffic_limit(db_entry),
                     last_online,
                     format_access_until(row["expiresAt"]),
                     row["created"],
@@ -988,6 +1130,7 @@ def cmd_traffic_summary(month_value=None):
     table_rows = []
     for row in rows:
         entry = traffic_entry(traffic_db, row["name"])
+        db_entry = db_clients(db).get(row["name"], {})
         incoming, outgoing = month_total(entry, month_key)
         all_in, all_out = all_time_total(entry)
         table_rows.append([
@@ -997,11 +1140,12 @@ def cmd_traffic_summary(month_value=None):
             format_traffic(incoming),
             format_traffic(outgoing),
             format_traffic(incoming + outgoing),
+            format_traffic_limit(db_entry),
             format_traffic(all_in + all_out),
         ])
 
     print(f"Month: {month_key}")
-    print_plain_table(["NAME", "STATUS", "CONNECTION", "IN", "OUT", "TOTAL", "ALL TIME"], table_rows)
+    print_plain_table(["NAME", "STATUS", "CONNECTION", "IN", "OUT", "TOTAL", "LIMIT", "ALL TIME"], table_rows)
 
 
 def cmd_traffic_day(name, day_value=None):
@@ -1058,6 +1202,22 @@ def all_client_names(config, db):
     for inbound in reality_inbounds(config):
         names.update(client_name(item) for item in clients(inbound) if client_name(item))
     return names
+
+
+def db_entry_for_existing_client(config, db, name):
+    validate_name(name)
+    entry = db_clients(db).get(name)
+    if entry:
+        return entry
+
+    inbound, item = active_client_any(config, name)
+    if item is None:
+        die(f"Client not found: {name}")
+    _, created = split_email(item.get("email", ""))
+    entry = db_entry_from_client(item, created=created, enabled=True)
+    entry["connection"] = inbound_tag(inbound)
+    db_clients(db)[name] = entry
+    return entry
 
 
 def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None):
@@ -1180,6 +1340,7 @@ def cmd_disable(name):
 
 def cmd_enable(name):
     validate_name(name)
+    sync_traffic()
     config = load_config()
     db = load_db()
     ensure_connections(config, db)
@@ -1190,6 +1351,14 @@ def cmd_enable(name):
         die(f"Client not found: {name}")
     if access_expired(entry):
         die(f"Access expired for client: {name}. Extend it first: xray-client set-days {name} DAYS")
+    traffic_status = traffic_limit_status(entry, traffic_entry(load_traffic_db(), name))
+    if traffic_status and traffic_status["exceeded"]:
+        die(
+            "Traffic limit is exhausted for the current "
+            f"{traffic_limit_period_label(traffic_status['period'])}. "
+            f"Used {format_traffic(traffic_status['usedBytes'])} of {format_traffic(traffic_status['limitBytes'])}. "
+            f"Can be enabled after reset: {traffic_status['resetAt']}"
+        )
 
     created = entry.get("created", "")
     client = dict(entry.get("client") or {})
@@ -1209,6 +1378,10 @@ def cmd_enable(name):
     entry.pop("disabledAt", None)
     entry.pop("disabledReason", None)
     entry.pop("expiredAt", None)
+    entry.pop("trafficLimitExceededAt", None)
+    entry.pop("trafficLimitExceededPeriod", None)
+    entry.pop("trafficLimitExceededBytes", None)
+    entry.pop("trafficLimitResetAt", None)
     db_clients(db)[name] = entry
 
     backup = save_config(config)
@@ -1253,6 +1426,156 @@ def cmd_set_days(name, days_value):
     print(f"Access until: {format_access_until(entry.get('expiresAt', ''))}")
     if entry.get("enabled") is False:
         print("Status: disabled. Use xray-client enable NAME after extending access if the client should be enabled now.")
+
+
+def cmd_set_limit(name, period_value, limit_gb_value):
+    period = validate_limit_period(period_value)
+    limit_bytes = parse_limit_gb(limit_gb_value)
+    config = load_config()
+    db = load_db()
+    ensure_connections(config, db)
+    entry = db_entry_for_existing_client(config, db, name)
+    set_entry_traffic_limit(entry, period, limit_bytes)
+    db_clients(db)[name] = entry
+    save_db(db)
+
+    print(f"Client: {name}")
+    if limit_bytes is None:
+        print("Traffic limit: без лимита")
+        return
+
+    sync_traffic()
+    traffic_db = load_traffic_db()
+    status = traffic_limit_status(entry, traffic_entry(traffic_db, name))
+    print(f"Traffic limit: {format_traffic(limit_bytes)}/{traffic_limit_period_label(period)}")
+    if status:
+        print(f"Current usage: {format_traffic(status['usedBytes'])}")
+        print(f"Remaining: {format_traffic(status['remainingBytes'])}")
+        print(f"Reset: {status['resetAt']}")
+        if status["exceeded"]:
+            print("Traffic limit is already exceeded. Checking active clients now.")
+            cmd_enforce_limits(quiet=False, sync_first=False)
+
+
+def cmd_clear_limit(name):
+    config = load_config()
+    db = load_db()
+    ensure_connections(config, db)
+    entry = db_entry_for_existing_client(config, db, name)
+    was_disabled_by_limit = entry.get("enabled") is False and entry.get("disabledReason") == "traffic-limit"
+    set_entry_traffic_limit(entry, "daily", None)
+    db_clients(db)[name] = entry
+    save_db(db)
+
+    print(f"Client: {name}")
+    print("Traffic limit: без лимита")
+    if was_disabled_by_limit:
+        print("Status: disabled by previous traffic limit. Use xray-client enable NAME if the client should be enabled now.")
+
+
+def traffic_limit_row(config, db, traffic_db, row):
+    db_entry = db_clients(db).get(row["name"], {})
+    traffic_db_entry = traffic_entry(traffic_db, row["name"])
+    status = traffic_limit_status(db_entry, traffic_db_entry)
+    if status is None:
+        return [
+            row["name"],
+            row["status"],
+            connection_display_name(config, db, row["connection"]),
+            "без лимита",
+            "-",
+            "-",
+            "-",
+        ]
+    return [
+        row["name"],
+        row["status"],
+        connection_display_name(config, db, row["connection"]),
+        format_traffic_limit(db_entry),
+        format_traffic(status["usedBytes"]),
+        format_traffic(status["remainingBytes"]),
+        status["resetAt"],
+    ]
+
+
+def cmd_limit_list():
+    sync_traffic()
+    config = load_config()
+    db = load_db()
+    ensure_connections(config, db)
+    save_db(db)
+    traffic_db = load_traffic_db()
+    rows = client_rows(config, db)
+    if not rows:
+        print("No clients.")
+        return
+    table_rows = [traffic_limit_row(config, db, traffic_db, row) for row in rows]
+    print_plain_table(["NAME", "STATUS", "CONNECTION", "LIMIT", "USED", "REMAINING", "RESET"], table_rows)
+
+
+def cmd_enforce_limits(quiet=False, sync_first=False):
+    if sync_first:
+        sync_traffic()
+
+    config = load_config()
+    db = load_db()
+    ensure_connections(config, db)
+    traffic_db = load_traffic_db()
+    due_names = []
+    due_clients = {}
+    due_statuses = {}
+
+    for inbound in reality_inbounds(config):
+        tag = inbound_tag(inbound)
+        for item in clients(inbound):
+            name = client_name(item)
+            entry = db_clients(db).get(name, {})
+            status = traffic_limit_status(entry, traffic_entry(traffic_db, name))
+            if status and status["exceeded"]:
+                due_names.append(name)
+                due_clients[name] = (tag, item)
+                due_statuses[name] = status
+
+    if not due_names:
+        if not quiet:
+            print("No traffic limits exceeded.")
+        return
+
+    stamp = utc_now_iso()
+    for name in due_names:
+        tag, item = due_clients[name]
+        status = due_statuses[name]
+        _, created = split_email(item.get("email", ""))
+        previous = db_clients(db).get(name, {})
+        entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
+        entry["connection"] = previous.get("connection") or tag
+        entry["disabledAt"] = stamp
+        entry["disabledReason"] = "traffic-limit"
+        entry["trafficLimitExceededAt"] = stamp
+        entry["trafficLimitExceededPeriod"] = status["periodKey"]
+        entry["trafficLimitExceededBytes"] = status["usedBytes"]
+        entry["trafficLimitResetAt"] = status["resetAt"]
+        db_clients(db)[name] = entry
+
+    due_set = set(due_names)
+    for inbound in reality_inbounds(config):
+        inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
+
+    backup = save_config(config)
+    try:
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+        save_db(db)
+    except subprocess.CalledProcessError:
+        shutil.copy2(backup, CONFIG_PATH)
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        run(["systemctl", "restart", "xray"])
+        die(f"New config failed. Restored backup: {backup}")
+
+    if not quiet:
+        print("Disabled clients by traffic limit: " + ", ".join(due_names))
+        print(f"Backup: {backup}")
 
 
 def cmd_expire_due(quiet=False):
@@ -1329,6 +1652,10 @@ def usage():
   xray-client traffic-week NAME [START_DATE]
   xray-client traffic-month NAME [YYYY-MM]
   xray-client traffic-period NAME START_DATE END_DATE
+  xray-client limit-list
+  xray-client set-limit NAME daily|monthly LIMIT_GB
+  xray-client clear-limit NAME
+  xray-client enforce-limits [--quiet] [--sync]
 """)
 
 
@@ -1407,6 +1734,19 @@ def main():
         cmd_traffic_month(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
     elif command == "traffic-period" and len(sys.argv) == 5:
         cmd_traffic_period(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif command == "limit-list" and len(sys.argv) == 2:
+        cmd_limit_list()
+    elif command == "set-limit" and len(sys.argv) == 5:
+        cmd_set_limit(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif command == "clear-limit" and len(sys.argv) == 3:
+        cmd_clear_limit(sys.argv[2])
+    elif command == "enforce-limits":
+        allowed = {"--quiet", "--sync"}
+        options = set(sys.argv[2:])
+        if not options.issubset(allowed):
+            usage()
+            sys.exit(1)
+        cmd_enforce_limits(quiet="--quiet" in options, sync_first="--sync" in options)
     else:
         usage()
         sys.exit(1)
