@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import quote
+
+CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
+CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
+SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
+TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
+INBOUND_TAG = "vless-reality"
+STATS_SERVER = "127.0.0.1:10085"
+TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
+DEFAULT_SERVER_ADDR = ""
+CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
+FINGERPRINTS = {
+    "chrome",
+    "firefox",
+    "safari",
+    "ios",
+    "android",
+    "edge",
+    "360",
+    "qq",
+    "random",
+    "randomized",
+}
+GREEN = "\033[32m"
+RED = "\033[31m"
+RESET = "\033[0m"
+
+
+def die(message):
+    print(f"ERROR: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(command):
+    subprocess.run(command, check=True)
+
+
+def run_capture(command, timeout=5):
+    return subprocess.run(
+        command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+    )
+
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        die(f"Config not found: {CONFIG_PATH}")
+    return json.loads(CONFIG_PATH.read_text())
+
+
+def save_config(config):
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.{timestamp}")
+    shutil.copy2(CONFIG_PATH, backup)
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+    shutil.chown(tmp, user="root", group="xray")
+    os.chmod(tmp, 0o640)
+    tmp.replace(CONFIG_PATH)
+    return backup
+
+
+def load_db():
+    if CLIENT_DB_PATH.exists():
+        return json.loads(CLIENT_DB_PATH.read_text())
+    return {"clients": {}}
+
+
+def save_db(db):
+    tmp = CLIENT_DB_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
+    shutil.chown(tmp, user="root", group="xray")
+    os.chmod(tmp, 0o640)
+    tmp.replace(CLIENT_DB_PATH)
+
+
+def find_inbound(config):
+    for inbound in config.get("inbounds", []):
+        if inbound.get("tag") == INBOUND_TAG:
+            return inbound
+    for inbound in config.get("inbounds", []):
+        if inbound.get("protocol") == "vless" and inbound.get("streamSettings", {}).get("security") == "reality":
+            return inbound
+    die("VLESS Reality inbound not found.")
+
+
+def clients(inbound):
+    settings = inbound.setdefault("settings", {})
+    return settings.setdefault("clients", [])
+
+
+def split_email(email):
+    if "|created=" in email:
+        name, created = email.split("|created=", 1)
+        return name, created
+    return email, ""
+
+
+def client_name(item):
+    return split_email(item.get("email", ""))[0]
+
+
+def active_client(inbound, name):
+    for item in clients(inbound):
+        if client_name(item) == name:
+            return item
+    return None
+
+
+def db_clients(db):
+    return db.setdefault("clients", {})
+
+
+def db_entry_from_client(item, created="", enabled=True):
+    name, email_created = split_email(item.get("email", ""))
+    created = created or email_created
+    entry = {
+        "id": item.get("id", ""),
+        "created": created,
+        "enabled": enabled,
+        "client": dict(item),
+    }
+    if not entry["client"].get("email") and name:
+        entry["client"]["email"] = f"{name}|created={created}" if created else name
+    return entry
+
+
+def validate_name(name):
+    if not CLIENT_NAME_RE.match(name):
+        die("Client name must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
+
+
+def status_cell(status):
+    text = status.ljust(8)
+    if not sys.stdout.isatty():
+        return text
+    if status == "enabled":
+        return f"{GREEN}{text}{RESET}"
+    if status == "disabled":
+        return f"{RED}{text}{RESET}"
+    return text
+
+
+def xray_uuid():
+    return subprocess.check_output(["/usr/local/bin/xray", "uuid"], text=True).strip()
+
+
+def reality_public_key(private_key):
+    output = subprocess.check_output(["/usr/local/bin/xray", "x25519", "-i", private_key], text=True)
+    for line in output.splitlines():
+        if line.startswith("Password (PublicKey):"):
+            return line.split(": ", 1)[1].strip()
+        if line.startswith("PublicKey:") or line.startswith("Public key:"):
+            return line.split(": ", 1)[1].strip()
+    die("Failed to derive Reality public key.")
+
+
+def server_env_values():
+    values = {}
+    if SERVER_ENV_PATH.exists():
+        for line in SERVER_ENV_PATH.read_text().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def server_env_value(key, default=""):
+    return server_env_values().get(key) or os.environ.get(key, default)
+
+
+def server_addr():
+    value = server_env_value("SERVER_ADDR", DEFAULT_SERVER_ADDR)
+    if value:
+        return value
+    die(f"SERVER_ADDR is not set. Check {SERVER_ENV_PATH} or set SERVER_ADDR manually.")
+
+
+def fingerprint():
+    value = server_env_value("FINGERPRINT", "chrome").lower()
+    if value not in FINGERPRINTS:
+        die("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
+    return value
+
+
+def link_for(config, client_id, name):
+    inbound = find_inbound(config)
+    stream = inbound.get("streamSettings", {})
+    reality = stream.get("realitySettings", {})
+    port = inbound.get("port", 443)
+    sni = reality.get("serverNames", [""])[0]
+    private_key = reality.get("privateKey")
+    short_ids = reality.get("shortIds", [""])
+    short_id = short_ids[0] if short_ids else ""
+    if not private_key or not sni:
+        die("Reality privateKey/serverNames not found in inbound.")
+    public_key = reality_public_key(private_key)
+
+    params = {
+        "security": "reality",
+        "encryption": "none",
+        "pbk": public_key,
+        "fp": fingerprint(),
+        "type": stream.get("network", "tcp"),
+        "flow": "xtls-rprx-vision",
+        "sni": sni,
+        "sid": short_id,
+        "spx": "/",
+    }
+    query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params.items())
+    return f"vless://{client_id}@{server_addr()}:{port}?{query}#{quote(name, safe='')}"
+
+
+def client_rows(config, db):
+    inbound = find_inbound(config)
+    rows = []
+    seen = set()
+    for item in clients(inbound):
+        raw_email = item.get("email", "")
+        name, created = split_email(raw_email)
+        if name in db_clients(db):
+            created = db["clients"][name].get("created", created)
+        rows.append({
+            "name": name or "(no-name)",
+            "created": created or "unknown",
+            "id": item.get("id", ""),
+            "email": raw_email,
+            "status": "enabled",
+        })
+        seen.add(name)
+
+    for name, entry in db_clients(db).items():
+        if name in seen:
+            continue
+        rows.append({
+            "name": name,
+            "created": entry.get("created") or "unknown",
+            "id": entry.get("id", ""),
+            "email": entry.get("client", {}).get("email", name),
+            "status": "disabled" if entry.get("enabled") is False else "missing",
+        })
+    return rows
+
+
+def query_user_stats():
+    try:
+        result = run_capture(
+            [
+                "/usr/local/bin/xray",
+                "api",
+                "statsquery",
+                f"--server={STATS_SERVER}",
+                "-pattern",
+                "user>>>",
+            ],
+            timeout=4,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    stats = {}
+    for name, value in re.findall(r'name:\s*"([^"]+)".*?value:\s*([0-9]+)', result.stdout, re.S):
+        stats[name] = int(value)
+    return stats
+
+
+def sync_traffic():
+    if TRAFFIC_SYNC.exists():
+        run_capture([str(TRAFFIC_SYNC), "--quiet"], timeout=8)
+
+
+def load_traffic_db():
+    if not TRAFFIC_PATH.exists():
+        return {"clients": {}}
+    try:
+        return json.loads(TRAFFIC_PATH.read_text())
+    except json.JSONDecodeError:
+        return {"clients": {}}
+
+
+def runtime_traffic_for(stats, email):
+    if stats is None:
+        return None, None
+    uplink = stats.get(f"user>>>{email}>>>traffic>>>uplink", 0)
+    downlink = stats.get(f"user>>>{email}>>>traffic>>>downlink", 0)
+    return uplink, downlink
+
+
+def traffic_for(traffic_db, stats, row):
+    entry = traffic_db.get("clients", {}).get(row["name"])
+    if entry:
+        return int(entry.get("incoming", 0)), int(entry.get("outgoing", 0))
+    return runtime_traffic_for(stats, row["email"])
+
+
+def format_gb(value):
+    if value is None:
+        return "n/a"
+    return f"{value / (1024 ** 3):.2f}GB"
+
+
+def cmd_list():
+    config = load_config()
+    db = load_db()
+    rows = client_rows(config, db)
+    if not rows:
+        print("No clients.")
+        return
+    sync_traffic()
+    traffic_db = load_traffic_db()
+    stats = query_user_stats()
+    width = max(len(row["name"]) for row in rows)
+    print(f"{'NAME'.ljust(width)}  STATUS    IN       OUT      TOTAL    CREATED")
+    for row in rows:
+        incoming, outgoing = traffic_for(traffic_db, stats, row)
+        total = None if incoming is None or outgoing is None else incoming + outgoing
+        print(
+            f"{row['name'].ljust(width)}  "
+            f"{status_cell(row['status'])}  "
+            f"{format_gb(incoming).rjust(7)}  "
+            f"{format_gb(outgoing).rjust(7)}  "
+            f"{format_gb(total).rjust(7)}  "
+            f"{row['created']}"
+        )
+
+
+def cmd_add(name):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    inbound = find_inbound(config)
+    current = clients(inbound)
+    existing_names = {client_name(item) for item in current}
+    if name in existing_names or name in db_clients(db):
+        die(f"Client already exists: {name}")
+
+    created = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    client_id = xray_uuid()
+    client = {
+        "id": client_id,
+        "flow": "xtls-rprx-vision",
+        "level": 0,
+        "email": f"{name}|created={created}",
+    }
+    current.append(client)
+    db_clients(db)[name] = db_entry_from_client(client, created=created, enabled=True)
+
+    backup = save_config(config)
+    try:
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+        save_db(db)
+    except subprocess.CalledProcessError:
+        shutil.copy2(backup, CONFIG_PATH)
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        run(["systemctl", "restart", "xray"])
+        die(f"New config failed. Restored backup: {backup}")
+
+    print(f"Added client: {name}")
+    print(f"Created: {created}")
+    print(f"Backup: {backup}")
+    print(link_for(config, client_id, name))
+
+
+def cmd_remove(name):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    inbound = find_inbound(config)
+    before = clients(inbound)
+    after = [item for item in before if client_name(item) != name]
+    found_in_db = name in db_clients(db)
+    if len(after) == len(before) and not found_in_db:
+        die(f"Client not found: {name}")
+    inbound["settings"]["clients"] = after
+    db_clients(db).pop(name, None)
+
+    backup = save_config(config)
+    try:
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+        save_db(db)
+    except subprocess.CalledProcessError:
+        shutil.copy2(backup, CONFIG_PATH)
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        run(["systemctl", "restart", "xray"])
+        die(f"New config failed. Restored backup: {backup}")
+
+    print(f"Removed client: {name}")
+    print(f"Backup: {backup}")
+
+
+def cmd_disable(name):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    inbound = find_inbound(config)
+    item = active_client(inbound, name)
+    if item is None:
+        if name in db_clients(db) and db["clients"][name].get("enabled") is False:
+            die(f"Client already disabled: {name}")
+        die(f"Enabled client not found: {name}")
+
+    _, created = split_email(item.get("email", ""))
+    if name in db_clients(db):
+        created = db["clients"][name].get("created", created)
+    entry = db_entry_from_client(item, created=created, enabled=False)
+    entry["disabledAt"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    db_clients(db)[name] = entry
+    inbound["settings"]["clients"] = [client for client in clients(inbound) if client_name(client) != name]
+
+    backup = save_config(config)
+    try:
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+        save_db(db)
+    except subprocess.CalledProcessError:
+        shutil.copy2(backup, CONFIG_PATH)
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        run(["systemctl", "restart", "xray"])
+        die(f"New config failed. Restored backup: {backup}")
+
+    print(f"Disabled client: {name}")
+    print(f"Backup: {backup}")
+
+
+def cmd_enable(name):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    inbound = find_inbound(config)
+    if active_client(inbound, name) is not None:
+        die(f"Client already enabled: {name}")
+    entry = db_clients(db).get(name)
+    if not entry:
+        die(f"Client not found: {name}")
+
+    created = entry.get("created", "")
+    client = dict(entry.get("client") or {})
+    client.setdefault("id", entry.get("id", ""))
+    client.setdefault("flow", "xtls-rprx-vision")
+    client.setdefault("level", 0)
+    client["email"] = f"{name}|created={created}" if created else name
+    if not client.get("id"):
+        die(f"Client has no UUID in database: {name}")
+
+    clients(inbound).append(client)
+    entry["enabled"] = True
+    entry["client"] = client
+    entry.pop("disabledAt", None)
+    db_clients(db)[name] = entry
+
+    backup = save_config(config)
+    try:
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+        save_db(db)
+    except subprocess.CalledProcessError:
+        shutil.copy2(backup, CONFIG_PATH)
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        run(["systemctl", "restart", "xray"])
+        die(f"New config failed. Restored backup: {backup}")
+
+    print(f"Enabled client: {name}")
+    print(f"Backup: {backup}")
+    print(link_for(config, client["id"], name))
+
+
+def usage():
+    print("""Usage:
+  xray-client list
+  xray-client add NAME
+  xray-client disable NAME
+  xray-client enable NAME
+  xray-client remove NAME
+  xray-client link NAME
+""")
+
+
+def cmd_link(name):
+    validate_name(name)
+    config = load_config()
+    for row in client_rows(config, load_db()):
+        if row["name"] == name:
+            print(link_for(config, row["id"], name))
+            return
+    die(f"Client not found: {name}")
+
+
+def main():
+    if os.geteuid() != 0:
+        die("Run this script as root.")
+    if len(sys.argv) < 2:
+        usage()
+        sys.exit(1)
+    command = sys.argv[1]
+    if command == "list":
+        cmd_list()
+    elif command == "add" and len(sys.argv) == 3:
+        cmd_add(sys.argv[2])
+    elif command in ("disable", "off") and len(sys.argv) == 3:
+        cmd_disable(sys.argv[2])
+    elif command in ("enable", "on") and len(sys.argv) == 3:
+        cmd_enable(sys.argv[2])
+    elif command in ("remove", "delete", "del", "rm") and len(sys.argv) == 3:
+        cmd_remove(sys.argv[2])
+    elif command == "link" and len(sys.argv) == 3:
+        cmd_link(sys.argv[2])
+    else:
+        usage()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
