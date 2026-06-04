@@ -5,16 +5,18 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from calendar import monthrange
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
+TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 INBOUND_TAG = "vless-reality"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-04 14:43 UTC"
+MENU_UPDATED = "2026-06-04 14:54 UTC"
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 GREEN = "\033[32m"
@@ -97,6 +99,7 @@ def main_menu_actions():
         ("4", "Сервис Xray"),
         ("5", "Обновление Xray"),
         ("6", "Стартовая ссылка"),
+        ("7", "Просмотр трафика"),
         ("0", "Выход"),
     ]
 
@@ -155,6 +158,16 @@ def update_menu_actions():
         ("2", "Обновить Xray"),
         ("3", "Показать бэкапы Xray"),
         ("4", "Откатить Xray к предыдущей версии"),
+        ("0", "Назад"),
+    ]
+
+
+def traffic_report_actions():
+    return [
+        ("1", "За день по часам"),
+        ("2", "За неделю по дням"),
+        ("3", "За месяц по дням"),
+        ("4", "За период по дням"),
         ("0", "Назад"),
     ]
 
@@ -436,6 +449,120 @@ def format_access_until(value):
     return parsed.astimezone().strftime("%Y-%m-%d 00:00")
 
 
+def local_today():
+    return datetime.now().astimezone().date()
+
+
+def parse_date_value(value, label="DATE"):
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        die(f"{label} must be in YYYY-MM-DD format.")
+
+
+def parse_month_value(value):
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}", value or ""):
+        die("MONTH must be in YYYY-MM format.")
+    year, month = (int(part, 10) for part in value.split("-", 1))
+    if month < 1 or month > 12:
+        die("MONTH must be in YYYY-MM format.")
+    return f"{year:04d}-{month:02d}"
+
+
+def current_month_key():
+    today = local_today()
+    return f"{today.year:04d}-{today.month:02d}"
+
+
+def month_bounds(month_key):
+    year, month = (int(part, 10) for part in month_key.split("-", 1))
+    start = date(year, month, 1)
+    end = date(year, month, monthrange(year, month)[1])
+    today = local_today()
+    if start <= today <= end:
+        end = today
+    return start, end
+
+
+def iter_dates(start, end):
+    current = start
+    while current <= end:
+        yield current
+        current += timedelta(days=1)
+
+
+def format_traffic(value):
+    value = int(value or 0)
+    if value < 1024:
+        return "0.00KB"
+    units = [
+        ("KB", 1024),
+        ("MB", 1024 ** 2),
+        ("GB", 1024 ** 3),
+    ]
+    for suffix, size in units:
+        next_size = size * 1024
+        if value < next_size or suffix == "GB":
+            return f"{value / size:.2f}{suffix}"
+    return "0.00KB"
+
+
+def traffic_bucket_totals(bucket):
+    if not isinstance(bucket, dict):
+        return 0, 0
+    return int(bucket.get("incoming", 0) or 0), int(bucket.get("outgoing", 0) or 0)
+
+
+def traffic_entry(traffic_db, name):
+    return traffic_db.get("clients", {}).get(name, {})
+
+
+def history_for_entry(entry):
+    history = entry.get("history", {})
+    return history if isinstance(history, dict) else {}
+
+
+def day_total(entry, day):
+    hours = history_for_entry(entry).get(day.isoformat(), {})
+    if not isinstance(hours, dict):
+        return 0, 0
+    incoming = 0
+    outgoing = 0
+    for bucket in hours.values():
+        bucket_in, bucket_out = traffic_bucket_totals(bucket)
+        incoming += bucket_in
+        outgoing += bucket_out
+    return incoming, outgoing
+
+
+def month_total(entry, month_key):
+    start, end = month_bounds(month_key)
+    incoming = 0
+    outgoing = 0
+    for day in iter_dates(start, end):
+        day_in, day_out = day_total(entry, day)
+        incoming += day_in
+        outgoing += day_out
+    return incoming, outgoing
+
+
+def all_time_total(entry):
+    return int(entry.get("incoming", 0) or 0), int(entry.get("outgoing", 0) or 0)
+
+
+def load_traffic_db():
+    return load_json(TRAFFIC_PATH, {"clients": {}})
+
+
+def sync_traffic_quiet():
+    sync = Path("/usr/local/sbin/xray-traffic-sync")
+    if sync.exists():
+        try:
+            subprocess.run([str(sync), "--quiet"], check=False, timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def client_rows_for_selection(mode="all"):
     config = load_config()
     db = load_json(CLIENT_DB_PATH, {"clients": {}})
@@ -515,6 +642,75 @@ def choose_client(action, mode="all"):
 
     print(f"Выбери клиента для действия: {action}.")
     print_client_selection_table(rows)
+    while True:
+        choice = input("Клиент: ").strip()
+        if choice == "0":
+            return ""
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return rows[index - 1]["name"]
+        print("Неизвестный клиент. Выбери номер из списка или 0 для возврата.")
+
+
+def traffic_rows_for_selection(month_key):
+    sync_traffic_quiet()
+    traffic_db = load_traffic_db()
+    rows = []
+    for row in client_rows_for_selection("all"):
+        entry = traffic_entry(traffic_db, row["name"])
+        month_in, month_out = month_total(entry, month_key)
+        all_in, all_out = all_time_total(entry)
+        rows.append({
+            "name": row["name"],
+            "status": row["status"],
+            "connectionName": row["connectionName"],
+            "monthIn": month_in,
+            "monthOut": month_out,
+            "monthTotal": month_in + month_out,
+            "allTimeTotal": all_in + all_out,
+        })
+    return rows
+
+
+def print_traffic_selection_table(rows):
+    headers = ("№", "CONNECTION", "NAME", "STATUS", "MONTH IN", "MONTH OUT", "MONTH TOTAL", "ALL TIME")
+    values = [
+        (
+            str(index),
+            row["connectionName"],
+            row["name"],
+            row["status"],
+            format_traffic(row["monthIn"]),
+            format_traffic(row["monthOut"]),
+            format_traffic(row["monthTotal"]),
+            format_traffic(row["allTimeTotal"]),
+        )
+        for index, row in enumerate(rows, start=1)
+    ]
+    values.append(("0", "Назад", "", "", "", "", "", ""))
+    widths = [
+        max(len(headers[column]), *(len(str(row[column])) for row in values))
+        for column in range(len(headers))
+    ]
+    border = table_border(widths)
+    print(border)
+    print(table_row(headers, widths))
+    print(border)
+    for row in values:
+        print(table_row(row, widths))
+    print(border)
+
+
+def choose_traffic_client():
+    month_key = current_month_key()
+    rows = traffic_rows_for_selection(month_key)
+    if not rows:
+        print("Нет клиентов для просмотра трафика.")
+        return ""
+
+    print(f"Трафик за текущий месяц: {month_key}")
+    print_traffic_selection_table(rows)
     while True:
         choice = input("Клиент: ").strip()
         if choice == "0":
@@ -847,6 +1043,42 @@ def call(command):
     subprocess.run(command, check=False)
 
 
+def prompt_date(default, label, description):
+    print(description)
+    value = input(f"{label} [{default}]: ").strip() or default
+    return parse_date_value(value, label).isoformat()
+
+
+def prompt_month(default, description):
+    print(description)
+    value = input(f"MONTH [{default}]: ").strip() or default
+    return parse_month_value(value)
+
+
+def show_traffic_day(name):
+    today = local_today().isoformat()
+    day = prompt_date(today, "DATE", "DATE: день отчёта в формате YYYY-MM-DD. Вывод будет по часам.")
+    call(["xray-client", "traffic-day", name, day])
+
+
+def show_traffic_week(name):
+    default = (local_today() - timedelta(days=6)).isoformat()
+    start = prompt_date(default, "START_DATE", "START_DATE: первый день 7-дневного периода в формате YYYY-MM-DD.")
+    call(["xray-client", "traffic-week", name, start])
+
+
+def show_traffic_month(name):
+    month = prompt_month(current_month_key(), "MONTH: месяц отчёта в формате YYYY-MM. Вывод будет по дням.")
+    call(["xray-client", "traffic-month", name, month])
+
+
+def show_traffic_period(name):
+    today = local_today().isoformat()
+    start = prompt_date(today, "START_DATE", "START_DATE: первый день периода в формате YYYY-MM-DD.")
+    end = prompt_date(today, "END_DATE", "END_DATE: последний день периода в формате YYYY-MM-DD.")
+    call(["xray-client", "traffic-period", name, start, end])
+
+
 def ask_name(action):
     name = input(f"Имя клиента для {action}: ").strip()
     return validate_client_name(name)
@@ -988,6 +1220,15 @@ def update_menu_handlers():
     }
 
 
+def traffic_report_handlers(name):
+    return {
+        "1": ("Трафик за день по часам", lambda: show_traffic_day(name)),
+        "2": ("Трафик за неделю по дням", lambda: show_traffic_week(name)),
+        "3": ("Трафик за месяц по дням", lambda: show_traffic_month(name)),
+        "4": ("Трафик за период по дням", lambda: show_traffic_period(name)),
+    }
+
+
 def print_section_title(title):
     print(f"Раздел: {title}")
 
@@ -1033,6 +1274,23 @@ def open_update_menu():
     menu_loop("Обновление Xray", update_menu_actions(), update_menu_handlers())
 
 
+def open_client_traffic_menu(name):
+    menu_loop(f"Просмотр трафика: {name}", traffic_report_actions(), traffic_report_handlers(name))
+
+
+def open_traffic_menu():
+    while True:
+        print()
+        print_menu_header()
+        print()
+        print_section_title("Просмотр трафика")
+        print()
+        name = choose_traffic_client()
+        if not name:
+            return
+        open_client_traffic_menu(name)
+
+
 def main_menu_handlers():
     return {
         "1": ("Клиенты", open_clients_menu),
@@ -1041,6 +1299,7 @@ def main_menu_handlers():
         "4": ("Сервис Xray", open_service_menu),
         "5": ("Обновление Xray", open_update_menu),
         "6": ("Вывести стартовую ссылку", print_initial_link),
+        "7": ("Просмотр трафика", open_traffic_menu),
     }
 
 
