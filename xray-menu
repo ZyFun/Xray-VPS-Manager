@@ -12,7 +12,7 @@ CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 INBOUND_TAG = "vless-reality"
-MENU_UPDATED = "2026-06-04 09:33 UTC"
+MENU_UPDATED = "2026-06-04 10:02 UTC"
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 FINGERPRINTS = [
@@ -96,16 +96,17 @@ def menu_actions():
         ("9", "Включить клиента"),
         ("10", "Удалить клиента"),
         ("11", "Вывести ссылку клиента"),
-        ("12", "Добавить/заменить каскад"),
-        ("13", "Проверить каскад"),
-        ("14", "Отключить каскад"),
-        ("15", "Статус Xray"),
-        ("16", "Перезапустить Xray"),
-        ("17", "Вывести стартовую ссылку"),
-        ("18", "Проверить Xray и доступность обновления"),
-        ("19", "Обновить Xray"),
-        ("20", "Показать бэкапы Xray"),
-        ("21", "Откатить Xray к предыдущей версии"),
+        ("12", "Изменить срок доступа клиента"),
+        ("13", "Добавить/заменить каскад"),
+        ("14", "Проверить каскад"),
+        ("15", "Отключить каскад"),
+        ("16", "Статус Xray"),
+        ("17", "Перезапустить Xray"),
+        ("18", "Вывести стартовую ссылку"),
+        ("19", "Проверить Xray и доступность обновления"),
+        ("20", "Обновить Xray"),
+        ("21", "Показать бэкапы Xray"),
+        ("22", "Откатить Xray к предыдущей версии"),
         ("0", "Выход"),
     ]
 
@@ -408,6 +409,26 @@ def ask_name(action):
     return validate_client_name(name)
 
 
+def ask_new_client_command():
+    print("Введите имя клиента. Можно сразу указать срок через пробел.")
+    print("Примеры: data_test2 или data_test2 30. Пустой срок или 0 означает бессрочно.")
+    raw = input("Имя клиента [и дни]: ").strip()
+    if not raw:
+        die("Client name is required.")
+    parts = raw.split(maxsplit=1)
+    name = validate_client_name(parts[0])
+    if len(parts) == 1:
+        return ["xray-client", "add", name]
+    return ["xray-client", "add", name, parts[1].strip()]
+
+
+def ask_access_days():
+    print("Количество календарных дней доступа.")
+    print("Введите 0 или нажмите Enter, чтобы сделать доступ бессрочным.")
+    value = input("ACCESS_DAYS [бессрочно]: ").strip()
+    return value or "0"
+
+
 def print_initial_link():
     if CLIENT_LINK_PATH.exists():
         print(CLIENT_LINK_PATH.read_text())
@@ -443,21 +464,22 @@ def menu_handlers():
         "4": ("Обновить PORT, REALITY_SNI и REALITY_DEST", update_port_and_sni),
         "5": ("Обновить FINGERPRINT", update_fingerprint),
         "6": ("Показать клиентов", lambda: call(["xray-client", "list"])),
-        "7": ("Добавить клиента", lambda: call(["xray-client", "add", ask_name("добавления")])),
+        "7": ("Добавить клиента", lambda: call(ask_new_client_command())),
         "8": ("Отключить клиента", lambda: call(["xray-client", "disable", ask_name("отключения")])),
         "9": ("Включить клиента", lambda: call(["xray-client", "enable", ask_name("включения")])),
         "10": ("Удалить клиента", lambda: call(["xray-client", "remove", ask_name("удаления")])),
         "11": ("Вывести ссылку клиента", lambda: call(["xray-client", "link", ask_name("вывода ссылки")])),
-        "12": ("Добавить/заменить каскад", lambda: call(["xray-set-cascade"])),
-        "13": ("Проверить каскад", lambda: call(["xray-set-cascade", "--test"])),
-        "14": ("Отключить каскад", lambda: call(["xray-set-cascade", "--disable"])),
-        "15": ("Статус Xray", lambda: call(["systemctl", "status", "xray", "--no-pager"])),
-        "16": ("Перезапустить Xray", lambda: (call(["systemctl", "restart", "xray"]), call(["systemctl", "is-active", "xray"]))),
-        "17": ("Вывести стартовую ссылку", print_initial_link),
-        "18": ("Проверить Xray и доступность обновления", lambda: call(["xray-update", "--check"])),
-        "19": ("Обновить Xray", lambda: call(["xray-update", "--update"])),
-        "20": ("Показать бэкапы Xray", lambda: call(["xray-update", "--backups"])),
-        "21": ("Откатить Xray к предыдущей версии", rollback_xray),
+        "12": ("Изменить срок доступа клиента", lambda: call(["xray-client", "set-days", ask_name("изменения срока"), ask_access_days()])),
+        "13": ("Добавить/заменить каскад", lambda: call(["xray-set-cascade"])),
+        "14": ("Проверить каскад", lambda: call(["xray-set-cascade", "--test"])),
+        "15": ("Отключить каскад", lambda: call(["xray-set-cascade", "--disable"])),
+        "16": ("Статус Xray", lambda: call(["systemctl", "status", "xray", "--no-pager"])),
+        "17": ("Перезапустить Xray", lambda: (call(["systemctl", "restart", "xray"]), call(["systemctl", "is-active", "xray"]))),
+        "18": ("Вывести стартовую ссылку", print_initial_link),
+        "19": ("Проверить Xray и доступность обновления", lambda: call(["xray-update", "--check"])),
+        "20": ("Обновить Xray", lambda: call(["xray-update", "--update"])),
+        "21": ("Показать бэкапы Xray", lambda: call(["xray-update", "--backups"])),
+        "22": ("Откатить Xray к предыдущей версии", rollback_xray),
     }
 
 

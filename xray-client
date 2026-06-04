@@ -5,7 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -54,6 +54,90 @@ def run_capture(command, timeout=5):
         stderr=subprocess.PIPE,
         timeout=timeout,
     )
+
+
+def utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def utc_now_iso():
+    return utc_now().isoformat().replace("+00:00", "Z")
+
+
+def local_now():
+    return datetime.now().astimezone().replace(microsecond=0)
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def parse_access_days(value):
+    raw = (value or "").strip().lower()
+    if raw in ("", "0", "none", "never", "no", "unlimited", "forever", "бессрочно", "без срока"):
+        return None
+    if not re.fullmatch(r"[0-9]+", raw):
+        die("Access days must be a positive number. Empty or 0 means unlimited access.")
+    days = int(raw, 10)
+    if days < 1:
+        return None
+    if days > 36500:
+        die("Access days is too large. Use a value up to 36500.")
+    return days
+
+
+def expires_at_from_days(days):
+    if days is None:
+        return ""
+    now = local_now()
+    expire_date = now.date() + timedelta(days=days)
+    expire_at = datetime.combine(expire_date, time.min, tzinfo=now.tzinfo)
+    return expire_at.isoformat(timespec="seconds")
+
+
+def set_entry_expiry(entry, days):
+    expires_at = expires_at_from_days(days)
+    if expires_at:
+        entry["expiresAt"] = expires_at
+        entry["accessDays"] = days
+        entry.pop("expiredAt", None)
+        entry.pop("disabledReason", None)
+    else:
+        entry.pop("expiresAt", None)
+        entry.pop("accessDays", None)
+        entry.pop("expiredAt", None)
+        entry.pop("disabledReason", None)
+
+
+def prompt_access_days():
+    if not sys.stdin.isatty():
+        return None
+    print()
+    print("ACCESS_DAYS: количество календарных дней доступа.")
+    print("Клиент будет автоматически отключён в 00:00 по локальному времени сервера после окончания срока.")
+    print("Нажми Enter или введи 0, чтобы добавить клиента бессрочно.")
+    value = input("ACCESS_DAYS [бессрочно]: ").strip()
+    return parse_access_days(value)
+
+
+def access_expired(entry, now=None):
+    expires_at = parse_datetime(entry.get("expiresAt", ""))
+    if expires_at is None:
+        return False
+    now = now or local_now()
+    return now >= expires_at.astimezone(now.tzinfo)
+
+
+def format_access_until(value):
+    parsed = parse_datetime(value)
+    if parsed is None:
+        return "бессрочно"
+    return parsed.astimezone().strftime("%Y-%m-%d 00:00")
 
 
 def load_config():
@@ -125,15 +209,19 @@ def db_clients(db):
     return db.setdefault("clients", {})
 
 
-def db_entry_from_client(item, created="", enabled=True):
+def db_entry_from_client(item, created="", enabled=True, previous=None):
     name, email_created = split_email(item.get("email", ""))
-    created = created or email_created
+    previous = previous or {}
+    created = created or previous.get("created", "") or email_created
     entry = {
         "id": item.get("id", ""),
         "created": created,
         "enabled": enabled,
         "client": dict(item),
     }
+    for key in ("expiresAt", "accessDays", "expiredAt", "disabledReason", "disabledAt"):
+        if key in previous:
+            entry[key] = previous[key]
     if not entry["client"].get("email") and name:
         entry["client"]["email"] = f"{name}|created={created}" if created else name
     return entry
@@ -147,7 +235,7 @@ def validate_name(name):
 def color_label(value, text):
     if not sys.stdout.isatty():
         return text
-    if value in ("enabled", "online"):
+    if value in ("enabled", "online", "бессрочно"):
         return f"{GREEN}{text}{RESET}"
     if value in ("disabled", "offline"):
         return f"{RED}{text}{RESET}"
@@ -231,14 +319,16 @@ def client_rows(config, db):
     for item in clients(inbound):
         raw_email = item.get("email", "")
         name, created = split_email(raw_email)
+        entry = db_clients(db).get(name, {})
         if name in db_clients(db):
-            created = db["clients"][name].get("created", created)
+            created = entry.get("created", created)
         rows.append({
             "name": name or "(no-name)",
             "created": created or "unknown",
             "id": item.get("id", ""),
             "email": raw_email,
             "status": "enabled",
+            "expiresAt": entry.get("expiresAt", ""),
         })
         seen.add(name)
 
@@ -251,6 +341,7 @@ def client_rows(config, db):
             "id": entry.get("id", ""),
             "email": entry.get("client", {}).get("email", name),
             "status": "disabled" if entry.get("enabled") is False else "missing",
+            "expiresAt": entry.get("expiresAt", ""),
         })
     return rows
 
@@ -370,8 +461,8 @@ def table_row(values, widths, color_indexes=None):
 
 
 def print_client_table(rows):
-    headers = ["NAME", "STATUS", "ONLINE", "IN", "OUT", "TOTAL", "LAST ONLINE", "CREATED"]
-    color_indexes = {headers.index("STATUS"), headers.index("ONLINE")}
+    headers = ["NAME", "STATUS", "ONLINE", "IN", "OUT", "TOTAL", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
+    color_indexes = {headers.index("STATUS"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
     widths = [len(header) for header in headers]
     for row in rows:
         for index, value in enumerate(row):
@@ -410,13 +501,14 @@ def cmd_list():
                 format_traffic(outgoing),
                 format_traffic(total),
                 last_online,
+                format_access_until(row["expiresAt"]),
                 row["created"],
             ]
         )
     print_client_table(table_rows)
 
 
-def cmd_add(name):
+def cmd_add(name, access_days=None, prompt_for_access=True):
     validate_name(name)
     config = load_config()
     db = load_db()
@@ -426,7 +518,10 @@ def cmd_add(name):
     if name in existing_names or name in db_clients(db):
         die(f"Client already exists: {name}")
 
-    created = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    if prompt_for_access:
+        access_days = prompt_access_days()
+
+    created = utc_now_iso()
     client_id = xray_uuid()
     client = {
         "id": client_id,
@@ -435,7 +530,9 @@ def cmd_add(name):
         "email": f"{name}|created={created}",
     }
     current.append(client)
-    db_clients(db)[name] = db_entry_from_client(client, created=created, enabled=True)
+    entry = db_entry_from_client(client, created=created, enabled=True)
+    set_entry_expiry(entry, access_days)
+    db_clients(db)[name] = entry
 
     backup = save_config(config)
     try:
@@ -451,6 +548,7 @@ def cmd_add(name):
 
     print(f"Added client: {name}")
     print(f"Created: {created}")
+    print(f"Access until: {format_access_until(entry.get('expiresAt', ''))}")
     print(f"Backup: {backup}")
     print(link_for(config, client_id, name))
 
@@ -496,10 +594,11 @@ def cmd_disable(name):
         die(f"Enabled client not found: {name}")
 
     _, created = split_email(item.get("email", ""))
+    previous = db_clients(db).get(name, {})
     if name in db_clients(db):
-        created = db["clients"][name].get("created", created)
-    entry = db_entry_from_client(item, created=created, enabled=False)
-    entry["disabledAt"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        created = previous.get("created", created)
+    entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
+    entry["disabledAt"] = utc_now_iso()
     db_clients(db)[name] = entry
     inbound["settings"]["clients"] = [client for client in clients(inbound) if client_name(client) != name]
 
@@ -529,6 +628,8 @@ def cmd_enable(name):
     entry = db_clients(db).get(name)
     if not entry:
         die(f"Client not found: {name}")
+    if access_expired(entry):
+        die(f"Access expired for client: {name}. Extend it first: xray-client set-days {name} DAYS")
 
     created = entry.get("created", "")
     client = dict(entry.get("client") or {})
@@ -543,6 +644,8 @@ def cmd_enable(name):
     entry["enabled"] = True
     entry["client"] = client
     entry.pop("disabledAt", None)
+    entry.pop("disabledReason", None)
+    entry.pop("expiredAt", None)
     db_clients(db)[name] = entry
 
     backup = save_config(config)
@@ -562,14 +665,92 @@ def cmd_enable(name):
     print(link_for(config, client["id"], name))
 
 
+def cmd_set_days(name, days_value):
+    validate_name(name)
+    days = parse_access_days(days_value)
+    config = load_config()
+    db = load_db()
+    inbound = find_inbound(config)
+    entry = db_clients(db).get(name)
+
+    if not entry:
+        item = active_client(inbound, name)
+        if item is None:
+            die(f"Client not found: {name}")
+        _, created = split_email(item.get("email", ""))
+        entry = db_entry_from_client(item, created=created, enabled=True)
+
+    set_entry_expiry(entry, days)
+    db_clients(db)[name] = entry
+    save_db(db)
+
+    print(f"Client: {name}")
+    print(f"Access until: {format_access_until(entry.get('expiresAt', ''))}")
+    if entry.get("enabled") is False:
+        print("Status: disabled. Use xray-client enable NAME after extending access if the client should be enabled now.")
+
+
+def cmd_expire_due(quiet=False):
+    config = load_config()
+    db = load_db()
+    inbound = find_inbound(config)
+    current = clients(inbound)
+    now = local_now()
+    due_names = []
+    due_clients = {}
+
+    for item in current:
+        name = client_name(item)
+        entry = db_clients(db).get(name, {})
+        if access_expired(entry, now):
+            due_names.append(name)
+            due_clients[name] = item
+
+    if not due_names:
+        if not quiet:
+            print("No expired clients.")
+        return
+
+    stamp = utc_now_iso()
+    for name in due_names:
+        item = due_clients[name]
+        _, created = split_email(item.get("email", ""))
+        previous = db_clients(db).get(name, {})
+        entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
+        entry["disabledAt"] = stamp
+        entry["expiredAt"] = stamp
+        entry["disabledReason"] = "expired"
+        db_clients(db)[name] = entry
+
+    inbound["settings"]["clients"] = [item for item in current if client_name(item) not in set(due_names)]
+
+    backup = save_config(config)
+    try:
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+        save_db(db)
+    except subprocess.CalledProcessError:
+        shutil.copy2(backup, CONFIG_PATH)
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        run(["systemctl", "restart", "xray"])
+        die(f"New config failed. Restored backup: {backup}")
+
+    if not quiet:
+        print("Disabled expired clients: " + ", ".join(due_names))
+        print(f"Backup: {backup}")
+
+
 def usage():
     print("""Usage:
   xray-client list
-  xray-client add NAME
+  xray-client add NAME [DAYS]
   xray-client disable NAME
   xray-client enable NAME
   xray-client remove NAME
   xray-client link NAME
+  xray-client set-days NAME DAYS
+  xray-client expire-due [--quiet]
 """)
 
 
@@ -594,6 +775,8 @@ def main():
         cmd_list()
     elif command == "add" and len(sys.argv) == 3:
         cmd_add(sys.argv[2])
+    elif command == "add" and len(sys.argv) == 4:
+        cmd_add(sys.argv[2], parse_access_days(sys.argv[3]), prompt_for_access=False)
     elif command in ("disable", "off") and len(sys.argv) == 3:
         cmd_disable(sys.argv[2])
     elif command in ("enable", "on") and len(sys.argv) == 3:
@@ -602,6 +785,14 @@ def main():
         cmd_remove(sys.argv[2])
     elif command == "link" and len(sys.argv) == 3:
         cmd_link(sys.argv[2])
+    elif command in ("set-days", "access-days") and len(sys.argv) == 4:
+        cmd_set_days(sys.argv[2], sys.argv[3])
+    elif command == "expire-due" and len(sys.argv) in (2, 3):
+        quiet = len(sys.argv) == 3 and sys.argv[2] == "--quiet"
+        if len(sys.argv) == 3 and not quiet:
+            usage()
+            sys.exit(1)
+        cmd_expire_due(quiet=quiet)
     else:
         usage()
         sys.exit(1)

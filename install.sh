@@ -354,7 +354,14 @@ cat >/usr/local/etc/xray/clients.json <<EOF
   "clients": {
     "${CLIENT_NAME}": {
       "id": "${uuid}",
-      "created": "${created}"
+      "created": "${created}",
+      "enabled": true,
+      "client": {
+        "id": "${uuid}",
+        "flow": "xtls-rprx-vision",
+        "level": 0,
+        "email": "${CLIENT_NAME}|created=${created}"
+      }
     }
   }
 }
@@ -445,12 +452,39 @@ Unit=xray-traffic-sync.service
 WantedBy=timers.target
 EOF
 
+cat >/etc/systemd/system/xray-client-expire.service <<'EOF'
+[Unit]
+Description=Disable expired Xray clients
+After=xray.service
+ConditionPathExists=/usr/local/etc/xray/config.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xray-client expire-due --quiet
+EOF
+
+cat >/etc/systemd/system/xray-client-expire.timer <<'EOF'
+[Unit]
+Description=Disable expired Xray clients every day at midnight
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+Persistent=true
+AccuracySec=1min
+Unit=xray-client-expire.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 /usr/local/bin/xray run -test -config /usr/local/etc/xray/config.json
 systemctl daemon-reload
 systemctl enable --now xray
 systemctl restart xray
 systemctl enable --now xray-traffic-sync.timer
+systemctl enable --now xray-client-expire.timer
 xray-traffic-sync --quiet || true
+xray-client expire-due --quiet || true
 
 echo "Installed: $(/usr/local/bin/xray version | sed -n '1p')"
 echo "Xray status: $(systemctl is-active xray)"

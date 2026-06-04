@@ -222,6 +222,15 @@ def preflight(verbose=True):
 
         check("Traffic sync timer", traffic_sync_timer)
 
+    expire_timer_file = Path("/etc/systemd/system/xray-client-expire.timer")
+    if expire_timer_file.exists():
+        def client_expire_timer():
+            if not systemctl_is_active("xray-client-expire.timer"):
+                raise RuntimeError("xray-client-expire.timer is not active")
+            return "xray-client-expire.timer active"
+
+        check("Client expire timer", client_expire_timer)
+
     return failures
 
 
