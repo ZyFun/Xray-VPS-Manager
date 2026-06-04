@@ -26,6 +26,7 @@ need_file xray-client
 need_file xray-set-cascade
 need_file xray-menu
 need_file xray-traffic-sync
+need_file xray-update
 
 detect_server_addr() {
   if [[ -n "${SERVER_ADDR:-}" ]]; then
@@ -374,6 +375,7 @@ install -o root -g root -m 0755 "$SCRIPT_DIR/xray-client" /usr/local/sbin/xray-c
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-cascade" /usr/local/sbin/xray-set-cascade
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-menu" /usr/local/sbin/xray-menu
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-traffic-sync" /usr/local/sbin/xray-traffic-sync
+install -o root -g root -m 0755 "$SCRIPT_DIR/xray-update" /usr/local/sbin/xray-update
 
 client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=tcp&flow=xtls-rprx-vision&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F#${CLIENT_NAME}"
 

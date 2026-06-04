@@ -304,6 +304,18 @@ def print_initial_link():
         print("Файл /root/xray-reality-client.txt не найден. Можно вывести ссылку через xray-client link NAME.")
 
 
+def confirm(message):
+    answer = input(f"{message} [y/N]: ").strip().lower()
+    return answer in ("y", "yes")
+
+
+def rollback_xray():
+    if confirm("Откатить Xray к последней сохранённой предыдущей версии?"):
+        call(["xray-update", "--rollback"])
+    else:
+        print("Откат отменён.")
+
+
 def menu():
     if os.geteuid() != 0:
         die("Run this script as root.")
@@ -328,6 +340,10 @@ def menu():
         print("15) Статус Xray")
         print("16) Перезапустить Xray")
         print("17) Вывести стартовую ссылку")
+        print("18) Проверить Xray и доступность обновления")
+        print("19) Обновить Xray")
+        print("20) Показать бэкапы Xray")
+        print("21) Откатить Xray к предыдущей версии")
         print("0) Выход")
         choice = input("Выбор: ").strip()
 
@@ -366,6 +382,14 @@ def menu():
             call(["systemctl", "is-active", "xray"])
         elif choice == "17":
             print_initial_link()
+        elif choice == "18":
+            call(["xray-update", "--check"])
+        elif choice == "19":
+            call(["xray-update", "--update"])
+        elif choice == "20":
+            call(["xray-update", "--backups"])
+        elif choice == "21":
+            rollback_xray()
         elif choice == "0":
             return
         else:

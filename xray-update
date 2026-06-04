@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+import hashlib
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
+XRAY_BIN = Path("/usr/local/bin/xray")
+XRAY_ASSET_DIR = Path("/usr/local/share/xray")
+BACKUP_DIR = Path("/usr/local/lib/xray-backups")
+GITHUB_API = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+LATEST_PAGE = "https://github.com/XTLS/Xray-core/releases/latest"
+LATEST_ZIP = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+LATEST_DGST = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip.dgst"
+
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+RESET = "\033[0m"
+
+
+def color(text, code):
+    if not sys.stdout.isatty():
+        return text
+    return f"{code}{text}{RESET}"
+
+
+def ok(message):
+    print(color(f"OK: {message}", GREEN))
+
+
+def warn(message):
+    print(color(f"WARN: {message}", YELLOW))
+
+
+def fail(message):
+    print(color(f"FAIL: {message}", RED))
+
+
+def die(message, code=1):
+    fail(message)
+    sys.exit(code)
+
+
+def run(command, timeout=60, check=False, env=None):
+    result = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        env=env,
+    )
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+        raise RuntimeError(detail)
+    return result
+
+
+def require_root():
+    if os.geteuid() != 0:
+        die("Run this script as root.")
+
+
+def parse_version(value):
+    match = re.search(r"(\d+(?:\.\d+){1,3})", value or "")
+    if not match:
+        return ""
+    return match.group(1)
+
+
+def version_tuple(value):
+    parsed = parse_version(value)
+    if not parsed:
+        return ()
+    return tuple(int(part) for part in parsed.split("."))
+
+
+def current_version(binary=XRAY_BIN):
+    if not binary.exists():
+        return ""
+    result = run([str(binary), "version"], timeout=10)
+    if result.returncode != 0:
+        return ""
+    return parse_version(result.stdout.splitlines()[0] if result.stdout else "")
+
+
+def require_path(path, label):
+    if not path.exists():
+        raise RuntimeError(f"{label} not found: {path}")
+    return f"{path} exists"
+
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        raise RuntimeError(f"Config not found: {CONFIG_PATH}")
+    return json.loads(CONFIG_PATH.read_text())
+
+
+def find_reality_inbound(config):
+    for inbound in config.get("inbounds", []):
+        if inbound.get("tag") == "vless-reality":
+            return inbound
+    for inbound in config.get("inbounds", []):
+        if inbound.get("protocol") == "vless" and inbound.get("streamSettings", {}).get("security") == "reality":
+            return inbound
+    return None
+
+
+def systemctl_is_active(unit):
+    result = run(["systemctl", "is-active", unit], timeout=10)
+    return result.returncode == 0 and result.stdout.strip() == "active"
+
+
+def check_tcp(host, port, timeout=2):
+    with socket.create_connection((host, port), timeout=timeout):
+        return True
+
+
+def config_test(binary=XRAY_BIN, asset_dir=None):
+    env = os.environ.copy()
+    if asset_dir:
+        env["XRAY_LOCATION_ASSET"] = str(asset_dir)
+    return run([str(binary), "run", "-test", "-config", str(CONFIG_PATH)], timeout=30, env=env)
+
+
+def preflight(verbose=True):
+    failures = []
+
+    def check(label, func):
+        try:
+            detail = func()
+            if verbose:
+                ok(detail or label)
+        except Exception as exc:
+            failures.append(f"{label}: {exc}")
+            if verbose:
+                fail(f"{label}: {exc}")
+
+    def xray_binary():
+        require_path(XRAY_BIN, "Xray binary")
+        version = current_version()
+        if not version:
+            raise RuntimeError("could not read Xray version")
+        return f"{XRAY_BIN} version {version}"
+
+    def command_exists(command):
+        path = shutil.which(command)
+        if not path:
+            raise RuntimeError(f"{command} not found in PATH")
+        return f"{command} found: {path}"
+
+    check("Xray binary", xray_binary)
+    check("curl", lambda: command_exists("curl"))
+    check("geoip.dat", lambda: require_path(XRAY_ASSET_DIR / "geoip.dat", "geoip.dat"))
+    check("geosite.dat", lambda: require_path(XRAY_ASSET_DIR / "geosite.dat", "geosite.dat"))
+
+    config_holder = {}
+
+    def parse_config():
+        config_holder["config"] = load_config()
+        return f"{CONFIG_PATH} parsed"
+
+    check("Config JSON", parse_config)
+
+    def reality_settings():
+        inbound = find_reality_inbound(config_holder.get("config", {}))
+        if not inbound:
+            raise RuntimeError("VLESS Reality inbound not found")
+        port = int(inbound.get("port", 0))
+        reality = inbound.get("streamSettings", {}).get("realitySettings", {})
+        sni = (reality.get("serverNames") or [""])[0]
+        dest = reality.get("dest", "")
+        if not port or not sni or not dest:
+            raise RuntimeError(f"incomplete settings: port={port}, sni={sni}, dest={dest}")
+        config_holder["port"] = port
+        return f"VLESS Reality port={port}, sni={sni}, dest={dest}"
+
+    def current_config_test():
+        result = config_test()
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or result.stdout or "xray config test failed").strip())
+        return "Configuration OK"
+
+    def xray_service():
+        if not systemctl_is_active("xray"):
+            raise RuntimeError("xray.service is not active")
+        return "xray.service active"
+
+    check("Reality settings", reality_settings)
+    check("Current config test", current_config_test)
+    check("xray.service", xray_service)
+
+    if "port" in config_holder:
+        check("VLESS TCP port", lambda: f"127.0.0.1:{config_holder['port']} accepts TCP" if check_tcp("127.0.0.1", config_holder["port"]) else "")
+
+    if any(item.get("tag") == "api" for item in config_holder.get("config", {}).get("inbounds", [])):
+        def stats_api():
+            result = run([str(XRAY_BIN), "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>"], timeout=10)
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "stats API failed").strip())
+            return "Stats API responds on 127.0.0.1:10085"
+
+        check("Stats API", stats_api)
+
+    timer_file = Path("/etc/systemd/system/xray-traffic-sync.timer")
+    if timer_file.exists():
+        def traffic_sync_timer():
+            if not systemctl_is_active("xray-traffic-sync.timer"):
+                raise RuntimeError("xray-traffic-sync.timer is not active")
+            return "xray-traffic-sync.timer active"
+
+        check("Traffic sync timer", traffic_sync_timer)
+
+    return failures
+
+
+def http_json(url, timeout=20):
+    request = urllib.request.Request(url, headers={"User-Agent": "xray-update"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def latest_from_redirect():
+    result = run(["curl", "-fsSLI", "-o", "/dev/null", "-w", "%{url_effective}", LATEST_PAGE], timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "failed to resolve latest release").strip())
+    tag = result.stdout.rstrip("/").split("/")[-1]
+    version = parse_version(tag)
+    if not version:
+        raise RuntimeError(f"could not parse version from {result.stdout.strip()}")
+    return {
+        "tag": tag,
+        "version": version,
+        "zip_url": LATEST_ZIP,
+        "dgst_url": LATEST_DGST,
+    }
+
+
+def latest_release():
+    try:
+        data = http_json(GITHUB_API)
+        tag = data.get("tag_name", "")
+        assets = {item.get("name"): item.get("browser_download_url") for item in data.get("assets", [])}
+        version = parse_version(tag)
+        zip_url = assets.get("Xray-linux-64.zip") or LATEST_ZIP
+        dgst_url = assets.get("Xray-linux-64.zip.dgst") or LATEST_DGST
+        if not version:
+            raise RuntimeError(f"could not parse tag_name={tag!r}")
+        return {
+            "tag": tag,
+            "version": version,
+            "zip_url": zip_url,
+            "dgst_url": dgst_url,
+        }
+    except Exception as exc:
+        warn(f"GitHub API недоступен, пробую latest redirect: {exc}")
+        return latest_from_redirect()
+
+
+def download(url, target, required=True):
+    result = run(["curl", "-fL", "--retry", "3", "--connect-timeout", "20", "--max-time", "240", "-o", str(target), url], timeout=270)
+    if result.returncode != 0:
+        if required:
+            raise RuntimeError((result.stderr or result.stdout or f"failed to download {url}").strip())
+        return False
+    return True
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_digest(zip_path, dgst_path):
+    if not dgst_path.exists() or dgst_path.stat().st_size == 0:
+        warn("Digest file was not downloaded; SHA256 verification skipped.")
+        return
+    text = dgst_path.read_text(errors="replace")
+    match = re.search(r"SHA2-256=\s*([A-Fa-f0-9]{64})", text)
+    if not match:
+        warn("Digest file does not contain SHA2-256; verification skipped.")
+        return
+    expected = match.group(1).lower()
+    actual = sha256(zip_path).lower()
+    if actual != expected:
+        raise RuntimeError(f"SHA256 mismatch: expected {expected}, got {actual}")
+    ok("SHA256 digest verified")
+
+
+def download_release(release, workdir):
+    zip_path = workdir / "Xray-linux-64.zip"
+    dgst_path = workdir / "Xray-linux-64.zip.dgst"
+    download(release["zip_url"], zip_path, required=True)
+    download(release["dgst_url"], dgst_path, required=False)
+    verify_digest(zip_path, dgst_path)
+    extract_dir = workdir / "xray"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(extract_dir)
+    candidate = extract_dir / "xray"
+    if not candidate.exists():
+        raise RuntimeError("Downloaded archive does not contain xray binary")
+    candidate.chmod(0o755)
+    return extract_dir, candidate
+
+
+def test_candidate(release, workdir):
+    extract_dir, candidate = download_release(release, workdir)
+    result = config_test(candidate, asset_dir=extract_dir)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "candidate config test failed").strip())
+    version = current_version(candidate)
+    if version and version != release["version"]:
+        warn(f"Downloaded binary reports version {version}, release tag is {release['version']}")
+    ok(f"Latest Xray {release['version']} works with current config")
+    return extract_dir, candidate
+
+
+def version_message(current, latest):
+    if version_tuple(current) < version_tuple(latest):
+        return "update-available"
+    return "no-update"
+
+
+def backup_current(target_version):
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    current = current_version() or "unknown"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    backup = BACKUP_DIR / f"{timestamp}-{current}"
+    backup.mkdir(mode=0o755)
+    shutil.copy2(XRAY_BIN, backup / "xray")
+    if (XRAY_ASSET_DIR / "geoip.dat").exists():
+        shutil.copy2(XRAY_ASSET_DIR / "geoip.dat", backup / "geoip.dat")
+    if (XRAY_ASSET_DIR / "geosite.dat").exists():
+        shutil.copy2(XRAY_ASSET_DIR / "geosite.dat", backup / "geosite.dat")
+    metadata = {
+        "created": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "version": current,
+        "targetVersion": target_version,
+    }
+    (backup / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    ok(f"Backup created: {backup}")
+    return backup
+
+
+def install_candidate(extract_dir):
+    shutil.copy2(extract_dir / "xray", XRAY_BIN)
+    XRAY_BIN.chmod(0o755)
+    XRAY_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    for name in ("geoip.dat", "geosite.dat"):
+        src = extract_dir / name
+        if src.exists():
+            shutil.copy2(src, XRAY_ASSET_DIR / name)
+            (XRAY_ASSET_DIR / name).chmod(0o644)
+
+
+def restart_xray():
+    run(["systemctl", "restart", "xray"], timeout=30, check=True)
+    if not systemctl_is_active("xray"):
+        raise RuntimeError("xray.service is not active after restart")
+
+
+def backup_dirs():
+    if not BACKUP_DIR.exists():
+        return []
+    return sorted([item for item in BACKUP_DIR.iterdir() if item.is_dir()], reverse=True)
+
+
+def list_backups():
+    backups = backup_dirs()
+    if not backups:
+        fail("Нет сохранённых предыдущих версий Xray.")
+        return 1
+    for item in backups:
+        metadata_path = item / "metadata.json"
+        version = "unknown"
+        created = item.name
+        if metadata_path.exists():
+            try:
+                metadata = json.loads(metadata_path.read_text())
+                version = metadata.get("version", version)
+                created = metadata.get("created", created)
+            except json.JSONDecodeError:
+                pass
+        print(f"{item.name}  version={version}  created={created}")
+    return 0
+
+
+def restore_backup(backup):
+    if not (backup / "xray").exists():
+        raise RuntimeError(f"Backup does not contain xray binary: {backup}")
+    shutil.copy2(backup / "xray", XRAY_BIN)
+    XRAY_BIN.chmod(0o755)
+    XRAY_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    for name in ("geoip.dat", "geosite.dat"):
+        src = backup / name
+        if src.exists():
+            shutil.copy2(src, XRAY_ASSET_DIR / name)
+            (XRAY_ASSET_DIR / name).chmod(0o644)
+    result = config_test()
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "config test failed after rollback").strip())
+    restart_xray()
+
+
+def rollback(name=None):
+    backups = backup_dirs()
+    if not backups:
+        die("Нет сохранённых предыдущих версий Xray для отката.")
+    backup = BACKUP_DIR / name if name else backups[0]
+    if not backup.exists():
+        die(f"Backup not found: {backup}")
+    restore_backup(backup)
+    ok(f"Rollback complete: {current_version()} restored from {backup.name}")
+
+
+def cmd_check():
+    failures = preflight(verbose=True)
+    if failures:
+        die("Проверка не пройдена. Исправь ошибки выше перед обновлением.")
+    release = latest_release()
+    current = current_version()
+    latest = release["version"]
+    if version_message(current, latest) == "no-update":
+        ok(f"Обновление не требуется: установлено {current}, official latest {latest}.")
+        return
+    warn(f"Доступно обновление: {current} -> {latest}. Проверяю новую версию с текущим config.json...")
+    with tempfile.TemporaryDirectory(prefix="xray-update-") as tmp:
+        test_candidate(release, Path(tmp))
+
+
+def cmd_update():
+    failures = preflight(verbose=True)
+    if failures:
+        die("Обновление остановлено: текущая конфигурация не прошла проверку.")
+
+    release = latest_release()
+    current = current_version()
+    latest = release["version"]
+    if version_message(current, latest) == "no-update":
+        ok(f"Обновление не требуется: установлено {current}, official latest {latest}.")
+        return
+
+    warn(f"Будет выполнено обновление Xray: {current} -> {latest}")
+    with tempfile.TemporaryDirectory(prefix="xray-update-") as tmp:
+        extract_dir, _ = test_candidate(release, Path(tmp))
+        backup = backup_current(latest)
+        try:
+            install_candidate(extract_dir)
+            result = config_test()
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "installed config test failed").strip())
+            restart_xray()
+        except Exception as exc:
+            fail(f"Update failed: {exc}")
+            warn("Пробую автоматически откатиться на предыдущую версию...")
+            restore_backup(backup)
+            die("Обновление не применено, предыдущая версия восстановлена.")
+    ok(f"Xray updated successfully: {current_version()}")
+
+
+def usage():
+    print("""Usage:
+  xray-update --check
+  xray-update --update
+  xray-update --rollback [BACKUP_NAME]
+  xray-update --backups
+""")
+
+
+def main():
+    require_root()
+    if len(sys.argv) < 2:
+        usage()
+        sys.exit(1)
+    command = sys.argv[1]
+    if command in ("--check", "check"):
+        cmd_check()
+    elif command in ("--update", "update"):
+        cmd_update()
+    elif command in ("--rollback", "rollback"):
+        rollback(sys.argv[2] if len(sys.argv) > 2 else None)
+    elif command in ("--backups", "backups", "--list-backups"):
+        sys.exit(list_backups())
+    else:
+        usage()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
