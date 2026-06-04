@@ -331,8 +331,12 @@ def connection_settings_from_inbound(inbound):
         "tag": inbound_tag(inbound),
         "port": port,
         "sni": sni,
-        "dest": reality.get("dest", f"{sni}:{port}" if sni else ""),
+        "dest": reality.get("dest", reality_dest(sni)),
     }
+
+
+def reality_dest(sni):
+    return f"{sni}:443" if sni else ""
 
 
 def ensure_connections(config, db):
@@ -951,7 +955,7 @@ def make_reality_inbound(tag, port, sni, private_key, short_id):
             "security": "reality",
             "realitySettings": {
                 "show": False,
-                "dest": f"{sni}:{port}",
+                "dest": reality_dest(sni),
                 "xver": 0,
                 "serverNames": [sni],
                 "privateKey": private_key,
@@ -1023,7 +1027,7 @@ def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
         "created": created,
         "port": port,
         "sni": sni,
-        "dest": f"{sni}:{port}",
+        "dest": reality_dest(sni),
         "fingerprint": fp,
         "publicKey": public_key,
         "shortId": short_id,
@@ -1045,7 +1049,7 @@ def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
     print(f"Tag: {tag}")
     print(f"PORT: {port}")
     print(f"REALITY_SNI: {sni}")
-    print(f"REALITY_DEST: {sni}:{port}")
+    print(f"REALITY_DEST: {reality_dest(sni)}")
     print(f"FINGERPRINT: {fp}")
     print(f"Backup: {backup}")
 

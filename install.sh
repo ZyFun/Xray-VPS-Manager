@@ -98,7 +98,7 @@ validate_install_options() {
     exit 1
   fi
 
-  REALITY_DEST="${REALITY_SNI}:${PORT}"
+  REALITY_DEST="${REALITY_SNI}:443"
 }
 
 prompt_fingerprint() {
@@ -156,7 +156,7 @@ prompt_install_options() {
   PORT="${input:-$PORT}"
   echo
   echo "REALITY_SNI: домен, видимый в TLS handshake. Вводи реальный HTTPS-домен без https:// и без порта."
-  echo "REALITY_DEST будет создан автоматически как REALITY_SNI:PORT."
+  echo "REALITY_DEST будет создан автоматически как REALITY_SNI:443."
   read -r -p "REALITY_SNI [${REALITY_SNI}]: " input
   REALITY_SNI="${input:-$REALITY_SNI}"
   echo
