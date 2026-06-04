@@ -138,7 +138,7 @@ xray-menu
 +-----------------+----------------------+
 | Xray Version    | 26.3.27              |
 | Manager Version | v1.0.0               |
-| Manager Updated | 2026-06-04 19:14 UTC |
+| Manager Updated | 2026-06-04 19:24 UTC |
 +-----------------+----------------------+
 ```
 
@@ -189,6 +189,7 @@ xray-menu
 4 Обновить REALITY_SNI и REALITY_DEST
 5 Обновить PORT, REALITY_SNI и REALITY_DEST
 6 Обновить FINGERPRINT
+7 Удалить подключение
 
 Каскад:
 1 Добавить/заменить каскад
@@ -271,6 +272,15 @@ xray-client add-connection backup443 8443 www.microsoft.com chrome
 Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом, SNI, DEST и fingerprint.
 `REALITY_DEST` создаётся автоматически как `REALITY_SNI:443`.
 При добавлении клиента через меню, если подключений больше одного, появится выбор подключения.
+
+Удалить подключение вместе со всеми клиентами в нём:
+
+```bash
+xray-client remove-connection ИМЯ_ИЛИ_TAG
+```
+
+Удаление убирает Reality inbound из `config.json`, запись подключения из `clients.json`, всех клиентов этого подключения и их историю трафика из `traffic.json`.
+Последнее Reality-подключение удалить нельзя.
 
 ## Клиенты
 

@@ -16,7 +16,7 @@ CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 INBOUND_TAG = "vless-reality"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-04 19:14 UTC"
+MENU_UPDATED = "2026-06-04 19:24 UTC"
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 GREEN = "\033[32m"
@@ -130,6 +130,7 @@ def reality_menu_actions():
         ("4", "Обновить REALITY_SNI и REALITY_DEST"),
         ("5", "Обновить PORT, REALITY_SNI и REALITY_DEST"),
         ("6", "Обновить FINGERPRINT"),
+        ("7", "Удалить подключение"),
         ("0", "Назад"),
     ]
 
@@ -373,11 +374,11 @@ def print_connection_selection_table(rows):
     print(border)
 
 
-def choose_connection(action):
+def choose_connection(action, auto_single=True):
     rows = connection_rows()
     if not rows:
         die("No Reality connections found.")
-    if len(rows) == 1:
+    if len(rows) == 1 and auto_single:
         return rows[0]["tag"]
     print(f"Выбери подключение для действия: {action}.")
     print_connection_selection_table(rows)
@@ -1047,6 +1048,27 @@ def update_fingerprint():
     print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
 
 
+def delete_connection():
+    rows = connection_rows()
+    if len(rows) <= 1:
+        print("Нельзя удалить последнее Reality-подключение. Сначала создай другое подключение.")
+        return
+    tag = choose_connection("удаления подключения", auto_single=False)
+    if not tag:
+        print("Действие отменено.")
+        return
+    row = next((item for item in rows if item["tag"] == tag), None)
+    name = row["name"] if row else tag
+    print()
+    print(f"Будет удалено подключение: {name} ({tag})")
+    print("Все клиенты этого подключения также будут удалены вместе с их историей трафика.")
+    if not confirm("Продолжить удаление"):
+        print("Удаление отменено.")
+        return
+    call(["xray-client", "remove-connection", tag])
+    refresh_initial_link()
+
+
 def call(command):
     subprocess.run(command, check=False)
 
@@ -1236,6 +1258,7 @@ def reality_menu_handlers():
         "4": ("Обновить REALITY_SNI и REALITY_DEST", update_sni),
         "5": ("Обновить PORT, REALITY_SNI и REALITY_DEST", update_port_and_sni),
         "6": ("Обновить FINGERPRINT", update_fingerprint),
+        "7": ("Удалить подключение", delete_connection),
     }
 
 
