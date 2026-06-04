@@ -9,10 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
+CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 INBOUND_TAG = "vless-reality"
-MENU_UPDATED = "2026-06-04 10:02 UTC"
+MENU_VERSION = "v1.0.0"
+MENU_UPDATED = "2026-06-04 10:40 UTC"
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 FINGERPRINTS = [
@@ -67,7 +69,8 @@ def table_row(values, widths):
 def print_menu_header():
     rows = [
         ("Xray Version", current_xray_version()),
-        ("Menu Updated", MENU_UPDATED),
+        ("Manager Version", MENU_VERSION),
+        ("Manager Updated", MENU_UPDATED),
     ]
     label_width = max(len(row[0]) for row in rows)
     value_width = max(len(row[1]) for row in rows)
@@ -76,43 +79,80 @@ def print_menu_header():
     row_border = table_border([label_width, value_width])
 
     print(title_border)
-    print(f"| {'Xray Menu'.ljust(total_width)} |")
+    print(f"| {'Xray VPS Manager'.ljust(total_width)} |")
     print(row_border)
     for row in rows:
         print(table_row(row, [label_width, value_width]))
     print(row_border)
 
 
-def menu_actions():
+def main_menu_actions():
+    return [
+        ("1", "Клиенты"),
+        ("2", "Настройки Reality"),
+        ("3", "Каскад"),
+        ("4", "Сервис Xray"),
+        ("5", "Обновление Xray"),
+        ("6", "Стартовая ссылка"),
+        ("0", "Выход"),
+    ]
+
+
+def client_menu_actions():
+    return [
+        ("1", "Показать клиентов"),
+        ("2", "Добавить клиента"),
+        ("3", "Изменить срок доступа"),
+        ("4", "Отключить клиента"),
+        ("5", "Включить клиента"),
+        ("6", "Удалить клиента"),
+        ("7", "Вывести ссылку клиента"),
+        ("8", "Проверить просроченных клиентов"),
+        ("0", "Назад"),
+    ]
+
+
+def reality_menu_actions():
     return [
         ("1", "Показать текущие настройки"),
         ("2", "Обновить PORT"),
         ("3", "Обновить REALITY_SNI и REALITY_DEST"),
         ("4", "Обновить PORT, REALITY_SNI и REALITY_DEST"),
         ("5", "Обновить FINGERPRINT"),
-        ("6", "Показать клиентов"),
-        ("7", "Добавить клиента"),
-        ("8", "Отключить клиента"),
-        ("9", "Включить клиента"),
-        ("10", "Удалить клиента"),
-        ("11", "Вывести ссылку клиента"),
-        ("12", "Изменить срок доступа клиента"),
-        ("13", "Добавить/заменить каскад"),
-        ("14", "Проверить каскад"),
-        ("15", "Отключить каскад"),
-        ("16", "Статус Xray"),
-        ("17", "Перезапустить Xray"),
-        ("18", "Вывести стартовую ссылку"),
-        ("19", "Проверить Xray и доступность обновления"),
-        ("20", "Обновить Xray"),
-        ("21", "Показать бэкапы Xray"),
-        ("22", "Откатить Xray к предыдущей версии"),
-        ("0", "Выход"),
+        ("0", "Назад"),
     ]
 
 
-def print_menu_table():
-    rows = menu_actions()
+def cascade_menu_actions():
+    return [
+        ("1", "Добавить/заменить каскад"),
+        ("2", "Проверить каскад"),
+        ("3", "Отключить каскад"),
+        ("0", "Назад"),
+    ]
+
+
+def service_menu_actions():
+    return [
+        ("1", "Статус Xray"),
+        ("2", "Перезапустить Xray"),
+        ("3", "Проверить config.json"),
+        ("4", "Проверить timers"),
+        ("0", "Назад"),
+    ]
+
+
+def update_menu_actions():
+    return [
+        ("1", "Проверить Xray и доступность обновления"),
+        ("2", "Обновить Xray"),
+        ("3", "Показать бэкапы Xray"),
+        ("4", "Откатить Xray к предыдущей версии"),
+        ("0", "Назад"),
+    ]
+
+
+def print_menu_table(rows):
     headers = ("№", "Действие")
     widths = [
         max(len(headers[0]), *(len(row[0]) for row in rows)),
@@ -177,10 +217,30 @@ def validate_client_name(value):
     return value
 
 
+def load_json(path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return default
+
+
 def load_config():
     if not CONFIG_PATH.exists():
         die(f"Config not found: {CONFIG_PATH}")
     return json.loads(CONFIG_PATH.read_text())
+
+
+def split_email(email):
+    if "|created=" in email:
+        name, created = email.split("|created=", 1)
+        return name, created
+    return email, ""
+
+
+def db_clients(db):
+    return db.setdefault("clients", {})
 
 
 def find_inbound(config):
@@ -201,6 +261,104 @@ def current_settings(config):
     sni = server_names[0]
     dest = reality.get("dest", f"{sni}:{port}")
     return inbound, reality, port, sni, dest
+
+
+def parse_time(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def format_access_until(value):
+    parsed = parse_time(value)
+    if parsed is None:
+        return "бессрочно"
+    return parsed.astimezone().strftime("%Y-%m-%d 00:00")
+
+
+def client_rows_for_selection(mode="all"):
+    config = load_config()
+    db = load_json(CLIENT_DB_PATH, {"clients": {}})
+    inbound = find_inbound(config)
+    rows = []
+    seen = set()
+
+    for item in inbound.get("settings", {}).get("clients", []):
+        name, created = split_email(item.get("email", ""))
+        if not name:
+            continue
+        entry = db_clients(db).get(name, {})
+        rows.append({
+            "name": name,
+            "status": "enabled",
+            "created": entry.get("created") or created or "unknown",
+            "expiresAt": entry.get("expiresAt", ""),
+        })
+        seen.add(name)
+
+    for name, entry in db_clients(db).items():
+        if name in seen:
+            continue
+        rows.append({
+            "name": name,
+            "status": "disabled" if entry.get("enabled") is False else "missing",
+            "created": entry.get("created") or "unknown",
+            "expiresAt": entry.get("expiresAt", ""),
+        })
+
+    if mode == "enabled":
+        return [row for row in rows if row["status"] == "enabled"]
+    if mode == "disabled":
+        return [row for row in rows if row["status"] != "enabled"]
+    return rows
+
+
+def print_client_selection_table(rows):
+    headers = ("№", "NAME", "STATUS", "ACCESS UNTIL", "CREATED")
+    values = [
+        (
+            str(index),
+            row["name"],
+            row["status"],
+            format_access_until(row.get("expiresAt", "")),
+            row["created"],
+        )
+        for index, row in enumerate(rows, start=1)
+    ]
+    values.append(("0", "Назад", "", "", ""))
+    widths = [
+        max(len(headers[column]), *(len(str(row[column])) for row in values))
+        for column in range(len(headers))
+    ]
+    border = table_border(widths)
+    print(border)
+    print(table_row(headers, widths))
+    print(border)
+    for row in values:
+        print(table_row(row, widths))
+    print(border)
+
+
+def choose_client(action, mode="all"):
+    rows = client_rows_for_selection(mode)
+    if not rows:
+        print(f"Нет клиентов для действия: {action}.")
+        return ""
+
+    print(f"Выбери клиента для действия: {action}.")
+    print_client_selection_table(rows)
+    while True:
+        choice = input("Клиент: ").strip()
+        if choice == "0":
+            return ""
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return rows[index - 1]["name"]
+        print("Неизвестный клиент. Выбери номер из списка или 0 для возврата.")
 
 
 def server_env():
@@ -429,6 +587,22 @@ def ask_access_days():
     return value or "0"
 
 
+def call_client_command(command, action, mode="all"):
+    name = choose_client(action, mode)
+    if not name:
+        print("Действие отменено.")
+        return
+    call(["xray-client", command, name])
+
+
+def update_selected_client_days():
+    name = choose_client("изменения срока", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    call(["xray-client", "set-days", name, ask_access_days()])
+
+
 def print_initial_link():
     if CLIENT_LINK_PATH.exists():
         print(CLIENT_LINK_PATH.read_text())
@@ -448,6 +622,14 @@ def rollback_xray():
         print("Откат отменён.")
 
 
+def check_config():
+    call(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+
+
+def check_timers():
+    call(["systemctl", "status", "xray-traffic-sync.timer", "xray-client-expire.timer", "--no-pager"])
+
+
 def execute_action(title, func):
     begin_action(title)
     try:
@@ -456,30 +638,108 @@ def execute_action(title, func):
         end_action(title)
 
 
-def menu_handlers():
+def client_menu_handlers():
+    return {
+        "1": ("Показать клиентов", lambda: call(["xray-client", "list"])),
+        "2": ("Добавить клиента", lambda: call(ask_new_client_command())),
+        "3": ("Изменить срок доступа", update_selected_client_days),
+        "4": ("Отключить клиента", lambda: call_client_command("disable", "отключения", "enabled")),
+        "5": ("Включить клиента", lambda: call_client_command("enable", "включения", "disabled")),
+        "6": ("Удалить клиента", lambda: call_client_command("remove", "удаления", "all")),
+        "7": ("Вывести ссылку клиента", lambda: call_client_command("link", "вывода ссылки", "all")),
+        "8": ("Проверить просроченных клиентов", lambda: call(["xray-client", "expire-due"])),
+    }
+
+
+def reality_menu_handlers():
     return {
         "1": ("Показать текущие настройки", show_settings),
         "2": ("Обновить PORT", update_port),
         "3": ("Обновить REALITY_SNI и REALITY_DEST", update_sni),
         "4": ("Обновить PORT, REALITY_SNI и REALITY_DEST", update_port_and_sni),
         "5": ("Обновить FINGERPRINT", update_fingerprint),
-        "6": ("Показать клиентов", lambda: call(["xray-client", "list"])),
-        "7": ("Добавить клиента", lambda: call(ask_new_client_command())),
-        "8": ("Отключить клиента", lambda: call(["xray-client", "disable", ask_name("отключения")])),
-        "9": ("Включить клиента", lambda: call(["xray-client", "enable", ask_name("включения")])),
-        "10": ("Удалить клиента", lambda: call(["xray-client", "remove", ask_name("удаления")])),
-        "11": ("Вывести ссылку клиента", lambda: call(["xray-client", "link", ask_name("вывода ссылки")])),
-        "12": ("Изменить срок доступа клиента", lambda: call(["xray-client", "set-days", ask_name("изменения срока"), ask_access_days()])),
-        "13": ("Добавить/заменить каскад", lambda: call(["xray-set-cascade"])),
-        "14": ("Проверить каскад", lambda: call(["xray-set-cascade", "--test"])),
-        "15": ("Отключить каскад", lambda: call(["xray-set-cascade", "--disable"])),
-        "16": ("Статус Xray", lambda: call(["systemctl", "status", "xray", "--no-pager"])),
-        "17": ("Перезапустить Xray", lambda: (call(["systemctl", "restart", "xray"]), call(["systemctl", "is-active", "xray"]))),
-        "18": ("Вывести стартовую ссылку", print_initial_link),
-        "19": ("Проверить Xray и доступность обновления", lambda: call(["xray-update", "--check"])),
-        "20": ("Обновить Xray", lambda: call(["xray-update", "--update"])),
-        "21": ("Показать бэкапы Xray", lambda: call(["xray-update", "--backups"])),
-        "22": ("Откатить Xray к предыдущей версии", rollback_xray),
+    }
+
+
+def cascade_menu_handlers():
+    return {
+        "1": ("Добавить/заменить каскад", lambda: call(["xray-set-cascade"])),
+        "2": ("Проверить каскад", lambda: call(["xray-set-cascade", "--test"])),
+        "3": ("Отключить каскад", lambda: call(["xray-set-cascade", "--disable"])),
+    }
+
+
+def service_menu_handlers():
+    return {
+        "1": ("Статус Xray", lambda: call(["systemctl", "status", "xray", "--no-pager"])),
+        "2": ("Перезапустить Xray", lambda: (call(["systemctl", "restart", "xray"]), call(["systemctl", "is-active", "xray"]))),
+        "3": ("Проверить config.json", check_config),
+        "4": ("Проверить timers", check_timers),
+    }
+
+
+def update_menu_handlers():
+    return {
+        "1": ("Проверить Xray и доступность обновления", lambda: call(["xray-update", "--check"])),
+        "2": ("Обновить Xray", lambda: call(["xray-update", "--update"])),
+        "3": ("Показать бэкапы Xray", lambda: call(["xray-update", "--backups"])),
+        "4": ("Откатить Xray к предыдущей версии", rollback_xray),
+    }
+
+
+def print_section_title(title):
+    print(f"Раздел: {title}")
+
+
+def menu_loop(title, rows, handlers, back_label="Назад"):
+    while True:
+        print()
+        print_menu_header()
+        print()
+        print_section_title(title)
+        print()
+        print_menu_table(rows)
+        choice = input("Выбор: ").strip()
+        if not sys.stdin.isatty():
+            print()
+
+        if choice == "0":
+            return
+        if choice in handlers:
+            action_title, handler = handlers[choice]
+            execute_action(action_title, handler)
+        else:
+            print(f"Неизвестный пункт меню. 0 - {back_label}.")
+
+
+def open_clients_menu():
+    menu_loop("Клиенты", client_menu_actions(), client_menu_handlers())
+
+
+def open_reality_menu():
+    menu_loop("Настройки Reality", reality_menu_actions(), reality_menu_handlers())
+
+
+def open_cascade_menu():
+    menu_loop("Каскад", cascade_menu_actions(), cascade_menu_handlers())
+
+
+def open_service_menu():
+    menu_loop("Сервис Xray", service_menu_actions(), service_menu_handlers())
+
+
+def open_update_menu():
+    menu_loop("Обновление Xray", update_menu_actions(), update_menu_handlers())
+
+
+def main_menu_handlers():
+    return {
+        "1": ("Клиенты", open_clients_menu),
+        "2": ("Настройки Reality", open_reality_menu),
+        "3": ("Каскад", open_cascade_menu),
+        "4": ("Сервис Xray", open_service_menu),
+        "5": ("Обновление Xray", open_update_menu),
+        "6": ("Вывести стартовую ссылку", print_initial_link),
     }
 
 
@@ -487,21 +747,26 @@ def menu():
     if os.geteuid() != 0:
         die("Run this script as root.")
 
+    handlers = main_menu_handlers()
     while True:
         print()
         print_menu_header()
         print()
-        print_menu_table()
+        print_section_title("Главное меню")
+        print()
+        print_menu_table(main_menu_actions())
         choice = input("Выбор: ").strip()
         if not sys.stdin.isatty():
             print()
 
         if choice == "0":
             return
-        handlers = menu_handlers()
         if choice in handlers:
             title, handler = handlers[choice]
-            execute_action(title, handler)
+            if choice == "6":
+                execute_action(title, handler)
+            else:
+                handler()
         else:
             print("Неизвестный пункт меню.")
 
