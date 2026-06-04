@@ -351,11 +351,25 @@ EOF
 
 cat >/usr/local/etc/xray/clients.json <<EOF
 {
+  "connections": {
+    "vless-reality": {
+      "tag": "vless-reality",
+      "name": "default",
+      "created": "${created}",
+      "port": ${PORT},
+      "sni": "${REALITY_SNI}",
+      "dest": "${REALITY_DEST}",
+      "fingerprint": "${FINGERPRINT}",
+      "publicKey": "${public_key}",
+      "shortId": "${short_id}"
+    }
+  },
   "clients": {
     "${CLIENT_NAME}": {
       "id": "${uuid}",
       "created": "${created}",
       "enabled": true,
+      "connection": "vless-reality",
       "client": {
         "id": "${uuid}",
         "flow": "xtls-rprx-vision",

@@ -89,11 +89,23 @@ def find_reality_inbound(config):
     return None
 
 
+def reality_inbounds(config):
+    return [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if inbound.get("protocol") == "vless"
+        and inbound.get("streamSettings", {}).get("security") == "reality"
+    ]
+
+
 def known_clients():
     clients = {}
     config = load_json(CONFIG_PATH, {})
-    inbound = find_reality_inbound(config)
-    if inbound:
+    inbounds = reality_inbounds(config)
+    if not inbounds:
+        inbound = find_reality_inbound(config)
+        inbounds = [inbound] if inbound else []
+    for inbound in inbounds:
         for item in inbound.get("settings", {}).get("clients", []):
             email = item.get("email", "")
             if not email:
