@@ -920,6 +920,11 @@ def online_state(row, traffic_db):
     return state, format_time(last_online)
 
 
+def traffic_updated_at(row, traffic_db):
+    entry = traffic_db.get("clients", {}).get(row["name"], {})
+    return format_time(entry.get("updated", ""))
+
+
 def table_border(widths):
     return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
 
@@ -936,7 +941,7 @@ def table_row(values, widths, color_indexes=None):
 
 
 def print_client_table(rows):
-    headers = ["NAME", "STATUS", "ONLINE", "IN", "OUT", "TOTAL", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
+    headers = ["NAME", "STATUS", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
     color_indexes = {headers.index("STATUS"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
     widths = [len(header) for header in headers]
     for row in rows:
@@ -1220,6 +1225,7 @@ def cmd_list():
             total = None if incoming is None or outgoing is None else incoming + outgoing
             online, last_online = online_state(row, traffic_db)
             db_entry = db_clients(db).get(row["name"], {})
+            traffic_updated = traffic_updated_at(row, traffic_db)
             table_rows.append(
                 [
                     row["name"],
@@ -1228,6 +1234,7 @@ def cmd_list():
                     format_traffic(incoming),
                     format_traffic(outgoing),
                     format_traffic(total),
+                    traffic_updated,
                     format_traffic_limit(db_entry),
                     last_online,
                     format_access_until(row["expiresAt"]),

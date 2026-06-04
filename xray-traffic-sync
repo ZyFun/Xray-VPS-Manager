@@ -312,13 +312,15 @@ def sync_locked():
         entry["incoming"] = int(entry.get("incoming", 0)) + delta_up
         entry["outgoing"] = int(entry.get("outgoing", 0)) + delta_down
         add_history_delta(entry, bucket_time, delta_up, delta_down)
-        if (delta_up > 0 or delta_down > 0) and name not in access_seen:
+        traffic_changed = delta_up > 0 or delta_down > 0
+        if traffic_changed and name not in access_seen:
             set_last_online(entry, stamp, "traffic")
+        if traffic_changed:
+            entry["updated"] = stamp
         entry["last"] = {
             "uplink": current_up,
             "downlink": current_down,
         }
-        entry["updated"] = stamp
 
     prune_history(db, bucket_time)
     db["updated"] = stamp
