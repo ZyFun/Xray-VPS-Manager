@@ -12,6 +12,7 @@ CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 INBOUND_TAG = "vless-reality"
+MENU_UPDATED = "2026-06-04 09:33 UTC"
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 FINGERPRINTS = [
@@ -35,6 +36,116 @@ def die(message):
 
 def run(command, **kwargs):
     return subprocess.run(command, check=True, **kwargs)
+
+
+def current_xray_version():
+    try:
+        result = subprocess.run(
+            ["/usr/local/bin/xray", "version"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return "unknown"
+    if result.returncode != 0 or not result.stdout:
+        return "unknown"
+    match = re.search(r"(\d+(?:\.\d+){1,3})", result.stdout.splitlines()[0])
+    return match.group(1) if match else result.stdout.splitlines()[0]
+
+
+def table_border(widths):
+    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+
+def table_row(values, widths):
+    cells = [f" {str(value).ljust(widths[index])} " for index, value in enumerate(values)]
+    return "|" + "|".join(cells) + "|"
+
+
+def print_menu_header():
+    rows = [
+        ("Xray Version", current_xray_version()),
+        ("Menu Updated", MENU_UPDATED),
+    ]
+    label_width = max(len(row[0]) for row in rows)
+    value_width = max(len(row[1]) for row in rows)
+    total_width = label_width + value_width + 3
+    title_border = "+" + "-" * (total_width + 2) + "+"
+    row_border = table_border([label_width, value_width])
+
+    print(title_border)
+    print(f"| {'Xray Menu'.ljust(total_width)} |")
+    print(row_border)
+    for row in rows:
+        print(table_row(row, [label_width, value_width]))
+    print(row_border)
+
+
+def menu_actions():
+    return [
+        ("1", "Показать текущие настройки"),
+        ("2", "Обновить PORT"),
+        ("3", "Обновить REALITY_SNI и REALITY_DEST"),
+        ("4", "Обновить PORT, REALITY_SNI и REALITY_DEST"),
+        ("5", "Обновить FINGERPRINT"),
+        ("6", "Показать клиентов"),
+        ("7", "Добавить клиента"),
+        ("8", "Отключить клиента"),
+        ("9", "Включить клиента"),
+        ("10", "Удалить клиента"),
+        ("11", "Вывести ссылку клиента"),
+        ("12", "Добавить/заменить каскад"),
+        ("13", "Проверить каскад"),
+        ("14", "Отключить каскад"),
+        ("15", "Статус Xray"),
+        ("16", "Перезапустить Xray"),
+        ("17", "Вывести стартовую ссылку"),
+        ("18", "Проверить Xray и доступность обновления"),
+        ("19", "Обновить Xray"),
+        ("20", "Показать бэкапы Xray"),
+        ("21", "Откатить Xray к предыдущей версии"),
+        ("0", "Выход"),
+    ]
+
+
+def print_menu_table():
+    rows = menu_actions()
+    headers = ("№", "Действие")
+    widths = [
+        max(len(headers[0]), *(len(row[0]) for row in rows)),
+        max(len(headers[1]), *(len(row[1]) for row in rows)),
+    ]
+    border = table_border(widths)
+
+    print(border)
+    print(table_row(headers, widths))
+    print(border)
+    for row in rows:
+        print(table_row(row, widths))
+    print(border)
+
+
+def action_separator(title):
+    line_width = max(60, len(title) + 10)
+    side = max(2, (line_width - len(title) - 2) // 2)
+    line = "=" * side + f" {title} "
+    line += "=" * max(2, line_width - len(line))
+    return line
+
+
+def begin_action(title):
+    print()
+    print(action_separator(title))
+    print()
+    sys.stdout.flush()
+
+
+def end_action(title):
+    print()
+    print("=" * len(action_separator(title)))
+    sys.stdout.flush()
 
 
 def validate_port(value):
@@ -316,82 +427,59 @@ def rollback_xray():
         print("Откат отменён.")
 
 
+def execute_action(title, func):
+    begin_action(title)
+    try:
+        func()
+    finally:
+        end_action(title)
+
+
+def menu_handlers():
+    return {
+        "1": ("Показать текущие настройки", show_settings),
+        "2": ("Обновить PORT", update_port),
+        "3": ("Обновить REALITY_SNI и REALITY_DEST", update_sni),
+        "4": ("Обновить PORT, REALITY_SNI и REALITY_DEST", update_port_and_sni),
+        "5": ("Обновить FINGERPRINT", update_fingerprint),
+        "6": ("Показать клиентов", lambda: call(["xray-client", "list"])),
+        "7": ("Добавить клиента", lambda: call(["xray-client", "add", ask_name("добавления")])),
+        "8": ("Отключить клиента", lambda: call(["xray-client", "disable", ask_name("отключения")])),
+        "9": ("Включить клиента", lambda: call(["xray-client", "enable", ask_name("включения")])),
+        "10": ("Удалить клиента", lambda: call(["xray-client", "remove", ask_name("удаления")])),
+        "11": ("Вывести ссылку клиента", lambda: call(["xray-client", "link", ask_name("вывода ссылки")])),
+        "12": ("Добавить/заменить каскад", lambda: call(["xray-set-cascade"])),
+        "13": ("Проверить каскад", lambda: call(["xray-set-cascade", "--test"])),
+        "14": ("Отключить каскад", lambda: call(["xray-set-cascade", "--disable"])),
+        "15": ("Статус Xray", lambda: call(["systemctl", "status", "xray", "--no-pager"])),
+        "16": ("Перезапустить Xray", lambda: (call(["systemctl", "restart", "xray"]), call(["systemctl", "is-active", "xray"]))),
+        "17": ("Вывести стартовую ссылку", print_initial_link),
+        "18": ("Проверить Xray и доступность обновления", lambda: call(["xray-update", "--check"])),
+        "19": ("Обновить Xray", lambda: call(["xray-update", "--update"])),
+        "20": ("Показать бэкапы Xray", lambda: call(["xray-update", "--backups"])),
+        "21": ("Откатить Xray к предыдущей версии", rollback_xray),
+    }
+
+
 def menu():
     if os.geteuid() != 0:
         die("Run this script as root.")
 
     while True:
         print()
-        print("Xray menu")
-        print("1) Показать текущие настройки")
-        print("2) Обновить PORT")
-        print("3) Обновить REALITY_SNI и REALITY_DEST")
-        print("4) Обновить PORT, REALITY_SNI и REALITY_DEST")
-        print("5) Обновить FINGERPRINT")
-        print("6) Показать клиентов")
-        print("7) Добавить клиента")
-        print("8) Отключить клиента")
-        print("9) Включить клиента")
-        print("10) Удалить клиента")
-        print("11) Вывести ссылку клиента")
-        print("12) Добавить/заменить каскад")
-        print("13) Проверить каскад")
-        print("14) Отключить каскад")
-        print("15) Статус Xray")
-        print("16) Перезапустить Xray")
-        print("17) Вывести стартовую ссылку")
-        print("18) Проверить Xray и доступность обновления")
-        print("19) Обновить Xray")
-        print("20) Показать бэкапы Xray")
-        print("21) Откатить Xray к предыдущей версии")
-        print("0) Выход")
+        print_menu_header()
+        print()
+        print_menu_table()
         choice = input("Выбор: ").strip()
+        if not sys.stdin.isatty():
+            print()
 
-        if choice == "1":
-            show_settings()
-        elif choice == "2":
-            update_port()
-        elif choice == "3":
-            update_sni()
-        elif choice == "4":
-            update_port_and_sni()
-        elif choice == "5":
-            update_fingerprint()
-        elif choice == "6":
-            call(["xray-client", "list"])
-        elif choice == "7":
-            call(["xray-client", "add", ask_name("добавления")])
-        elif choice == "8":
-            call(["xray-client", "disable", ask_name("отключения")])
-        elif choice == "9":
-            call(["xray-client", "enable", ask_name("включения")])
-        elif choice == "10":
-            call(["xray-client", "remove", ask_name("удаления")])
-        elif choice == "11":
-            call(["xray-client", "link", ask_name("вывода ссылки")])
-        elif choice == "12":
-            call(["xray-set-cascade"])
-        elif choice == "13":
-            call(["xray-set-cascade", "--test"])
-        elif choice == "14":
-            call(["xray-set-cascade", "--disable"])
-        elif choice == "15":
-            call(["systemctl", "status", "xray", "--no-pager"])
-        elif choice == "16":
-            call(["systemctl", "restart", "xray"])
-            call(["systemctl", "is-active", "xray"])
-        elif choice == "17":
-            print_initial_link()
-        elif choice == "18":
-            call(["xray-update", "--check"])
-        elif choice == "19":
-            call(["xray-update", "--update"])
-        elif choice == "20":
-            call(["xray-update", "--backups"])
-        elif choice == "21":
-            rollback_xray()
-        elif choice == "0":
+        if choice == "0":
             return
+        handlers = menu_handlers()
+        if choice in handlers:
+            title, handler = handlers[choice]
+            execute_action(title, handler)
         else:
             print("Неизвестный пункт меню.")
 
