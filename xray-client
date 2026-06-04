@@ -17,6 +17,7 @@ INBOUND_TAG = "vless-reality"
 STATS_SERVER = "127.0.0.1:10085"
 TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 DEFAULT_SERVER_ADDR = ""
+ONLINE_WINDOW_SECONDS = 300
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 FINGERPRINTS = {
     "chrome",
@@ -143,13 +144,12 @@ def validate_name(name):
         die("Client name must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
 
 
-def status_cell(status):
-    text = status.ljust(8)
+def color_label(value, text):
     if not sys.stdout.isatty():
         return text
-    if status == "enabled":
+    if value in ("enabled", "online"):
         return f"{GREEN}{text}{RESET}"
-    if status == "disabled":
+    if value in ("disabled", "offline"):
         return f"{RED}{text}{RESET}"
     return text
 
@@ -309,10 +309,81 @@ def traffic_for(traffic_db, stats, row):
     return runtime_traffic_for(stats, row["email"])
 
 
-def format_gb(value):
+def format_traffic(value):
     if value is None:
         return "n/a"
-    return f"{value / (1024 ** 3):.2f}GB"
+    if value < 1024:
+        return "0.00KB"
+    units = [
+        ("KB", 1024),
+        ("MB", 1024 ** 2),
+        ("GB", 1024 ** 3),
+    ]
+    for suffix, size in units:
+        next_size = size * 1024
+        if value < next_size or suffix == "GB":
+            return f"{value / size:.2f}{suffix}"
+
+
+def parse_time(value):
+    if not value or value in ("never", "unknown"):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def format_time(value):
+    parsed = parse_time(value)
+    if parsed is None:
+        return "never"
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def online_state(row, traffic_db):
+    if row["status"] != "enabled":
+        return "offline", "never"
+    entry = traffic_db.get("clients", {}).get(row["name"], {})
+    last_online = entry.get("lastOnline", "")
+    parsed = parse_time(last_online)
+    if parsed is None:
+        return "offline", "never"
+    age = (datetime.now(timezone.utc) - parsed).total_seconds()
+    state = "online" if age <= ONLINE_WINDOW_SECONDS else "offline"
+    return state, format_time(last_online)
+
+
+def table_border(widths):
+    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+
+
+def table_row(values, widths, color_indexes=None):
+    color_indexes = color_indexes or set()
+    cells = []
+    for index, value in enumerate(values):
+        text = str(value).ljust(widths[index])
+        if index in color_indexes:
+            text = color_label(str(value), text)
+        cells.append(f" {text} ")
+    return "|" + "|".join(cells) + "|"
+
+
+def print_client_table(rows):
+    headers = ["NAME", "STATUS", "ONLINE", "IN", "OUT", "TOTAL", "LAST ONLINE", "CREATED"]
+    color_indexes = {headers.index("STATUS"), headers.index("ONLINE")}
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(str(value)))
+
+    border = table_border(widths)
+    print(border)
+    print(table_row(headers, widths))
+    print(border)
+    for row in rows:
+        print(table_row(row, widths, color_indexes=color_indexes))
+    print(border)
 
 
 def cmd_list():
@@ -325,19 +396,24 @@ def cmd_list():
     sync_traffic()
     traffic_db = load_traffic_db()
     stats = query_user_stats()
-    width = max(len(row["name"]) for row in rows)
-    print(f"{'NAME'.ljust(width)}  STATUS    IN       OUT      TOTAL    CREATED")
+    table_rows = []
     for row in rows:
         incoming, outgoing = traffic_for(traffic_db, stats, row)
         total = None if incoming is None or outgoing is None else incoming + outgoing
-        print(
-            f"{row['name'].ljust(width)}  "
-            f"{status_cell(row['status'])}  "
-            f"{format_gb(incoming).rjust(7)}  "
-            f"{format_gb(outgoing).rjust(7)}  "
-            f"{format_gb(total).rjust(7)}  "
-            f"{row['created']}"
+        online, last_online = online_state(row, traffic_db)
+        table_rows.append(
+            [
+                row["name"],
+                row["status"],
+                online,
+                format_traffic(incoming),
+                format_traffic(outgoing),
+                format_traffic(total),
+                last_online,
+                row["created"],
+            ]
         )
+    print_client_table(table_rows)
 
 
 def cmd_add(name):

@@ -13,8 +13,10 @@ CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 LOCK_PATH = Path("/usr/local/etc/xray/traffic.lock")
+ACCESS_LOG_PATH = Path("/var/log/xray/access.log")
 INBOUND_TAG = "vless-reality"
 STATS_SERVER = "127.0.0.1:10085"
+ACCESS_RE = re.compile(r'^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)? .* email: (.+)$')
 
 
 def log(message):
@@ -24,6 +26,19 @@ def log(message):
 
 def now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def access_time_to_iso(value):
+    parsed = datetime.strptime(value, "%Y/%m/%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return parsed.isoformat().replace("+00:00", "Z")
+
+
+def max_time(left, right):
+    if not left:
+        return right
+    if not right:
+        return left
+    return max(left, right)
 
 
 def run_capture(command, timeout=5):
@@ -144,6 +159,72 @@ def positive_delta(current, previous):
     return current
 
 
+def set_last_online(entry, stamp, source):
+    entry["lastOnline"] = max_time(entry.get("lastOnline", ""), stamp)
+    entry["lastOnlineSource"] = source
+
+
+def ensure_entry(entries, name, email):
+    entry = entries.setdefault(
+        name,
+        {
+            "email": email,
+            "incoming": 0,
+            "outgoing": 0,
+            "last": {},
+        },
+    )
+    entry["email"] = email
+    return entry
+
+
+def sync_access_log(db, clients, stamp):
+    if not ACCESS_LOG_PATH.exists():
+        return set()
+
+    try:
+        stat = ACCESS_LOG_PATH.stat()
+    except OSError:
+        return set()
+
+    access_state = db.setdefault("accessLog", {})
+    previous_inode = access_state.get("inode")
+    previous_offset = int(access_state.get("offset", 0) or 0)
+    offset = previous_offset if previous_inode == stat.st_ino and stat.st_size >= previous_offset else 0
+
+    seen = set()
+    entries = db.setdefault("clients", {})
+    try:
+        with ACCESS_LOG_PATH.open("rb") as log_file:
+            log_file.seek(offset)
+            data = log_file.read()
+            new_offset = log_file.tell()
+    except OSError:
+        return seen
+
+    for raw_line in data.decode("utf-8", errors="replace").splitlines():
+        match = ACCESS_RE.match(raw_line)
+        if not match:
+            continue
+        email = match.group(2).strip()
+        name = split_email(email)
+        if name not in clients:
+            continue
+        event_time = access_time_to_iso(match.group(1))
+        entry = ensure_entry(entries, name, clients[name])
+        set_last_online(entry, event_time, "access-log")
+        entry["lastAccepted"] = max_time(entry.get("lastAccepted", ""), event_time)
+        seen.add(name)
+
+    access_state.update({
+        "path": str(ACCESS_LOG_PATH),
+        "inode": stat.st_ino,
+        "offset": new_offset,
+        "updated": stamp,
+    })
+    return seen
+
+
 def sync_locked():
     clients = known_clients()
     if not clients:
@@ -160,18 +241,10 @@ def sync_locked():
     db = load_json(TRAFFIC_PATH, {"version": 1, "clients": {}})
     db.setdefault("version", 1)
     entries = db.setdefault("clients", {})
+    access_seen = sync_access_log(db, clients, stamp)
 
     for name, email in clients.items():
-        entry = entries.setdefault(
-            name,
-            {
-                "email": email,
-                "incoming": 0,
-                "outgoing": 0,
-                "last": {},
-            },
-        )
-        entry["email"] = email
+        entry = ensure_entry(entries, name, email)
         last = entry.setdefault("last", {})
         current_up = counter(runtime, email, "uplink")
         current_down = counter(runtime, email, "downlink")
@@ -179,6 +252,8 @@ def sync_locked():
         delta_down = positive_delta(current_down, last.get("downlink"))
         entry["incoming"] = int(entry.get("incoming", 0)) + delta_up
         entry["outgoing"] = int(entry.get("outgoing", 0)) + delta_down
+        if (delta_up > 0 or delta_down > 0) and name not in access_seen:
+            set_last_online(entry, stamp, "traffic")
         entry["last"] = {
             "uplink": current_up,
             "downlink": current_down,
