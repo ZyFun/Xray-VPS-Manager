@@ -15,9 +15,15 @@ CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
+SSHD_CONFIG_PATH = Path("/etc/ssh/sshd_config")
+SSHD_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/00-xray-vps-manager.conf")
+SSHD_LEGACY_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/99-xray-vps-manager.conf")
+AUTHORIZED_KEYS_PATH = Path("/root/.ssh/authorized_keys")
 INBOUND_TAG = "vless-reality"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-05 10:19 UTC"
+MENU_UPDATED = "2026-06-05 13:09 UTC"
+SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
+SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 GREEN = "\033[32m"
@@ -95,6 +101,7 @@ def print_menu_header():
         ("Xray Version", current_xray_version()),
         ("Manager Version", MENU_VERSION),
         ("Manager Updated", MENU_UPDATED),
+        ("Security Audit", security_audit_header_value()),
     ]
     label_width = max(len(row[0]) for row in rows)
     value_width = max(len(row[1]) for row in rows)
@@ -108,6 +115,9 @@ def print_menu_header():
     for row in rows:
         print(table_row(row, [label_width, value_width]))
     print(row_border)
+    warning = security_audit_header_warning()
+    if warning:
+        print(red(f"! {warning}"))
 
 
 def main_menu_actions():
@@ -116,10 +126,11 @@ def main_menu_actions():
         ("2", "Настройки Reality"),
         ("3", "Каскад"),
         ("4", "Сервис Xray"),
-        ("5", "Обновление Xray"),
-        ("6", "Стартовая ссылка"),
-        ("7", "Просмотр трафика"),
-        ("8", "Резервные копии"),
+        ("5", "Безопасность"),
+        ("6", "Обновление Xray"),
+        ("7", "Стартовая ссылка"),
+        ("8", "Просмотр трафика"),
+        ("9", "Резервные копии"),
         ("0", "Выход"),
     ]
 
@@ -176,6 +187,16 @@ def service_menu_actions():
         ("8", "Разрешить торренты"),
         ("9", "Показать часовой пояс"),
         ("10", "Изменить часовой пояс"),
+        ("0", "Назад"),
+    ]
+
+
+def security_menu_actions():
+    return [
+        ("1", "Проверить безопасность сервера"),
+        ("2", "Показать SSH-доступ"),
+        ("3", "Отключить вход по паролю SSH"),
+        ("4", "Включить вход по паролю SSH"),
         ("0", "Назад"),
     ]
 
@@ -848,6 +869,28 @@ def server_env():
     return values
 
 
+def write_server_env_values(values):
+    ordered = [
+        "SERVER_ADDR",
+        "PORT",
+        "REALITY_SNI",
+        "REALITY_DEST",
+        "FINGERPRINT",
+        "MANAGER_TIMEZONE",
+        SECURITY_AUDIT_ENV_KEY,
+    ]
+    lines = [f"{key}={values.get(key, '')}" for key in ordered if key in values or key != SECURITY_AUDIT_ENV_KEY]
+    for key in sorted(values):
+        if key not in ordered:
+            lines.append(f"{key}={values[key]}")
+
+    tmp = SERVER_ENV_PATH.with_suffix(".env.tmp")
+    tmp.write_text("\n".join(lines) + "\n")
+    shutil.chown(tmp, user="root", group="xray")
+    os.chmod(tmp, 0o640)
+    tmp.replace(SERVER_ENV_PATH)
+
+
 def normalize_timezone(value):
     raw = (value or "").strip()
     if raw.lower() in ("", "server", "local", "default", "system", "сервер", "локально", "по умолчанию"):
@@ -877,6 +920,63 @@ def manager_timezone_label():
     current = datetime.now().astimezone()
     suffix = current.tzname() or "server local time"
     return f"server local time ({suffix})"
+
+
+def parse_utc_timestamp(value):
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def utc_stamp():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def format_manager_time(moment):
+    local = moment.astimezone(manager_timezone())
+    tz_name = local.tzname() or manager_timezone_label()
+    return local.strftime("%Y-%m-%d %H:%M ") + tz_name
+
+
+def last_security_audit_time():
+    return parse_utc_timestamp(server_env().get(SECURITY_AUDIT_ENV_KEY, ""))
+
+
+def security_audit_header_value():
+    last_run = last_security_audit_time()
+    if not last_run:
+        return "не выполнялась"
+    return format_manager_time(last_run)
+
+
+def security_audit_is_stale():
+    last_run = last_security_audit_time()
+    if not last_run:
+        return True
+    return datetime.now(timezone.utc) - last_run >= timedelta(days=SECURITY_AUDIT_STALE_DAYS)
+
+
+def security_audit_header_warning():
+    if not security_audit_is_stale():
+        return ""
+    return "Рекомендуется запустить: Безопасность -> Проверить безопасность сервера."
+
+
+def record_security_audit_run():
+    values = server_env()
+    stamp = utc_stamp()
+    values[SECURITY_AUDIT_ENV_KEY] = stamp
+    write_server_env_values(values)
+    return parse_utc_timestamp(stamp)
 
 
 def timezone_value_label(value):
@@ -1010,18 +1110,7 @@ def write_server_env(port, sni, dest, fingerprint=None):
     values["FINGERPRINT"] = validate_fingerprint(fingerprint) if fingerprint is not None else current_fingerprint()
     if "SERVER_ADDR" not in values:
         values["SERVER_ADDR"] = ""
-
-    ordered = ["SERVER_ADDR", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT", "MANAGER_TIMEZONE"]
-    lines = [f"{key}={values.get(key, '')}" for key in ordered]
-    for key in sorted(values):
-        if key not in ordered:
-            lines.append(f"{key}={values[key]}")
-
-    tmp = SERVER_ENV_PATH.with_suffix(".env.tmp")
-    tmp.write_text("\n".join(lines) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(SERVER_ENV_PATH)
+    write_server_env_values(values)
 
 
 def write_config(config):
@@ -1563,6 +1652,434 @@ def update_timezone():
     print("Новая настройка будет использоваться в следующих расчётах и выводе времени.")
 
 
+def sshd_binary():
+    for candidate in ("/usr/sbin/sshd", "/usr/local/sbin/sshd", shutil.which("sshd")):
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def sshd_effective_config():
+    binary = sshd_binary()
+    if not binary:
+        return None, "sshd не найден."
+    result = subprocess.run(
+        [binary, "-T"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "sshd -T завершился с ошибкой."
+        return None, message
+    settings = {}
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            settings[parts[0].lower()] = parts[1].strip()
+    return settings, ""
+
+
+def validate_sshd_config():
+    binary = sshd_binary()
+    if not binary:
+        return False, "sshd не найден."
+    result = subprocess.run(
+        [binary, "-t"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    message = result.stderr.strip() or result.stdout.strip()
+    return result.returncode == 0, message
+
+
+def root_authorized_key_count():
+    if not AUTHORIZED_KEYS_PATH.exists():
+        return 0
+    count = 0
+    for line in AUTHORIZED_KEYS_PATH.read_text(errors="ignore").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            count += 1
+    return count
+
+
+def sshd_config_includes_manager_dropin():
+    if not SSHD_CONFIG_PATH.exists():
+        return False
+    include_line = f"include {SSHD_DROPIN_PATH}".lower()
+    for line in SSHD_CONFIG_PATH.read_text(errors="ignore").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped.lower() == include_line:
+            return True
+    return False
+
+
+def ensure_sshd_dropin_include():
+    if sshd_config_includes_manager_dropin():
+        return False
+    lines = SSHD_CONFIG_PATH.read_text(errors="ignore").splitlines()
+    include_block = [
+        "# Added by Xray VPS Manager",
+        f"Include {SSHD_DROPIN_PATH}",
+        "",
+    ]
+    lines = include_block + lines
+    SSHD_CONFIG_PATH.write_text("\n".join(lines) + "\n")
+    return True
+
+
+def remove_sshd_dropin_include():
+    if not SSHD_CONFIG_PATH.exists():
+        return False
+    target = f"include {SSHD_DROPIN_PATH}".lower()
+    lines = SSHD_CONFIG_PATH.read_text(errors="ignore").splitlines()
+    new_lines = []
+    removed = False
+    skip_next_blank = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower() == target:
+            removed = True
+            if new_lines and new_lines[-1].strip() == "# Added by Xray VPS Manager":
+                new_lines.pop()
+            skip_next_blank = True
+            continue
+        if skip_next_blank and not stripped:
+            skip_next_blank = False
+            continue
+        skip_next_blank = False
+        new_lines.append(line)
+
+    if removed:
+        SSHD_CONFIG_PATH.write_text("\n".join(new_lines) + "\n")
+    return removed
+
+
+def write_sshd_password_dropin():
+    SSHD_DROPIN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SSHD_DROPIN_PATH.write_text(
+        "\n".join(
+            [
+                "# Managed by Xray VPS Manager.",
+                "# Password SSH logins are disabled; public-key SSH remains enabled.",
+                "PasswordAuthentication no",
+                "KbdInteractiveAuthentication no",
+                "ChallengeResponseAuthentication no",
+                "PubkeyAuthentication yes",
+                "",
+            ]
+        )
+    )
+    SSHD_DROPIN_PATH.chmod(0o644)
+
+
+def remove_legacy_sshd_dropin():
+    if SSHD_LEGACY_DROPIN_PATH.exists():
+        SSHD_LEGACY_DROPIN_PATH.unlink()
+        return True
+    return False
+
+
+def backup_existing_file(path):
+    if not path.exists():
+        return None
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    backup = Path(f"{path}.bak.{timestamp}")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def restore_text_file(path, text):
+    if text is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    if path in (SSHD_DROPIN_PATH, SSHD_LEGACY_DROPIN_PATH):
+        path.chmod(0o644)
+
+
+def reload_sshd_service():
+    attempts = [
+        ("reload", "ssh"),
+        ("reload", "sshd"),
+        ("restart", "ssh"),
+        ("restart", "sshd"),
+    ]
+    errors = []
+    for action, unit in attempts:
+        result = subprocess.run(
+            ["systemctl", action, unit],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode == 0:
+            print(green(f"SSH service обновлён через: systemctl {action} {unit}"))
+            return True
+        errors.append(f"systemctl {action} {unit}: {(result.stderr or result.stdout).strip()}")
+    print(red("Не удалось перезагрузить ssh/sshd через systemctl."))
+    for error in errors:
+        if error.strip():
+            print(error)
+    return False
+
+
+def ssh_password_login_disabled(settings):
+    if not settings:
+        return False
+    password = settings.get("passwordauthentication")
+    keyboard = settings.get("kbdinteractiveauthentication")
+    challenge = settings.get("challengeresponseauthentication")
+    return password == "no" and keyboard == "no" and challenge in (None, "no")
+
+
+def ssh_password_login_enabled(settings):
+    if not settings:
+        return False
+    return settings.get("passwordauthentication") == "yes"
+
+
+def format_ssh_setting(key, value):
+    if value == "unknown":
+        return value
+    if key == "pubkeyauthentication":
+        return green(value) if value == "yes" else red(value)
+    if key in ("passwordauthentication", "kbdinteractiveauthentication", "challengeresponseauthentication"):
+        return green(value) if value == "no" else red(value)
+    return value
+
+
+def show_ssh_access():
+    settings, error = sshd_effective_config()
+    if settings:
+        print("Effective SSH config по данным sshd -T:")
+        for key in (
+            "pubkeyauthentication",
+            "passwordauthentication",
+            "kbdinteractiveauthentication",
+            "challengeresponseauthentication",
+            "permitrootlogin",
+        ):
+            value = settings.get(key, "unknown")
+            print(f"{key}: {format_ssh_setting(key, value)}")
+        print()
+        if ssh_password_login_disabled(settings):
+            print(green("Парольный вход SSH отключен."))
+        else:
+            print(red("Парольный вход SSH может быть разрешен."))
+    else:
+        print(red(f"Не удалось прочитать effective config SSH: {error}"))
+    key_count = root_authorized_key_count()
+    key_message = f"{AUTHORIZED_KEYS_PATH}: {key_count} ключ(ей)"
+    print(green(key_message) if key_count > 0 else red(key_message))
+    dropin_status = "есть" if SSHD_DROPIN_PATH.exists() else "нет"
+    print(f"Managed drop-in: {SSHD_DROPIN_PATH} ({dropin_status})")
+    if SSHD_LEGACY_DROPIN_PATH.exists():
+        print(f"Legacy drop-in: {SSHD_LEGACY_DROPIN_PATH} (есть, будет убран при следующем применении)")
+
+
+def run_security_audit():
+    print("Проверка безопасности сервера.")
+    print("Текущий набор проверок: SSH password login.")
+    print()
+
+    findings = []
+    settings, error = sshd_effective_config()
+    if not settings:
+        print(red("FAIL SSH password login: не удалось получить effective config через sshd -T."))
+        findings.append(
+            {
+                "title": "Не удалось проверить SSH password login",
+                "details": error or "sshd -T не вернул настройки.",
+                "recommendations": [
+                    "Проверь, что установлен openssh-server и команда sshd доступна.",
+                    "Выполни /usr/sbin/sshd -t и исправь ошибки конфигурации, если они есть.",
+                    "Повтори проверку через меню Безопасность -> Проверить безопасность сервера.",
+                ],
+            }
+        )
+    else:
+        password = settings.get("passwordauthentication", "unknown")
+        keyboard = settings.get("kbdinteractiveauthentication", "unknown")
+        challenge = settings.get("challengeresponseauthentication", "unknown")
+        details = (
+            f"PasswordAuthentication={password}, "
+            f"KbdInteractiveAuthentication={keyboard}, "
+            f"ChallengeResponseAuthentication={challenge}"
+        )
+        password_available = password == "yes" or keyboard == "yes" or challenge == "yes"
+        if password_available:
+            print(red(f"FAIL SSH password login: вход по паролю доступен. {details}"))
+            findings.append(
+                {
+                    "title": "SSH password login доступен",
+                    "details": details,
+                    "recommendations": [
+                        "Убедись, что вход по SSH-ключу работает в отдельной сессии.",
+                        "Открой Безопасность -> Отключить вход по паролю SSH.",
+                        "После применения снова запусти Проверить безопасность сервера и проверь, что PasswordAuthentication=no.",
+                    ],
+                }
+            )
+        else:
+            print(green(f"OK   SSH password login: вход по паролю отключён. {details}"))
+
+    print()
+    if findings:
+        print(red("Рекомендации по найденным проблемам:"))
+        for index, finding in enumerate(findings, 1):
+            print(f"{index}. {finding['title']}")
+            print(f"   Детали: {finding['details']}")
+            for recommendation in finding["recommendations"]:
+                print(f"   - {recommendation}")
+    else:
+        print(green("Проблем безопасности из текущего набора проверок не найдено."))
+
+    try:
+        recorded_at = record_security_audit_run()
+    except Exception as exc:
+        print(red(f"WARN: не удалось записать время проверки безопасности: {exc}"))
+    else:
+        print()
+        print(f"Последняя проверка безопасности записана: {format_manager_time(recorded_at)}")
+
+
+def disable_ssh_password_login():
+    print("Будет отключён только вход по логину и паролю.")
+    print("SSH-сервис и вход по SSH-ключам останутся включены.")
+    print("Перед применением скрипт проверит root authorized_keys и валидность sshd config.")
+    print()
+    show_ssh_access()
+    if root_authorized_key_count() < 1:
+        print()
+        print(red(f"Остановка: в {AUTHORIZED_KEYS_PATH} не найдено ни одного ключа."))
+        print("Сначала добавь SSH-ключ, открой вторую сессию по ключу и только потом отключай парольный вход.")
+        return
+    if not SSHD_CONFIG_PATH.exists():
+        print(red(f"Остановка: не найден {SSHD_CONFIG_PATH}."))
+        return
+    print()
+    print("После применения текущая сессия обычно остаётся открытой, но новый вход по паролю будет запрещён.")
+    if not confirm("Отключить парольный вход SSH сейчас"):
+        print("Изменение отменено.")
+        return
+
+    original_config = SSHD_CONFIG_PATH.read_text(errors="ignore")
+    original_dropin = SSHD_DROPIN_PATH.read_text(errors="ignore") if SSHD_DROPIN_PATH.exists() else None
+    original_legacy_dropin = (
+        SSHD_LEGACY_DROPIN_PATH.read_text(errors="ignore") if SSHD_LEGACY_DROPIN_PATH.exists() else None
+    )
+    config_backup = backup_existing_file(SSHD_CONFIG_PATH)
+    dropin_backup = backup_existing_file(SSHD_DROPIN_PATH)
+    legacy_backup = backup_existing_file(SSHD_LEGACY_DROPIN_PATH)
+    if config_backup:
+        print(f"Бэкап SSH config: {config_backup}")
+    if dropin_backup:
+        print(f"Бэкап managed drop-in: {dropin_backup}")
+    if legacy_backup:
+        print(f"Бэкап legacy drop-in: {legacy_backup}")
+
+    try:
+        write_sshd_password_dropin()
+        include_added = ensure_sshd_dropin_include()
+        if include_added:
+            print(f"Добавлен ранний Include для {SSHD_DROPIN_PATH} в {SSHD_CONFIG_PATH}.")
+        if remove_legacy_sshd_dropin():
+            print(f"Удалён legacy drop-in: {SSHD_LEGACY_DROPIN_PATH}")
+        valid, message = validate_sshd_config()
+        if not valid:
+            raise RuntimeError(f"sshd -t не прошёл проверку: {message}")
+        settings, error = sshd_effective_config()
+        if not ssh_password_login_disabled(settings):
+            raise RuntimeError(f"sshd -T всё ещё показывает включённый парольный вход: {error or settings}")
+        if not reload_sshd_service():
+            raise RuntimeError("не удалось применить SSH config через systemctl")
+    except Exception as exc:
+        restore_text_file(SSHD_CONFIG_PATH, original_config)
+        restore_text_file(SSHD_DROPIN_PATH, original_dropin)
+        restore_text_file(SSHD_LEGACY_DROPIN_PATH, original_legacy_dropin)
+        valid, _message = validate_sshd_config()
+        if valid:
+            reload_sshd_service()
+        print(red(f"Изменения SSH отменены: {exc}"))
+        return
+
+    print(green("Готово: вход по паролю SSH отключён, вход по SSH-ключам оставлен."))
+    print("Проверь новый вход из отдельного терминала: ssh root@SERVER_HOST")
+
+
+def enable_ssh_password_login():
+    print("Будет убрана managed-настройка Xray VPS Manager, которая отключала вход по паролю.")
+    print("После этого парольный вход включится, если он разрешён основным sshd_config или drop-in файлами сервера.")
+    print("Вход по SSH-ключам не отключается.")
+    print()
+    show_ssh_access()
+    if not SSHD_CONFIG_PATH.exists():
+        print(red(f"Остановка: не найден {SSHD_CONFIG_PATH}."))
+        return
+    print()
+    if not confirm("Включить парольный вход SSH сейчас"):
+        print("Изменение отменено.")
+        return
+
+    original_config = SSHD_CONFIG_PATH.read_text(errors="ignore")
+    original_dropin = SSHD_DROPIN_PATH.read_text(errors="ignore") if SSHD_DROPIN_PATH.exists() else None
+    original_legacy_dropin = (
+        SSHD_LEGACY_DROPIN_PATH.read_text(errors="ignore") if SSHD_LEGACY_DROPIN_PATH.exists() else None
+    )
+    config_backup = backup_existing_file(SSHD_CONFIG_PATH)
+    dropin_backup = backup_existing_file(SSHD_DROPIN_PATH)
+    legacy_backup = backup_existing_file(SSHD_LEGACY_DROPIN_PATH)
+    if config_backup:
+        print(f"Бэкап SSH config: {config_backup}")
+    if dropin_backup:
+        print(f"Бэкап managed drop-in: {dropin_backup}")
+    if legacy_backup:
+        print(f"Бэкап legacy drop-in: {legacy_backup}")
+
+    try:
+        if remove_sshd_dropin_include():
+            print(f"Удалён ранний Include для {SSHD_DROPIN_PATH} из {SSHD_CONFIG_PATH}.")
+        if SSHD_DROPIN_PATH.exists():
+            SSHD_DROPIN_PATH.unlink()
+            print(f"Удалён managed drop-in: {SSHD_DROPIN_PATH}")
+        if remove_legacy_sshd_dropin():
+            print(f"Удалён legacy drop-in: {SSHD_LEGACY_DROPIN_PATH}")
+
+        valid, message = validate_sshd_config()
+        if not valid:
+            raise RuntimeError(f"sshd -t не прошёл проверку: {message}")
+        settings, error = sshd_effective_config()
+        if not ssh_password_login_enabled(settings):
+            raise RuntimeError(f"sshd -T всё ещё показывает отключённый парольный вход: {error or settings}")
+        if not reload_sshd_service():
+            raise RuntimeError("не удалось применить SSH config через systemctl")
+    except Exception as exc:
+        restore_text_file(SSHD_CONFIG_PATH, original_config)
+        restore_text_file(SSHD_DROPIN_PATH, original_dropin)
+        restore_text_file(SSHD_LEGACY_DROPIN_PATH, original_legacy_dropin)
+        valid, _message = validate_sshd_config()
+        if valid:
+            reload_sshd_service()
+        print(red(f"Изменения SSH отменены: {exc}"))
+        return
+
+    print(green("Готово: вход по паролю SSH включён."))
+    print("Проверь новый вход из отдельного терминала перед закрытием текущей SSH-сессии.")
+
+
 def execute_action(title, func):
     begin_action(title)
     try:
@@ -1620,6 +2137,15 @@ def service_menu_handlers():
         "8": ("Разрешить торренты", allow_torrents),
         "9": ("Показать часовой пояс", show_timezone),
         "10": ("Изменить часовой пояс", update_timezone),
+    }
+
+
+def security_menu_handlers():
+    return {
+        "1": ("Проверить безопасность сервера", run_security_audit),
+        "2": ("Показать SSH-доступ", show_ssh_access),
+        "3": ("Отключить вход по паролю SSH", disable_ssh_password_login),
+        "4": ("Включить вход по паролю SSH", enable_ssh_password_login),
     }
 
 
@@ -1694,6 +2220,10 @@ def open_service_menu():
     menu_loop("Сервис Xray", service_menu_actions(), service_menu_handlers())
 
 
+def open_security_menu():
+    menu_loop("Безопасность", security_menu_actions(), security_menu_handlers())
+
+
 def open_update_menu():
     menu_loop("Обновление Xray", update_menu_actions(), update_menu_handlers())
 
@@ -1725,10 +2255,11 @@ def main_menu_handlers():
         "2": ("Настройки Reality", open_reality_menu),
         "3": ("Каскад", open_cascade_menu),
         "4": ("Сервис Xray", open_service_menu),
-        "5": ("Обновление Xray", open_update_menu),
-        "6": ("Вывести стартовую ссылку", print_initial_link),
-        "7": ("Просмотр трафика", open_traffic_menu),
-        "8": ("Резервные копии", open_backup_menu),
+        "5": ("Безопасность", open_security_menu),
+        "6": ("Обновление Xray", open_update_menu),
+        "7": ("Вывести стартовую ссылку", print_initial_link),
+        "8": ("Просмотр трафика", open_traffic_menu),
+        "9": ("Резервные копии", open_backup_menu),
     }
 
 
@@ -1752,7 +2283,7 @@ def menu():
             return
         if choice in handlers:
             title, handler = handlers[choice]
-            if choice == "6":
+            if choice == "7":
                 execute_action(title, handler)
             else:
                 handler()
