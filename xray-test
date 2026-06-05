@@ -14,6 +14,8 @@ CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
+ACTIVITY_PATH = Path("/usr/local/etc/xray/activity.json")
+ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
 STATS_SERVER = "127.0.0.1:10085"
@@ -22,6 +24,7 @@ BLOCKED_TAG = "blocked"
 HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-client",
     "/usr/local/sbin/xray-menu",
+    "/usr/local/sbin/xray-activity",
     "/usr/local/sbin/xray-traffic-sync",
     "/usr/local/sbin/xray-set-cascade",
     "/usr/local/sbin/xray-update",
@@ -30,6 +33,7 @@ HELPER_SCRIPTS = [
 ]
 TRAFFIC_SERVICE_COMMANDS = [
     "ExecStart=/usr/local/sbin/xray-traffic-sync --quiet",
+    "ExecStart=/usr/local/sbin/xray-activity sync --quiet",
     "ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet",
     "ExecStart=/usr/local/sbin/xray-client expire-due --quiet",
 ]
@@ -396,12 +400,17 @@ def check_traffic_sync_service():
     missing = [line for line in TRAFFIC_SERVICE_COMMANDS if line not in result.stdout]
     if missing:
         raise RuntimeError("missing service command(s): " + ", ".join(missing))
-    return "xray-traffic-sync.service runs sync, limits, and expiry checks"
+    return "xray-traffic-sync.service runs traffic sync, activity sync, limits, and expiry checks"
 
 
 def check_traffic_sync_runtime():
     run_ok(["/usr/local/sbin/xray-traffic-sync", "--quiet"], timeout=15)
     return "xray-traffic-sync runs successfully"
+
+
+def check_activity_runtime():
+    run_ok(["/usr/local/sbin/xray-activity", "status"], timeout=20)
+    return "xray-activity status runs successfully"
 
 
 def check_client_list_runtime():
@@ -505,13 +514,18 @@ def check_cascade_config(diag):
 
 def check_file_permissions():
     checked = []
-    for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH):
+    for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH, ACTIVITY_PATH):
         if not path.exists():
             continue
         mode = stat.S_IMODE(path.stat().st_mode)
         if mode & 0o007:
             raise RuntimeError(f"{path} is readable by others: mode {mode:o}")
         checked.append(f"{path.name}={mode:o}")
+    if ACTIVITY_DIR.exists():
+        mode = stat.S_IMODE(ACTIVITY_DIR.stat().st_mode)
+        if mode & 0o007:
+            raise RuntimeError(f"{ACTIVITY_DIR} is accessible by others: mode {mode:o}")
+        checked.append(f"{ACTIVITY_DIR.name}={mode:o}")
     return "sensitive file permissions OK: " + ", ".join(checked)
 
 
@@ -536,6 +550,7 @@ def run_diagnostics():
     diag.check("Systemd timers", check_timers)
     diag.check("Traffic sync service", check_traffic_sync_service)
     diag.check("Traffic sync runtime", check_traffic_sync_runtime)
+    diag.check("Activity log runtime", check_activity_runtime)
     diag.check("xray-client list", check_client_list_runtime)
     diag.check("Client DB alignment", lambda: check_client_db_alignment(diag), fatal=False)
     diag.check("Traffic DB alignment", lambda: check_traffic_db_alignment(diag), fatal=False)

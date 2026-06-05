@@ -21,7 +21,7 @@ SSHD_LEGACY_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/99-xray-vps-manager.conf"
 AUTHORIZED_KEYS_PATH = Path("/root/.ssh/authorized_keys")
 INBOUND_TAG = "vless-reality"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-05 13:09 UTC"
+MENU_UPDATED = "2026-06-05 13:50 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -59,6 +59,20 @@ TIMEZONE_PRESETS = [
     ("UTC", "UTC"),
 ]
 TIMEZONE_SEARCH_LIMIT = 30
+GEOIP_REGION_PRESETS = [
+    ("RU", "Россия"),
+    ("US", "США"),
+    ("CN", "Китай"),
+    ("KZ", "Казахстан"),
+    ("BY", "Беларусь"),
+    ("UA", "Украина"),
+    ("TR", "Турция"),
+    ("DE", "Германия"),
+    ("NL", "Нидерланды"),
+    ("FI", "Финляндия"),
+    ("EE", "Эстония"),
+    ("GB", "Великобритания"),
+]
 
 
 def die(message):
@@ -130,7 +144,8 @@ def main_menu_actions():
         ("6", "Обновление Xray"),
         ("7", "Стартовая ссылка"),
         ("8", "Просмотр трафика"),
-        ("9", "Резервные копии"),
+        ("9", "Журнал активности"),
+        ("10", "Резервные копии"),
         ("0", "Выход"),
     ]
 
@@ -230,6 +245,24 @@ def backup_menu_actions():
         ("4", "Восстановить из бэкапа на сервере"),
         ("5", "Показать команду загрузки бэкапа на сервер"),
         ("6", "Удалить бэкап"),
+        ("0", "Назад"),
+    ]
+
+
+def activity_menu_actions():
+    return [
+        ("1", "Статус журнала активности"),
+        ("2", "Включить парсинг activity log"),
+        ("3", "Отключить парсинг activity log"),
+        ("4", "Синхронизировать сейчас"),
+        ("5", "Отчёт по клиенту"),
+        ("6", "Подозрительная активность"),
+        ("7", "Экспорт отчёта по клиенту"),
+        ("8", "Показать архивы экспорта"),
+        ("9", "Удалить архив экспорта"),
+        ("10", "Изменить срок хранения журнала"),
+        ("11", "Выбрать GeoIP-регион предупреждений"),
+        ("12", "Отключить GeoIP-предупреждения"),
         ("0", "Назад"),
     ]
 
@@ -857,6 +890,83 @@ def choose_backup(action):
             if 1 <= index <= len(rows):
                 return rows[index - 1]["path"]
         print("Неизвестный бэкап. Выбери номер из списка или 0 для возврата.")
+
+
+def activity_export_rows_for_selection():
+    result = subprocess.run(
+        ["xray-activity", "export-list", "--plain"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        print(result.stderr.strip() or result.stdout.strip() or "Не удалось получить список экспортов активности.")
+        return []
+
+    rows = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 6:
+            continue
+        path, created, size, client, period, events = parts[:6]
+        rows.append({
+            "path": path,
+            "file": Path(path).name,
+            "created": created,
+            "size": size,
+            "client": client,
+            "period": period,
+            "events": events,
+        })
+    return rows
+
+
+def print_activity_export_selection_table(rows):
+    headers = ("№", "FILE", "CREATED", "SIZE", "CLIENT", "PERIOD", "EVENTS")
+    values = [
+        (
+            str(index),
+            row["file"],
+            row["created"],
+            row["size"],
+            row["client"],
+            row["period"],
+            row["events"],
+        )
+        for index, row in enumerate(rows, start=1)
+    ]
+    values.append(("0", "Назад", "", "", "", "", ""))
+    widths = [
+        max(len(headers[column]), *(len(str(row[column])) for row in values))
+        for column in range(len(headers))
+    ]
+    border = table_border(widths)
+    print(border)
+    print(table_row(headers, widths))
+    print(border)
+    for row in values:
+        print(table_row(row, widths))
+    print(border)
+
+
+def choose_activity_export(action):
+    rows = activity_export_rows_for_selection()
+    if not rows:
+        print("Архивы экспорта активности на сервере не найдены.")
+        return ""
+
+    print(f"Выбери архив экспорта активности для действия: {action}.")
+    print_activity_export_selection_table(rows)
+    while True:
+        choice = input("Архив: ").strip()
+        if choice == "0":
+            return ""
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return rows[index - 1]["path"]
+        print("Неизвестный архив. Выбери номер из списка или 0 для возврата.")
 
 
 def server_env():
@@ -1652,6 +1762,192 @@ def update_timezone():
     print("Новая настройка будет использоваться в следующих расчётах и выводе времени.")
 
 
+def ask_activity_days(default=7):
+    value = input(f"Период в днях [{default}]: ").strip() or str(default)
+    if not re.fullmatch(r"[0-9]+", value) or int(value, 10) < 1:
+        print(f"Некорректный период, использую {default} дней.")
+        return str(default)
+    return value
+
+
+def activity_client_report():
+    name = choose_client("просмотра журнала активности", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    call(["xray-activity", "client", name, ask_activity_days(7)])
+
+
+def activity_suspicious_report():
+    call(["xray-activity", "suspicious", ask_activity_days(7)])
+
+
+def activity_export_report():
+    name = choose_client("экспорта журнала активности", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    today = datetime.now(timezone.utc).date()
+    default_start = today - timedelta(days=6)
+    start = input(f"START_DATE [{default_start.isoformat()}]: ").strip() or default_start.isoformat()
+    end = input(f"END_DATE [{today.isoformat()}]: ").strip() or today.isoformat()
+    result = subprocess.run(
+        ["xray-activity", "export", name, start, end, "--path-only"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        print(result.stderr.strip() or result.stdout.strip() or "Не удалось создать экспорт журнала активности.")
+        return
+
+    archive = result.stdout.strip().splitlines()[-1]
+    print(f"Экспорт создан на сервере: {archive}")
+    print()
+    print("Ниже будет команда для локального терминала на компьютере, с которого нужно скачать архив.")
+    default_target = default_ssh_target()
+    ssh_target = input(f"SSH target/user@host [{default_target}]: ").strip() or default_target
+    default_dir = choose_local_download_dir()
+    local_dir = input(f"Куда сохранить на локальной машине [{default_dir}]: ").strip() or default_dir
+    print()
+    call(["xray-activity", "download-command", archive, ssh_target, local_dir])
+
+
+def delete_activity_export_from_menu():
+    archive = choose_activity_export("удаления")
+    if not archive:
+        print("Действие отменено.")
+        return
+    print()
+    print(f"Будет удалён архив экспорта активности: {archive}")
+    print("Это действие удалит только архив на сервере. Журнал активности и данные Xray не изменятся.")
+    if not confirm("Удалить выбранный архив экспорта"):
+        print("Удаление отменено.")
+        return
+    call(["xray-activity", "export-delete", archive])
+
+
+def activity_retention_value():
+    result = subprocess.run(
+        ["xray-activity", "retention"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    output = result.stdout + result.stderr
+    match = re.search(r"(\d+)\s+days", output)
+    return match.group(1) if match else "365"
+
+
+def update_activity_retention():
+    current = activity_retention_value()
+    print("ACTIVITY_RETENTION_DAYS: сколько дней хранить детальные события журнала активности.")
+    print("По умолчанию 365 дней. Допустимый диапазон: 1-3650 дней.")
+    print("Старые события старше нового срока будут удалены сразу после изменения.")
+    value = input(f"ACTIVITY_RETENTION_DAYS [{current}] (Enter - оставить без изменений): ").strip()
+    if not value:
+        print("Изменение отменено.")
+        return
+    call(["xray-activity", "retention", value])
+
+
+def geoip_codes(query=""):
+    command = ["xray-activity", "geo-list"]
+    if query:
+        command.append(query)
+    result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        print(result.stderr.strip() or "Не удалось получить список GeoIP-регионов.")
+        return []
+    return [line.strip().upper() for line in result.stdout.splitlines() if line.strip()]
+
+
+def print_geoip_region_table(rows, include_search=False):
+    headers = ("№", "CODE", "ОПИСАНИЕ")
+    values = [(str(index), code, label) for index, (code, label) in enumerate(rows, start=1)]
+    if include_search:
+        values.append(("S", "Поиск", "найти другой код региона в geoip.dat"))
+    values.append(("0", "Назад", ""))
+    widths = [
+        max(len(headers[column]), *(len(str(row[column])) for row in values))
+        for column in range(len(headers))
+    ]
+    border = table_border(widths)
+    print(border)
+    print(table_row(headers, widths))
+    print(border)
+    for row in values:
+        print(table_row(row, widths))
+    print(border)
+
+
+def choose_geoip_region_from_rows(rows, prompt):
+    while True:
+        choice = input(prompt).strip().lower()
+        if choice in ("", "0"):
+            return ""
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return rows[index - 1][0]
+        print("Неизвестный регион. Выбери номер из списка или 0 для возврата.")
+
+
+def search_geoip_region():
+    while True:
+        query = input("Фильтр региона или GeoIP code, например Россия, RU или U (Enter - назад): ").strip()
+        if not query:
+            return ""
+        query_code = query.upper()
+        query_text = query.lower()
+        rows = []
+        seen = set()
+        for code, label in GEOIP_REGION_PRESETS:
+            if query_code in code or query_text in label.lower():
+                rows.append((code, label))
+                seen.add(code)
+        for code in geoip_codes(query_code):
+            if code not in seen:
+                rows.append((code, "geoip.dat"))
+                seen.add(code)
+        if not rows:
+            print("По этому фильтру ничего не найдено.")
+            continue
+        displayed = rows[:30]
+        print_geoip_region_table(displayed)
+        selected = choose_geoip_region_from_rows(displayed, "GeoIP region: ")
+        return selected
+
+
+def choose_geoip_region():
+    while True:
+        print("Выбери GeoIP-регион. Если IP назначения попадает в этот регион, отчёты покажут предупреждение о split tunneling.")
+        print_geoip_region_table(GEOIP_REGION_PRESETS, include_search=True)
+        choice = input("GeoIP region: ").strip().lower()
+        if choice in ("", "0"):
+            return ""
+        if choice in ("s", "search", "поиск"):
+            selected = search_geoip_region()
+            if selected:
+                return selected
+            continue
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(GEOIP_REGION_PRESETS):
+                return GEOIP_REGION_PRESETS[index - 1][0]
+        print("Неизвестный регион. Выбери номер, S для поиска или 0 для возврата.")
+
+
+def set_activity_geoip_region():
+    code = choose_geoip_region()
+    if not code:
+        print("Действие отменено.")
+        return
+    call(["xray-activity", "geo-warnings", "set", code])
+
+
 def sshd_binary():
     for candidate in ("/usr/sbin/sshd", "/usr/local/sbin/sshd", shutil.which("sshd")):
         if candidate and Path(candidate).exists():
@@ -2179,6 +2475,23 @@ def backup_menu_handlers():
     }
 
 
+def activity_menu_handlers():
+    return {
+        "1": ("Статус журнала активности", lambda: call(["xray-activity", "status"])),
+        "2": ("Включить парсинг activity log", lambda: call(["xray-activity", "enable"])),
+        "3": ("Отключить парсинг activity log", lambda: call(["xray-activity", "disable"])),
+        "4": ("Синхронизировать сейчас", lambda: call(["xray-activity", "sync"])),
+        "5": ("Отчёт по клиенту", activity_client_report),
+        "6": ("Подозрительная активность", activity_suspicious_report),
+        "7": ("Экспорт отчёта по клиенту", activity_export_report),
+        "8": ("Показать архивы экспорта", lambda: call(["xray-activity", "export-list"])),
+        "9": ("Удалить архив экспорта", delete_activity_export_from_menu),
+        "10": ("Изменить срок хранения журнала", update_activity_retention),
+        "11": ("Выбрать GeoIP-регион предупреждений", set_activity_geoip_region),
+        "12": ("Отключить GeoIP-предупреждения", lambda: call(["xray-activity", "geo-warnings", "disable"])),
+    }
+
+
 def print_section_title(title):
     print(f"Раздел: {title}")
 
@@ -2232,6 +2545,10 @@ def open_backup_menu():
     menu_loop("Резервные копии", backup_menu_actions(), backup_menu_handlers())
 
 
+def open_activity_menu():
+    menu_loop("Журнал активности", activity_menu_actions(), activity_menu_handlers())
+
+
 def open_client_traffic_menu(name):
     menu_loop(f"Просмотр трафика: {name}", traffic_report_actions(), traffic_report_handlers(name))
 
@@ -2259,7 +2576,8 @@ def main_menu_handlers():
         "6": ("Обновление Xray", open_update_menu),
         "7": ("Вывести стартовую ссылку", print_initial_link),
         "8": ("Просмотр трафика", open_traffic_menu),
-        "9": ("Резервные копии", open_backup_menu),
+        "9": ("Журнал активности", open_activity_menu),
+        "10": ("Резервные копии", open_backup_menu),
     }
 
 

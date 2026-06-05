@@ -18,6 +18,8 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 CLIENT_DB_PATH = CONFIG_DIR / "clients.json"
 SERVER_ENV_PATH = CONFIG_DIR / "server.env"
 TRAFFIC_PATH = CONFIG_DIR / "traffic.json"
+ACTIVITY_PATH = CONFIG_DIR / "activity.json"
+ACTIVITY_DIR = CONFIG_DIR / "activity"
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 
 BACKUP_FILES = [
@@ -25,7 +27,11 @@ BACKUP_FILES = [
     ("usr/local/etc/xray/clients.json", CLIENT_DB_PATH, True),
     ("usr/local/etc/xray/server.env", SERVER_ENV_PATH, True),
     ("usr/local/etc/xray/traffic.json", TRAFFIC_PATH, False),
+    ("usr/local/etc/xray/activity.json", ACTIVITY_PATH, False),
     ("root/xray-reality-client.txt", CLIENT_LINK_PATH, False),
+]
+BACKUP_DIRS = [
+    ("usr/local/etc/xray/activity", ACTIVITY_DIR, False),
 ]
 
 
@@ -106,6 +112,12 @@ def sync_traffic():
             run_capture([str(sync), "--quiet"], timeout=20)
         except subprocess.TimeoutExpired:
             pass
+    activity = Path("/usr/local/sbin/xray-activity")
+    if activity.exists():
+        try:
+            run_capture([str(activity), "sync", "--quiet"], timeout=20)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def create_backup(path_only=False, quiet=False, sync=True):
@@ -134,6 +146,19 @@ def create_backup(path_only=False, quiet=False, sync=True):
                 "size": stat.st_size,
             })
 
+        for arcname, source, required in BACKUP_DIRS:
+            if not source.exists():
+                if required:
+                    die(f"Required directory not found: {source}")
+                continue
+            tar.add(source, arcname=arcname, recursive=True)
+            size = sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
+            files.append({
+                "source": str(source),
+                "archive": arcname,
+                "size": size,
+            })
+
         add_json(
             tar,
             "manifest.json",
@@ -142,7 +167,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
                 "hostname": socket.gethostname(),
                 "xrayVersion": xray_version(),
                 "files": files,
-                "warning": "This archive contains Xray private keys, client UUIDs, and traffic data.",
+                "warning": "This archive contains Xray private keys, client UUIDs, traffic data, and activity metadata.",
             },
         )
 
@@ -152,7 +177,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
     elif not quiet:
         print(f"Backup created: {archive}")
         print(f"Size: {format_size(archive.stat().st_size)}")
-        print("Contains: config.json, clients.json, server.env, traffic.json, starter link if present.")
+        print("Contains: config.json, clients.json, server.env, traffic.json, activity logs, starter link if present.")
         print("Keep this file private: it contains Reality private keys and client data.")
     return archive
 
@@ -267,6 +292,30 @@ def copy_if_exists(temp_dir, arcname, target, mode):
     return True
 
 
+def chown_tree_xray(path):
+    if path.is_dir():
+        chown_xray(path)
+        os.chmod(path, 0o750)
+        for child in path.rglob("*"):
+            chown_xray(child)
+            os.chmod(child, 0o750 if child.is_dir() else 0o640)
+    else:
+        chown_xray(path)
+        os.chmod(path, 0o640)
+
+
+def copy_dir_if_exists(temp_dir, arcname, target):
+    source = temp_dir / arcname
+    if not source.exists():
+        return False
+    if target.exists():
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target)
+    chown_tree_xray(target)
+    return True
+
+
 def apply_restore(temp_dir):
     if not (temp_dir / "usr/local/etc/xray/config.json").exists():
         die("Backup does not contain config.json.")
@@ -277,6 +326,11 @@ def apply_restore(temp_dir):
             restored.append(str(target))
         elif required:
             die(f"Backup does not contain required file: {arcname}")
+    for arcname, target, required in BACKUP_DIRS:
+        if copy_dir_if_exists(temp_dir, arcname, target):
+            restored.append(str(target))
+        elif required:
+            die(f"Backup does not contain required directory: {arcname}")
     return restored
 
 

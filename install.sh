@@ -43,6 +43,7 @@ need_file() {
 need_file xray-client
 need_file xray-set-cascade
 need_file xray-menu
+need_file xray-activity
 need_file xray-traffic-sync
 need_file xray-update
 need_file xray-backup
@@ -354,6 +355,9 @@ install -d -o xray -g xray -m 0755 /var/log/xray
 touch /var/log/xray/access.log /var/log/xray/error.log
 chown xray:xray /var/log/xray/access.log /var/log/xray/error.log
 chmod 0644 /var/log/xray/access.log /var/log/xray/error.log
+install -d -o root -g xray -m 0750 /usr/local/etc/xray/activity
+install -d -o root -g xray -m 0750 /usr/local/etc/xray/activity/clients
+install -d -o root -g root -m 0700 /root/xray_activity_exports
 
 if [[ -f /usr/local/etc/xray/config.json ]]; then
   cp -a /usr/local/etc/xray/config.json "/usr/local/etc/xray/config.json.bak.$(date -u +%Y%m%d%H%M%S)"
@@ -530,6 +534,9 @@ REALITY_SNI=${REALITY_SNI}
 REALITY_DEST=${REALITY_DEST}
 FINGERPRINT=${FINGERPRINT}
 MANAGER_TIMEZONE=${MANAGER_TIMEZONE}
+ACTIVITY_LOGGING_ENABLED=false
+ACTIVITY_RETENTION_DAYS=365
+ACTIVITY_GEOIP_WARNING_CODE=
 EOF
 
 chown root:xray /usr/local/etc/xray/config.json /usr/local/etc/xray/clients.json /usr/local/etc/xray/server.env
@@ -538,6 +545,7 @@ chmod 0640 /usr/local/etc/xray/config.json /usr/local/etc/xray/clients.json /usr
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-client" /usr/local/sbin/xray-client
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-cascade" /usr/local/sbin/xray-set-cascade
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-menu" /usr/local/sbin/xray-menu
+install -o root -g root -m 0755 "$SCRIPT_DIR/xray-activity" /usr/local/sbin/xray-activity
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-traffic-sync" /usr/local/sbin/xray-traffic-sync
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-update" /usr/local/sbin/xray-update
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-backup" /usr/local/sbin/xray-backup
@@ -595,6 +603,7 @@ ConditionPathExists=/usr/local/etc/xray/config.json
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/xray-traffic-sync --quiet
+ExecStart=/usr/local/sbin/xray-activity sync --quiet
 ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet
 ExecStart=/usr/local/sbin/xray-client expire-due --quiet
 EOF
