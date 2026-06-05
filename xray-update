@@ -437,25 +437,57 @@ def rollback(name=None):
     ok(f"Rollback complete: {current_version()} restored from {backup.name}")
 
 
+def run_passthrough(command, timeout=120):
+    return subprocess.run(command, check=False, text=True, timeout=timeout)
+
+
+def run_diagnostics(stage):
+    candidates = [Path("/usr/local/sbin/xray-test")]
+    found = next((path for path in candidates if path.exists()), None)
+    if not found:
+        warn("xray-test не найден, использую встроенную базовую проверку.")
+        failures = preflight(verbose=True)
+        if failures:
+            raise RuntimeError(f"диагностика не пройдена: {stage}")
+        return
+
+    warn(f"Запускаю диагностику сервера: {stage}")
+    result = run_passthrough([str(found)], timeout=180)
+    if result.returncode != 0:
+        raise RuntimeError(f"диагностика не пройдена: {stage}")
+
+
 def cmd_check():
-    failures = preflight(verbose=True)
-    if failures:
-        die("Проверка не пройдена. Исправь ошибки выше перед обновлением.")
     release = latest_release()
     current = current_version()
+    if not current:
+        die("Не удалось определить установленную версию Xray.")
     latest = release["version"]
     if version_message(current, latest) == "no-update":
         ok(f"Обновление не требуется: установлено {current}, official latest {latest}.")
         return
-    warn(f"Доступно обновление: {current} -> {latest}. Проверяю новую версию с текущим config.json...")
+    warn(f"Доступно обновление: {current} -> {latest}.")
+
+
+def cmd_test_latest():
+    release = latest_release()
+    current = current_version()
+    if not current:
+        die("Не удалось определить установленную версию Xray.")
+    latest = release["version"]
+    if version_message(current, latest) == "no-update":
+        ok(f"Совместимость latest не требует проверки: установлено {current}, official latest {latest}.")
+        return
+    warn(f"Проверяю latest Xray {latest} с текущим config.json без установки...")
     with tempfile.TemporaryDirectory(prefix="xray-update-") as tmp:
         test_candidate(release, Path(tmp))
 
 
 def cmd_update():
-    failures = preflight(verbose=True)
-    if failures:
-        die("Обновление остановлено: текущая конфигурация не прошла проверку.")
+    try:
+        run_diagnostics("перед обновлением")
+    except Exception as exc:
+        die(f"Обновление остановлено: {exc}")
 
     release = latest_release()
     current = current_version()
@@ -474,6 +506,7 @@ def cmd_update():
             if result.returncode != 0:
                 raise RuntimeError((result.stderr or result.stdout or "installed config test failed").strip())
             restart_xray()
+            run_diagnostics("после обновления")
         except Exception as exc:
             fail(f"Update failed: {exc}")
             warn("Пробую автоматически откатиться на предыдущую версию...")
@@ -485,6 +518,7 @@ def cmd_update():
 def usage():
     print("""Usage:
   xray-update --check
+  xray-update --test-latest
   xray-update --update
   xray-update --rollback [BACKUP_NAME]
   xray-update --backups
@@ -499,6 +533,8 @@ def main():
     command = sys.argv[1]
     if command in ("--check", "check"):
         cmd_check()
+    elif command in ("--test-latest", "test-latest"):
+        cmd_test_latest()
     elif command in ("--update", "update"):
         cmd_update()
     elif command in ("--rollback", "rollback"):

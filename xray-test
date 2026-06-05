@@ -1,0 +1,564 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
+CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
+SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
+TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
+XRAY_BIN = Path("/usr/local/bin/xray")
+XRAY_ASSET_DIR = Path("/usr/local/share/xray")
+STATS_SERVER = "127.0.0.1:10085"
+UPSTREAM_TAG = "cascade-upstream"
+BLOCKED_TAG = "blocked"
+HELPER_SCRIPTS = [
+    "/usr/local/sbin/xray-client",
+    "/usr/local/sbin/xray-menu",
+    "/usr/local/sbin/xray-traffic-sync",
+    "/usr/local/sbin/xray-set-cascade",
+    "/usr/local/sbin/xray-update",
+    "/usr/local/sbin/xray-backup",
+    "/usr/local/sbin/xray-test",
+]
+TRAFFIC_SERVICE_COMMANDS = [
+    "ExecStart=/usr/local/sbin/xray-traffic-sync --quiet",
+    "ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet",
+    "ExecStart=/usr/local/sbin/xray-client expire-due --quiet",
+]
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+RESET = "\033[0m"
+
+
+def color(text, code):
+    if not sys.stdout.isatty():
+        return text
+    return f"{code}{text}{RESET}"
+
+
+def line_ok(message):
+    print(color(f"OK: {message}", GREEN))
+
+
+def line_warn(message):
+    print(color(f"WARN: {message}", YELLOW))
+
+
+def line_fail(message):
+    print(color(f"FAIL: {message}", RED))
+
+
+def compact_output(result):
+    detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+    return "\n".join(detail.splitlines()[:8])
+
+
+def run(command, timeout=20, env=None):
+    return subprocess.run(
+        command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        env=env,
+    )
+
+
+def run_ok(command, timeout=20, env=None):
+    result = run(command, timeout=timeout, env=env)
+    if result.returncode != 0:
+        raise RuntimeError(compact_output(result))
+    return result.stdout.strip() or " ".join(command)
+
+
+def load_json(path):
+    if not path.exists():
+        raise RuntimeError(f"not found: {path}")
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{path} is not valid JSON: {exc}")
+
+
+def load_env(path):
+    if not path.exists():
+        raise RuntimeError(f"not found: {path}")
+    values = {}
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        if "=" not in line:
+            raise RuntimeError(f"invalid line without '=': {line}")
+        key, value = line.split("=", 1)
+        values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def parse_xray_version(output):
+    match = re.search(r"(\d+(?:\.\d+){1,3})", output or "")
+    return match.group(1) if match else ""
+
+
+def is_active(unit):
+    result = run(["systemctl", "is-active", unit], timeout=10)
+    return result.returncode == 0 and result.stdout.strip() == "active"
+
+
+def check_tcp(host, port, timeout=2):
+    with socket.create_connection((host, port), timeout=timeout):
+        return True
+
+
+def reality_inbounds(config):
+    return [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if inbound.get("protocol") == "vless"
+        and inbound.get("streamSettings", {}).get("security") == "reality"
+    ]
+
+
+def inbound_tag(inbound):
+    return inbound.get("tag") or "vless-reality"
+
+
+def clients(inbound):
+    return inbound.get("settings", {}).get("clients", [])
+
+
+def client_name(email):
+    if "|created=" in email:
+        return email.split("|created=", 1)[0]
+    return email
+
+
+def routing_rules(config):
+    return config.get("routing", {}).get("rules", [])
+
+
+def rule_values(rule, key):
+    value = rule.get(key, [])
+    if isinstance(value, str):
+        return [value]
+    return value if isinstance(value, list) else []
+
+
+class Diagnostics:
+    def __init__(self):
+        self.context = {}
+        self.failures = []
+        self.warnings = []
+
+    def check(self, label, func, fatal=True):
+        try:
+            detail = func()
+            line_ok(detail or label)
+        except Exception as exc:
+            message = f"{label}: {exc}"
+            if fatal:
+                self.failures.append(message)
+                line_fail(message)
+            else:
+                self.warnings.append(message)
+                line_warn(message)
+
+    def summary(self):
+        print()
+        if self.failures:
+            line_fail(f"Diagnostics failed: {len(self.failures)} critical issue(s), {len(self.warnings)} warning(s).")
+            return 1
+        if self.warnings:
+            line_warn(f"Diagnostics finished with {len(self.warnings)} warning(s), no critical failures.")
+            return 0
+        line_ok("All diagnostics passed.")
+        return 0
+
+
+def save_traffic_db(db):
+    tmp = TRAFFIC_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
+    try:
+        shutil.chown(tmp, user="root", group="xray")
+    except LookupError:
+        shutil.chown(tmp, user="root")
+    os.chmod(tmp, 0o640)
+    tmp.replace(TRAFFIC_PATH)
+
+
+def check_root():
+    if os.geteuid() != 0:
+        raise RuntimeError("run xray-test as root")
+    return "root privileges"
+
+
+def check_xray_binary(diag):
+    if not XRAY_BIN.exists():
+        raise RuntimeError(f"not found: {XRAY_BIN}")
+    result = run([str(XRAY_BIN), "version"], timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(compact_output(result))
+    version = parse_xray_version(result.stdout.splitlines()[0] if result.stdout else "")
+    if not version:
+        raise RuntimeError("could not parse Xray version")
+    diag.context["xray_version"] = version
+    return f"{XRAY_BIN} version {version}"
+
+
+def check_assets():
+    missing = [name for name in ("geoip.dat", "geosite.dat") if not (XRAY_ASSET_DIR / name).exists()]
+    if missing:
+        raise RuntimeError("missing " + ", ".join(missing))
+    return "geoip.dat and geosite.dat exist"
+
+
+def check_helpers():
+    missing = []
+    for path in HELPER_SCRIPTS:
+        item = Path(path)
+        if not item.exists() or not os.access(item, os.X_OK):
+            missing.append(path)
+    if missing:
+        raise RuntimeError("missing or not executable: " + ", ".join(missing))
+    return "helper scripts are installed and executable"
+
+
+def check_helper_syntax():
+    env = os.environ.copy()
+    env["PYTHONPYCACHEPREFIX"] = "/tmp/xray-test-pycache"
+    run_ok(["python3", "-m", "py_compile", *HELPER_SCRIPTS], timeout=30, env=env)
+    return "helper Python scripts compile"
+
+
+def check_config_json(diag):
+    config = load_json(CONFIG_PATH)
+    diag.context["config"] = config
+    return f"{CONFIG_PATH} parsed"
+
+
+def check_client_db(diag):
+    db = load_json(CLIENT_DB_PATH)
+    if not isinstance(db.get("clients", {}), dict):
+        raise RuntimeError("clients.json must contain object field: clients")
+    diag.context["client_db"] = db
+    return f"{CLIENT_DB_PATH} parsed"
+
+
+def check_traffic_db(diag):
+    if not TRAFFIC_PATH.exists():
+        diag.context["traffic_db"] = {"clients": {}}
+        return f"{TRAFFIC_PATH} not created yet"
+    db = load_json(TRAFFIC_PATH)
+    if not isinstance(db.get("clients", {}), dict):
+        raise RuntimeError("traffic.json must contain object field: clients")
+    diag.context["traffic_db"] = db
+    return f"{TRAFFIC_PATH} parsed"
+
+
+def check_server_env(diag):
+    values = load_env(SERVER_ENV_PATH)
+    diag.context["server_env"] = values
+    missing = [key for key in ("SERVER_ADDR", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT") if key not in values]
+    if missing:
+        raise RuntimeError("missing keys: " + ", ".join(missing))
+    if values.get("REALITY_SNI") and values.get("REALITY_DEST") != f"{values['REALITY_SNI']}:443":
+        raise RuntimeError("REALITY_DEST must be REALITY_SNI:443")
+    return f"{SERVER_ENV_PATH} parsed"
+
+
+def check_manager_timezone(diag):
+    value = (diag.context.get("server_env", {}).get("MANAGER_TIMEZONE") or "").strip()
+    if not value:
+        return "MANAGER_TIMEZONE uses server local time"
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        raise RuntimeError(f"invalid MANAGER_TIMEZONE: {value}")
+    return f"MANAGER_TIMEZONE={value}"
+
+
+def check_reality_inbounds(diag):
+    config = diag.context["config"]
+    inbounds = reality_inbounds(config)
+    if not inbounds:
+        raise RuntimeError("VLESS Reality inbound not found")
+
+    seen_tags = set()
+    seen_ports = set()
+    names = set()
+    summary = []
+    for inbound in inbounds:
+        tag = inbound_tag(inbound)
+        if tag in seen_tags:
+            raise RuntimeError(f"duplicate inbound tag: {tag}")
+        seen_tags.add(tag)
+
+        try:
+            port = int(inbound.get("port", 0))
+        except (TypeError, ValueError):
+            raise RuntimeError(f"{tag}: invalid port")
+        if port < 1 or port > 65535:
+            raise RuntimeError(f"{tag}: invalid port {port}")
+        if port in seen_ports:
+            raise RuntimeError(f"duplicate Reality port: {port}")
+        seen_ports.add(port)
+
+        reality = inbound.get("streamSettings", {}).get("realitySettings", {})
+        sni = (reality.get("serverNames") or [""])[0]
+        dest = reality.get("dest", "")
+        private_key = reality.get("privateKey", "")
+        short_ids = reality.get("shortIds", [])
+        if not sni or not dest or not private_key or not short_ids:
+            raise RuntimeError(f"{tag}: incomplete Reality settings")
+        if dest != f"{sni}:443":
+            raise RuntimeError(f"{tag}: Reality dest must be SNI:443, got {dest}")
+
+        for client in clients(inbound):
+            client_id = client.get("id", "")
+            email = client.get("email", "")
+            if not re.fullmatch(r"[0-9a-fA-F-]{36}", client_id):
+                raise RuntimeError(f"{tag}: client has invalid UUID")
+            if not email:
+                raise RuntimeError(f"{tag}: client has empty email")
+            name = client_name(email)
+            if name in names:
+                raise RuntimeError(f"duplicate active client name: {name}")
+            names.add(name)
+        summary.append(f"{tag}:{port}")
+
+    diag.context["reality_inbounds"] = inbounds
+    diag.context["reality_tags"] = seen_tags
+    diag.context["reality_ports"] = sorted(seen_ports)
+    return "Reality connections OK: " + ", ".join(summary)
+
+
+def check_reality_ports(diag):
+    ports = diag.context.get("reality_ports", [])
+    for port in ports:
+        check_tcp("127.0.0.1", port)
+    return "Reality TCP ports accept local connections: " + ", ".join(str(port) for port in ports)
+
+
+def check_config_test():
+    run_ok([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)], timeout=30)
+    return "Xray configuration OK"
+
+
+def check_xray_service():
+    if not is_active("xray"):
+        raise RuntimeError("xray.service is not active")
+    return "xray.service active"
+
+
+def check_stats_config(diag):
+    config = diag.context["config"]
+    services = config.get("api", {}).get("services", [])
+    if "StatsService" not in services:
+        raise RuntimeError("api.services must include StatsService")
+    if not isinstance(config.get("stats"), dict):
+        raise RuntimeError("stats object is missing")
+    level0 = config.get("policy", {}).get("levels", {}).get("0", {})
+    if level0.get("statsUserUplink") is not True or level0.get("statsUserDownlink") is not True:
+        raise RuntimeError("policy.levels.0 must enable user traffic stats")
+    if not any(item.get("tag") == "api" for item in config.get("inbounds", [])):
+        raise RuntimeError("api inbound is missing")
+    api_rule = any("api" in rule_values(rule, "inboundTag") and rule.get("outboundTag") == "api" for rule in routing_rules(config))
+    if not api_rule:
+        raise RuntimeError("routing rule for api inbound is missing")
+    return "Stats API config is enabled"
+
+
+def check_stats_runtime():
+    run_ok([str(XRAY_BIN), "api", "statsquery", f"--server={STATS_SERVER}", "-pattern", "user>>>"], timeout=10)
+    return f"Stats API responds on {STATS_SERVER}"
+
+
+def check_timers():
+    inactive = [unit for unit in ("xray-traffic-sync.timer", "xray-client-expire.timer") if not is_active(unit)]
+    if inactive:
+        raise RuntimeError("inactive timers: " + ", ".join(inactive))
+    return "traffic and expiry timers active"
+
+
+def check_traffic_sync_service():
+    result = run(["systemctl", "cat", "xray-traffic-sync.service"], timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(compact_output(result))
+    missing = [line for line in TRAFFIC_SERVICE_COMMANDS if line not in result.stdout]
+    if missing:
+        raise RuntimeError("missing service command(s): " + ", ".join(missing))
+    return "xray-traffic-sync.service runs sync, limits, and expiry checks"
+
+
+def check_traffic_sync_runtime():
+    run_ok(["/usr/local/sbin/xray-traffic-sync", "--quiet"], timeout=15)
+    return "xray-traffic-sync runs successfully"
+
+
+def check_client_list_runtime():
+    run_ok(["/usr/local/sbin/xray-client", "list"], timeout=20)
+    return "xray-client list runs successfully"
+
+
+def check_client_db_alignment(diag):
+    db = diag.context.get("client_db", {})
+    known_tags = diag.context.get("reality_tags", set())
+    active_names = set()
+    for inbound in diag.context.get("reality_inbounds", []):
+        for client in clients(inbound):
+            active_names.add(client_name(client.get("email", "")))
+
+    problems = []
+    for name, entry in db.get("clients", {}).items():
+        connection = entry.get("connection", "")
+        if connection and connection not in known_tags:
+            problems.append(f"{name}: unknown connection {connection}")
+        if entry.get("enabled") is not False and name not in active_names:
+            problems.append(f"{name}: enabled in clients.json but absent from config")
+    if problems:
+        raise RuntimeError("; ".join(problems[:8]))
+    return "clients.json matches active Reality connections"
+
+
+def check_traffic_db_alignment(diag):
+    client_names = set(diag.context.get("client_db", {}).get("clients", {}).keys())
+    traffic_names = set(diag.context.get("traffic_db", {}).get("clients", {}).keys())
+    stale = sorted(traffic_names - client_names)
+    diag.context["stale_traffic_clients"] = stale
+    if stale:
+        raise RuntimeError("traffic.json has stale clients: " + ", ".join(stale[:8]))
+    return "traffic.json client rows are known"
+
+
+def cleanup_stale_traffic_clients(diag):
+    stale = diag.context.get("stale_traffic_clients", [])
+    if not stale:
+        return
+
+    print()
+    print("В traffic.json найдены клиенты, которых уже нет в clients.json:")
+    for name in stale:
+        print(f" - {name}")
+
+    if not sys.stdin.isatty():
+        line_warn("Очистка пропущена: для изменения traffic.json нужен интерактивный терминал.")
+        return
+
+    answer = input("Удалить эти строки из traffic.json? [y/N]: ").strip().lower()
+    if answer not in ("y", "yes", "д", "да"):
+        print("Очистка traffic.json пропущена.")
+        return
+
+    traffic_db = diag.context.get("traffic_db") or load_json(TRAFFIC_PATH)
+    traffic_clients = traffic_db.setdefault("clients", {})
+    removed = []
+    for name in stale:
+        if name in traffic_clients:
+            traffic_clients.pop(name, None)
+            removed.append(name)
+
+    if removed:
+        save_traffic_db(traffic_db)
+        diag.context["traffic_db"] = traffic_db
+        diag.context["stale_traffic_clients"] = []
+        diag.warnings = [
+            message
+            for message in diag.warnings
+            if not message.startswith("Traffic DB alignment: traffic.json has stale clients:")
+        ]
+        line_ok("Removed stale traffic clients from traffic.json: " + ", ".join(removed))
+    else:
+        line_ok("No stale traffic clients left in traffic.json.")
+
+
+def check_torrent_policy(diag):
+    blocked = any("bittorrent" in rule_values(rule, "protocol") and rule.get("outboundTag") == BLOCKED_TAG for rule in routing_rules(diag.context["config"]))
+    if blocked:
+        return "BitTorrent traffic is blocked"
+    return "BitTorrent traffic is allowed by current settings"
+
+
+def check_cascade_config(diag):
+    config = diag.context["config"]
+    outbound = next((item for item in config.get("outbounds", []) if item.get("tag") == UPSTREAM_TAG), None)
+    if not outbound:
+        return "Cascade outbound is not configured"
+    if outbound.get("protocol") != "vless":
+        raise RuntimeError("cascade-upstream must use protocol=vless")
+    vnext = outbound.get("settings", {}).get("vnext", [])
+    if not vnext or not vnext[0].get("address") or not vnext[0].get("port"):
+        raise RuntimeError("cascade-upstream has incomplete vnext settings")
+    route = any(rule.get("outboundTag") == UPSTREAM_TAG and rule.get("type") == "field" for rule in routing_rules(config))
+    if not route:
+        raise RuntimeError("routing rule to cascade-upstream is missing")
+    return "Cascade config is present; deep network test remains in Cascade menu"
+
+
+def check_file_permissions():
+    checked = []
+    for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH):
+        if not path.exists():
+            continue
+        mode = stat.S_IMODE(path.stat().st_mode)
+        if mode & 0o007:
+            raise RuntimeError(f"{path} is readable by others: mode {mode:o}")
+        checked.append(f"{path.name}={mode:o}")
+    return "sensitive file permissions OK: " + ", ".join(checked)
+
+
+def run_diagnostics():
+    diag = Diagnostics()
+    diag.check("Root privileges", check_root)
+    diag.check("Xray binary", lambda: check_xray_binary(diag))
+    diag.check("Xray assets", check_assets)
+    diag.check("Helper scripts", check_helpers)
+    diag.check("Helper script syntax", check_helper_syntax)
+    diag.check("Config JSON", lambda: check_config_json(diag))
+    diag.check("Clients DB", lambda: check_client_db(diag))
+    diag.check("Traffic DB", lambda: check_traffic_db(diag))
+    diag.check("server.env", lambda: check_server_env(diag))
+    diag.check("Manager timezone", lambda: check_manager_timezone(diag))
+    diag.check("Reality connections", lambda: check_reality_inbounds(diag))
+    diag.check("Xray config test", check_config_test)
+    diag.check("xray.service", check_xray_service)
+    diag.check("Reality TCP ports", lambda: check_reality_ports(diag))
+    diag.check("Stats API config", lambda: check_stats_config(diag))
+    diag.check("Stats API runtime", check_stats_runtime)
+    diag.check("Systemd timers", check_timers)
+    diag.check("Traffic sync service", check_traffic_sync_service)
+    diag.check("Traffic sync runtime", check_traffic_sync_runtime)
+    diag.check("xray-client list", check_client_list_runtime)
+    diag.check("Client DB alignment", lambda: check_client_db_alignment(diag), fatal=False)
+    diag.check("Traffic DB alignment", lambda: check_traffic_db_alignment(diag), fatal=False)
+    diag.check("Torrent policy", lambda: check_torrent_policy(diag))
+    diag.check("Cascade config", lambda: check_cascade_config(diag))
+    diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
+    cleanup_stale_traffic_clients(diag)
+    return diag.summary()
+
+
+def usage():
+    print("""Usage:
+  xray-test
+  xray-test --all
+""")
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] not in ("--all", "all"):
+        usage()
+        sys.exit(1)
+    sys.exit(run_diagnostics())
+
+
+if __name__ == "__main__":
+    main()
