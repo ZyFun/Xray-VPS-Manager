@@ -9,9 +9,11 @@ import sys
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
+SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 LOCK_PATH = Path("/usr/local/etc/xray/traffic.lock")
 ACCESS_LOG_PATH = Path("/var/log/xray/access.log")
@@ -30,8 +32,29 @@ def now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def server_env_values():
+    values = {}
+    if SERVER_ENV_PATH.exists():
+        for line in SERVER_ENV_PATH.read_text().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def manager_timezone():
+    value = (server_env_values().get("MANAGER_TIMEZONE") or "").strip()
+    if not value:
+        return datetime.now().astimezone().tzinfo
+    try:
+        return ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        log(f"Invalid MANAGER_TIMEZONE={value!r}. Falling back to server local time.")
+        return datetime.now().astimezone().tzinfo
+
+
 def local_bucket_time():
-    return datetime.now().astimezone().replace(microsecond=0)
+    return datetime.now(manager_timezone()).replace(microsecond=0)
 
 
 def subtract_months(day, months):

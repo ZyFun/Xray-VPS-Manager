@@ -8,6 +8,7 @@ import sys
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
@@ -16,7 +17,7 @@ CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 INBOUND_TAG = "vless-reality"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-04 20:12 UTC"
+MENU_UPDATED = "2026-06-05 09:53 UTC"
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 GREEN = "\033[32m"
@@ -34,6 +35,24 @@ FINGERPRINTS = [
     "random",
     "randomized",
 ]
+TIMEZONE_PRESETS = [
+    ("", "Системное время сервера"),
+    ("Europe/Moscow", "Москва"),
+    ("Europe/Kaliningrad", "Калининград"),
+    ("Europe/Samara", "Самара"),
+    ("Asia/Yekaterinburg", "Екатеринбург"),
+    ("Asia/Omsk", "Омск"),
+    ("Asia/Novosibirsk", "Новосибирск"),
+    ("Asia/Krasnoyarsk", "Красноярск"),
+    ("Asia/Irkutsk", "Иркутск"),
+    ("Asia/Yakutsk", "Якутск"),
+    ("Asia/Vladivostok", "Владивосток"),
+    ("Asia/Magadan", "Магадан"),
+    ("Asia/Sakhalin", "Сахалин"),
+    ("Asia/Kamchatka", "Камчатка"),
+    ("UTC", "UTC"),
+]
+TIMEZONE_SEARCH_LIMIT = 30
 
 
 def die(message):
@@ -154,6 +173,8 @@ def service_menu_actions():
         ("5", "Показать доступ к торрентам"),
         ("6", "Запретить торренты"),
         ("7", "Разрешить торренты"),
+        ("8", "Показать часовой пояс"),
+        ("9", "Изменить часовой пояс"),
         ("0", "Назад"),
     ]
 
@@ -468,11 +489,11 @@ def format_access_until(value):
     parsed = parse_time(value)
     if parsed is None:
         return "бессрочно"
-    return parsed.astimezone().strftime("%Y-%m-%d 00:00")
+    return parsed.astimezone(manager_timezone()).strftime("%Y-%m-%d %H:%M")
 
 
 def local_today():
-    return datetime.now().astimezone().date()
+    return datetime.now(manager_timezone()).date()
 
 
 def parse_date_value(value, label="DATE"):
@@ -821,8 +842,123 @@ def server_env():
         for line in SERVER_ENV_PATH.read_text().splitlines():
             if "=" in line:
                 key, value = line.split("=", 1)
-                values[key] = value
+                values[key] = value.strip().strip('"').strip("'")
     return values
+
+
+def normalize_timezone(value):
+    raw = (value or "").strip()
+    if raw.lower() in ("", "server", "local", "default", "system", "сервер", "локально", "по умолчанию"):
+        return ""
+    try:
+        ZoneInfo(raw)
+    except ZoneInfoNotFoundError:
+        die("MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time.")
+    return raw
+
+
+def configured_timezone_name():
+    return normalize_timezone(server_env().get("MANAGER_TIMEZONE", ""))
+
+
+def manager_timezone():
+    name = configured_timezone_name()
+    if name:
+        return ZoneInfo(name)
+    return datetime.now().astimezone().tzinfo
+
+
+def manager_timezone_label():
+    name = configured_timezone_name()
+    if name:
+        return name
+    current = datetime.now().astimezone()
+    suffix = current.tzname() or "server local time"
+    return f"server local time ({suffix})"
+
+
+def timezone_value_label(value):
+    return value or "server"
+
+
+def print_timezone_selection_table(rows, include_search=False):
+    headers = ("№", "TIMEZONE", "ОПИСАНИЕ")
+    values = [
+        (str(index), timezone_value_label(value), label)
+        for index, (value, label) in enumerate(rows, start=1)
+    ]
+    if include_search:
+        values.append(("S", "Поиск", "найти другой часовой пояс"))
+    values.append(("0", "Назад", ""))
+    widths = [
+        max(len(headers[column]), *(len(str(row[column])) for row in values))
+        for column in range(len(headers))
+    ]
+    border = table_border(widths)
+    print(border)
+    print(table_row(headers, widths))
+    print(border)
+    for row in values:
+        print(table_row(row, widths))
+    print(border)
+
+
+def timezone_search_matches(query):
+    needle = query.strip().lower()
+    if not needle:
+        return []
+    try:
+        zones = sorted(available_timezones())
+    except Exception:
+        zones = sorted(value for value, _ in TIMEZONE_PRESETS if value)
+    return [(zone, "") for zone in zones if needle in zone.lower()][:TIMEZONE_SEARCH_LIMIT]
+
+
+def choose_timezone_from_rows(rows, prompt):
+    while True:
+        choice = input(prompt).strip()
+        if choice in ("", "0"):
+            return None
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return rows[index - 1][0]
+        print("Неизвестный часовой пояс. Выбери номер из списка или 0 для возврата.")
+
+
+def search_timezone():
+    while True:
+        query = input("Фильтр timezone, например Moscow или Europe (Enter - назад): ").strip()
+        if not query:
+            return None
+        matches = timezone_search_matches(query)
+        if not matches:
+            print("По этому фильтру ничего не найдено.")
+            continue
+        print_timezone_selection_table(matches)
+        selected = choose_timezone_from_rows(matches, "Часовой пояс: ")
+        if selected is not None:
+            return selected
+
+
+def choose_timezone():
+    current = configured_timezone_name() or "server"
+    print(f"Текущее значение: {current}")
+    while True:
+        print_timezone_selection_table(TIMEZONE_PRESETS, include_search=True)
+        choice = input("Часовой пояс: ").strip().lower()
+        if choice in ("", "0"):
+            return None
+        if choice in ("s", "search", "поиск"):
+            selected = search_timezone()
+            if selected is not None:
+                return selected
+            continue
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(TIMEZONE_PRESETS):
+                return TIMEZONE_PRESETS[index - 1][0]
+        print("Неизвестный часовой пояс. Выбери номер из списка, S для поиска или 0 для возврата.")
 
 
 def default_ssh_target():
@@ -846,7 +982,7 @@ def write_server_env(port, sni, dest, fingerprint=None):
     if "SERVER_ADDR" not in values:
         values["SERVER_ADDR"] = ""
 
-    ordered = ["SERVER_ADDR", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT"]
+    ordered = ["SERVER_ADDR", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT", "MANAGER_TIMEZONE"]
     lines = [f"{key}={values.get(key, '')}" for key in ordered]
     for key in sorted(values):
         if key not in ordered:
@@ -1381,6 +1517,21 @@ def check_timers():
     call(["systemctl", "status", "xray-traffic-sync.timer", "xray-client-expire.timer", "--no-pager"])
 
 
+def show_timezone():
+    call(["xray-client", "timezone"])
+
+
+def update_timezone():
+    print("MANAGER_TIMEZONE: часовой пояс для сроков доступа, лимитов трафика, отчётов и отображения времени.")
+    print("Выбери значение из списка, чтобы не ошибиться при ручном вводе.")
+    value = choose_timezone()
+    if value is None:
+        print("Изменение отменено.")
+        return
+    call(["xray-client", "set-timezone", value])
+    print("Новая настройка будет использоваться в следующих расчётах и выводе времени.")
+
+
 def execute_action(title, func):
     begin_action(title)
     try:
@@ -1435,6 +1586,8 @@ def service_menu_handlers():
         "5": ("Показать доступ к торрентам", print_torrent_status),
         "6": ("Запретить торренты", block_torrents),
         "7": ("Разрешить торренты", allow_torrents),
+        "8": ("Показать часовой пояс", show_timezone),
+        "9": ("Изменить часовой пояс", update_timezone),
     }
 
 

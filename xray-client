@@ -9,6 +9,7 @@ from calendar import monthrange
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
@@ -69,7 +70,7 @@ def utc_now_iso():
 
 
 def local_now():
-    return datetime.now().astimezone().replace(microsecond=0)
+    return datetime.now(manager_timezone()).replace(microsecond=0)
 
 
 def parse_datetime(value):
@@ -222,7 +223,7 @@ def prompt_access_days():
         return None
     print()
     print("ACCESS_DAYS: количество календарных дней доступа.")
-    print("Клиент будет автоматически отключён в 00:00 по локальному времени сервера после окончания срока.")
+    print(f"Клиент будет автоматически отключён в 00:00 по часовому поясу менеджера: {manager_timezone_label()}.")
     print("Нажми Enter или введи 0, чтобы добавить клиента бессрочно.")
     value = input("ACCESS_DAYS [бессрочно]: ").strip()
     return parse_access_days(value)
@@ -240,7 +241,15 @@ def format_access_until(value):
     parsed = parse_datetime(value)
     if parsed is None:
         return "бессрочно"
-    return parsed.astimezone().strftime("%Y-%m-%d 00:00")
+    return parsed.astimezone(manager_timezone()).strftime("%Y-%m-%d %H:%M")
+
+
+def access_deadline_at_midnight(value, tz):
+    parsed = parse_datetime(value)
+    if parsed is None:
+        return ""
+    local = parsed.astimezone(tz)
+    return datetime.combine(local.date(), time.min, tzinfo=tz).isoformat(timespec="minutes")
 
 
 def load_config():
@@ -275,8 +284,24 @@ def save_db(db):
     tmp.replace(CLIENT_DB_PATH)
 
 
+def normalize_access_deadlines(tz):
+    if not CLIENT_DB_PATH.exists():
+        return 0
+    db = load_db()
+    changed = 0
+    for entry in db_clients(db).values():
+        expires_at = entry.get("expiresAt", "")
+        normalized = access_deadline_at_midnight(expires_at, tz)
+        if normalized and normalized != expires_at:
+            entry["expiresAt"] = normalized
+            changed += 1
+    if changed:
+        save_db(db)
+    return changed
+
+
 def save_server_env_values(values):
-    ordered = ["SERVER_ADDR", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT"]
+    ordered = ["SERVER_ADDR", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT", "MANAGER_TIMEZONE"]
     lines = [f"{key}={values.get(key, '')}" for key in ordered]
     for key in sorted(values):
         if key not in ordered:
@@ -580,6 +605,37 @@ def server_env_values():
 
 def server_env_value(key, default=""):
     return server_env_values().get(key) or os.environ.get(key, default)
+
+
+def normalize_timezone(value):
+    raw = (value or "").strip()
+    if raw.lower() in ("", "server", "local", "default", "system", "сервер", "локально", "по умолчанию"):
+        return ""
+    try:
+        ZoneInfo(raw)
+    except ZoneInfoNotFoundError:
+        die("MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time.")
+    return raw
+
+
+def configured_timezone_name():
+    return normalize_timezone(server_env_value("MANAGER_TIMEZONE", ""))
+
+
+def manager_timezone():
+    name = configured_timezone_name()
+    if name:
+        return ZoneInfo(name)
+    return datetime.now().astimezone().tzinfo
+
+
+def manager_timezone_label():
+    name = configured_timezone_name()
+    if name:
+        return name
+    current = datetime.now().astimezone()
+    suffix = current.tzname() or "server local time"
+    return f"server local time ({suffix})"
 
 
 def server_addr():
@@ -904,7 +960,8 @@ def format_time(value):
     parsed = parse_time(value)
     if parsed is None:
         return "never"
-    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    local = parsed.astimezone(manager_timezone())
+    return local.strftime("%Y-%m-%d %H:%M %Z")
 
 
 def online_state(row, traffic_db):
@@ -1302,7 +1359,7 @@ def cmd_traffic_day(name, day_value=None):
     day = parse_date_value(day_value or local_now().date().isoformat())
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
-    print(f"Day: {day.isoformat()} (server time)")
+    print(f"Day: {day.isoformat()} (timezone: {manager_timezone_label()})")
     print_plain_table(["HOUR", "IN", "OUT", "TOTAL"], day_hour_totals(entry, day))
 
 
@@ -1311,7 +1368,7 @@ def cmd_traffic_week(name, start_value=None):
     end = start + timedelta(days=6)
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
-    print(f"Period: {start.isoformat()}..{end.isoformat()} (server time)")
+    print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {manager_timezone_label()})")
     print_plain_table(["DATE", "IN", "OUT", "TOTAL"], period_day_rows(entry, start, end))
 
 
@@ -1320,7 +1377,7 @@ def cmd_traffic_month(name, month_value=None):
     start, end = month_bounds(month_key)
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
-    print(f"Month: {month_key} (server time)")
+    print(f"Month: {month_key} (timezone: {manager_timezone_label()})")
     print_plain_table(["DATE", "IN", "OUT", "TOTAL"], period_day_rows(entry, start, end))
 
 
@@ -1331,7 +1388,7 @@ def cmd_traffic_period(name, start_value, end_value):
         die("END_DATE must be the same as or later than START_DATE.")
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
-    print(f"Period: {start.isoformat()}..{end.isoformat()} (server time)")
+    print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {manager_timezone_label()})")
     print_plain_table(["DATE", "IN", "OUT", "TOTAL"], period_day_rows(entry, start, end))
 
 
@@ -1787,6 +1844,25 @@ def cmd_expire_due(quiet=False):
         print(f"Backup: {backup}")
 
 
+def cmd_timezone():
+    name = configured_timezone_name()
+    current = local_now()
+    print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
+    print(f"Current time: {current.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+
+
+def cmd_set_timezone(value):
+    name = normalize_timezone(value)
+    values = server_env_values()
+    values["MANAGER_TIMEZONE"] = name
+    save_server_env_values(values)
+    normalized = normalize_access_deadlines(manager_timezone())
+    print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
+    print(f"Current time: {local_now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    if normalized:
+        print(f"Normalized access deadlines: {normalized}")
+
+
 def usage():
     print("""Usage:
   xray-client list
@@ -1809,6 +1885,8 @@ def usage():
   xray-client set-limit NAME daily|monthly LIMIT_GB
   xray-client clear-limit NAME
   xray-client enforce-limits [--quiet] [--sync]
+  xray-client timezone
+  xray-client set-timezone TIMEZONE|server
 """)
 
 
@@ -1902,6 +1980,10 @@ def main():
             usage()
             sys.exit(1)
         cmd_enforce_limits(quiet="--quiet" in options, sync_first="--sync" in options)
+    elif command == "timezone" and len(sys.argv) == 2:
+        cmd_timezone()
+    elif command == "set-timezone" and len(sys.argv) == 3:
+        cmd_set_timezone(sys.argv[2])
     else:
         usage()
         sys.exit(1)

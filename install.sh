@@ -9,6 +9,24 @@ REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
 REALITY_DEST=""
 CLIENT_NAME="${CLIENT_NAME:-starter}"
 FINGERPRINT="${FINGERPRINT:-chrome}"
+MANAGER_TIMEZONE="${MANAGER_TIMEZONE:-}"
+TIMEZONE_SEARCH_LIMIT=30
+TIMEZONE_PRESETS=(
+  "Europe/Moscow|Москва"
+  "Europe/Kaliningrad|Калининград"
+  "Europe/Samara|Самара"
+  "Asia/Yekaterinburg|Екатеринбург"
+  "Asia/Omsk|Омск"
+  "Asia/Novosibirsk|Новосибирск"
+  "Asia/Krasnoyarsk|Красноярск"
+  "Asia/Irkutsk|Иркутск"
+  "Asia/Yakutsk|Якутск"
+  "Asia/Vladivostok|Владивосток"
+  "Asia/Magadan|Магадан"
+  "Asia/Sakhalin|Сахалин"
+  "Asia/Kamchatka|Камчатка"
+  "UTC|UTC"
+)
 
 if [[ "$(id -u)" != "0" ]]; then
   echo "Run this script as root." >&2
@@ -88,11 +106,27 @@ validate_fingerprint() {
   esac
 }
 
+validate_manager_timezone() {
+  local value="$1"
+  if [[ -z "$value" ]]; then
+    return
+  fi
+  if [[ "$value" == /* || "$value" == *".."* || "$value" == *" "* ]]; then
+    echo "MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time." >&2
+    exit 1
+  fi
+  if ! [[ "$value" =~ ^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)+$ ]]; then
+    echo "MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time." >&2
+    exit 1
+  fi
+}
+
 validate_install_options() {
   FINGERPRINT="$(printf '%s' "$FINGERPRINT" | tr '[:upper:]' '[:lower:]')"
   validate_port "$PORT" "PORT"
   validate_host "$REALITY_SNI" "REALITY_SNI"
   validate_fingerprint "$FINGERPRINT"
+  validate_manager_timezone "$MANAGER_TIMEZONE"
 
   if [[ ! "$CLIENT_NAME" =~ ^[A-Za-z0-9_.@-]{1,64}$ ]]; then
     echo "CLIENT_NAME must be 1-64 chars: A-Z a-z 0-9 _ . @ -" >&2
@@ -143,6 +177,102 @@ prompt_fingerprint() {
   done
 }
 
+timezone_candidates() {
+  if command -v timedatectl >/dev/null 2>&1; then
+    timedatectl list-timezones 2>/dev/null || true
+    return
+  fi
+  if [[ -f /usr/share/zoneinfo/zone1970.tab ]]; then
+    awk '!/^#/ {print $3}' /usr/share/zoneinfo/zone1970.tab
+    return
+  fi
+  if [[ -f /usr/share/zoneinfo/zone.tab ]]; then
+    awk '!/^#/ {print $3}' /usr/share/zoneinfo/zone.tab
+  fi
+}
+
+print_timezone_presets() {
+  local index=1
+  local item value label
+  printf '  %2s) %-24s %s\n' "0" "server" "системное время сервера"
+  for item in "${TIMEZONE_PRESETS[@]}"; do
+    value="${item%%|*}"
+    label="${item#*|}"
+    printf '  %2s) %-24s %s\n' "$index" "$value" "$label"
+    index=$((index + 1))
+  done
+  printf '  %2s) %-24s %s\n' "S" "Поиск" "найти другой часовой пояс"
+}
+
+prompt_timezone_search() {
+  local query choice index
+  local -a matches=()
+  while true; do
+    read -r -p "Фильтр timezone, например Moscow или Europe (Enter - назад): " query
+    if [[ -z "$query" ]]; then
+      return 1
+    fi
+    mapfile -t matches < <(timezone_candidates | grep -i -F -- "$query" | head -n "$TIMEZONE_SEARCH_LIMIT" || true)
+    if (( ${#matches[@]} == 0 )); then
+      echo "По этому фильтру ничего не найдено."
+      continue
+    fi
+    for index in "${!matches[@]}"; do
+      printf '  %2s) %s\n' "$((index + 1))" "${matches[$index]}"
+    done
+    printf '  %2s) %s\n' "0" "назад"
+    read -r -p "Часовой пояс: " choice
+    if [[ "$choice" == "0" || -z "$choice" ]]; then
+      return 1
+    fi
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+      index=$((10#$choice))
+      if (( index >= 1 && index <= ${#matches[@]} )); then
+        MANAGER_TIMEZONE="${matches[$((index - 1))]}"
+        return 0
+      fi
+    fi
+    echo "Неверное значение. Выбери номер из списка."
+  done
+}
+
+prompt_manager_timezone() {
+  local input lower index item
+  while true; do
+    echo "MANAGER_TIMEZONE: часовой пояс для сроков доступа, лимитов трафика, отчётов и отображения времени."
+    echo "Выбери номер из списка. Нажми Enter, чтобы оставить: ${MANAGER_TIMEZONE:-server local time}."
+    print_timezone_presets
+    read -r -p "MANAGER_TIMEZONE [${MANAGER_TIMEZONE:-server}] (номер или S): " input
+    if [[ -z "$input" ]]; then
+      return
+    fi
+    lower="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+      0|server|local|default|system)
+        MANAGER_TIMEZONE=""
+        return
+        ;;
+      s|search|поиск)
+        if prompt_timezone_search; then
+          return
+        fi
+        echo
+        continue
+        ;;
+    esac
+    if [[ "$input" =~ ^[0-9]+$ ]]; then
+      index=$((10#$input))
+      if (( index >= 1 && index <= ${#TIMEZONE_PRESETS[@]} )); then
+        item="${TIMEZONE_PRESETS[$((index - 1))]}"
+        MANAGER_TIMEZONE="${item%%|*}"
+        return
+      fi
+    fi
+    echo "Неверное значение. Выбери номер из списка или S для поиска."
+    echo
+  done
+}
+
 prompt_install_options() {
   if [[ ! -t 0 ]]; then
     validate_install_options
@@ -165,6 +295,8 @@ prompt_install_options() {
   read -r -p "CLIENT_NAME [${CLIENT_NAME}]: " input
   CLIENT_NAME="${input:-$CLIENT_NAME}"
   echo
+  prompt_manager_timezone
+  echo
   prompt_fingerprint
 
   validate_install_options
@@ -175,6 +307,7 @@ prompt_install_options() {
   echo "  REALITY_DEST=${REALITY_DEST} (создан автоматически)"
   echo "  CLIENT_NAME=${CLIENT_NAME}"
   echo "  FINGERPRINT=${FINGERPRINT}"
+  echo "  MANAGER_TIMEZONE=${MANAGER_TIMEZONE:-server local time}"
   echo
 }
 
@@ -182,7 +315,7 @@ prompt_install_options
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl unzip openssl python3
+apt-get install -y ca-certificates curl unzip openssl python3 tzdata
 
 echo "Xray download source: official GitHub Releases"
 echo "Xray URL: ${XRAY_ZIP_URL}"
@@ -395,6 +528,7 @@ PORT=${PORT}
 REALITY_SNI=${REALITY_SNI}
 REALITY_DEST=${REALITY_DEST}
 FINGERPRINT=${FINGERPRINT}
+MANAGER_TIMEZONE=${MANAGER_TIMEZONE}
 EOF
 
 chown root:xray /usr/local/etc/xray/config.json /usr/local/etc/xray/clients.json /usr/local/etc/xray/server.env
@@ -460,6 +594,7 @@ ConditionPathExists=/usr/local/etc/xray/config.json
 Type=oneshot
 ExecStart=/usr/local/sbin/xray-traffic-sync --quiet
 ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet
+ExecStart=/usr/local/sbin/xray-client expire-due --quiet
 EOF
 
 cat >/etc/systemd/system/xray-traffic-sync.timer <<'EOF'
