@@ -261,8 +261,9 @@ def activity_menu_actions():
         ("8", "Показать архивы экспорта"),
         ("9", "Удалить архив экспорта"),
         ("10", "Изменить срок хранения журнала"),
-        ("11", "Выбрать GeoIP-регион предупреждений"),
-        ("12", "Отключить GeoIP-предупреждения"),
+        ("11", "Настроить лимиты suspicious"),
+        ("12", "Выбрать GeoIP-регион предупреждений"),
+        ("13", "Отключить GeoIP-предупреждения"),
         ("0", "Назад"),
     ]
 
@@ -1853,6 +1854,46 @@ def update_activity_retention():
     call(["xray-activity", "retention", value])
 
 
+def activity_risk_limit_values():
+    defaults = {
+        "burst_events": "1000",
+        "burst_window": "15",
+        "unique_hosts": "500",
+        "unique_ports": "20",
+    }
+    result = subprocess.run(
+        ["xray-activity", "risk-limits"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    output = result.stdout + result.stderr
+    patterns = {
+        "burst_events": r"\|\s*Burst events\s*\|\s*([0-9]+)\s*\|",
+        "burst_window": r"\|\s*Burst window\s*\|\s*([0-9]+)\s+minutes\s*\|",
+        "unique_hosts": r"\|\s*Unique hosts\s*\|\s*([0-9]+)\s*\|",
+        "unique_ports": r"\|\s*Unique ports\s*\|\s*([0-9]+)\s*\|",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, output)
+        if match:
+            defaults[key] = match.group(1)
+    return defaults
+
+
+def update_activity_risk_limits():
+    current = activity_risk_limit_values()
+    print("Лимиты suspicious определяют, когда клиент попадёт в отчёт подозрительной активности.")
+    print("По умолчанию burst = 1000 событий за 15 минут, чтобы обычный стриминг не попадал в false positive.")
+    print("Нажми Enter на любом пункте, чтобы оставить текущее значение.")
+    burst_events = input(f"BURST_EVENTS [{current['burst_events']}]: ").strip() or current["burst_events"]
+    burst_window = input(f"BURST_WINDOW_MINUTES [{current['burst_window']}]: ").strip() or current["burst_window"]
+    unique_hosts = input(f"UNIQUE_HOSTS [{current['unique_hosts']}]: ").strip() or current["unique_hosts"]
+    unique_ports = input(f"UNIQUE_PORTS [{current['unique_ports']}]: ").strip() or current["unique_ports"]
+    call(["xray-activity", "risk-limits", "set", burst_events, burst_window, unique_hosts, unique_ports])
+
+
 def geoip_codes(query=""):
     command = ["xray-activity", "geo-list"]
     if query:
@@ -2487,8 +2528,9 @@ def activity_menu_handlers():
         "8": ("Показать архивы экспорта", lambda: call(["xray-activity", "export-list"])),
         "9": ("Удалить архив экспорта", delete_activity_export_from_menu),
         "10": ("Изменить срок хранения журнала", update_activity_retention),
-        "11": ("Выбрать GeoIP-регион предупреждений", set_activity_geoip_region),
-        "12": ("Отключить GeoIP-предупреждения", lambda: call(["xray-activity", "geo-warnings", "disable"])),
+        "11": ("Настроить лимиты suspicious", update_activity_risk_limits),
+        "12": ("Выбрать GeoIP-регион предупреждений", set_activity_geoip_region),
+        "13": ("Отключить GeoIP-предупреждения", lambda: call(["xray-activity", "geo-warnings", "disable"])),
     }
 
 

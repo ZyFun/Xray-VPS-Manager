@@ -34,9 +34,10 @@ INBOUND_TAG = "vless-reality"
 DEFAULT_RETENTION_DAYS = 365
 SMTP_PORTS = {"25", "465", "587", "2525"}
 ADMIN_PORTS = {"22", "23", "135", "139", "445", "3389", "5900"}
-RISK_CONNECTIONS_PER_HOUR = 1000
-RISK_UNIQUE_HOSTS_PER_DAY = 500
-RISK_UNIQUE_PORTS_PER_DAY = 20
+DEFAULT_RISK_BURST_EVENTS = 1000
+DEFAULT_RISK_BURST_WINDOW_MINUTES = 15
+DEFAULT_RISK_UNIQUE_HOSTS = 500
+DEFAULT_RISK_UNIQUE_PORTS = 20
 ACCESS_RE = re.compile(
     r"^(?P<time>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?\s+(?P<body>.*?)\s+email:\s+(?P<email>.+)$"
 )
@@ -151,6 +152,10 @@ def write_server_env(values):
         "SECURITY_AUDIT_LAST_RUN",
         "ACTIVITY_LOGGING_ENABLED",
         "ACTIVITY_RETENTION_DAYS",
+        "ACTIVITY_RISK_BURST_EVENTS",
+        "ACTIVITY_RISK_BURST_WINDOW_MINUTES",
+        "ACTIVITY_RISK_UNIQUE_HOSTS",
+        "ACTIVITY_RISK_UNIQUE_PORTS",
         "ACTIVITY_GEOIP_WARNING_CODE",
     ]
     lines = [f"{key}={values.get(key, '')}" for key in ordered if key in values]
@@ -192,6 +197,37 @@ def parse_retention_days(value):
     if days < 1 or days > 3650:
         die("Retention days must be a number from 1 to 3650.")
     return days
+
+
+def env_int(name, default, minimum=1, maximum=1000000):
+    raw = (server_env_values().get(name) or str(default)).strip()
+    try:
+        value = int(raw, 10)
+    except ValueError:
+        return default
+    if value < minimum or value > maximum:
+        return default
+    return value
+
+
+def risk_limits():
+    return {
+        "burstEvents": env_int("ACTIVITY_RISK_BURST_EVENTS", DEFAULT_RISK_BURST_EVENTS, 1, 1000000),
+        "burstWindowMinutes": env_int("ACTIVITY_RISK_BURST_WINDOW_MINUTES", DEFAULT_RISK_BURST_WINDOW_MINUTES, 1, 1440),
+        "uniqueHosts": env_int("ACTIVITY_RISK_UNIQUE_HOSTS", DEFAULT_RISK_UNIQUE_HOSTS, 1, 1000000),
+        "uniquePorts": env_int("ACTIVITY_RISK_UNIQUE_PORTS", DEFAULT_RISK_UNIQUE_PORTS, 1, 65535),
+    }
+
+
+def with_activity_defaults(env):
+    env.setdefault("ACTIVITY_LOGGING_ENABLED", "false")
+    env.setdefault("ACTIVITY_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))
+    env.setdefault("ACTIVITY_RISK_BURST_EVENTS", str(DEFAULT_RISK_BURST_EVENTS))
+    env.setdefault("ACTIVITY_RISK_BURST_WINDOW_MINUTES", str(DEFAULT_RISK_BURST_WINDOW_MINUTES))
+    env.setdefault("ACTIVITY_RISK_UNIQUE_HOSTS", str(DEFAULT_RISK_UNIQUE_HOSTS))
+    env.setdefault("ACTIVITY_RISK_UNIQUE_PORTS", str(DEFAULT_RISK_UNIQUE_PORTS))
+    env.setdefault("ACTIVITY_GEOIP_WARNING_CODE", "")
+    return env
 
 
 def load_json(path, default):
@@ -706,24 +742,20 @@ def access_log_available_for_parsing():
 
 
 def set_enabled(value):
-    env = server_env_values()
+    env = with_activity_defaults(server_env_values())
     env["ACTIVITY_LOGGING_ENABLED"] = "true" if value else "false"
-    env.setdefault("ACTIVITY_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))
     write_server_env(env)
 
 
 def set_geoip_warning_code(code):
-    env = server_env_values()
-    env.setdefault("ACTIVITY_LOGGING_ENABLED", "false")
-    env.setdefault("ACTIVITY_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))
+    env = with_activity_defaults(server_env_values())
     env["ACTIVITY_GEOIP_WARNING_CODE"] = (code or "").upper()
     write_server_env(env)
 
 
 def set_retention_days(value):
     days = parse_retention_days(value)
-    env = server_env_values()
-    env.setdefault("ACTIVITY_LOGGING_ENABLED", "false")
+    env = with_activity_defaults(server_env_values())
     env["ACTIVITY_RETENTION_DAYS"] = str(days)
     write_server_env(env)
     db = load_activity_db()
@@ -732,6 +764,42 @@ def set_retention_days(value):
     save_activity_db(db)
     print(f"Activity retention set to {days} days.")
     print(f"Pruned old activity events: {removed}")
+
+
+def parse_limit_value(label, value, minimum, maximum):
+    raw = str(value or "").strip()
+    if not re.fullmatch(r"[0-9]+", raw):
+        die(f"{label} must be a number from {minimum} to {maximum}.")
+    parsed = int(raw, 10)
+    if parsed < minimum or parsed > maximum:
+        die(f"{label} must be a number from {minimum} to {maximum}.")
+    return parsed
+
+
+def set_risk_limits(burst_events, burst_window_minutes, unique_hosts, unique_ports):
+    values = {
+        "ACTIVITY_RISK_BURST_EVENTS": parse_limit_value("BURST_EVENTS", burst_events, 1, 1000000),
+        "ACTIVITY_RISK_BURST_WINDOW_MINUTES": parse_limit_value("BURST_WINDOW_MINUTES", burst_window_minutes, 1, 1440),
+        "ACTIVITY_RISK_UNIQUE_HOSTS": parse_limit_value("UNIQUE_HOSTS", unique_hosts, 1, 1000000),
+        "ACTIVITY_RISK_UNIQUE_PORTS": parse_limit_value("UNIQUE_PORTS", unique_ports, 1, 65535),
+    }
+    env = with_activity_defaults(server_env_values())
+    for key, value in values.items():
+        env[key] = str(value)
+    write_server_env(env)
+    print("Activity suspicious limits updated.")
+    print_risk_limits()
+
+
+def print_risk_limits():
+    limits = risk_limits()
+    rows = [
+        ["Burst events", limits["burstEvents"]],
+        ["Burst window", f"{limits['burstWindowMinutes']} minutes"],
+        ["Unique hosts", limits["uniqueHosts"]],
+        ["Unique ports", limits["uniquePorts"]],
+    ]
+    print_table(["LIMIT", "VALUE"], rows)
 
 
 def enable_activity():
@@ -823,6 +891,7 @@ def aggregate_events(events):
         "outbounds": {},
         "risks": {},
         "hours": {},
+        "times": [],
         "sources": {},
     }
     for event in events:
@@ -840,9 +909,28 @@ def aggregate_events(events):
             result["risks"][risk] = result["risks"].get(risk, 0) + 1
         event_time = parse_time(event.get("time"))
         if event_time:
+            result["times"].append(event_time)
             hour_key = event_time.strftime("%Y-%m-%d %H:00")
             result["hours"][hour_key] = result["hours"].get(hour_key, 0) + 1
     return result
+
+
+def rolling_burst(times, window_minutes):
+    ordered = sorted(time for time in times if time)
+    if not ordered:
+        return 0, None
+    best_count = 0
+    best_start = None
+    end_index = 0
+    window = timedelta(minutes=window_minutes)
+    for start_index, start_time in enumerate(ordered):
+        while end_index < len(ordered) and ordered[end_index] < start_time + window:
+            end_index += 1
+        count = end_index - start_index
+        if count > best_count:
+            best_count = count
+            best_start = start_time
+    return best_count, best_start
 
 
 def report_client(name, days_value="7"):
@@ -873,18 +961,19 @@ def report_client(name, days_value="7"):
 def risk_findings(name, aggregate):
     findings = []
     risks = aggregate["risks"]
+    limits = risk_limits()
     if risks.get("smtp", 0) > 0:
         findings.append(("smtp", f"SMTP-like ports used: {risks['smtp']}", "Уточнить назначение трафика; при необходимости временно отключить клиента."))
     if risks.get("blocked", 0) > 0 or risks.get("torrent", 0) > 0:
         count = risks.get("blocked", 0) + risks.get("torrent", 0)
         findings.append(("blocked", f"Blocked/torrent events: {count}", "Проверить отчёт клиента и оставить запрет торрентов включённым."))
-    if aggregate["hours"]:
-        max_hour, max_count = max(aggregate["hours"].items(), key=lambda item: item[1])
-        if max_count >= RISK_CONNECTIONS_PER_HOUR:
-            findings.append(("burst", f"{max_count} events during {max_hour}", "Похоже на автоматизацию/парсинг; проверить клиента и лимиты."))
-    if len(aggregate["hosts"]) >= RISK_UNIQUE_HOSTS_PER_DAY:
+    burst_count, burst_start = rolling_burst(aggregate.get("times", []), limits["burstWindowMinutes"])
+    if burst_count >= limits["burstEvents"]:
+        start = burst_start.strftime("%Y-%m-%d %H:%M UTC") if burst_start else "unknown time"
+        findings.append(("burst", f"{burst_count} events during {limits['burstWindowMinutes']} min from {start}", "Похоже на автоматизацию/парсинг; проверить клиента и лимиты."))
+    if len(aggregate["hosts"]) >= limits["uniqueHosts"]:
         findings.append(("many-hosts", f"Unique hosts: {len(aggregate['hosts'])}", "Похоже на парсинг или сканирование; запросить объяснение у клиента."))
-    if len(aggregate["ports"]) >= RISK_UNIQUE_PORTS_PER_DAY:
+    if len(aggregate["ports"]) >= limits["uniquePorts"]:
         findings.append(("many-ports", f"Unique ports: {len(aggregate['ports'])}", "Похоже на сканирование; временно отключить клиента при повторении."))
     for risk, count in sorted(risks.items()):
         if risk.startswith("geoip:"):
@@ -1083,6 +1172,9 @@ def status():
     rows = [
         ["Parser enabled", "yes" if activity_enabled() else "no"],
         ["Retention", f"{retention_days()} days"],
+        ["Suspicious burst", f"{risk_limits()['burstEvents']} events / {risk_limits()['burstWindowMinutes']} min"],
+        ["Suspicious hosts", risk_limits()["uniqueHosts"]],
+        ["Suspicious ports", risk_limits()["uniquePorts"]],
         ["GeoIP warnings", geoip_warning_code() or "disabled"],
         ["Access log", access or "not configured"],
         ["GeoIP data", str(geoip_path()) if geoip_path() else "geoip.dat not available"],
@@ -1111,6 +1203,8 @@ def usage():
   xray-activity export-delete ARCHIVE_PATH_OR_NAME
   xray-activity download-command ARCHIVE_PATH_OR_NAME [SSH_TARGET_OR_USER_HOST] [LOCAL_DIR]
   xray-activity retention [DAYS]
+  xray-activity risk-limits
+  xray-activity risk-limits set BURST_EVENTS BURST_WINDOW_MINUTES UNIQUE_HOSTS UNIQUE_PORTS
   xray-activity geo-warnings set CODE
   xray-activity geo-warnings disable
   xray-activity geo-warnings status
@@ -1156,6 +1250,14 @@ def main():
                 print(f"Activity retention: {retention_days()} days")
             else:
                 set_retention_days(args[1])
+        elif command == "risk-limits" and len(args) in (1, 6):
+            if len(args) == 1:
+                print_risk_limits()
+            elif args[1] == "set":
+                set_risk_limits(args[2], args[3], args[4], args[5])
+            else:
+                usage()
+                sys.exit(1)
         elif command == "geo-warnings" and len(args) in (2, 3):
             action = args[1]
             if action == "set" and len(args) == 3:
