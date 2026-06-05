@@ -970,6 +970,33 @@ def default_ssh_target():
     return "root@SERVER_HOST"
 
 
+def choose_local_download_dir():
+    print("Выбери систему компьютера, где будет выполняться команда scp.")
+    print("1) macOS: ~/Downloads")
+    print("2) Linux: ~/Downloads")
+    print("3) Windows: %USERPROFILE%/Downloads")
+    print("4) Свой путь")
+    while True:
+        choice = input("Система [1]: ").strip() or "1"
+        if choice == "1":
+            return "~/Downloads"
+        if choice == "2":
+            return "~/Downloads"
+        if choice == "3":
+            return "%USERPROFILE%/Downloads"
+        if choice == "4":
+            value = input("Путь к папке загрузок: ").strip()
+            if value:
+                return value
+            print("Путь не может быть пустым.")
+            continue
+        print("Выбери 1, 2, 3 или 4.")
+
+
+def backup_file_from_dir(directory):
+    return directory.rstrip("/\\") + "/xray-backup.tar.gz"
+
+
 def current_fingerprint():
     value = (server_env().get("FINGERPRINT") or "chrome").strip().lower()
     return value if value in FINGERPRINTS else "chrome"
@@ -1323,19 +1350,21 @@ def create_backup_download_command():
     print()
     print("Ниже будет команда для локального терминала на компьютере, с которого нужно скачать архив.")
     default_target = default_ssh_target()
-    alias = input(f"SSH target/user@host [{default_target}]: ").strip() or default_target
-    local_dir = input("Куда сохранить на локальной машине [~/Downloads]: ").strip() or "~/Downloads"
+    ssh_target = input(f"SSH target/user@host [{default_target}]: ").strip() or default_target
+    default_dir = choose_local_download_dir()
+    local_dir = input(f"Куда сохранить на локальной машине [{default_dir}]: ").strip() or default_dir
     print()
-    call(["xray-backup", "download-command", archive, alias, local_dir])
+    call(["xray-backup", "download-command", archive, ssh_target, local_dir])
 
 
 def show_backup_upload_command():
     print("Эта команда нужна, если архив лежит на локальной машине и его надо загрузить на сервер перед восстановлением.")
     default_target = default_ssh_target()
-    alias = input(f"SSH target/user@host [{default_target}]: ").strip() or default_target
-    local_file = input("Путь к архиву на локальной машине [~/Downloads/xray-backup.tar.gz]: ").strip() or "~/Downloads/xray-backup.tar.gz"
+    ssh_target = input(f"SSH target/user@host [{default_target}]: ").strip() or default_target
+    default_file = backup_file_from_dir(choose_local_download_dir())
+    local_file = input(f"Путь к архиву на локальной машине [{default_file}]: ").strip() or default_file
     print()
-    call(["xray-backup", "upload-command", alias, local_file])
+    call(["xray-backup", "upload-command", ssh_target, local_file])
 
 
 def restore_backup_from_menu():
