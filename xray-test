@@ -7,6 +7,8 @@ import socket
 import stat
 import subprocess
 import sys
+from calendar import monthrange
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -450,6 +452,105 @@ def check_traffic_db_alignment(diag):
     return "traffic.json client rows are known"
 
 
+def manager_timezone(diag):
+    value = (diag.context.get("server_env", {}).get("MANAGER_TIMEZONE") or "").strip()
+    if not value:
+        return datetime.now().astimezone().tzinfo
+    return ZoneInfo(value)
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def access_expired(entry, now):
+    expires_at = parse_datetime(entry.get("expiresAt", ""))
+    if expires_at is None:
+        return False
+    return now >= expires_at.astimezone(now.tzinfo)
+
+
+def traffic_bucket_totals(bucket):
+    if not isinstance(bucket, dict):
+        return 0
+    return int(bucket.get("incoming", 0) or 0) + int(bucket.get("outgoing", 0) or 0)
+
+
+def day_total(entry, day):
+    history = entry.get("history", {})
+    if not isinstance(history, dict):
+        return 0
+    hours = history.get(day.isoformat(), {})
+    if not isinstance(hours, dict):
+        return 0
+    return sum(traffic_bucket_totals(bucket) for bucket in hours.values())
+
+
+def month_total(entry, month_key):
+    year, month = (int(part, 10) for part in month_key.split("-", 1))
+    current = date(year, month, 1)
+    end = date(year, month, monthrange(year, month)[1])
+    total = 0
+    while current <= end:
+        total += day_total(entry, current)
+        current = date.fromordinal(current.toordinal() + 1)
+    return total
+
+
+def traffic_limit_status(client_entry, traffic_entry, now):
+    limit = client_entry.get("trafficLimit")
+    if not isinstance(limit, dict):
+        return None
+    period = limit.get("period")
+    try:
+        limit_bytes = int(limit.get("bytes", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if period not in ("daily", "monthly") or limit_bytes <= 0:
+        return None
+
+    if period == "daily":
+        period_key = now.date().isoformat()
+        used = day_total(traffic_entry, now.date())
+    else:
+        period_key = now.strftime("%Y-%m")
+        used = month_total(traffic_entry, period_key)
+    return {
+        "periodKey": period_key,
+        "limitBytes": limit_bytes,
+        "usedBytes": used,
+        "exceeded": used >= limit_bytes,
+    }
+
+
+def check_traffic_limit_reset_state(diag):
+    client_db = diag.context.get("client_db", {})
+    traffic_db = diag.context.get("traffic_db", {})
+    traffic_clients = traffic_db.get("clients", {})
+    now = datetime.now(manager_timezone(diag)).replace(microsecond=0)
+    stale = []
+
+    for name, entry in client_db.get("clients", {}).items():
+        if entry.get("enabled") is not False or entry.get("disabledReason") != "traffic-limit":
+            continue
+        status = traffic_limit_status(entry, traffic_clients.get(name, {}), now)
+        if not status or status["exceeded"] or access_expired(entry, now):
+            continue
+        exceeded_period = entry.get("trafficLimitExceededPeriod", "")
+        if exceeded_period and exceeded_period == status["periodKey"]:
+            continue
+        stale.append(f"{name}: current period {status['periodKey']} uses {status['usedBytes']} of {status['limitBytes']} bytes")
+
+    if stale:
+        raise RuntimeError("traffic-limit clients are eligible for auto re-enable: " + "; ".join(stale[:8]))
+    return "traffic-limit reset state OK"
+
+
 def cleanup_stale_traffic_clients(diag):
     stale = diag.context.get("stale_traffic_clients", [])
     if not stale:
@@ -597,6 +698,7 @@ def run_diagnostics():
     diag.check("xray-client list", check_client_list_runtime)
     diag.check("Client DB alignment", lambda: check_client_db_alignment(diag), fatal=False)
     diag.check("Traffic DB alignment", lambda: check_traffic_db_alignment(diag), fatal=False)
+    diag.check("Traffic limit reset state", lambda: check_traffic_limit_reset_state(diag))
     diag.check("Torrent policy", lambda: check_torrent_policy(diag))
     diag.check("Cascade config", lambda: check_cascade_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
