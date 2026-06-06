@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import fcntl
+import ipaddress
 import json
 import os
-import ipaddress
 import re
 import shlex
 import shutil
@@ -13,6 +13,7 @@ import tempfile
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
@@ -31,6 +32,7 @@ GEOIP_PATHS = [
     Path("/usr/share/v2ray/geoip.dat"),
 ]
 INBOUND_TAG = "vless-reality"
+XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 DEFAULT_RETENTION_DAYS = 365
 SMTP_PORTS = {"25", "465", "587", "2525"}
 ADMIN_PORTS = {"22", "23", "135", "139", "445", "3389", "5900"}
@@ -44,9 +46,7 @@ ACCESS_RE = re.compile(
 ROUTE_RE = re.compile(r"\[([^\]]+)\]")
 TARGET_RE = re.compile(r"\b(?P<status>accepted|rejected)\s+(?P<target>(?P<network>tcp|udp):\S+)")
 NETWORK_TARGET_RE = re.compile(r"\b(?P<target>(?P<network>tcp|udp):\S+)")
-GEOIP_NETWORKS_BY_CODE = {}
 GEOIP_CODES_CACHE = None
-GEOIP_MATCH_CACHE = {}
 
 
 def die(message):
@@ -142,6 +142,7 @@ def server_env_values():
 
 
 def write_server_env(values):
+    values.pop("ACTIVITY_GEOIP_WARNING_CODE", None)
     ordered = [
         "SERVER_ADDR",
         "PORT",
@@ -156,7 +157,8 @@ def write_server_env(values):
         "ACTIVITY_RISK_BURST_WINDOW_MINUTES",
         "ACTIVITY_RISK_UNIQUE_HOSTS",
         "ACTIVITY_RISK_UNIQUE_PORTS",
-        "ACTIVITY_GEOIP_WARNING_CODE",
+        "ACTIVITY_XRAY_GEOIP_WARNING_CODE",
+        "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY",
     ]
     lines = [f"{key}={values.get(key, '')}" for key in ordered if key in values]
     for key in sorted(values):
@@ -176,8 +178,8 @@ def activity_enabled():
     return (server_env_values().get("ACTIVITY_LOGGING_ENABLED") or "false").strip().lower() in ("1", "true", "yes", "y")
 
 
-def geoip_warning_code():
-    return (server_env_values().get("ACTIVITY_GEOIP_WARNING_CODE") or "").strip().upper()
+def xray_geoip_warning_code():
+    return (server_env_values().get("ACTIVITY_XRAY_GEOIP_WARNING_CODE") or "").strip().upper()
 
 
 def retention_days():
@@ -226,7 +228,7 @@ def with_activity_defaults(env):
     env.setdefault("ACTIVITY_RISK_BURST_WINDOW_MINUTES", str(DEFAULT_RISK_BURST_WINDOW_MINUTES))
     env.setdefault("ACTIVITY_RISK_UNIQUE_HOSTS", str(DEFAULT_RISK_UNIQUE_HOSTS))
     env.setdefault("ACTIVITY_RISK_UNIQUE_PORTS", str(DEFAULT_RISK_UNIQUE_PORTS))
-    env.setdefault("ACTIVITY_GEOIP_WARNING_CODE", "")
+    env.setdefault("ACTIVITY_XRAY_GEOIP_WARNING_CODE", "")
     return env
 
 
@@ -378,25 +380,6 @@ def parse_proto_fields(data):
     return fields
 
 
-def parse_geoip_cidr(data):
-    ip_bytes = None
-    prefix = None
-    for field_number, wire_type, value in parse_proto_fields(data):
-        if field_number == 1 and wire_type == 2:
-            ip_bytes = value
-        elif field_number == 2 and wire_type == 0:
-            prefix = int(value)
-    if ip_bytes is None or prefix is None:
-        return None
-    if len(ip_bytes) == 4:
-        address = ipaddress.IPv4Address(ip_bytes)
-    elif len(ip_bytes) == 16:
-        address = ipaddress.IPv6Address(ip_bytes)
-    else:
-        return None
-    return ipaddress.ip_network((address, prefix), strict=False)
-
-
 def geoip_path():
     for path in GEOIP_PATHS:
         if path.exists():
@@ -413,63 +396,21 @@ def iter_geoip_entries():
         if field_number != 1 or wire_type != 2:
             continue
         country_code = ""
-        cidr_blobs = []
         for inner_number, inner_type, inner_value in parse_proto_fields(geoip_blob):
             if inner_number == 1 and inner_type == 2:
                 country_code = inner_value.decode("utf-8", errors="ignore").upper()
-            elif inner_number == 2 and inner_type == 2:
-                cidr_blobs.append(inner_value)
         if country_code:
-            yield country_code, cidr_blobs
+            yield country_code
 
 
 def available_geoip_codes():
     global GEOIP_CODES_CACHE
     if GEOIP_CODES_CACHE is None:
         try:
-            GEOIP_CODES_CACHE = sorted({code for code, _cidrs in iter_geoip_entries()})
+            GEOIP_CODES_CACHE = sorted(set(iter_geoip_entries()))
         except Exception:
             GEOIP_CODES_CACHE = []
     return GEOIP_CODES_CACHE
-
-
-def geoip_networks(code):
-    code = (code or "").upper()
-    if not code:
-        return []
-    if code in GEOIP_NETWORKS_BY_CODE:
-        return GEOIP_NETWORKS_BY_CODE[code]
-    networks = []
-    try:
-        for country_code, cidr_blobs in iter_geoip_entries():
-            if country_code != code:
-                continue
-            for cidr_blob in cidr_blobs:
-                network = parse_geoip_cidr(cidr_blob)
-                if network is not None:
-                    networks.append(network)
-            break
-    except Exception:
-        networks = []
-    GEOIP_NETWORKS_BY_CODE[code] = networks
-    return networks
-
-
-def is_geoip_match(host, code):
-    if not host:
-        return False
-    code = (code or "").upper()
-    cache_key = (host, code)
-    if cache_key in GEOIP_MATCH_CACHE:
-        return GEOIP_MATCH_CACHE[cache_key]
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        GEOIP_MATCH_CACHE[cache_key] = False
-        return False
-    result = any(address in network for network in geoip_networks(code))
-    GEOIP_MATCH_CACHE[cache_key] = result
-    return result
 
 
 def parse_route(body):
@@ -502,9 +443,10 @@ def event_risks(event):
         risks.append("blocked")
     if "bittorrent" in target or "torrent" in outbound:
         risks.append("torrent")
-    warning_code = geoip_warning_code()
-    if warning_code and is_geoip_match(event.get("host", ""), warning_code):
-        risks.append(f"geoip:{warning_code}")
+    if outbound.startswith(XRAY_GEOIP_OUTBOUND_PREFIX):
+        code = outbound[len(XRAY_GEOIP_OUTBOUND_PREFIX):].upper()
+        if code:
+            risks.append(f"xray-geoip:{code}")
     return risks
 
 
@@ -747,12 +689,6 @@ def set_enabled(value):
     write_server_env(env)
 
 
-def set_geoip_warning_code(code):
-    env = with_activity_defaults(server_env_values())
-    env["ACTIVITY_GEOIP_WARNING_CODE"] = (code or "").upper()
-    write_server_env(env)
-
-
 def set_retention_days(value):
     days = parse_retention_days(value)
     env = with_activity_defaults(server_env_values())
@@ -967,6 +903,10 @@ def risk_findings(name, aggregate):
     if risks.get("blocked", 0) > 0 or risks.get("torrent", 0) > 0:
         count = risks.get("blocked", 0) + risks.get("torrent", 0)
         findings.append(("blocked", f"Blocked/torrent events: {count}", "Проверить отчёт клиента и оставить запрет торрентов включённым."))
+    for risk, count in sorted(risks.items()):
+        if risk.startswith("xray-geoip:"):
+            code = risk.split(":", 1)[1]
+            findings.append((risk, f"Xray routed destination events in geoip:{code}: {count}", f"Xray routing зафиксировал трафик в регион {code}; проверить раздельное туннелирование клиента."))
     burst_count, burst_start = rolling_burst(aggregate.get("times", []), limits["burstWindowMinutes"])
     if burst_count >= limits["burstEvents"]:
         start = burst_start.strftime("%Y-%m-%d %H:%M UTC") if burst_start else "unknown time"
@@ -975,10 +915,6 @@ def risk_findings(name, aggregate):
         findings.append(("many-hosts", f"Unique hosts: {len(aggregate['hosts'])}", "Похоже на парсинг или сканирование; запросить объяснение у клиента."))
     if len(aggregate["ports"]) >= limits["uniquePorts"]:
         findings.append(("many-ports", f"Unique ports: {len(aggregate['ports'])}", "Похоже на сканирование; временно отключить клиента при повторении."))
-    for risk, count in sorted(risks.items()):
-        if risk.startswith("geoip:"):
-            code = risk.split(":", 1)[1]
-            findings.append((risk, f"Destination IP events in {code}: {count}", f"Предупредить пользователя проверить раздельное туннелирование: IP региона {code} должны идти мимо VPN."))
     return findings
 
 
@@ -1002,6 +938,80 @@ def suspicious(days_value="7"):
         print("No suspicious activity found by current rules.")
         return
     print_table(["CLIENT", "RISKS", "EVENTS", "HOSTS", "PORTS", "DETAILS", "RECOMMENDATION"], rows)
+
+
+def geoip_risks_for_event(event):
+    risks = set(event.get("risks") or [])
+    risks.update(event_risks(event))
+    return sorted(risk for risk in risks if str(risk).startswith("xray-geoip:"))
+
+
+def activity_display_timezone():
+    configured = (server_env_values().get("MANAGER_TIMEZONE") or "").strip()
+    if configured:
+        try:
+            return ZoneInfo(configured), configured
+        except ZoneInfoNotFoundError:
+            return timezone.utc, f"UTC (invalid MANAGER_TIMEZONE: {configured})"
+    local = datetime.now().astimezone().tzinfo or timezone.utc
+    local_name = datetime.now(local).tzname()
+    label = "server local time"
+    if local_name:
+        label += f" ({local_name})"
+    return local, label
+
+
+def format_event_time(value, tzinfo):
+    moment = parse_time(value)
+    if not moment:
+        return value or "-"
+    return moment.astimezone(tzinfo).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def split_ip_or_domain(host):
+    value = (host or "").strip().strip("[]")
+    if not value:
+        return "-", "-"
+    try:
+        ipaddress.ip_address(value)
+        return value, "-"
+    except ValueError:
+        return "-", value
+
+
+def geoip_risk_details(days_value="7"):
+    days = int(days_value or "7", 10)
+    start, end = date_range_from_days(days)
+    clients = known_clients()
+    found = False
+    display_tz, display_tz_label = activity_display_timezone()
+    print(f"GeoIP risk details: {start.isoformat()} - {end.isoformat()} UTC")
+    print(f"Timezone: {display_tz_label}")
+    for name in sorted(clients):
+        rows = []
+        for event in iter_events(name, start, end):
+            risks = geoip_risks_for_event(event)
+            if not risks:
+                continue
+            ip_value, domain_value = split_ip_or_domain(event.get("host", ""))
+            rows.append(
+                [
+                    format_event_time(event.get("time"), display_tz),
+                    ip_value,
+                    domain_value,
+                    event.get("port") or "-",
+                    ", ".join(risk.split(":", 1)[1] for risk in risks),
+                    event.get("outbound") or "-",
+                ]
+            )
+        if not rows:
+            continue
+        found = True
+        print()
+        print(f"Client: {name}")
+        print_table(["TIME", "IP", "DOMAIN", "PORT", "REGION", "OUTBOUND"], rows)
+    if not found:
+        print("No GeoIP risk events found by current rules.")
 
 
 def export_client(name, start_value, end_value, path_only=False):
@@ -1175,7 +1185,7 @@ def status():
         ["Suspicious burst", f"{risk_limits()['burstEvents']} events / {risk_limits()['burstWindowMinutes']} min"],
         ["Suspicious hosts", risk_limits()["uniqueHosts"]],
         ["Suspicious ports", risk_limits()["uniquePorts"]],
-        ["GeoIP warnings", geoip_warning_code() or "disabled"],
+        ["Xray route GeoIP warnings", xray_geoip_warning_code() or "disabled"],
         ["Access log", access or "not configured"],
         ["GeoIP data", str(geoip_path()) if geoip_path() else "geoip.dat not available"],
         ["Activity DB", str(ACTIVITY_DB_PATH)],
@@ -1185,8 +1195,8 @@ def status():
     print_table(["SETTING", "VALUE"], rows)
     if not activity_enabled():
         print("Activity log parser is disabled. Enable it from menu or run: xray-activity enable")
-    if geoip_warning_code() and not geoip_networks(geoip_warning_code()):
-        print(f"WARN: GeoIP warnings are set to {geoip_warning_code()}, but this region was not found in geoip.dat.")
+    if xray_geoip_warning_code() and xray_geoip_warning_code() not in available_geoip_codes():
+        print(f"WARN: Xray route GeoIP warnings are set to {xray_geoip_warning_code()}, but this region was not found in geoip.dat.")
 
 
 def usage():
@@ -1198,6 +1208,7 @@ def usage():
   xray-activity sync [--quiet]
   xray-activity client NAME [DAYS]
   xray-activity suspicious [DAYS]
+  xray-activity geoip-risks [DAYS]
   xray-activity export NAME START_DATE END_DATE [--path-only]
   xray-activity export-list [--plain]
   xray-activity export-delete ARCHIVE_PATH_OR_NAME
@@ -1205,9 +1216,6 @@ def usage():
   xray-activity retention [DAYS]
   xray-activity risk-limits
   xray-activity risk-limits set BURST_EVENTS BURST_WINDOW_MINUTES UNIQUE_HOSTS UNIQUE_PORTS
-  xray-activity geo-warnings set CODE
-  xray-activity geo-warnings disable
-  xray-activity geo-warnings status
   xray-activity geo-list [FILTER]
 """
     )
@@ -1231,6 +1239,8 @@ def main():
             report_client(args[1], args[2] if len(args) == 3 else "7")
         elif command == "suspicious" and len(args) in (1, 2):
             suspicious(args[1] if len(args) == 2 else "7")
+        elif command == "geoip-risks" and len(args) in (1, 2):
+            geoip_risk_details(args[1] if len(args) == 2 else "7")
         elif command == "export" and len(args) in (4, 5):
             if len(args) == 5 and args[4] != "--path-only":
                 usage()
@@ -1255,22 +1265,6 @@ def main():
                 print_risk_limits()
             elif args[1] == "set":
                 set_risk_limits(args[2], args[3], args[4], args[5])
-            else:
-                usage()
-                sys.exit(1)
-        elif command == "geo-warnings" and len(args) in (2, 3):
-            action = args[1]
-            if action == "set" and len(args) == 3:
-                code = args[2].upper()
-                if code not in available_geoip_codes():
-                    die(f"GeoIP region not found: {code}")
-                set_geoip_warning_code(code)
-                print(f"GeoIP destination warnings enabled for region: {code}")
-            elif action == "disable" and len(args) == 2:
-                set_geoip_warning_code("")
-                print("GeoIP destination warnings disabled.")
-            elif action == "status" and len(args) == 2:
-                print("GeoIP destination warnings: " + (geoip_warning_code() or "disabled"))
             else:
                 usage()
                 sys.exit(1)

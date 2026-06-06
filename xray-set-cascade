@@ -16,6 +16,7 @@ UPSTREAM_TAG = "cascade-upstream"
 DIRECT_TAG = "direct"
 BLOCKED_TAG = "blocked"
 API_TAG = "api"
+GEOIP_WARNING_OUTBOUND_PREFIX = "geoip-warning-"
 TEST_INBOUND_TAG = "cascade-test-socks"
 TEST_SOCKS_HOST = "127.0.0.1"
 TEST_SOCKS_PORT = 10808
@@ -142,6 +143,37 @@ def remove_tag(items, tag):
     return [item for item in items if item.get("tag") != tag]
 
 
+def is_geoip_warning_tag(tag):
+    return str(tag or "").startswith(GEOIP_WARNING_OUTBOUND_PREFIX)
+
+
+def geoip_warning_tags(config):
+    tags = {item.get("tag") for item in config.get("outbounds", []) if is_geoip_warning_tag(item.get("tag"))}
+    tags.update(rule.get("outboundTag") for rule in config.get("routing", {}).get("rules", []) if is_geoip_warning_tag(rule.get("outboundTag")))
+    return sorted(tag for tag in tags if tag)
+
+
+def direct_outbound(config):
+    for outbound in config.setdefault("outbounds", []):
+        if outbound.get("tag") == DIRECT_TAG:
+            return outbound
+    outbound = {"tag": DIRECT_TAG, "protocol": "freedom"}
+    config.setdefault("outbounds", []).append(outbound)
+    return outbound
+
+
+def sync_geoip_warning_outbounds(config, source_outbound=None):
+    tags = geoip_warning_tags(config)
+    if not tags:
+        return
+    source = source_outbound or next((item for item in config.get("outbounds", []) if item.get("tag") == UPSTREAM_TAG), None) or direct_outbound(config)
+    config["outbounds"] = [item for item in config.get("outbounds", []) if not is_geoip_warning_tag(item.get("tag"))]
+    for tag in tags:
+        outbound = copy.deepcopy(source)
+        outbound["tag"] = tag
+        config.setdefault("outbounds", []).append(outbound)
+
+
 def is_api_rule(rule):
     inbound_tags = rule.get("inboundTag", [])
     if isinstance(inbound_tags, str):
@@ -192,6 +224,7 @@ def configure_cascade(config, outbound):
         }
     )
     routing["rules"] = kept_rules
+    sync_geoip_warning_outbounds(config, outbound)
 
 
 def disable_cascade(config):
@@ -203,6 +236,7 @@ def disable_cascade(config):
         if rule.get("outboundTag") != UPSTREAM_TAG
     ]
     ensure_base_outbounds(config)
+    sync_geoip_warning_outbounds(config, direct_outbound(config))
 
 
 def write_config(config):

@@ -20,7 +20,9 @@ XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
 STATS_SERVER = "127.0.0.1:10085"
 UPSTREAM_TAG = "cascade-upstream"
+DIRECT_TAG = "direct"
 BLOCKED_TAG = "blocked"
+GEOIP_WARNING_PREFIX = "geoip-warning-"
 HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-client",
     "/usr/local/sbin/xray-menu",
@@ -512,6 +514,47 @@ def check_cascade_config(diag):
     return "Cascade config is present; deep network test remains in Cascade menu"
 
 
+def is_geoip_warning_tag(tag):
+    return str(tag or "").startswith(GEOIP_WARNING_PREFIX)
+
+
+def check_geoip_warning_routing(diag):
+    config = diag.context["config"]
+    env = diag.context.get("server_env", {})
+    legacy = (env.get("ACTIVITY_GEOIP_WARNING_CODE") or "").strip()
+    code = (env.get("ACTIVITY_XRAY_GEOIP_WARNING_CODE") or "").strip().upper()
+    outbounds = config.get("outbounds", [])
+    outbound_tags = {item.get("tag") for item in outbounds if is_geoip_warning_tag(item.get("tag"))}
+    rules = [rule for rule in routing_rules(config) if is_geoip_warning_tag(rule.get("outboundTag"))]
+
+    if legacy:
+        raise RuntimeError("legacy ACTIVITY_GEOIP_WARNING_CODE is still present in server.env")
+    if not code and not outbound_tags and not rules:
+        return "GeoIP routing warnings are disabled"
+    if not code:
+        raise RuntimeError("geoip-warning route/outbound exists, but ACTIVITY_XRAY_GEOIP_WARNING_CODE is empty")
+    strategy = config.get("routing", {}).get("domainStrategy", "")
+    if strategy != "IPOnDemand":
+        raise RuntimeError(f"GeoIP warning routing requires routing.domainStrategy=IPOnDemand, got {strategy or 'empty'}")
+
+    expected_tag = f"{GEOIP_WARNING_PREFIX}{code}"
+    expected_ip = f"geoip:{code.lower()}"
+    extra_tags = sorted(tag for tag in outbound_tags if tag != expected_tag)
+    if extra_tags:
+        raise RuntimeError("unexpected GeoIP warning outbound(s): " + ", ".join(extra_tags))
+    if expected_tag not in outbound_tags:
+        raise RuntimeError(f"missing GeoIP warning outbound: {expected_tag}")
+
+    matching_rules = [
+        rule
+        for rule in rules
+        if rule.get("outboundTag") == expected_tag and expected_ip in rule_values(rule, "ip")
+    ]
+    if not matching_rules:
+        raise RuntimeError(f"missing routing rule {expected_ip} -> {expected_tag}")
+    return f"GeoIP routing warnings enabled for {code}"
+
+
 def check_file_permissions():
     checked = []
     for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH, ACTIVITY_PATH):
@@ -556,6 +599,7 @@ def run_diagnostics():
     diag.check("Traffic DB alignment", lambda: check_traffic_db_alignment(diag), fatal=False)
     diag.check("Torrent policy", lambda: check_torrent_policy(diag))
     diag.check("Cascade config", lambda: check_cascade_config(diag))
+    diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
     diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
     cleanup_stale_traffic_clients(diag)
     return diag.summary()
