@@ -26,7 +26,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-06 19:53 UTC"
+MENU_UPDATED = "2026-06-08 17:37 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -142,15 +142,11 @@ def print_menu_header():
 def main_menu_actions():
     return [
         ("1", "Клиенты"),
-        ("2", "Настройки Reality"),
-        ("3", "Каскад"),
-        ("4", "Сервис Xray"),
-        ("5", "Безопасность"),
-        ("6", "Обновление Xray"),
-        ("7", "Стартовая ссылка"),
-        ("8", "Просмотр трафика"),
-        ("9", "Журнал активности"),
-        ("10", "Резервные копии"),
+        ("2", "Настройки Xray"),
+        ("3", "Безопасность"),
+        ("4", "Просмотр трафика"),
+        ("5", "Журнал активности"),
+        ("6", "Резервные копии"),
         ("0", "Выход"),
     ]
 
@@ -195,18 +191,22 @@ def cascade_menu_actions():
     ]
 
 
-def service_menu_actions():
+def xray_settings_menu_actions():
     return [
         ("1", "Статус Xray"),
         ("2", "Перезапустить Xray"),
         ("3", "Проверить config.json"),
         ("4", "Проверить timers"),
         ("5", "Прогнать все тесты сервера"),
-        ("6", "Показать доступ к торрентам"),
-        ("7", "Запретить торренты"),
-        ("8", "Разрешить торренты"),
-        ("9", "Показать часовой пояс"),
-        ("10", "Изменить часовой пояс"),
+        ("6", "Настройки Reality"),
+        ("7", "Каскад"),
+        ("8", "Обновление Xray"),
+        ("9", "Стартовая ссылка"),
+        ("10", "Показать доступ к торрентам"),
+        ("11", "Запретить торренты"),
+        ("12", "Разрешить торренты"),
+        ("13", "Показать часовой пояс"),
+        ("14", "Изменить часовой пояс"),
         ("0", "Назад"),
     ]
 
@@ -2591,18 +2591,22 @@ def cascade_menu_handlers():
     }
 
 
-def service_menu_handlers():
+def xray_settings_menu_handlers():
     return {
         "1": ("Статус Xray", lambda: call(["systemctl", "status", "xray", "--no-pager"])),
         "2": ("Перезапустить Xray", lambda: (call(["systemctl", "restart", "xray"]), call(["systemctl", "is-active", "xray"]))),
         "3": ("Проверить config.json", check_config),
         "4": ("Проверить timers", check_timers),
         "5": ("Прогнать все тесты сервера", lambda: call(["xray-test"])),
-        "6": ("Показать доступ к торрентам", print_torrent_status),
-        "7": ("Запретить торренты", block_torrents),
-        "8": ("Разрешить торренты", allow_torrents),
-        "9": ("Показать часовой пояс", show_timezone),
-        "10": ("Изменить часовой пояс", update_timezone),
+        "6": ("Настройки Reality", open_reality_menu),
+        "7": ("Каскад", open_cascade_menu),
+        "8": ("Обновление Xray", open_update_menu),
+        "9": ("Вывести стартовую ссылку", print_initial_link),
+        "10": ("Показать доступ к торрентам", print_torrent_status),
+        "11": ("Запретить торренты", block_torrents),
+        "12": ("Разрешить торренты", allow_torrents),
+        "13": ("Показать часовой пояс", show_timezone),
+        "14": ("Изменить часовой пояс", update_timezone),
     }
 
 
@@ -2707,8 +2711,8 @@ def open_cascade_menu():
     menu_loop("Каскад", cascade_menu_actions(), cascade_menu_handlers())
 
 
-def open_service_menu():
-    menu_loop("Сервис Xray", service_menu_actions(), service_menu_handlers())
+def open_xray_settings_menu():
+    menu_loop("Настройки Xray", xray_settings_menu_actions(), xray_settings_menu_handlers())
 
 
 def open_security_menu():
@@ -2751,15 +2755,11 @@ def open_traffic_menu():
 def main_menu_handlers():
     return {
         "1": ("Клиенты", open_clients_menu),
-        "2": ("Настройки Reality", open_reality_menu),
-        "3": ("Каскад", open_cascade_menu),
-        "4": ("Сервис Xray", open_service_menu),
-        "5": ("Безопасность", open_security_menu),
-        "6": ("Обновление Xray", open_update_menu),
-        "7": ("Вывести стартовую ссылку", print_initial_link),
-        "8": ("Просмотр трафика", open_traffic_menu),
-        "9": ("Журнал активности", open_activity_menu),
-        "10": ("Резервные копии", open_backup_menu),
+        "2": ("Настройки Xray", open_xray_settings_menu),
+        "3": ("Безопасность", open_security_menu),
+        "4": ("Просмотр трафика", open_traffic_menu),
+        "5": ("Журнал активности", open_activity_menu),
+        "6": ("Резервные копии", open_backup_menu),
     }
 
 
