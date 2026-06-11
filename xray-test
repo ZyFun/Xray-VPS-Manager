@@ -22,6 +22,7 @@ XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
 STATS_SERVER = "127.0.0.1:10085"
 UPSTREAM_TAG = "cascade-upstream"
+WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_TAG = "direct"
 BLOCKED_TAG = "blocked"
 GEOIP_WARNING_PREFIX = "geoip-warning-"
@@ -34,6 +35,7 @@ HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-update",
     "/usr/local/sbin/xray-backup",
     "/usr/local/sbin/xray-test",
+    "/usr/local/sbin/xray-warp",
 ]
 TRAFFIC_SERVICE_COMMANDS = [
     "ExecStart=/usr/local/sbin/xray-traffic-sync --quiet",
@@ -615,6 +617,38 @@ def check_cascade_config(diag):
     return "Cascade config is present; deep network test remains in Cascade menu"
 
 
+def is_catchall_rule(rule, tag):
+    if rule.get("type") != "field" or rule.get("outboundTag") != tag:
+        return False
+    if rule.get("network") != "tcp,udp":
+        return False
+    for key in ("domain", "ip", "protocol", "inboundTag", "port", "source", "sourcePort", "attrs"):
+        if key in rule:
+            return False
+    return True
+
+
+def check_warp_config(diag):
+    config = diag.context["config"]
+    outbound = next((item for item in config.get("outbounds", []) if item.get("tag") == WARP_OUTBOUND_TAG), None)
+    route = any(is_catchall_rule(rule, WARP_OUTBOUND_TAG) for rule in routing_rules(config))
+    if not outbound and not route:
+        return "WARP outbound is not configured"
+    if not outbound:
+        raise RuntimeError("WARP route is enabled, but warp-out outbound is missing")
+    if outbound.get("protocol") != "wireguard":
+        raise RuntimeError("warp-out must use protocol=wireguard")
+    settings = outbound.get("settings", {})
+    if not settings.get("secretKey") or not settings.get("address") or not settings.get("peers"):
+        raise RuntimeError("warp-out has incomplete WireGuard settings")
+    peer = settings.get("peers", [{}])[0]
+    if not peer.get("endpoint") or not peer.get("publicKey"):
+        raise RuntimeError("warp-out peer must include endpoint and publicKey")
+    if route:
+        return "WARP config is present and enabled as catch-all"
+    return "WARP config is present but disabled"
+
+
 def is_geoip_warning_tag(tag):
     return str(tag or "").startswith(GEOIP_WARNING_PREFIX)
 
@@ -701,6 +735,7 @@ def run_diagnostics():
     diag.check("Traffic limit reset state", lambda: check_traffic_limit_reset_state(diag))
     diag.check("Torrent policy", lambda: check_torrent_policy(diag))
     diag.check("Cascade config", lambda: check_cascade_config(diag))
+    diag.check("WARP config", lambda: check_warp_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
     diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
     cleanup_stale_traffic_clients(diag)

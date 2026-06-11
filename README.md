@@ -189,11 +189,12 @@ xray-menu
 7 Каскад
 8 Обновление Xray
 9 Стартовая ссылка
-10 Показать доступ к торрентам
-11 Запретить торренты
-12 Разрешить торренты
-13 Показать часовой пояс
-14 Изменить часовой пояс
+10 WARP
+11 Показать доступ к торрентам
+12 Запретить торренты
+13 Разрешить торренты
+14 Показать часовой пояс
+15 Изменить часовой пояс
 
 Настройки Xray -> Настройки Reality:
 1 Показать подключения
@@ -208,6 +209,15 @@ xray-menu
 1 Добавить/заменить каскад
 2 Проверить каскад
 3 Отключить каскад
+
+Настройки Xray -> WARP:
+1 Статус WARP
+2 Создать WARP outbound
+3 Пересоздать WARP профиль
+4 Включить WARP для Xray
+5 Отключить WARP
+6 Проверить WARP
+7 Удалить WARP из config.json
 
 Безопасность:
 1 Проверить безопасность сервера
@@ -713,6 +723,45 @@ xray-set-cascade --test
 xray-set-cascade --disable
 ```
 
+## WARP
+
+WARP настраивается как `wireguard` outbound внутри Xray с tag `warp-out`. Это не меняет системный маршрут сервера и не должно ломать SSH-доступ. Создание профиля само по себе не включает WARP для пользователей.
+
+Создать WARP-профиль и добавить outbound в `config.json`:
+
+```bash
+xray-warp create
+```
+
+Если первый A-record `api.cloudflareclient.com` зависает на TLS handshake, скрипт попробует другие известные IPv4 и добавит managed-строку в `/etc/hosts` с backup исходного файла.
+Endpoint `engage.cloudflareclient.com:2408` из профиля сначала тестируется как есть. IPv4 fallback записывается в `config.json` только если доменный endpoint не прошёл WARP-тест.
+
+Включить WARP для всего управляемого исходящего tcp/udp-трафика Xray:
+
+```bash
+xray-warp enable
+```
+
+Проверить WARP без постоянного включения:
+
+```bash
+xray-warp test
+```
+
+Тест временно добавляет SOCKS inbound `127.0.0.1:10809`, направляет только его через `warp-out`, проверяет внешний IP и `https://www.cloudflare.com/cdn-cgi/trace`, затем возвращает исходный `config.json`.
+
+Отключить WARP-маршрут:
+
+```bash
+xray-warp disable
+```
+
+Удалить WARP outbound из `config.json`, оставив локальные файлы профиля:
+
+```bash
+xray-warp remove
+```
+
 ## Обновление Xray
 
 Проверить только доступность обновления Xray:
@@ -841,9 +890,11 @@ systemctl status xray-client-expire.timer --no-pager
 /usr/local/etc/xray/traffic.json         накопительная статистика и история трафика за 6 месяцев
 /usr/local/etc/xray/activity.json        сводная база журнала активности
 /usr/local/etc/xray/activity             детальные JSONL-журналы активности клиентов
+/usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /usr/local/sbin/xray-client              управление клиентами
 /usr/local/sbin/xray-menu                интерактивное меню
 /usr/local/sbin/xray-set-cascade         управление каскадом
+/usr/local/sbin/xray-warp                управление WARP outbound
 /usr/local/sbin/xray-traffic-sync        сохранение статистики
 /usr/local/sbin/xray-update              обновление и откат Xray
 /usr/local/sbin/xray-backup              резервное копирование и восстановление данных

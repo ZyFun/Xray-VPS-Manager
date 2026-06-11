@@ -23,11 +23,12 @@ SSHD_LEGACY_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/99-xray-vps-manager.conf"
 AUTHORIZED_KEYS_PATH = Path("/root/.ssh/authorized_keys")
 INBOUND_TAG = "vless-reality"
 CASCADE_UPSTREAM_TAG = "cascade-upstream"
+WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-11 13:35 UTC"
+MENU_UPDATED = "2026-06-11 14:27 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -200,11 +201,12 @@ def xray_settings_menu_actions():
         ("7", "Каскад"),
         ("8", "Обновление Xray"),
         ("9", "Стартовая ссылка"),
-        ("10", "Показать доступ к торрентам"),
-        ("11", "Запретить торренты"),
-        ("12", "Разрешить торренты"),
-        ("13", "Показать часовой пояс"),
-        ("14", "Изменить часовой пояс"),
+        ("10", "WARP"),
+        ("11", "Показать доступ к торрентам"),
+        ("12", "Запретить торренты"),
+        ("13", "Разрешить торренты"),
+        ("14", "Показать часовой пояс"),
+        ("15", "Изменить часовой пояс"),
         ("0", "Назад"),
     ]
 
@@ -229,6 +231,19 @@ def update_menu_actions():
         ("6", "Обновить geoip/geosite из Xray release"),
         ("7", "Обновить geoip/geosite из Loyalsoldier"),
         ("8", "Обновить geoip.dat из v2fly"),
+        ("0", "Назад"),
+    ]
+
+
+def warp_menu_actions():
+    return [
+        ("1", "Статус WARP"),
+        ("2", "Создать WARP outbound"),
+        ("3", "Пересоздать WARP профиль"),
+        ("4", "Включить WARP для Xray"),
+        ("5", "Отключить WARP"),
+        ("6", "Проверить WARP"),
+        ("7", "Удалить WARP из config.json"),
         ("0", "Назад"),
     ]
 
@@ -1341,6 +1356,11 @@ def xray_geoip_warning_tag(code):
 def xray_geoip_warning_source_outbound(config):
     outbounds = config.setdefault("outbounds", [])
     for outbound in outbounds:
+        if outbound.get("tag") == WARP_OUTBOUND_TAG and any(
+            rule.get("outboundTag") == WARP_OUTBOUND_TAG for rule in routing_rules(config)
+        ):
+            return outbound
+    for outbound in outbounds:
         if outbound.get("tag") == CASCADE_UPSTREAM_TAG:
             return outbound
     return ensure_direct_outbound(config)
@@ -1365,7 +1385,7 @@ def remove_xray_geoip_warning_config(config):
 def insert_before_catchall_route(rules, rule):
     insert_index = len(rules)
     for index, existing in enumerate(rules):
-        if existing.get("outboundTag") == CASCADE_UPSTREAM_TAG and existing.get("network") == "tcp,udp":
+        if existing.get("outboundTag") in (WARP_OUTBOUND_TAG, CASCADE_UPSTREAM_TAG) and existing.get("network") == "tcp,udp":
             insert_index = index
             break
     rules.insert(insert_index, rule)
@@ -2629,6 +2649,27 @@ def cascade_menu_handlers():
     }
 
 
+def recreate_warp_profile():
+    print("Будет создан новый WARP-аккаунт и новый WireGuard profile.")
+    print("Старые файлы wgcf-account.toml и wgcf-profile.conf будут заменены.")
+    if not confirm("Пересоздать WARP профиль"):
+        print("Действие отменено.")
+        return
+    call(["xray-warp", "create", "--force"])
+
+
+def warp_menu_handlers():
+    return {
+        "1": ("Статус WARP", lambda: call(["xray-warp", "status"])),
+        "2": ("Создать WARP outbound", lambda: call(["xray-warp", "create"])),
+        "3": ("Пересоздать WARP профиль", recreate_warp_profile),
+        "4": ("Включить WARP для Xray", lambda: call(["xray-warp", "enable"])),
+        "5": ("Отключить WARP", lambda: call(["xray-warp", "disable"])),
+        "6": ("Проверить WARP", lambda: call(["xray-warp", "test"])),
+        "7": ("Удалить WARP из config.json", lambda: call(["xray-warp", "remove"])),
+    }
+
+
 def xray_settings_menu_handlers():
     return {
         "1": ("Статус Xray", lambda: call(["systemctl", "status", "xray", "--no-pager"])),
@@ -2640,11 +2681,12 @@ def xray_settings_menu_handlers():
         "7": ("Каскад", open_cascade_menu),
         "8": ("Обновление Xray", open_update_menu),
         "9": ("Вывести стартовую ссылку", print_initial_link),
-        "10": ("Показать доступ к торрентам", print_torrent_status),
-        "11": ("Запретить торренты", block_torrents),
-        "12": ("Разрешить торренты", allow_torrents),
-        "13": ("Показать часовой пояс", show_timezone),
-        "14": ("Изменить часовой пояс", update_timezone),
+        "10": ("WARP", open_warp_menu),
+        "11": ("Показать доступ к торрентам", print_torrent_status),
+        "12": ("Запретить торренты", block_torrents),
+        "13": ("Разрешить торренты", allow_torrents),
+        "14": ("Показать часовой пояс", show_timezone),
+        "15": ("Изменить часовой пояс", update_timezone),
     }
 
 
@@ -2761,6 +2803,10 @@ def open_reality_menu():
 
 def open_cascade_menu():
     menu_loop("Каскад", cascade_menu_actions(), cascade_menu_handlers())
+
+
+def open_warp_menu():
+    menu_loop("WARP", warp_menu_actions(), warp_menu_handlers())
 
 
 def open_xray_settings_menu():
