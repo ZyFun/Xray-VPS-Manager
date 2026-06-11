@@ -111,12 +111,10 @@ def set_entry_expiry(entry, days):
         entry["expiresAt"] = expires_at
         entry["accessDays"] = days
         entry.pop("expiredAt", None)
-        entry.pop("disabledReason", None)
     else:
         entry.pop("expiresAt", None)
         entry.pop("accessDays", None)
         entry.pop("expiredAt", None)
-        entry.pop("disabledReason", None)
 
 
 def parse_limit_gb(value):
@@ -551,6 +549,80 @@ def enable_db_client(config, db, name, entry):
     entry["client"] = client
     entry["connection"] = connection_tag
     return True
+
+
+def remove_active_client(config, name):
+    removed_tag = ""
+    removed_item = None
+    changed = False
+    for inbound in reality_inbounds(config):
+        before = clients(inbound)
+        after = []
+        for item in before:
+            if client_name(item) == name:
+                if removed_item is None:
+                    removed_tag = inbound_tag(inbound)
+                    removed_item = item
+                changed = True
+                continue
+            after.append(item)
+        if len(after) != len(before):
+            inbound["settings"]["clients"] = after
+    return changed, removed_tag, removed_item
+
+
+def clear_traffic_limit_exceeded_state(entry):
+    entry.pop("trafficLimitExceededAt", None)
+    entry.pop("trafficLimitExceededPeriod", None)
+    entry.pop("trafficLimitExceededBytes", None)
+    entry.pop("trafficLimitResetAt", None)
+
+
+def disabled_entry_for_policy(config, name, entry):
+    changed, tag, item = remove_active_client(config, name)
+    if item is None:
+        disabled = dict(entry)
+        disabled["enabled"] = False
+        return disabled, changed
+
+    _, created = split_email(item.get("email", ""))
+    created = entry.get("created", created)
+    disabled = db_entry_from_client(item, created=created, enabled=False, previous=entry)
+    disabled["connection"] = entry.get("connection") or tag
+    return disabled, changed
+
+
+def reconcile_client_access_status(config, db, traffic_db, name, entry, now=None):
+    now = now or local_now()
+    stamp = utc_now_iso()
+    status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
+
+    if status and status["exceeded"]:
+        disabled, changed = disabled_entry_for_policy(config, name, entry)
+        disabled["disabledAt"] = stamp
+        disabled["disabledReason"] = "traffic-limit"
+        disabled["trafficLimitExceededAt"] = stamp
+        disabled["trafficLimitExceededPeriod"] = status["periodKey"]
+        disabled["trafficLimitExceededBytes"] = status["usedBytes"]
+        disabled["trafficLimitResetAt"] = status["resetAt"]
+        disabled.pop("expiredAt", None)
+        db_clients(db)[name] = disabled
+        return disabled, changed, "disabled-traffic-limit", status
+
+    if access_expired(entry, now):
+        disabled, changed = disabled_entry_for_policy(config, name, entry)
+        disabled["disabledAt"] = stamp
+        disabled["expiredAt"] = stamp
+        disabled["disabledReason"] = "expired"
+        clear_traffic_limit_exceeded_state(disabled)
+        db_clients(db)[name] = disabled
+        return disabled, changed, "disabled-expired", None
+
+    changed = enable_db_client(config, db, name, entry)
+    entry["enabled"] = True
+    clear_disabled_state(entry)
+    db_clients(db)[name] = entry
+    return entry, changed, "enabled", None
 
 
 def validate_name(name):
@@ -1632,6 +1704,7 @@ def cmd_enable(name):
 def cmd_set_days(name, days_value):
     validate_name(name)
     days = parse_access_days(days_value)
+    sync_traffic()
     config = load_config()
     db = load_db()
     ensure_connections(config, db)
@@ -1646,13 +1719,39 @@ def cmd_set_days(name, days_value):
         entry["connection"] = inbound_tag(inbound)
 
     set_entry_expiry(entry, days)
-    db_clients(db)[name] = entry
-    save_db(db)
+    traffic_db = load_traffic_db()
+    entry, config_changed, status, traffic_status = reconcile_client_access_status(config, db, traffic_db, name, entry)
+
+    backup = None
+    if config_changed:
+        backup = save_config(config)
+        try:
+            run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+            run(["systemctl", "restart", "xray"])
+            save_db(db)
+        except subprocess.CalledProcessError:
+            shutil.copy2(backup, CONFIG_PATH)
+            shutil.chown(CONFIG_PATH, user="root", group="xray")
+            os.chmod(CONFIG_PATH, 0o640)
+            run(["systemctl", "restart", "xray"])
+            die(f"New config failed. Restored backup: {backup}")
+    else:
+        save_db(db)
 
     print(f"Client: {name}")
     print(f"Access until: {format_access_until(entry.get('expiresAt', ''))}")
-    if entry.get("enabled") is False:
-        print("Status: disabled. Use xray-client enable NAME after extending access if the client should be enabled now.")
+    if status == "enabled":
+        print("Status: enabled")
+    elif status == "disabled-expired":
+        print("Status: disabled by expired access")
+    elif status == "disabled-traffic-limit":
+        print(
+            "Status: disabled by traffic limit. "
+            f"Used {format_traffic(traffic_status['usedBytes'])} of {format_traffic(traffic_status['limitBytes'])}; "
+            f"can be enabled after reset: {traffic_status['resetAt']}"
+        )
+    if backup:
+        print(f"Backup: {backup}")
 
 
 def cmd_set_limit(name, period_value, limit_gb_value):
