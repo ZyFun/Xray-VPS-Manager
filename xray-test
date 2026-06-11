@@ -317,6 +317,8 @@ def check_telegram_bot_db(diag):
         raise RuntimeError("telegram-bot.json clientSubscriptions must be an object")
     if not isinstance(db.get("clientSubscriptionState", {}), dict):
         raise RuntimeError("telegram-bot.json clientSubscriptionState must be an object")
+    if not isinstance(db.get("adminState", {}), dict):
+        raise RuntimeError("telegram-bot.json adminState must be an object")
     diag.context["telegram_bot_db"] = db
     return f"{TELEGRAM_BOT_PATH} parsed"
 

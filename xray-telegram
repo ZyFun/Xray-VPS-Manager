@@ -42,6 +42,30 @@ UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 DEFAULT_SERVER_NAME = "Virei"
 DEFAULT_BOT_NAME = "Vireika"
+MAINTENANCE_NOTICE_TEMPLATES = {
+    "start": {
+        "title": "Плановые работы",
+        "lines": [
+            "{bot}: плановые работы",
+            "",
+            "Сейчас я обновляю настройки сервера.",
+            "Во время работ VPN может кратковременно переподключаться.",
+            "",
+            "Ничего делать не нужно. Если связь пропадёт, подключение можно повторить через пару минут.",
+        ],
+    },
+    "done": {
+        "title": "Работы завершены",
+        "lines": [
+            "{bot}: работы завершены",
+            "",
+            "Обновление настроек сервера завершено.",
+            "VPN должен работать в обычном режиме.",
+            "",
+            "Если связь не восстановилась автоматически, можно переподключиться вручную.",
+        ],
+    },
+}
 DEFAULT_DB = {
     "version": 1,
     "enabled": False,
@@ -58,6 +82,7 @@ DEFAULT_DB = {
     "geoipState": {"files": {}, "sentIds": []},
     "clientSubscriptions": {},
     "clientSubscriptionState": {"userUpdateOffset": 0, "expiryReminders": {}},
+    "adminState": {},
 }
 
 
@@ -159,6 +184,10 @@ def load_db():
         reminders = {}
     subscription_state["expiryReminders"] = reminders
     merged["clientSubscriptionState"] = subscription_state
+    admin_state = merged.get("adminState")
+    if not isinstance(admin_state, dict):
+        admin_state = {}
+    merged["adminState"] = admin_state
     if not str(merged.get("paymentTotalAmount", "")).strip() and str(merged.get("paymentAmount", "")).strip():
         try:
             amount, currency = parse_payment_value(str(merged.get("paymentAmount", "")))
@@ -1000,7 +1029,31 @@ def admin_menu_keyboard():
                 {"text": "Проверка сервера", "callback_data": "admin:test"},
                 {"text": "Создать backup", "callback_data": "admin:backup"},
             ],
+            [{"text": "Уведомления", "callback_data": "admin:notices"}],
             [{"text": "Клиентское меню", "callback_data": "client:help"}],
+        ]
+    }
+
+
+def admin_notices_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Плановые работы", "callback_data": "admin:notice:start"}],
+            [{"text": "Работы завершены", "callback_data": "admin:notice:done"}],
+            [{"text": "Своё сообщение", "callback_data": "admin:notice:custom"}],
+            [{"text": "Назад", "callback_data": "admin:menu"}],
+        ]
+    }
+
+
+def admin_notice_confirm_keyboard(kind):
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Отправить", "callback_data": f"admin:notice-send:{kind}"},
+                {"text": "Отмена", "callback_data": "admin:notice-cancel"},
+            ],
+            [{"text": "Назад", "callback_data": "admin:notices"}],
         ]
     }
 
@@ -1026,7 +1079,7 @@ def subscribe_prompt_text():
 def admin_intro_text():
     return (
         "Xray VPS Manager: админ-панель\n\n"
-        "Кнопки ниже выполняют только безопасные действия: проверка, сводка и создание резервной копии."
+        "Кнопки ниже выполняют проверку, сводку, создание резервной копии и ручные уведомления клиентам."
     )
 
 
@@ -1043,6 +1096,17 @@ def send_client_menu(db, chat_id, text=None):
 
 def send_admin_menu(db, chat_id, text=None):
     send_chat_message(db, chat_id, text or admin_intro_text(), reply_markup=admin_menu_keyboard())
+
+
+def send_admin_notices_menu(db, chat_id, text=None):
+    send_chat_message(
+        db,
+        chat_id,
+        text
+        or "Xray VPS Manager: уведомления клиентам\n\n"
+        "Выбери готовое сообщение или составь своё. Перед отправкой бот покажет предпросмотр.",
+        reply_markup=admin_notices_keyboard(),
+    )
 
 
 def subscription_status_for_chat(db, chat_id):
@@ -1207,6 +1271,17 @@ def handle_user_message(db, update):
     if not text:
         send_client_menu(db, chat_id, "Отправь текстовую VLESS-ссылку или нажми кнопку ниже.")
         return True
+    pending = db.get("adminState", {}).get(chat_id, {})
+    if is_owner_chat(db, chat_id) and pending.get("action") == "custom-notice-text":
+        if text.lower() in ("/cancel", "cancel", "отмена"):
+            clear_admin_state(db, chat_id)
+            send_admin_notices_menu(db, chat_id, "Создание своего сообщения отменено.")
+            return True
+        db.setdefault("adminState", {})["customNoticeText"] = text
+        db["adminState"].pop(chat_id, None)
+        save_db_sections(db, ("adminState",))
+        preview_admin_notice(db, chat_id, "custom")
+        return True
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
     if command == "/admin":
         if is_owner_chat(db, chat_id):
@@ -1285,6 +1360,33 @@ def handle_callback_query(db, update):
             return True
         if data == "admin:backup":
             send_admin_menu(db, chat_id, admin_create_backup_text())
+            return True
+        if data == "admin:notices":
+            send_admin_notices_menu(db, chat_id)
+            return True
+        if data in ("admin:notice:start", "admin:notice:done"):
+            preview_admin_notice(db, chat_id, data.rsplit(":", 1)[1])
+            return True
+        if data == "admin:notice:custom":
+            set_custom_notice_waiting(db, chat_id)
+            send_chat_message(
+                db,
+                chat_id,
+                "Отправь следующим сообщением текст, который нужно разослать подписанным клиентам.\n\n"
+                "Если передумаешь, отправь /cancel.",
+                reply_markup={"inline_keyboard": [[{"text": "Отмена", "callback_data": "admin:notice-cancel"}]]},
+            )
+            return True
+        if data.startswith("admin:notice-send:"):
+            kind = data.rsplit(":", 1)[1]
+            if kind not in ("start", "done", "custom"):
+                send_admin_notices_menu(db, chat_id, "Неизвестный тип уведомления.")
+                return True
+            send_admin_notice(db, chat_id, kind)
+            return True
+        if data == "admin:notice-cancel":
+            clear_admin_state(db, chat_id)
+            send_admin_notices_menu(db, chat_id, "Рассылка отменена.")
             return True
         send_admin_menu(db, chat_id, "Неизвестная админская кнопка.")
         return True
@@ -1570,6 +1672,143 @@ def notify_access_updated(name, quiet=False):
     return 0
 
 
+def maintenance_notice_message(db, template_id):
+    template_id = normalize_maintenance_template_id(template_id)
+    template = MAINTENANCE_NOTICE_TEMPLATES.get(template_id)
+    if not template:
+        raise ValueError("Неизвестный шаблон уведомления о работах.")
+    return "\n".join(line.format(bot=bot_name(db)) for line in template["lines"])
+
+
+def normalize_maintenance_template_id(value):
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "": "start",
+        "1": "start",
+        "start": "start",
+        "begin": "start",
+        "maintenance": "start",
+        "2": "done",
+        "done": "done",
+        "finish": "done",
+        "complete": "done",
+    }
+    return aliases.get(raw, raw)
+
+
+def maintenance_notice_recipients(db):
+    recipients = []
+    seen = set()
+    for chat_id, subscription in db.get("clientSubscriptions", {}).items():
+        if not isinstance(subscription, dict) or subscription.get("enabled") is False:
+            continue
+        chat_id = str(chat_id or "").strip()
+        if not chat_id or chat_id in seen:
+            continue
+        recipients.append((chat_id, subscription))
+        seen.add(chat_id)
+    return recipients
+
+
+def print_maintenance_notice_templates(db):
+    print("Доступные уведомления о технических работах:")
+    print()
+    for index, (key, template) in enumerate(MAINTENANCE_NOTICE_TEMPLATES.items(), start=1):
+        print(f"{index}) {template['title']} ({key})")
+        print(maintenance_notice_message(db, key))
+        print()
+
+
+def send_notice_message(db, message, dry_run=False, yes=False, label="message"):
+    recipients = maintenance_notice_recipients(db)
+    if dry_run or not yes:
+        print(f"Notice: {label}")
+        print(f"Recipients: {len(recipients)}")
+        print()
+        print(message)
+        if not dry_run:
+            print()
+            print("To send, repeat command with --yes.")
+        return 0
+    sent_count = 0
+    failed_count = 0
+    for chat_id, _subscription in recipients:
+        try:
+            send_chat_message(db, chat_id, message)
+            sent_count += 1
+        except Exception as exc:
+            failed_count += 1
+            print(f"ERROR: maintenance notice failed for {chat_id}: {exc}", file=sys.stderr)
+    print(f"Maintenance notice sent: {sent_count}")
+    if failed_count:
+        print(f"Maintenance notice failed: {failed_count}")
+        return 1
+    return 0
+
+
+def send_maintenance_notice(template_id="start", dry_run=False, yes=False):
+    db = load_db()
+    if not db.get("enabled") or not db.get("token"):
+        print("Telegram bot notifications are not configured or disabled.")
+        return 0
+    template_id = normalize_maintenance_template_id(template_id)
+    message = maintenance_notice_message(db, template_id)
+    template = MAINTENANCE_NOTICE_TEMPLATES[str(template_id)]
+    return send_notice_message(db, message, dry_run=dry_run, yes=yes, label=template["title"])
+
+
+def preview_admin_notice(db, chat_id, kind):
+    if kind == "custom":
+        message = str(db.get("adminState", {}).get("customNoticeText") or "").strip()
+        if not message:
+            send_admin_notices_menu(db, chat_id, "Черновик своего сообщения пуст. Нажми «Своё сообщение» и отправь текст заново.")
+            return
+        title = "своё сообщение"
+    else:
+        message = maintenance_notice_message(db, kind)
+        title = MAINTENANCE_NOTICE_TEMPLATES[kind]["title"]
+    recipients = len(maintenance_notice_recipients(db))
+    text = "\n".join(
+        [
+            f"Предпросмотр: {title}",
+            f"Получателей: {recipients}",
+            "",
+            message,
+        ]
+    )
+    send_chat_message(db, chat_id, text, reply_markup=admin_notice_confirm_keyboard(kind))
+
+
+def set_custom_notice_waiting(db, chat_id):
+    db.setdefault("adminState", {})[str(chat_id)] = {"action": "custom-notice-text", "startedAt": utc_stamp()}
+    save_db_sections(db, ("adminState",))
+
+
+def clear_admin_state(db, chat_id):
+    state = db.setdefault("adminState", {})
+    state.pop(str(chat_id), None)
+    state.pop("customNoticeText", None)
+    save_db_sections(db, ("adminState",))
+
+
+def send_admin_notice(db, chat_id, kind):
+    if kind == "custom":
+        message = str(db.get("adminState", {}).get("customNoticeText") or "").strip()
+        if not message:
+            send_admin_notices_menu(db, chat_id, "Черновик своего сообщения пуст. Отправка отменена.")
+            return
+        label = "своё сообщение"
+    else:
+        message = maintenance_notice_message(db, kind)
+        label = MAINTENANCE_NOTICE_TEMPLATES[kind]["title"]
+    rc = send_notice_message(db, message, yes=True, label=label)
+    clear_admin_state(db, chat_id)
+    if rc == 0:
+        send_admin_notices_menu(db, chat_id, "Уведомление отправлено подписанным клиентам.")
+    else:
+        send_admin_notices_menu(db, chat_id, "Уведомление отправлено не всем. Проверь логи сервера.")
+
+
 def list_client_subscribers():
     db = load_db()
     client_db = load_client_db()
@@ -1835,6 +2074,7 @@ def usage():
   xray-telegram run-poller
   xray-telegram notify-expiry [--quiet]
   xray-telegram notify-access NAME [--quiet]
+  xray-telegram maintenance-notice [start|done] [--dry-run|--yes]
   xray-telegram subscribers
   xray-telegram payment-amount [VALUE]
   xray-telegram payment-rounding [none|step VALUE]
@@ -1890,6 +2130,16 @@ def main():
                 usage()
                 sys.exit(1)
             sys.exit(notify_access_updated(args[1], quiet=len(args) == 3))
+        elif command == "maintenance-notice" and len(args) in (1, 2, 3):
+            if len(args) == 1 or (len(args) == 2 and args[1] in ("list", "templates")):
+                print_maintenance_notice_templates(load_db())
+            else:
+                template_id = args[1]
+                flag = args[2] if len(args) == 3 else ""
+                if flag and flag not in ("--dry-run", "--yes"):
+                    usage()
+                    sys.exit(1)
+                sys.exit(send_maintenance_notice(template_id, dry_run=flag == "--dry-run", yes=flag == "--yes"))
         elif command in ("subscribers", "subscriptions") and len(args) == 1:
             list_client_subscribers()
         elif command == "payment-amount" and len(args) in (1, 2):

@@ -28,7 +28,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-11 22:28 UTC"
+MENU_UPDATED = "2026-06-11 22:55 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -179,7 +179,8 @@ def telegram_menu_actions():
         ("11", "Проверить напоминания об оплате"),
         ("12", "Настроить оплату и округление"),
         ("13", "Изменить имя бота"),
-        ("14", "Обновить меню команд Telegram"),
+        ("14", "Уведомить о работах на сервере"),
+        ("15", "Обновить меню команд Telegram"),
         ("0", "Назад"),
     ]
 
@@ -2182,6 +2183,33 @@ def update_telegram_bot_name():
     call(["xray-telegram", "bot-name", value])
 
 
+def send_telegram_maintenance_notice():
+    print("Выбери уведомление для подписанных клиентов.")
+    call(["xray-telegram", "maintenance-notice", "templates"])
+    print("3) Своё сообщение через Telegram админ-панель")
+    choice = input("Уведомление [1]: ").strip() or "1"
+    if choice == "3":
+        print("Для своего сообщения открой Telegram-бота владельцем: /admin -> Уведомления -> Своё сообщение.")
+        return
+    notices = {
+        "1": "start",
+        "2": "done",
+        "start": "start",
+        "done": "done",
+    }
+    notice = notices.get(choice.lower())
+    if not notice:
+        print("Действие отменено: неизвестное уведомление.")
+        return
+    print()
+    print("Предпросмотр:")
+    call(["xray-telegram", "maintenance-notice", notice, "--dry-run"])
+    if not confirm("Отправить это уведомление всем подписанным клиентам?"):
+        print("Рассылка отменена.")
+        return
+    call(["xray-telegram", "maintenance-notice", notice, "--yes"])
+
+
 def print_initial_link():
     if CLIENT_LINK_PATH.exists():
         print(CLIENT_LINK_PATH.read_text())
@@ -3138,7 +3166,8 @@ def telegram_menu_handlers():
         "11": ("Проверить напоминания об оплате", lambda: call(["xray-telegram", "notify-expiry"])),
         "12": ("Настроить оплату и округление", update_telegram_payment_amount),
         "13": ("Изменить имя бота", update_telegram_bot_name),
-        "14": ("Обновить меню команд Telegram", lambda: call(["xray-telegram", "commands"])),
+        "14": ("Уведомить о работах на сервере", send_telegram_maintenance_notice),
+        "15": ("Обновить меню команд Telegram", lambda: call(["xray-telegram", "commands"])),
     }
 
 
