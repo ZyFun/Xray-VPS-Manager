@@ -17,6 +17,7 @@ CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 ACTIVITY_PATH = Path("/usr/local/etc/xray/activity.json")
+ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
 ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
@@ -272,6 +273,17 @@ def check_traffic_db(diag):
         raise RuntimeError("traffic.json must contain object field: clients")
     diag.context["traffic_db"] = db
     return f"{TRAFFIC_PATH} parsed"
+
+
+def check_activity_exceptions_db(diag):
+    if not ACTIVITY_EXCEPTIONS_PATH.exists():
+        diag.context["activity_exceptions_db"] = {"items": []}
+        return f"{ACTIVITY_EXCEPTIONS_PATH} not created yet"
+    db = load_json(ACTIVITY_EXCEPTIONS_PATH)
+    if not isinstance(db.get("items", []), list):
+        raise RuntimeError("activity-exceptions.json must contain array field: items")
+    diag.context["activity_exceptions_db"] = db
+    return f"{ACTIVITY_EXCEPTIONS_PATH} parsed"
 
 
 def check_server_env(diag):
@@ -692,7 +704,7 @@ def check_geoip_warning_routing(diag):
 
 def check_file_permissions():
     checked = []
-    for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH, ACTIVITY_PATH):
+    for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH, ACTIVITY_PATH, ACTIVITY_EXCEPTIONS_PATH):
         if not path.exists():
             continue
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -717,6 +729,7 @@ def run_diagnostics():
     diag.check("Config JSON", lambda: check_config_json(diag))
     diag.check("Clients DB", lambda: check_client_db(diag))
     diag.check("Traffic DB", lambda: check_traffic_db(diag))
+    diag.check("Activity exceptions DB", lambda: check_activity_exceptions_db(diag))
     diag.check("server.env", lambda: check_server_env(diag))
     diag.check("Manager timezone", lambda: check_manager_timezone(diag))
     diag.check("Reality connections", lambda: check_reality_inbounds(diag))

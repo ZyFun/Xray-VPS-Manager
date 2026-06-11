@@ -359,6 +359,11 @@ chmod 0644 /var/log/xray/access.log /var/log/xray/error.log
 install -d -o root -g xray -m 0750 /usr/local/etc/xray/activity
 install -d -o root -g xray -m 0750 /usr/local/etc/xray/activity/clients
 install -d -o root -g root -m 0700 /root/xray_activity_exports
+if [[ ! -f /usr/local/etc/xray/activity-exceptions.json ]]; then
+  printf '{\n  "version": 1,\n  "items": []\n}\n' >/usr/local/etc/xray/activity-exceptions.json
+  chown root:xray /usr/local/etc/xray/activity-exceptions.json
+  chmod 0640 /usr/local/etc/xray/activity-exceptions.json
+fi
 
 if [[ -f /usr/local/etc/xray/config.json ]]; then
   cp -a /usr/local/etc/xray/config.json "/usr/local/etc/xray/config.json.bak.$(date -u +%Y%m%d%H%M%S)"

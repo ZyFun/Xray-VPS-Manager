@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import fcntl
+import fnmatch
 import ipaddress
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -13,12 +15,14 @@ import tempfile
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 ACTIVITY_DB_PATH = Path("/usr/local/etc/xray/activity.json")
+ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
 ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
 CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
 EXPORT_DIR = Path("/root/xray_activity_exports")
@@ -47,6 +51,10 @@ ROUTE_RE = re.compile(r"\[([^\]]+)\]")
 TARGET_RE = re.compile(r"\b(?P<status>accepted|rejected)\s+(?P<target>(?P<network>tcp|udp):\S+)")
 NETWORK_TARGET_RE = re.compile(r"\b(?P<target>(?P<network>tcp|udp):\S+)")
 GEOIP_CODES_CACHE = None
+EXCEPTION_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:*?/-]+$")
+
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 
 def die(message):
@@ -279,6 +287,136 @@ def load_activity_db():
     db["retentionDays"] = retention_days()
     db["enabled"] = activity_enabled()
     return db
+
+
+def normalize_exception_value(value, fatal=True):
+    def fail(message):
+        if fatal:
+            die(message)
+        raise ValueError(message)
+
+    raw = str(value or "").strip()
+    if not raw:
+        fail("Exception value must not be empty.")
+
+    if raw.startswith(("tcp:", "udp:")):
+        _network, host, _port = parse_target(raw)
+        raw = host or raw
+
+    if "://" in raw:
+        parsed = urlparse(raw)
+        raw = parsed.hostname or raw
+
+    raw = raw.strip().strip("[]").strip().lower()
+    if not raw:
+        fail("Exception value must contain a domain, IP, CIDR, or wildcard mask.")
+
+    if "/" not in raw and raw.count(":") == 1:
+        host, port = raw.rsplit(":", 1)
+        if port.isdigit():
+            raw = host.strip("[]")
+
+    if not EXCEPTION_VALUE_RE.fullmatch(raw):
+        fail("Exception may contain only letters, digits, dot, dash, underscore, *, ?, /, and :.")
+    return raw
+
+
+def classify_exception_value(value, fatal=True):
+    normalized = normalize_exception_value(value, fatal=fatal)
+    if "/" in normalized:
+        try:
+            ipaddress.ip_network(normalized, strict=False)
+            return normalized, "cidr"
+        except ValueError:
+            if fatal:
+                die("CIDR exception must be a valid IP network, for example 203.0.113.0/24.")
+            raise
+    try:
+        ipaddress.ip_address(normalized)
+        return normalized, "ip"
+    except ValueError:
+        pass
+    if "*" in normalized or "?" in normalized:
+        return normalized, "mask"
+    return normalized, "domain"
+
+
+def load_activity_exceptions():
+    db = load_json(ACTIVITY_EXCEPTIONS_PATH, {})
+    if not isinstance(db, dict):
+        db = {}
+    items = []
+    seen = set()
+    for item in db.get("items", []):
+        if isinstance(item, str):
+            item = {"value": item, "source": "legacy"}
+        if not isinstance(item, dict):
+            continue
+        try:
+            value, kind = classify_exception_value(item.get("value", ""), fatal=False)
+        except ValueError:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        items.append({
+            "value": value,
+            "kind": kind,
+            "createdAt": item.get("createdAt") or utc_stamp(),
+            "source": item.get("source") or "manual",
+        })
+    return {"version": 1, "items": items}
+
+
+def save_activity_exceptions(db):
+    ensure_dirs()
+    tmp = ACTIVITY_EXCEPTIONS_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
+    chown_xray(tmp)
+    os.chmod(tmp, 0o640)
+    tmp.replace(ACTIVITY_EXCEPTIONS_PATH)
+
+
+def exception_items():
+    return load_activity_exceptions().get("items", [])
+
+
+def host_for_exception_match(host):
+    value = str(host or "").strip().strip("[]").lower()
+    if not value:
+        return ""
+    if "/" not in value and value.count(":") == 1:
+        candidate, port = value.rsplit(":", 1)
+        if port.isdigit():
+            value = candidate.strip("[]")
+    return value
+
+
+def exception_matches_host(item, host):
+    value = item.get("value", "")
+    kind = item.get("kind", "")
+    host_value = host_for_exception_match(host)
+    if not value or not host_value:
+        return False
+    if kind == "cidr":
+        try:
+            return ipaddress.ip_address(host_value) in ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            return False
+    if kind == "ip":
+        return host_value == value
+    if kind == "mask":
+        return fnmatch.fnmatchcase(host_value, value)
+    return host_value == value
+
+
+def event_exception(event, exceptions=None):
+    exceptions = exceptions if exceptions is not None else exception_items()
+    host = event.get("host") or ""
+    for item in exceptions:
+        if exception_matches_host(item, host):
+            return item
+    return None
 
 
 def safe_client_file(name):
@@ -819,18 +957,27 @@ def iter_events(name, start, end):
             yield event
 
 
-def aggregate_events(events):
+def aggregate_events(events, skip_exceptions=False, exceptions=None):
+    exceptions = exceptions if exceptions is not None else exception_items()
     result = {
         "events": 0,
         "hosts": {},
         "ports": {},
         "outbounds": {},
         "risks": {},
+        "exceptions": {},
         "hours": {},
         "times": [],
         "sources": {},
     }
     for event in events:
+        matched_exception = event_exception(event, exceptions)
+        if matched_exception:
+            value = matched_exception.get("value", "")
+            if value:
+                result["exceptions"][value] = result["exceptions"].get(value, 0) + 1
+            if skip_exceptions:
+                continue
         result["events"] += 1
         if event.get("host"):
             result["hosts"][event["host"]] = result["hosts"].get(event["host"], 0) + 1
@@ -841,8 +988,9 @@ def aggregate_events(events):
             result["outbounds"][event["outbound"]] = result["outbounds"].get(event["outbound"], 0) + 1
         if event.get("source"):
             result["sources"][event["source"]] = result["sources"].get(event["source"], 0) + 1
-        for risk in event.get("risks", []):
-            result["risks"][risk] = result["risks"].get(risk, 0) + 1
+        if not matched_exception:
+            for risk in event.get("risks", []):
+                result["risks"][risk] = result["risks"].get(risk, 0) + 1
         event_time = parse_time(event.get("time"))
         if event_time:
             result["times"].append(event_time)
@@ -872,10 +1020,11 @@ def rolling_burst(times, window_minutes):
 def report_client(name, days_value="7"):
     days = int(days_value or "7", 10)
     start, end = date_range_from_days(days)
+    exceptions = exception_items()
     rows = []
     total_events = 0
     for day in iter_dates(start, end):
-        aggregate = aggregate_events(iter_events(name, day, day))
+        aggregate = aggregate_events(iter_events(name, day, day), exceptions=exceptions)
         total_events += aggregate["events"]
         rows.append(
             [
@@ -885,12 +1034,13 @@ def report_client(name, days_value="7"):
                 top_items(aggregate["ports"]),
                 top_items(aggregate["outbounds"]),
                 top_items(aggregate["risks"]),
+                top_items(aggregate["exceptions"]),
                 top_items(aggregate["hosts"]),
             ]
         )
     print(f"Activity report for client: {name}")
     print(f"Period: {start.isoformat()} - {end.isoformat()} UTC")
-    print_table(["DATE", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "TOP HOSTS"], rows)
+    print_table(["DATE", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "EXCEPTIONS", "TOP HOSTS"], rows)
     print(f"Total events: {total_events}")
 
 
@@ -918,13 +1068,20 @@ def risk_findings(name, aggregate):
     return findings
 
 
+def risk_names_for_event(event):
+    risks = set(event.get("risks") or [])
+    risks.update(event_risks(event))
+    return sorted(str(risk) for risk in risks if risk)
+
+
 def suspicious(days_value="7"):
     days = int(days_value or "7", 10)
     start, end = date_range_from_days(days)
     clients = known_clients()
+    exceptions = exception_items()
     rows = []
     for name in sorted(clients):
-        aggregate = aggregate_events(iter_events(name, start, end))
+        aggregate = aggregate_events(iter_events(name, start, end), skip_exceptions=True, exceptions=exceptions)
         findings = risk_findings(name, aggregate)
         if not findings:
             continue
@@ -941,9 +1098,7 @@ def suspicious(days_value="7"):
 
 
 def geoip_risks_for_event(event):
-    risks = set(event.get("risks") or [])
-    risks.update(event_risks(event))
-    return sorted(risk for risk in risks if str(risk).startswith("xray-geoip:"))
+    return sorted(risk for risk in risk_names_for_event(event) if str(risk).startswith("xray-geoip:"))
 
 
 def activity_display_timezone():
@@ -985,11 +1140,14 @@ def geoip_risk_details(days_value="7"):
     clients = known_clients()
     found = False
     display_tz, display_tz_label = activity_display_timezone()
+    exceptions = exception_items()
     print(f"GeoIP risk details: {start.isoformat()} - {end.isoformat()} UTC")
     print(f"Timezone: {display_tz_label}")
     for name in sorted(clients):
         rows = []
         for event in iter_events(name, start, end):
+            if event_exception(event, exceptions):
+                continue
             risks = geoip_risks_for_event(event)
             if not risks:
                 continue
@@ -1012,6 +1170,138 @@ def geoip_risk_details(days_value="7"):
         print_table(["TIME", "IP", "DOMAIN", "PORT", "REGION", "OUTBOUND"], rows)
     if not found:
         print("No GeoIP risk events found by current rules.")
+
+
+def add_exception(value, source="manual"):
+    normalized, kind = classify_exception_value(value)
+    source = re.sub(r"[^A-Za-z0-9_.@:-]+", "_", str(source or "manual")).strip("_") or "manual"
+    db = load_activity_exceptions()
+    for item in db.get("items", []):
+        if item.get("value") == normalized:
+            print(f"Exception already exists: {normalized}")
+            return
+    db.setdefault("items", []).append({
+        "value": normalized,
+        "kind": kind,
+        "createdAt": utc_stamp(),
+        "source": source,
+    })
+    save_activity_exceptions(db)
+    print(f"Added activity exception: {normalized}")
+    print(f"Kind: {kind}")
+
+
+def delete_exception(value):
+    normalized, _kind = classify_exception_value(value)
+    db = load_activity_exceptions()
+    before = len(db.get("items", []))
+    db["items"] = [item for item in db.get("items", []) if item.get("value") != normalized]
+    if len(db["items"]) == before:
+        die(f"Activity exception not found: {normalized}")
+    save_activity_exceptions(db)
+    print(f"Deleted activity exception: {normalized}")
+
+
+def delete_all_exceptions(confirmed=False):
+    if not confirmed:
+        die("Refusing to delete all activity exceptions without --yes.")
+    db = load_activity_exceptions()
+    count = len(db.get("items", []))
+    db["items"] = []
+    save_activity_exceptions(db)
+    print(f"Deleted activity exceptions: {count}")
+
+
+def list_exceptions(plain=False):
+    db = load_activity_exceptions()
+    save_activity_exceptions(db)
+    rows = sorted(db.get("items", []), key=lambda item: item.get("value", ""))
+    if plain:
+        for item in rows:
+            print("\t".join([
+                item.get("value", ""),
+                item.get("kind", ""),
+                item.get("createdAt", ""),
+                item.get("source", ""),
+            ]))
+        return
+    if not rows:
+        print("No activity exceptions configured.")
+        return
+    print_table(
+        ["VALUE", "KIND", "CREATED", "SOURCE"],
+        [[item.get("value", ""), item.get("kind", ""), item.get("createdAt", ""), item.get("source", "")] for item in rows],
+    )
+
+
+def exception_candidate_rows(days_value="7"):
+    days = int(days_value or "7", 10)
+    start, end = date_range_from_days(days)
+    clients = known_clients()
+    exceptions = exception_items()
+    candidates = {}
+    for name in sorted(clients):
+        for event in iter_events(name, start, end):
+            if event_exception(event, exceptions):
+                continue
+            risks = risk_names_for_event(event)
+            if not risks:
+                continue
+            host = event.get("host") or ""
+            if not host:
+                continue
+            try:
+                value, kind = classify_exception_value(host, fatal=False)
+            except ValueError:
+                continue
+            row = candidates.setdefault(
+                value,
+                {
+                    "value": value,
+                    "kind": kind,
+                    "events": 0,
+                    "clients": {},
+                    "risks": {},
+                    "ports": {},
+                    "lastSeen": "",
+                    "sampleTarget": event.get("target") or host,
+                },
+            )
+            row["events"] += 1
+            row["clients"][name] = row["clients"].get(name, 0) + 1
+            for risk in risks:
+                row["risks"][risk] = row["risks"].get(risk, 0) + 1
+            if event.get("port"):
+                port = str(event.get("port"))
+                row["ports"][port] = row["ports"].get(port, 0) + 1
+            if event.get("time", "") > row["lastSeen"]:
+                row["lastSeen"] = event.get("time", "")
+                row["sampleTarget"] = event.get("target") or host
+    return sorted(candidates.values(), key=lambda row: (row["events"], row["value"]), reverse=True)
+
+
+def print_exception_candidates(days_value="7", plain=False):
+    rows = exception_candidate_rows(days_value)
+    if plain:
+        for row in rows:
+            print("\t".join([
+                row["value"],
+                row["kind"],
+                str(row["events"]),
+                top_items(row["clients"], limit=5),
+                top_items(row["risks"], limit=5),
+                top_items(row["ports"], limit=5),
+                row["lastSeen"],
+                row["sampleTarget"],
+            ]))
+        return
+    if not rows:
+        print("No suspicious activity candidates found for exceptions.")
+        return
+    print_table(
+        ["VALUE", "KIND", "EVENTS", "CLIENTS", "RISKS", "PORTS", "LAST SEEN"],
+        [[row["value"], row["kind"], row["events"], top_items(row["clients"], 3), top_items(row["risks"], 3), top_items(row["ports"], 3), row["lastSeen"]] for row in rows],
+    )
 
 
 def export_client(name, start_value, end_value, path_only=False):
@@ -1216,16 +1506,19 @@ def status():
     access = config.get("log", {}).get("access", "")
     client_files = list(CLIENT_LOG_DIR.glob("*.jsonl")) if CLIENT_LOG_DIR.exists() else []
     size = sum(path.stat().st_size for path in client_files if path.exists())
+    exceptions = exception_items()
     rows = [
         ["Parser enabled", "yes" if activity_enabled() else "no"],
         ["Retention", f"{retention_days()} days"],
         ["Suspicious burst", f"{risk_limits()['burstEvents']} events / {risk_limits()['burstWindowMinutes']} min"],
         ["Suspicious hosts", risk_limits()["uniqueHosts"]],
         ["Suspicious ports", risk_limits()["uniquePorts"]],
+        ["Suspicious exceptions", len(exceptions)],
         ["Xray route GeoIP warnings", xray_geoip_warning_code() or "disabled"],
         ["Access log", access or "not configured"],
         ["GeoIP data", str(geoip_path()) if geoip_path() else "geoip.dat not available"],
         ["Activity DB", str(ACTIVITY_DB_PATH)],
+        ["Exception DB", str(ACTIVITY_EXCEPTIONS_PATH)],
         ["Client logs", f"{len(client_files)} files, {format_size(size)}"],
         ["Last sync", db.get("lastSync", "never")],
     ]
@@ -1246,6 +1539,11 @@ def usage():
   xray-activity client NAME [DAYS]
   xray-activity suspicious [DAYS]
   xray-activity geoip-risks [DAYS]
+  xray-activity exception-candidates [DAYS] [--plain]
+  xray-activity exceptions [--plain]
+  xray-activity exception-add VALUE [SOURCE]
+  xray-activity exception-delete VALUE
+  xray-activity exception-delete-all --yes
   xray-activity export NAME START_DATE END_DATE [--path-only]
   xray-activity export-list [--plain]
   xray-activity export-delete ARCHIVE_PATH_OR_NAME
@@ -1279,6 +1577,21 @@ def main():
             suspicious(args[1] if len(args) == 2 else "7")
         elif command == "geoip-risks" and len(args) in (1, 2):
             geoip_risk_details(args[1] if len(args) == 2 else "7")
+        elif command == "exception-candidates" and len(args) in (1, 2, 3):
+            plain = "--plain" in args
+            values = [arg for arg in args[1:] if arg != "--plain"]
+            print_exception_candidates(values[0] if values else "7", plain=plain)
+        elif command == "exceptions" and len(args) in (1, 2):
+            if len(args) == 2 and args[1] != "--plain":
+                usage()
+                sys.exit(1)
+            list_exceptions(plain=len(args) == 2)
+        elif command == "exception-add" and len(args) in (2, 3):
+            add_exception(args[1], args[2] if len(args) == 3 else "manual")
+        elif command == "exception-delete" and len(args) == 2:
+            delete_exception(args[1])
+        elif command == "exception-delete-all" and len(args) in (1, 2):
+            delete_all_exceptions(confirmed=len(args) == 2 and args[1] == "--yes")
         elif command == "export" and len(args) in (4, 5):
             if len(args) == 5 and args[4] != "--path-only":
                 usage()

@@ -129,7 +129,7 @@ xray-menu
 +-----------------+--------------------------------------------------------------+
 | Xray Version    | 26.3.27                                                      |
 | Manager Version | v1.0.0                                                       |
-| Manager Updated | 2026-06-11 18:02 UTC                                         |
+| Manager Updated | 2026-06-11 18:24 UTC                                         |
 | Geo Assets      | geoip.dat: 2026-06-11 13:26 MSK; geosite.dat: 2026-06-11...  |
 | Security Audit  | 2026-06-05 15:55 MSK                                         |
 +-----------------+--------------------------------------------------------------+
@@ -257,6 +257,18 @@ xray-menu
 12 Настроить лимиты suspicious
 13 GeoIP routing: выбрать регион
 14 GeoIP routing: отключить
+
+Клиенты -> Журнал активности -> Подозрительная активность:
+1 Сводка suspicious
+2 GeoIP-риски подробно
+3 Настройки исключений
+
+Клиенты -> Журнал активности -> Подозрительная активность -> Настройки исключений:
+1 Показать исключения
+2 Добавить из suspicious
+3 Добавить вручную
+4 Удалить исключение
+5 Удалить все исключения
 
 Резервные копии:
 1 Создать бэкап на сервере
@@ -493,6 +505,42 @@ xray-activity geoip-risks 7
 `xray-activity suspicious` - это отдельная сводка по найденным поводам для внимания. Сейчас туда попадают `smtp`, `blocked/torrent`, `xray-geoip:CODE`, всплеск событий в rolling-окне, слишком много уникальных host за период или слишком много уникальных портов за период.
 
 `xray-activity geoip-risks` выводит отдельную таблицу для каждого клиента, у которого были события `xray-geoip:CODE`: время события в выбранном часовом поясе менеджера, IP или домен, порт, регион и outbound. То же доступно через меню `Клиенты` -> `Журнал активности` -> `Подозрительная активность` -> `GeoIP-риски подробно`.
+
+Исключения suspicious позволяют скрыть известные безопасные домены, IP или сети из отчётов suspicious и подробных GeoIP-рисков. Сырые события остаются в JSONL-журнале, а в клиентском отчёте такие совпадения считаются в колонке `EXCEPTIONS`.
+
+Показать исключения:
+
+```bash
+xray-activity exceptions
+```
+
+Добавить исключение вручную:
+
+```bash
+xray-activity exception-add '*.apple.com'
+```
+
+Поддерживаются домены, IP, CIDR-сети и wildcard-маски: `mask.icloud.com`, `*.apple.com`, `203.0.113.10`, `203.0.113.0/24`.
+
+Показать кандидатов для добавления из подозрительной активности:
+
+```bash
+xray-activity exception-candidates 7
+```
+
+Удалить одно исключение:
+
+```bash
+xray-activity exception-delete '*.apple.com'
+```
+
+Удалить все исключения:
+
+```bash
+xray-activity exception-delete-all --yes
+```
+
+То же доступно через меню `Клиенты` -> `Журнал активности` -> `Подозрительная активность` -> `Настройки исключений`.
 
 Порог suspicious по умолчанию:
 
@@ -899,6 +947,7 @@ systemctl status xray-client-expire.timer --no-pager
 /usr/local/etc/xray/server.env           параметры подключения, порт, SNI, DEST, fingerprint, timezone
 /usr/local/etc/xray/traffic.json         накопительная статистика и история трафика за 6 месяцев
 /usr/local/etc/xray/activity.json        сводная база журнала активности
+/usr/local/etc/xray/activity-exceptions.json база исключений suspicious
 /usr/local/etc/xray/activity             детальные JSONL-журналы активности клиентов
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /usr/local/sbin/xray-client              управление клиентами
@@ -956,12 +1005,13 @@ xray-backup create
 /usr/local/etc/xray/server.env
 /usr/local/etc/xray/traffic.json
 /usr/local/etc/xray/activity.json
+/usr/local/etc/xray/activity-exceptions.json
 /usr/local/etc/xray/activity
 /root/xray-reality-client.txt
 ```
 
 Архивы хранятся на сервере в `/root/xray_backups`.
-Архив содержит Reality private key, UUID клиентов, статистику трафика и журнал активности, поэтому его нужно хранить как приватный секрет.
+Архив содержит Reality private key, UUID клиентов, статистику трафика, журнал активности и исключения suspicious, поэтому его нужно хранить как приватный секрет.
 
 Показать бэкапы на сервере:
 
