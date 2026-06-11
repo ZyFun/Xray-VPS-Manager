@@ -153,6 +153,7 @@ def write_server_env(values):
     values.pop("ACTIVITY_GEOIP_WARNING_CODE", None)
     ordered = [
         "SERVER_ADDR",
+        "SERVER_NAME",
         "PORT",
         "REALITY_SNI",
         "REALITY_DEST",

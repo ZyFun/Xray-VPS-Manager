@@ -21,10 +21,12 @@ STATS_SERVER = "127.0.0.1:10085"
 TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 XRAY_TELEGRAM = Path("/usr/local/sbin/xray-telegram")
 DEFAULT_SERVER_ADDR = ""
+DEFAULT_SERVER_NAME = "Virei"
 ONLINE_WINDOW_SECONDS = 300
 BYTES_IN_GB = 1024 ** 3
 PAYMENT_TYPES = {"paid", "free"}
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
+SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 CONNECTION_NAME_RE = re.compile(r"^[^\r\n|]{1,64}$")
 FINGERPRINTS = {
     "chrome",
@@ -356,7 +358,7 @@ def normalize_access_deadlines(tz):
 
 
 def save_server_env_values(values):
-    ordered = ["SERVER_ADDR", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT", "MANAGER_TIMEZONE"]
+    ordered = ["SERVER_ADDR", "SERVER_NAME", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT", "MANAGER_TIMEZONE"]
     lines = [f"{key}={values.get(key, '')}" for key in ordered]
     for key in sorted(values):
         if key not in ordered:
@@ -815,6 +817,15 @@ def server_addr():
     die(f"SERVER_ADDR is not set. Check {SERVER_ENV_PATH} or set SERVER_ADDR manually.")
 
 
+def server_name():
+    value = server_env_value("SERVER_NAME", DEFAULT_SERVER_NAME).strip()
+    if not value:
+        return DEFAULT_SERVER_NAME
+    if not SERVER_NAME_RE.fullmatch(value):
+        die("SERVER_NAME must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
+    return value
+
+
 def fingerprint():
     value = server_env_value("FINGERPRINT", "chrome").lower()
     if value not in FINGERPRINTS:
@@ -850,7 +861,7 @@ def link_for(config, client_id, name, connection_tag=None, db=None):
         "spx": "/",
     }
     query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params.items())
-    return f"vless://{client_id}@{server_addr()}:{port}?{query}#{quote(name, safe='')}"
+    return f"vless://{client_id}@{server_addr()}:{port}?{query}#{quote(server_name(), safe='')}"
 
 
 def client_rows(config, db):

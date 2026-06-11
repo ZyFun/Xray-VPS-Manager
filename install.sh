@@ -8,6 +8,7 @@ PORT="${PORT:-443}"
 REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
 REALITY_DEST=""
 CLIENT_NAME="${CLIENT_NAME:-starter}"
+SERVER_NAME="${SERVER_NAME:-Virei}"
 FINGERPRINT="${FINGERPRINT:-chrome}"
 MANAGER_TIMEZONE="${MANAGER_TIMEZONE:-}"
 TIMEZONE_SEARCH_LIMIT=30
@@ -110,6 +111,14 @@ validate_fingerprint() {
   esac
 }
 
+validate_server_name() {
+  local value="$1"
+  if [[ ! "$value" =~ ^[A-Za-z0-9_.@-]{1,64}$ ]]; then
+    echo "SERVER_NAME must be 1-64 chars: A-Z a-z 0-9 _ . @ -" >&2
+    exit 1
+  fi
+}
+
 validate_manager_timezone() {
   local value="$1"
   if [[ -z "$value" ]]; then
@@ -136,6 +145,7 @@ validate_install_options() {
     echo "CLIENT_NAME must be 1-64 chars: A-Z a-z 0-9 _ . @ -" >&2
     exit 1
   fi
+  validate_server_name "$SERVER_NAME"
 
   REALITY_DEST="${REALITY_SNI}:443"
 }
@@ -299,6 +309,12 @@ prompt_install_options() {
   read -r -p "CLIENT_NAME [${CLIENT_NAME}]: " input
   CLIENT_NAME="${input:-$CLIENT_NAME}"
   echo
+  echo "SERVER_NAME: отображаемое имя сервера в конце VLESS-ссылки после #."
+  echo "Оно видно пользователю в приложении, но не раскрывает внутреннее имя клиента."
+  echo "Разрешены: A-Z a-z 0-9 _ . @ -"
+  read -r -p "SERVER_NAME [${SERVER_NAME}]: " input
+  SERVER_NAME="${input:-$SERVER_NAME}"
+  echo
   prompt_manager_timezone
   echo
   prompt_fingerprint
@@ -310,6 +326,7 @@ prompt_install_options() {
   echo "  REALITY_SNI=${REALITY_SNI}"
   echo "  REALITY_DEST=${REALITY_DEST} (создан автоматически)"
   echo "  CLIENT_NAME=${CLIENT_NAME}"
+  echo "  SERVER_NAME=${SERVER_NAME}"
   echo "  FINGERPRINT=${FINGERPRINT}"
   echo "  MANAGER_TIMEZONE=${MANAGER_TIMEZONE:-server local time}"
   echo
@@ -536,6 +553,7 @@ EOF
 
 cat >/usr/local/etc/xray/server.env <<EOF
 SERVER_ADDR=${server_addr}
+SERVER_NAME=${SERVER_NAME}
 PORT=${PORT}
 REALITY_SNI=${REALITY_SNI}
 REALITY_DEST=${REALITY_DEST}
@@ -564,7 +582,7 @@ install -o root -g root -m 0755 "$SCRIPT_DIR/xray-test" /usr/local/sbin/xray-tes
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-warp" /usr/local/sbin/xray-warp
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-telegram" /usr/local/sbin/xray-telegram
 
-client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=tcp&flow=xtls-rprx-vision&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F#${CLIENT_NAME}"
+client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=tcp&flow=xtls-rprx-vision&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F#${SERVER_NAME}"
 
 cat >/root/xray-reality-client.txt <<EOF
 CLIENT_URI=${client_uri}

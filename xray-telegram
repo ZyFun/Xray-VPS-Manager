@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from pathlib import Path
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -25,6 +25,7 @@ ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
 CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
 ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
 XRAY_BIN = Path("/usr/local/bin/xray")
+XRAY_CLIENT = Path("/usr/local/sbin/xray-client")
 CASCADE_UPSTREAM_TAG = "cascade-upstream"
 TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
 TELEGRAM_SOCKS_HOST = "127.0.0.1"
@@ -38,10 +39,14 @@ USER_POLLER_SLEEP_UNCONFIGURED = 30
 USER_POLLER_SLEEP_ERROR = 5
 TELEGRAM_MESSAGE_LIMIT = 3900
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
+DEFAULT_SERVER_NAME = "Virei"
+DEFAULT_BOT_NAME = "Vireika"
 DEFAULT_DB = {
     "version": 1,
     "enabled": False,
     "token": "",
+    "botName": DEFAULT_BOT_NAME,
     "chatId": "",
     "chatLabel": "",
     "routeMode": "direct",
@@ -197,6 +202,32 @@ def mask_token(token):
     return token[:6] + "..." + token[-6:]
 
 
+def normalize_display_name(value, default, label):
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    if any(char in raw for char in "\r\n\t"):
+        raise ValueError(f"{label} must not contain control characters.")
+    if len(raw) > 64:
+        raise ValueError(f"{label} must be 64 characters or shorter.")
+    return raw
+
+
+def bot_name(db=None):
+    source = db if isinstance(db, dict) else load_db()
+    try:
+        return normalize_display_name(source.get("botName", DEFAULT_BOT_NAME), DEFAULT_BOT_NAME, "BOT_NAME")
+    except ValueError:
+        return DEFAULT_BOT_NAME
+
+
+def set_bot_name(value):
+    db = load_db()
+    db["botName"] = normalize_display_name(value, DEFAULT_BOT_NAME, "BOT_NAME")
+    save_db(db)
+    print(f"Bot name: {db['botName']}")
+
+
 def server_env_values():
     values = {}
     if SERVER_ENV_PATH.exists():
@@ -205,6 +236,13 @@ def server_env_values():
                 key, value = line.split("=", 1)
                 values[key] = value.strip().strip('"').strip("'")
     return values
+
+
+def server_name_fragment():
+    value = (server_env_values().get("SERVER_NAME") or DEFAULT_SERVER_NAME).strip()
+    if not value or not SERVER_NAME_RE.fullmatch(value):
+        value = DEFAULT_SERVER_NAME
+    return quote(value, safe="")
 
 
 def display_timezone():
@@ -574,6 +612,12 @@ def setup():
     db["token"] = token
 
     print()
+    print("BOT_NAME: имя бота в сообщениях пользователям.")
+    print("Например: Vireika. Если нажать Enter, останется текущее значение.")
+    value = input(f"BOT_NAME [{bot_name(db)}]: ").strip()
+    db["botName"] = normalize_display_name(value or bot_name(db), DEFAULT_BOT_NAME, "BOT_NAME")
+
+    print()
     print("Как боту выходить в интернет?")
     print("1. direct: напрямую с этого сервера")
     print("2. cascade: через исходящий сервер, настроенный как cascade-upstream")
@@ -612,6 +656,7 @@ def configure_bot_commands():
     commands = [
         {"command": "start", "description": "Открыть меню"},
         {"command": "status", "description": "Показать подписку"},
+        {"command": "link", "description": "Получить VLESS-ссылку"},
         {"command": "unsubscribe", "description": "Отключить напоминания"},
         {"command": "help", "description": "Помощь"},
     ]
@@ -923,6 +968,7 @@ def client_menu_keyboard():
     return [
         [{"text": "Подключить уведомления", "callback_data": "client:subscribe"}],
         [{"text": "Статус подписки", "callback_data": "client:status"}],
+        [{"text": "Получить VLESS-ссылку", "callback_data": "client:link"}],
         [{"text": "Отключить уведомления", "callback_data": "client:unsubscribe"}],
         [{"text": "Помощь", "callback_data": "client:help"}],
     ]
@@ -960,8 +1006,9 @@ def admin_menu_keyboard():
 
 
 def subscription_intro_text():
+    db = load_db()
     return (
-        "Привет. Я бот Vireika.\n\n"
+        f"Привет. Я бот {bot_name(db)}.\n\n"
         "Я помогу не забыть о переводе за совместную аренду сервера.\n\n"
         "Чтобы подключить напоминания, нажми кнопку «Подключить уведомления» "
         "или просто отправь сюда свою VLESS Reality-ссылку. "
@@ -1010,6 +1057,56 @@ def subscription_status_for_chat(db, chat_id):
     if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
         return "Подписка устарела: клиент был пересоздан. Отправь актуальную VLESS-ссылку заново."
     return "Текущая подписка:\n" + client_access_summary(entry)
+
+
+def subscription_entry_for_chat(db, chat_id):
+    subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
+    if not subscription:
+        return None, None, "Ты пока не подписан на напоминания. Сначала отправь свою VLESS-ссылку."
+    client_db = load_client_db()
+    name = subscription.get("client", "")
+    entry = client_db_clients(client_db).get(name)
+    if not entry:
+        return None, None, "Подписка найдена, но клиента уже нет в базе. Отправь актуальную VLESS-ссылку или обратись к администратору."
+    if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
+        return None, None, "Подписка устарела: клиент был пересоздан. Отправь актуальную VLESS-ссылку заново."
+    return name, entry, ""
+
+
+def neutral_vless_fragment(link):
+    raw = str(link or "").strip()
+    if not raw:
+        return raw
+    base = raw.split("#", 1)[0]
+    return base + "#" + server_name_fragment()
+
+
+def current_vless_link_for_chat(db, chat_id):
+    name, _entry, error = subscription_entry_for_chat(db, chat_id)
+    if error:
+        return error
+    if not XRAY_CLIENT.exists():
+        return "xray-client не найден на сервере. Обратись к администратору."
+    result = run_capture([str(XRAY_CLIENT), "link", name], timeout=20)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+        return "Не удалось получить актуальную VLESS-ссылку: " + detail
+    link = ""
+    for line in result.stdout.splitlines():
+        if line.strip().startswith("vless://"):
+            link = line.strip()
+            break
+    if not link:
+        return "Не удалось получить актуальную VLESS-ссылку: xray-client не вернул ссылку."
+    return "\n".join(
+        [
+            "Актуальная VLESS Reality-ссылка:",
+            "",
+            neutral_vless_fragment(link),
+            "",
+            "Если настройки подключения менялись, импортируй эту ссылку заново.",
+        ]
+    )
 
 
 def unsubscribe_chat(db, chat_id):
@@ -1123,6 +1220,9 @@ def handle_user_message(db, update):
     if command == "/status":
         send_client_menu(db, chat_id, subscription_status_for_chat(db, chat_id))
         return True
+    if command == "/link":
+        send_client_menu(db, chat_id, current_vless_link_for_chat(db, chat_id))
+        return True
     if command in ("/unsubscribe", "/stop"):
         send_client_menu(db, chat_id, unsubscribe_chat(db, chat_id))
         return True
@@ -1196,6 +1296,10 @@ def handle_callback_query(db, update):
     if data == "client:status":
         answer_callback_query(db, callback_id)
         send_client_menu(db, chat_id, subscription_status_for_chat(db, chat_id))
+        return True
+    if data == "client:link":
+        answer_callback_query(db, callback_id)
+        send_client_menu(db, chat_id, current_vless_link_for_chat(db, chat_id))
         return True
     if data == "client:unsubscribe":
         answer_callback_query(db, callback_id, "Готово")
@@ -1352,7 +1456,7 @@ def build_expiry_reminder_message(db, entry, days_before, expiry_local, timezone
     day_word = "день" if days_before == 1 else "дней"
     return "\n".join(
         [
-            "Vireika: напоминание об оплате",
+            f"{bot_name(db)}: напоминание об оплате",
             "",
             f"Через {days_before} {day_word} заканчивается текущий период.",
             f"Доступ до: {expiry_local.strftime('%Y-%m-%d %H:%M')} {timezone_label}",
@@ -1418,10 +1522,10 @@ def notify_expiry(quiet=False):
     return 0
 
 
-def build_access_updated_message(entry):
+def build_access_updated_message(db, entry):
     return "\n".join(
         [
-            "Vireika: всё готово",
+            f"{bot_name(db)}: всё готово",
             "",
             "Спасибо! Оплата за совместную аренду сервера получена.",
             "",
@@ -1446,7 +1550,7 @@ def notify_access_updated(name, quiet=False):
         if not quiet:
             print(f"Client is free, access payment notification skipped: {name}")
         return 0
-    message = build_access_updated_message(entry)
+    message = build_access_updated_message(db, entry)
     sent_count = 0
     for chat_id, subscription in db.get("clientSubscriptions", {}).items():
         if not isinstance(subscription, dict) or subscription.get("enabled") is False:
@@ -1698,6 +1802,7 @@ def status():
     rows = [
         ("Enabled", "yes" if db.get("enabled") else "no"),
         ("Token", mask_token(db.get("token", ""))),
+        ("Bot name", bot_name(db)),
         ("Chat", f"{db.get('chatLabel') or '-'} ({db.get('chatId') or '-'})"),
         ("Route mode", db.get("routeMode", "direct")),
         ("Payment amount", payment_amount_label(db)),
@@ -1722,6 +1827,7 @@ def usage():
   xray-telegram enable
   xray-telegram disable
   xray-telegram mode direct|cascade
+  xray-telegram bot-name [NAME]
   xray-telegram test
   xray-telegram commands
   xray-telegram notify-geoip [--quiet]
@@ -1753,6 +1859,11 @@ def main():
             set_enabled(False)
         elif command == "mode" and len(args) == 2:
             set_route_mode(args[1])
+        elif command == "bot-name" and len(args) in (1, 2):
+            if len(args) == 1:
+                print(f"Bot name: {bot_name(load_db())}")
+            else:
+                set_bot_name(args[1])
         elif command == "test" and len(args) == 1:
             test_message()
         elif command in ("commands", "set-commands") and len(args) == 1:

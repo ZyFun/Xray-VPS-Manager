@@ -28,7 +28,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-11 22:09 UTC"
+MENU_UPDATED = "2026-06-11 22:28 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -178,7 +178,8 @@ def telegram_menu_actions():
         ("10", "Обработать сообщения пользователей"),
         ("11", "Проверить напоминания об оплате"),
         ("12", "Настроить оплату и округление"),
-        ("13", "Обновить меню команд Telegram"),
+        ("13", "Изменить имя бота"),
+        ("14", "Обновить меню команд Telegram"),
         ("0", "Назад"),
     ]
 
@@ -1233,6 +1234,7 @@ def write_server_env_values(values):
     values.pop("ACTIVITY_GEOIP_WARNING_CODE", None)
     ordered = [
         "SERVER_ADDR",
+        "SERVER_NAME",
         "PORT",
         "REALITY_SNI",
         "REALITY_DEST",
@@ -2168,6 +2170,16 @@ def update_telegram_payment_amount():
             return
         call(["xray-telegram", "payment-amount", f"{amount} {symbol}"])
     update_telegram_payment_rounding()
+
+
+def update_telegram_bot_name():
+    print("Имя бота используется в сообщениях пользователям.")
+    print("Например: Vireika. Оставь пустым, чтобы не менять.")
+    value = input("Имя бота: ").strip()
+    if not value:
+        print("Имя бота не изменено.")
+        return
+    call(["xray-telegram", "bot-name", value])
 
 
 def print_initial_link():
@@ -3125,7 +3137,8 @@ def telegram_menu_handlers():
         "10": ("Обработать сообщения пользователей", lambda: call(["xray-telegram", "poll-users"])),
         "11": ("Проверить напоминания об оплате", lambda: call(["xray-telegram", "notify-expiry"])),
         "12": ("Настроить оплату и округление", update_telegram_payment_amount),
-        "13": ("Обновить меню команд Telegram", lambda: call(["xray-telegram", "commands"])),
+        "13": ("Изменить имя бота", update_telegram_bot_name),
+        "14": ("Обновить меню команд Telegram", lambda: call(["xray-telegram", "commands"])),
     }
 
 

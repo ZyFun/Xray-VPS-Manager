@@ -301,6 +301,8 @@ def check_telegram_bot_db(diag):
     mode = db.get("routeMode", "direct")
     if mode not in ("direct", "cascade"):
         raise RuntimeError("telegram-bot.json routeMode must be direct or cascade")
+    if not isinstance(db.get("botName", "Vireika"), str):
+        raise RuntimeError("telegram-bot.json botName must be a string")
     if not isinstance(db.get("paymentAmount", ""), str):
         raise RuntimeError("telegram-bot.json paymentAmount must be a string")
     if not isinstance(db.get("paymentTotalAmount", ""), str):
@@ -322,9 +324,11 @@ def check_telegram_bot_db(diag):
 def check_server_env(diag):
     values = load_env(SERVER_ENV_PATH)
     diag.context["server_env"] = values
-    missing = [key for key in ("SERVER_ADDR", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT") if key not in values]
+    missing = [key for key in ("SERVER_ADDR", "SERVER_NAME", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT") if key not in values]
     if missing:
         raise RuntimeError("missing keys: " + ", ".join(missing))
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,64}", values.get("SERVER_NAME", "")):
+        raise RuntimeError("SERVER_NAME must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
     if values.get("REALITY_SNI") and values.get("REALITY_DEST") != f"{values['REALITY_SNI']}:443":
         raise RuntimeError("REALITY_DEST must be REALITY_SNI:443")
     return f"{SERVER_ENV_PATH} parsed"
