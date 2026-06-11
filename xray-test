@@ -18,6 +18,7 @@ SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 ACTIVITY_PATH = Path("/usr/local/etc/xray/activity.json")
 ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
+TELEGRAM_BOT_PATH = Path("/usr/local/etc/xray/telegram-bot.json")
 ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
@@ -37,10 +38,12 @@ HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-backup",
     "/usr/local/sbin/xray-test",
     "/usr/local/sbin/xray-warp",
+    "/usr/local/sbin/xray-telegram",
 ]
 TRAFFIC_SERVICE_COMMANDS = [
     "ExecStart=/usr/local/sbin/xray-traffic-sync --quiet",
     "ExecStart=/usr/local/sbin/xray-activity sync --quiet",
+    "ExecStart=/usr/local/sbin/xray-telegram notify-geoip --quiet",
     "ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet",
     "ExecStart=/usr/local/sbin/xray-client expire-due --quiet",
 ]
@@ -286,6 +289,20 @@ def check_activity_exceptions_db(diag):
     return f"{ACTIVITY_EXCEPTIONS_PATH} parsed"
 
 
+def check_telegram_bot_db(diag):
+    if not TELEGRAM_BOT_PATH.exists():
+        diag.context["telegram_bot_db"] = {}
+        return f"{TELEGRAM_BOT_PATH} not created yet"
+    db = load_json(TELEGRAM_BOT_PATH)
+    if not isinstance(db, dict):
+        raise RuntimeError("telegram-bot.json must contain a JSON object")
+    mode = db.get("routeMode", "direct")
+    if mode not in ("direct", "cascade"):
+        raise RuntimeError("telegram-bot.json routeMode must be direct or cascade")
+    diag.context["telegram_bot_db"] = db
+    return f"{TELEGRAM_BOT_PATH} parsed"
+
+
 def check_server_env(diag):
     values = load_env(SERVER_ENV_PATH)
     diag.context["server_env"] = values
@@ -418,7 +435,7 @@ def check_traffic_sync_service():
     missing = [line for line in TRAFFIC_SERVICE_COMMANDS if line not in result.stdout]
     if missing:
         raise RuntimeError("missing service command(s): " + ", ".join(missing))
-    return "xray-traffic-sync.service runs traffic sync, activity sync, limits, and expiry checks"
+    return "xray-traffic-sync.service runs traffic sync, activity sync, Telegram GeoIP notifications, limits, and expiry checks"
 
 
 def check_traffic_sync_runtime():
@@ -429,6 +446,11 @@ def check_traffic_sync_runtime():
 def check_activity_runtime():
     run_ok(["/usr/local/sbin/xray-activity", "status"], timeout=20)
     return "xray-activity status runs successfully"
+
+
+def check_telegram_runtime():
+    run_ok(["/usr/local/sbin/xray-telegram", "status"], timeout=20)
+    return "xray-telegram status runs successfully"
 
 
 def check_client_list_runtime():
@@ -704,7 +726,7 @@ def check_geoip_warning_routing(diag):
 
 def check_file_permissions():
     checked = []
-    for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH, ACTIVITY_PATH, ACTIVITY_EXCEPTIONS_PATH):
+    for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH, ACTIVITY_PATH, ACTIVITY_EXCEPTIONS_PATH, TELEGRAM_BOT_PATH):
         if not path.exists():
             continue
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -730,6 +752,7 @@ def run_diagnostics():
     diag.check("Clients DB", lambda: check_client_db(diag))
     diag.check("Traffic DB", lambda: check_traffic_db(diag))
     diag.check("Activity exceptions DB", lambda: check_activity_exceptions_db(diag))
+    diag.check("Telegram bot DB", lambda: check_telegram_bot_db(diag))
     diag.check("server.env", lambda: check_server_env(diag))
     diag.check("Manager timezone", lambda: check_manager_timezone(diag))
     diag.check("Reality connections", lambda: check_reality_inbounds(diag))
@@ -742,6 +765,7 @@ def run_diagnostics():
     diag.check("Traffic sync service", check_traffic_sync_service)
     diag.check("Traffic sync runtime", check_traffic_sync_runtime)
     diag.check("Activity log runtime", check_activity_runtime)
+    diag.check("Telegram bot runtime", check_telegram_runtime)
     diag.check("xray-client list", check_client_list_runtime)
     diag.check("Client DB alignment", lambda: check_client_db_alignment(diag), fatal=False)
     diag.check("Traffic DB alignment", lambda: check_traffic_db_alignment(diag), fatal=False)

@@ -20,6 +20,7 @@ SERVER_ENV_PATH = CONFIG_DIR / "server.env"
 TRAFFIC_PATH = CONFIG_DIR / "traffic.json"
 ACTIVITY_PATH = CONFIG_DIR / "activity.json"
 ACTIVITY_EXCEPTIONS_PATH = CONFIG_DIR / "activity-exceptions.json"
+TELEGRAM_BOT_PATH = CONFIG_DIR / "telegram-bot.json"
 ACTIVITY_DIR = CONFIG_DIR / "activity"
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 
@@ -30,6 +31,7 @@ BACKUP_FILES = [
     ("usr/local/etc/xray/traffic.json", TRAFFIC_PATH, False),
     ("usr/local/etc/xray/activity.json", ACTIVITY_PATH, False),
     ("usr/local/etc/xray/activity-exceptions.json", ACTIVITY_EXCEPTIONS_PATH, False),
+    ("usr/local/etc/xray/telegram-bot.json", TELEGRAM_BOT_PATH, False),
     ("root/xray-reality-client.txt", CLIENT_LINK_PATH, False),
 ]
 BACKUP_DIRS = [
@@ -179,7 +181,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
     elif not quiet:
         print(f"Backup created: {archive}")
         print(f"Size: {format_size(archive.stat().st_size)}")
-        print("Contains: config.json, clients.json, server.env, traffic.json, activity logs, activity exceptions, starter link if present.")
+        print("Contains: config.json, clients.json, server.env, traffic.json, activity logs, activity exceptions, Telegram bot config, starter link if present.")
         print("Keep this file private: it contains Reality private keys and client data.")
     return archive
 

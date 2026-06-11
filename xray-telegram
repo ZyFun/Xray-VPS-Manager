@@ -1,0 +1,754 @@
+#!/usr/bin/env python3
+import copy
+import fnmatch
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
+SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
+TELEGRAM_DB_PATH = Path("/usr/local/etc/xray/telegram-bot.json")
+ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
+CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
+ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
+XRAY_BIN = Path("/usr/local/bin/xray")
+CASCADE_UPSTREAM_TAG = "cascade-upstream"
+TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
+TELEGRAM_SOCKS_HOST = "127.0.0.1"
+TELEGRAM_SOCKS_PORT = 10810
+XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
+DEFAULT_DB = {
+    "version": 1,
+    "enabled": False,
+    "token": "",
+    "chatId": "",
+    "chatLabel": "",
+    "routeMode": "direct",
+    "geoipState": {"files": {}, "sentIds": []},
+}
+
+
+def die(message):
+    print(f"ERROR: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def run(command, **kwargs):
+    return subprocess.run(command, check=True, text=True, **kwargs)
+
+
+def run_capture(command, timeout=20, input_text=None):
+    return subprocess.run(
+        command,
+        check=False,
+        text=True,
+        input=input_text,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+    )
+
+
+def require_root():
+    if os.geteuid() != 0:
+        die("Run this script as root.")
+
+
+def utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def utc_stamp():
+    return utc_now().isoformat().replace("+00:00", "Z")
+
+
+def parse_time(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def load_json(path, default):
+    if not path.exists():
+        return copy.deepcopy(default)
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return copy.deepcopy(default)
+    return data if isinstance(data, dict) else copy.deepcopy(default)
+
+
+def chown_xray(path):
+    try:
+        shutil.chown(path, user="root", group="xray")
+    except LookupError:
+        shutil.chown(path, user="root")
+
+
+def ensure_config_dir():
+    TELEGRAM_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    chown_xray(TELEGRAM_DB_PATH.parent)
+    os.chmod(TELEGRAM_DB_PATH.parent, 0o750)
+
+
+def load_db():
+    db = load_json(TELEGRAM_DB_PATH, DEFAULT_DB)
+    merged = copy.deepcopy(DEFAULT_DB)
+    merged.update(db)
+    geoip_state = merged.get("geoipState")
+    if not isinstance(geoip_state, dict):
+        geoip_state = {}
+    geoip_state.setdefault("files", {})
+    geoip_state.setdefault("sentIds", [])
+    merged["geoipState"] = geoip_state
+    if merged.get("routeMode") not in ("direct", "cascade"):
+        merged["routeMode"] = "direct"
+    return merged
+
+
+def save_db(db):
+    ensure_config_dir()
+    tmp = TELEGRAM_DB_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
+    chown_xray(tmp)
+    os.chmod(tmp, 0o640)
+    tmp.replace(TELEGRAM_DB_PATH)
+
+
+def mask_token(token):
+    if not token:
+        return "not configured"
+    if len(token) <= 12:
+        return "***"
+    return token[:6] + "..." + token[-6:]
+
+
+def server_env_values():
+    values = {}
+    if SERVER_ENV_PATH.exists():
+        for line in SERVER_ENV_PATH.read_text().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def display_timezone():
+    configured = (server_env_values().get("MANAGER_TIMEZONE") or "").strip()
+    if configured:
+        try:
+            return ZoneInfo(configured), configured
+        except ZoneInfoNotFoundError:
+            return timezone.utc, f"UTC (invalid MANAGER_TIMEZONE: {configured})"
+    local = datetime.now().astimezone().tzinfo or timezone.utc
+    return local, "server local time"
+
+
+def format_event_time(value):
+    moment = parse_time(value)
+    if not moment:
+        return value or "-"
+    tzinfo, label = display_timezone()
+    return f"{moment.astimezone(tzinfo).strftime('%Y-%m-%d %H:%M:%S')} {label}"
+
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        die(f"Config not found: {CONFIG_PATH}")
+    return json.loads(CONFIG_PATH.read_text())
+
+
+def save_config(config):
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.telegram.{timestamp}")
+    shutil.copy2(CONFIG_PATH, backup)
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+    chown_xray(tmp)
+    os.chmod(tmp, 0o640)
+    tmp.replace(CONFIG_PATH)
+    return backup
+
+
+def restart_xray():
+    result = run_capture(["systemctl", "restart", "xray"], timeout=30)
+    if result.returncode == 0:
+        return
+    run_capture(["systemctl", "reset-failed", "xray"], timeout=10)
+    time.sleep(1.0)
+    retry = run_capture(["systemctl", "restart", "xray"], timeout=30)
+    if retry.returncode == 0:
+        return
+    detail = (retry.stderr or retry.stdout or result.stderr or result.stdout or "systemctl restart failed").strip()
+    raise subprocess.CalledProcessError(retry.returncode, retry.args, retry.stdout, detail)
+
+
+def apply_config(config):
+    backup = save_config(config)
+    try:
+        run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
+        restart_xray()
+    except subprocess.CalledProcessError:
+        shutil.copy2(backup, CONFIG_PATH)
+        chown_xray(CONFIG_PATH)
+        os.chmod(CONFIG_PATH, 0o640)
+        restart_xray()
+        die(f"New config failed. Restored backup: {backup}")
+    return backup
+
+
+def rule_values(rule, key):
+    value = rule.get(key, [])
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def routing_rules(config):
+    routing = config.setdefault("routing", {})
+    routing.setdefault("domainStrategy", "IPIfNonMatch")
+    return routing.setdefault("rules", [])
+
+
+def remove_telegram_proxy_config(config):
+    old_inbounds = config.get("inbounds", [])
+    config["inbounds"] = [item for item in old_inbounds if item.get("tag") != TELEGRAM_SOCKS_TAG]
+    rules = routing_rules(config)
+    config["routing"]["rules"] = [rule for rule in rules if TELEGRAM_SOCKS_TAG not in rule_values(rule, "inboundTag")]
+    return len(config["inbounds"]) != len(old_inbounds) or len(config["routing"]["rules"]) != len(rules)
+
+
+def telegram_proxy_configured(config):
+    has_inbound = any(item.get("tag") == TELEGRAM_SOCKS_TAG for item in config.get("inbounds", []))
+    has_route = any(TELEGRAM_SOCKS_TAG in rule_values(rule, "inboundTag") for rule in routing_rules(config))
+    return has_inbound and has_route
+
+
+def ensure_telegram_proxy_config(config):
+    if not any(item.get("tag") == CASCADE_UPSTREAM_TAG for item in config.get("outbounds", [])):
+        die("Cascade outbound is not configured. Add cascade first or use direct Telegram route mode.")
+
+    remove_telegram_proxy_config(config)
+    config.setdefault("inbounds", []).append(
+        {
+            "tag": TELEGRAM_SOCKS_TAG,
+            "listen": TELEGRAM_SOCKS_HOST,
+            "port": TELEGRAM_SOCKS_PORT,
+            "protocol": "socks",
+            "settings": {"auth": "noauth", "udp": False},
+            "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
+        }
+    )
+    routing_rules(config).insert(
+        0,
+        {
+            "type": "field",
+            "inboundTag": [TELEGRAM_SOCKS_TAG],
+            "outboundTag": CASCADE_UPSTREAM_TAG,
+        },
+    )
+
+
+def wait_for_tcp(host, port, timeout=8.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+
+def set_route_mode(mode):
+    if mode not in ("direct", "cascade"):
+        die("Route mode must be direct or cascade.")
+    db = load_db()
+    previous_mode = db.get("routeMode", "direct")
+    config = load_config()
+    if mode == "cascade":
+        db["routeMode"] = mode
+        save_db(db)
+        ensure_telegram_proxy_config(config)
+        try:
+            backup = apply_config(config)
+        except Exception:
+            db["routeMode"] = previous_mode
+            save_db(db)
+            raise
+        if not wait_for_tcp(TELEGRAM_SOCKS_HOST, TELEGRAM_SOCKS_PORT):
+            die(f"Telegram SOCKS inbound did not open: {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}")
+        print(f"Telegram Bot API traffic will use cascade through SOCKS {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}.")
+        print(f"Backup: {backup}")
+    else:
+        changed = remove_telegram_proxy_config(config)
+        if changed:
+            backup = apply_config(config)
+            print("Telegram Bot API traffic will use direct server internet route.")
+            print(f"Backup: {backup}")
+        else:
+            print("Telegram Bot API traffic already uses direct server internet route.")
+    db["routeMode"] = mode
+    save_db(db)
+
+
+def curl_json(db, method, payload=None, timeout=30):
+    token = db.get("token", "")
+    if not token:
+        die("Telegram bot token is not configured.")
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    command = ["curl", "-fsS", "--connect-timeout", "10", "--max-time", str(timeout)]
+    if db.get("routeMode") == "cascade":
+        command.extend(["--proxy", f"socks5h://{TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}"])
+    if payload is not None:
+        command.extend(["-H", "Content-Type: application/json", "-d", json.dumps(payload, ensure_ascii=False)])
+    command.append(url)
+    result = run_capture(command, timeout=timeout + 5)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"curl exited with {result.returncode}").strip()
+        raise RuntimeError(detail)
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Telegram returned invalid JSON: {exc}") from exc
+    if not data.get("ok"):
+        raise RuntimeError(json.dumps(data, ensure_ascii=False))
+    return data
+
+
+def telegram_chat_label(chat):
+    parts = []
+    if chat.get("username"):
+        parts.append("@" + str(chat["username"]))
+    full_name = " ".join(str(chat.get(key, "")).strip() for key in ("first_name", "last_name")).strip()
+    if full_name:
+        parts.append(full_name)
+    if not parts:
+        parts.append(str(chat.get("id", "")))
+    return " / ".join(parts)
+
+
+def private_chats_from_updates(updates):
+    rows = []
+    seen = set()
+    for update in updates:
+        message = update.get("message") or update.get("edited_message") or {}
+        chat = message.get("chat") or {}
+        if chat.get("type") != "private" or "id" not in chat:
+            continue
+        chat_id = str(chat["id"])
+        if chat_id in seen:
+            continue
+        seen.add(chat_id)
+        rows.append({"id": chat_id, "label": telegram_chat_label(chat)})
+    return rows
+
+
+def choose_private_chat(db):
+    print("Теперь отправь любое сообщение новому боту в Telegram, например /start.")
+    print("После этого нажми Enter здесь, чтобы сервер увидел твой chat_id.")
+    while True:
+        input("Enter после отправки /start боту: ")
+        data = curl_json(db, "getUpdates", {"allowed_updates": ["message"], "timeout": 2}, timeout=15)
+        chats = private_chats_from_updates(data.get("result", []))
+        if not chats:
+            print("Личные чаты не найдены. Проверь, что ты написал именно этому боту, и попробуй ещё раз.")
+            continue
+        print("Найденные личные чаты:")
+        for index, row in enumerate(chats, start=1):
+            print(f"{index}. {row['label']} ({row['id']})")
+        choice = input("Выбери чат для уведомлений [1]: ").strip() or "1"
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(chats):
+                return chats[index - 1]
+        print("Неизвестный выбор.")
+
+
+def initialize_geoip_offsets(db):
+    state = db.setdefault("geoipState", {})
+    files = {}
+    if CLIENT_LOG_DIR.exists():
+        for path in CLIENT_LOG_DIR.glob("*.jsonl"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files[str(path)] = {"inode": stat.st_ino, "offset": stat.st_size}
+    state["files"] = files
+    state["sentIds"] = []
+    state["updated"] = utc_stamp()
+
+
+def send_message(db, text):
+    chat_id = str(db.get("chatId") or "").strip()
+    if not chat_id:
+        die("Telegram chat is not configured.")
+    return curl_json(db, "sendMessage", {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}, timeout=30)
+
+
+def ask_token_if_missing(db):
+    if db.get("token"):
+        return db
+    print("Token Telegram-бота не настроен.")
+    print("Возьми token у @BotFather и вставь его сюда.")
+    token = input("BOT_TOKEN: ").strip()
+    if not token or ":" not in token:
+        die("BOT_TOKEN выглядит некорректно.")
+    db["token"] = token
+    save_db(db)
+    return db
+
+
+def maybe_adopt_existing_cascade_route(db):
+    if db.get("routeMode") == "cascade":
+        return db
+    try:
+        config = load_config()
+    except Exception:
+        return db
+    if not telegram_proxy_configured(config):
+        return db
+    print("Найден уже настроенный Telegram SOCKS для cascade в Xray config.")
+    print("Похоже, первичная настройка оборвалась после применения маршрута, но до выбора владельца бота.")
+    answer = input("Использовать cascade для привязки владельца? [Y/n]: ").strip().lower()
+    if answer in ("", "y", "yes", "д", "да"):
+        db["routeMode"] = "cascade"
+        save_db(db)
+    return db
+
+
+def configure_owner(send_test=True):
+    db = ask_token_if_missing(load_db())
+    db = maybe_adopt_existing_cascade_route(db)
+    me = curl_json(db, "getMe")
+    bot = me.get("result", {})
+    print(f"Бот найден: @{bot.get('username', 'unknown')}")
+    chat = choose_private_chat(db)
+    db["chatId"] = chat["id"]
+    db["chatLabel"] = chat["label"]
+    db["enabled"] = True
+    initialize_geoip_offsets(db)
+    save_db(db)
+    if send_test:
+        send_message(db, "Xray VPS Manager: Telegram-уведомления подключены. GeoIP-уведомления будут отправляться только в этот чат.")
+    print("Telegram bot owner/chat configured.")
+    print(f"Chat: {db['chatLabel']} ({db['chatId']})")
+    print(f"Route mode: {db['routeMode']}")
+
+
+def setup():
+    print("Нужен токен Telegram-бота от @BotFather.")
+    print("1. Открой Telegram и найди @BotFather.")
+    print("2. Создай бота командой /newbot.")
+    print("3. Скопируй token вида 123456:ABC-DEF...")
+    token = input("BOT_TOKEN: ").strip()
+    if not token or ":" not in token:
+        die("BOT_TOKEN выглядит некорректно.")
+    db = load_db()
+    db["token"] = token
+
+    print()
+    print("Как боту выходить в интернет?")
+    print("1. direct: напрямую с этого сервера")
+    print("2. cascade: через исходящий сервер, настроенный как cascade-upstream")
+    mode_choice = input("Route mode [1-direct]: ").strip() or "1"
+    mode = "cascade" if mode_choice == "2" else "direct"
+    save_db(db)
+    if mode == "cascade":
+        print()
+        print("Сейчас будет применён cascade-маршрут для Telegram Bot API.")
+        print("Если SSH-сессия оборвётся на перезапуске Xray, подключись заново и запусти:")
+        print("  xray-telegram owner")
+        print("или в меню: Telegram бот -> Донастроить владельца/чат")
+    set_route_mode(mode)
+    configure_owner(send_test=True)
+
+
+def set_enabled(value):
+    db = load_db()
+    db["enabled"] = bool(value)
+    if value:
+        initialize_geoip_offsets(db)
+    save_db(db)
+    print("Telegram notifications enabled." if value else "Telegram notifications disabled.")
+
+
+def test_message():
+    db = load_db()
+    send_message(db, "Xray VPS Manager: тестовое сообщение Telegram-бота.")
+    print("Test message sent.")
+
+
+def load_exceptions():
+    data = load_json(ACTIVITY_EXCEPTIONS_PATH, {"items": []})
+    items = data.get("items", [])
+    return items if isinstance(items, list) else []
+
+
+def normalize_host(host):
+    value = str(host or "").strip().strip("[]").lower()
+    if not value:
+        return ""
+    if "/" not in value and value.count(":") == 1:
+        candidate, port = value.rsplit(":", 1)
+        if port.isdigit():
+            value = candidate.strip("[]")
+    return value
+
+
+def exception_matches(item, host):
+    value = normalize_host(item.get("value", ""))
+    kind = item.get("kind", "")
+    host_value = normalize_host(host)
+    if not value or not host_value:
+        return False
+    if kind == "cidr":
+        try:
+            return ipaddress.ip_address(host_value) in ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            return False
+    if kind == "ip":
+        return host_value == value
+    if kind == "mask":
+        return fnmatch.fnmatchcase(host_value, value)
+    return host_value == value
+
+
+def is_exception(event, exceptions):
+    return any(exception_matches(item, event.get("host", "")) for item in exceptions)
+
+
+def geoip_regions(event):
+    risks = set(event.get("risks") or [])
+    outbound = str(event.get("outbound") or "").lower()
+    if outbound.startswith(XRAY_GEOIP_OUTBOUND_PREFIX):
+        code = outbound[len(XRAY_GEOIP_OUTBOUND_PREFIX):].upper()
+        if code:
+            risks.add(f"xray-geoip:{code}")
+    regions = []
+    for risk in sorted(risks):
+        if str(risk).startswith("xray-geoip:"):
+            regions.append(str(risk).split(":", 1)[1].upper())
+    return regions
+
+
+def event_id(event):
+    payload = "|".join(
+        str(event.get(key, ""))
+        for key in ("time", "client", "host", "port", "outbound", "source", "target")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def iter_new_events(db):
+    state = db.setdefault("geoipState", {})
+    files = state.setdefault("files", {})
+    if not CLIENT_LOG_DIR.exists():
+        return []
+    events = []
+    for path in sorted(CLIENT_LOG_DIR.glob("*.jsonl")):
+        key = str(path)
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        item = files.get(key, {})
+        offset = int(item.get("offset", 0) or 0)
+        if item.get("inode") != stat.st_ino or stat.st_size < offset:
+            offset = 0
+        try:
+            with path.open("rb") as handle:
+                handle.seek(offset)
+                data = handle.read()
+                files[key] = {"inode": stat.st_ino, "offset": handle.tell()}
+        except OSError:
+            continue
+        for line in data.decode("utf-8", errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            events.append(event)
+    state["updated"] = utc_stamp()
+    return events
+
+
+def build_geoip_message(events):
+    grouped = {}
+    for event in events:
+        regions = ",".join(geoip_regions(event)) or "-"
+        host = event.get("host") or "-"
+        port = str(event.get("port") or "-")
+        key = (event.get("client") or "-", regions, host, port)
+        row = grouped.setdefault(
+            key,
+            {
+                "client": event.get("client") or "-",
+                "regions": regions,
+                "host": host,
+                "port": port,
+                "count": 0,
+                "last": event.get("time") or "",
+                "outbound": event.get("outbound") or "-",
+            },
+        )
+        row["count"] += 1
+        if event.get("time", "") >= row["last"]:
+            row["last"] = event.get("time") or row["last"]
+            row["outbound"] = event.get("outbound") or row["outbound"]
+
+    rows = sorted(grouped.values(), key=lambda item: (item["count"], item["last"]), reverse=True)
+    lines = [
+        "Xray VPS Manager: обнаружено подключение по GeoIP",
+        f"Новых событий: {len(events)}",
+        "",
+    ]
+    for row in rows[:10]:
+        lines.extend(
+            [
+                f"Клиент: {row['client']}",
+                f"Регион: {row['regions']}",
+                f"Цель: {row['host']}:{row['port']}",
+                f"Событий: {row['count']}",
+                f"Последнее: {format_event_time(row['last'])}",
+                f"Outbound: {row['outbound']}",
+                "",
+            ]
+        )
+    if len(rows) > 10:
+        lines.append(f"И ещё целей: {len(rows) - 10}")
+    return "\n".join(lines).strip()
+
+
+def notify_geoip(quiet=False):
+    db = load_db()
+    if not db.get("enabled") or not db.get("token") or not db.get("chatId"):
+        if not quiet:
+            print("Telegram bot notifications are not configured or disabled.")
+        return 0
+
+    state = db.setdefault("geoipState", {})
+    sent_ids = list(state.get("sentIds", []))[-500:]
+    sent_set = set(sent_ids)
+    exceptions = load_exceptions()
+    candidates = []
+    for event in iter_new_events(db):
+        if not geoip_regions(event):
+            continue
+        if is_exception(event, exceptions):
+            continue
+        item_id = event_id(event)
+        if item_id in sent_set:
+            continue
+        candidates.append(event)
+        sent_ids.append(item_id)
+        sent_set.add(item_id)
+
+    if not candidates:
+        state["sentIds"] = sent_ids[-500:]
+        save_db(db)
+        if not quiet:
+            print("No new GeoIP events for Telegram notification.")
+        return 0
+
+    message = build_geoip_message(candidates)
+    try:
+        send_message(db, message)
+    except Exception as exc:
+        if not quiet:
+            print(f"ERROR: Telegram notification failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    state["sentIds"] = sent_ids[-500:]
+    state["lastGeoipNotification"] = utc_stamp()
+    save_db(db)
+    if not quiet:
+        print(f"Telegram GeoIP notification sent: {len(candidates)} events.")
+    return 0
+
+
+def status():
+    db = load_db()
+    rows = [
+        ("Enabled", "yes" if db.get("enabled") else "no"),
+        ("Token", mask_token(db.get("token", ""))),
+        ("Chat", f"{db.get('chatLabel') or '-'} ({db.get('chatId') or '-'})"),
+        ("Route mode", db.get("routeMode", "direct")),
+        ("Config", str(TELEGRAM_DB_PATH)),
+        ("Last GeoIP notification", db.get("geoipState", {}).get("lastGeoipNotification") or db.get("lastGeoipNotification") or "never"),
+    ]
+    width = max(len(key) for key, _value in rows)
+    for key, value in rows:
+        print(f"{key.ljust(width)} : {value}")
+
+
+def usage():
+    print(
+        """Usage:
+  xray-telegram status
+  xray-telegram setup
+  xray-telegram owner
+  xray-telegram enable
+  xray-telegram disable
+  xray-telegram mode direct|cascade
+  xray-telegram test
+  xray-telegram notify-geoip [--quiet]
+"""
+    )
+
+
+def main():
+    require_root()
+    args = sys.argv[1:]
+    command = args[0] if args else "status"
+    try:
+        if command == "status" and len(args) in (0, 1):
+            status()
+        elif command == "setup" and len(args) == 1:
+            setup()
+        elif command in ("owner", "chat", "finish-setup") and len(args) == 1:
+            configure_owner(send_test=True)
+        elif command == "enable" and len(args) == 1:
+            set_enabled(True)
+        elif command == "disable" and len(args) == 1:
+            set_enabled(False)
+        elif command == "mode" and len(args) == 2:
+            set_route_mode(args[1])
+        elif command == "test" and len(args) == 1:
+            test_message()
+        elif command == "notify-geoip" and len(args) in (1, 2):
+            if len(args) == 2 and args[1] != "--quiet":
+                usage()
+                sys.exit(1)
+            sys.exit(notify_geoip(quiet=len(args) == 2))
+        else:
+            usage()
+            sys.exit(1)
+    except Exception as exc:
+        die(str(exc))
+
+
+if __name__ == "__main__":
+    main()

@@ -129,7 +129,7 @@ xray-menu
 +-----------------+--------------------------------------------------------------+
 | Xray Version    | 26.3.27                                                      |
 | Manager Version | v1.0.0                                                       |
-| Manager Updated | 2026-06-11 18:24 UTC                                         |
+| Manager Updated | 2026-06-11 19:35 UTC                                         |
 | Geo Assets      | geoip.dat: 2026-06-11 13:26 MSK; geosite.dat: 2026-06-11...  |
 | Security Audit  | 2026-06-05 15:55 MSK                                         |
 +-----------------+--------------------------------------------------------------+
@@ -147,6 +147,7 @@ xray-menu
 | 2 | Настройки Xray    |
 | 3 | Безопасность      |
 | 4 | Резервные копии   |
+| 5 | Telegram бот      |
 | 0 | Выход             |
 +---+-------------------+
 ```
@@ -277,6 +278,16 @@ xray-menu
 4 Восстановить из бэкапа на сервере
 5 Показать команду загрузки бэкапа на сервер
 6 Удалить бэкап
+
+Telegram бот:
+1 Статус бота
+2 Первичная настройка
+3 Донастроить владельца/чат
+4 Включить уведомления
+5 Отключить уведомления
+6 Изменить маршрут
+7 Отправить тестовое сообщение
+8 Проверить GeoIP-уведомления сейчас
 ```
 
 После выбора команды её вывод отделяется визуальным блоком:
@@ -626,6 +637,55 @@ GeoIP routing-предупреждения для проверки split tunneli
 
 Меню добавляет в `config.json` правило Xray вида `geoip:CODE -> geoip-warning-CODE`. Маршрут трафика не меняется: warning outbound дублирует текущий `cascade-upstream` или `direct`, но в access log появляется отдельная метка outbound. На время включённой GeoIP-проверки `routing.domainStrategy` переключается в `IPOnDemand`, чтобы доменные цели успевали пройти DNS/GeoIP-проверку до общего catch-all правила. При отключении GeoIP routing менеджер восстанавливает прежний `domainStrategy`. Парсер активности не сканирует IP самостоятельно, а только читает метку outbound и показывает риск `xray-geoip:CODE`.
 
+## Telegram Бот
+
+Telegram-бот отправляет уведомления о новых GeoIP-событиях только в один сохранённый приватный `chat_id`. Если кто-то другой напишет этому боту, менеджер не будет отправлять ему уведомления.
+
+Первичная настройка:
+
+```bash
+xray-telegram setup
+```
+
+Во время настройки нужно вставить token от BotFather, отправить `/start` своему боту и выбрать найденный приватный чат. После настройки бот отправит тестовое сообщение.
+
+Если при выборе `cascade` SSH-сессия оборвалась на перезапуске Xray, подключитесь к серверу заново и завершите привязку владельца:
+
+```bash
+xray-telegram owner
+```
+
+Эта команда использует уже сохранённый token и не перезапускает Xray. Если cascade-маршрут уже успел записаться в Xray config, команда предложит подхватить его для Telegram-бота без повторной перенастройки. В меню это пункт `Telegram бот` -> `Донастроить владельца/чат`.
+
+Показать статус:
+
+```bash
+xray-telegram status
+```
+
+Выбрать маршрут Telegram Bot API:
+
+```bash
+xray-telegram mode direct
+xray-telegram mode cascade
+```
+
+`direct` отправляет запросы Telegram напрямую с сервера. `cascade` создаёт локальный SOCKS inbound `127.0.0.1:10810` и направляет только Telegram Bot API через `cascade-upstream`.
+
+Отправить тестовое сообщение:
+
+```bash
+xray-telegram test
+```
+
+Проверить новые GeoIP-события и отправить уведомление вручную:
+
+```bash
+xray-telegram notify-geoip
+```
+
+В автоматическом режиме `xray-traffic-sync.timer` запускает `xray-telegram notify-geoip --quiet` после `xray-activity sync`. Исключения suspicious из `activity-exceptions.json` учитываются: по ним уведомления не отправляются.
+
 Показать доступные GeoIP-коды:
 
 ```bash
@@ -948,6 +1008,7 @@ systemctl status xray-client-expire.timer --no-pager
 /usr/local/etc/xray/traffic.json         накопительная статистика и история трафика за 6 месяцев
 /usr/local/etc/xray/activity.json        сводная база журнала активности
 /usr/local/etc/xray/activity-exceptions.json база исключений suspicious
+/usr/local/etc/xray/telegram-bot.json    настройки Telegram-бота и chat_id уведомлений
 /usr/local/etc/xray/activity             детальные JSONL-журналы активности клиентов
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /usr/local/sbin/xray-client              управление клиентами
@@ -959,6 +1020,7 @@ systemctl status xray-client-expire.timer --no-pager
 /usr/local/sbin/xray-backup              резервное копирование и восстановление данных
 /usr/local/sbin/xray-test                безопасная диагностика сервера
 /usr/local/sbin/xray-activity            журнал активности и отчёты по метаданным
+/usr/local/sbin/xray-telegram            Telegram-уведомления о GeoIP-событиях
 /root/xray-reality-client.txt            стартовая ссылка
 /root/xray_backups                       архивы резервных копий данных
 /root/xray_activity_exports              экспортированные отчёты активности
@@ -1006,12 +1068,13 @@ xray-backup create
 /usr/local/etc/xray/traffic.json
 /usr/local/etc/xray/activity.json
 /usr/local/etc/xray/activity-exceptions.json
+/usr/local/etc/xray/telegram-bot.json
 /usr/local/etc/xray/activity
 /root/xray-reality-client.txt
 ```
 
 Архивы хранятся на сервере в `/root/xray_backups`.
-Архив содержит Reality private key, UUID клиентов, статистику трафика, журнал активности и исключения suspicious, поэтому его нужно хранить как приватный секрет.
+Архив содержит Reality private key, UUID клиентов, статистику трафика, журнал активности, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
 
 Показать бэкапы на сервере:
 
