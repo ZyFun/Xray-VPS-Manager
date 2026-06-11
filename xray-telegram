@@ -12,10 +12,13 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
+CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 TELEGRAM_DB_PATH = Path("/usr/local/etc/xray/telegram-bot.json")
 ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
@@ -27,6 +30,13 @@ TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
 TELEGRAM_SOCKS_HOST = "127.0.0.1"
 TELEGRAM_SOCKS_PORT = 10810
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
+EXPIRY_REMINDER_DAYS = (5, 1)
+EXPIRY_REMINDER_HOUR = 8
+USER_POLL_SHORT_TIMEOUT = 2
+USER_POLL_LONG_TIMEOUT = 45
+USER_POLLER_SLEEP_UNCONFIGURED = 30
+USER_POLLER_SLEEP_ERROR = 5
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 DEFAULT_DB = {
     "version": 1,
     "enabled": False,
@@ -34,7 +44,14 @@ DEFAULT_DB = {
     "chatId": "",
     "chatLabel": "",
     "routeMode": "direct",
+    "paymentAmount": "",
+    "paymentTotalAmount": "",
+    "paymentCurrency": "₽",
+    "paymentRoundingMode": "none",
+    "paymentRoundingStep": "10",
     "geoipState": {"files": {}, "sentIds": []},
+    "clientSubscriptions": {},
+    "clientSubscriptionState": {"userUpdateOffset": 0, "expiryReminders": {}},
 }
 
 
@@ -120,6 +137,35 @@ def load_db():
     geoip_state.setdefault("files", {})
     geoip_state.setdefault("sentIds", [])
     merged["geoipState"] = geoip_state
+    subscriptions = merged.get("clientSubscriptions")
+    if not isinstance(subscriptions, dict):
+        subscriptions = {}
+    merged["clientSubscriptions"] = subscriptions
+    subscription_state = merged.get("clientSubscriptionState")
+    if not isinstance(subscription_state, dict):
+        subscription_state = {}
+    try:
+        subscription_state["userUpdateOffset"] = int(subscription_state.get("userUpdateOffset", 0) or 0)
+    except (TypeError, ValueError):
+        subscription_state["userUpdateOffset"] = 0
+    reminders = subscription_state.get("expiryReminders")
+    if not isinstance(reminders, dict):
+        reminders = {}
+    subscription_state["expiryReminders"] = reminders
+    merged["clientSubscriptionState"] = subscription_state
+    if not str(merged.get("paymentTotalAmount", "")).strip() and str(merged.get("paymentAmount", "")).strip():
+        try:
+            amount, currency = parse_payment_value(str(merged.get("paymentAmount", "")))
+            merged["paymentTotalAmount"] = amount
+            merged["paymentCurrency"] = currency
+        except ValueError:
+            pass
+    if merged.get("paymentRoundingMode") not in ("none", "step"):
+        merged["paymentRoundingMode"] = "none"
+    try:
+        merged["paymentRoundingStep"] = parse_payment_rounding_step(merged.get("paymentRoundingStep", "10"))
+    except ValueError:
+        merged["paymentRoundingStep"] = "10"
     if merged.get("routeMode") not in ("direct", "cascade"):
         merged["routeMode"] = "direct"
     return merged
@@ -132,6 +178,14 @@ def save_db(db):
     chown_xray(tmp)
     os.chmod(tmp, 0o640)
     tmp.replace(TELEGRAM_DB_PATH)
+
+
+def save_db_sections(db, sections):
+    current = load_db()
+    for section in sections:
+        if section in db:
+            current[section] = db[section]
+    save_db(current)
 
 
 def mask_token(token):
@@ -175,6 +229,20 @@ def load_config():
     if not CONFIG_PATH.exists():
         die(f"Config not found: {CONFIG_PATH}")
     return json.loads(CONFIG_PATH.read_text())
+
+
+def load_client_db():
+    return load_json(CLIENT_DB_PATH, {"clients": {}, "connections": {}})
+
+
+def client_db_clients(db):
+    clients = db.get("clients", {})
+    return clients if isinstance(clients, dict) else {}
+
+
+def client_db_connections(db):
+    connections = db.get("connections", {})
+    return connections if isinstance(connections, dict) else {}
 
 
 def save_config(config):
@@ -401,11 +469,44 @@ def initialize_geoip_offsets(db):
     state["updated"] = utc_stamp()
 
 
-def send_message(db, text):
-    chat_id = str(db.get("chatId") or "").strip()
+def send_chat_message(db, chat_id, text, reply_markup=None):
+    chat_id = str(chat_id or "").strip()
     if not chat_id:
         die("Telegram chat is not configured.")
-    return curl_json(db, "sendMessage", {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}, timeout=30)
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    return curl_json(db, "sendMessage", payload, timeout=30)
+
+
+def send_message(db, text):
+    return send_chat_message(db, db.get("chatId"), text)
+
+
+def answer_callback_query(db, callback_id, text="", show_alert=False):
+    callback_id = str(callback_id or "").strip()
+    if not callback_id:
+        return None
+    payload = {"callback_query_id": callback_id, "show_alert": bool(show_alert)}
+    if text:
+        payload["text"] = text
+    try:
+        return curl_json(db, "answerCallbackQuery", payload, timeout=15)
+    except Exception:
+        return None
+
+
+def refresh_user_update_offset(db):
+    try:
+        data = curl_json(db, "getUpdates", {"allowed_updates": ["message", "callback_query"], "timeout": 1}, timeout=10)
+    except Exception:
+        return
+    updates = data.get("result", [])
+    if not updates:
+        return
+    offset = max(int(update.get("update_id", 0)) + 1 for update in updates)
+    state = db.setdefault("clientSubscriptionState", {})
+    state["userUpdateOffset"] = max(int(state.get("userUpdateOffset", 0) or 0), offset)
 
 
 def ask_token_if_missing(db):
@@ -450,7 +551,9 @@ def configure_owner(send_test=True):
     db["chatLabel"] = chat["label"]
     db["enabled"] = True
     initialize_geoip_offsets(db)
+    refresh_user_update_offset(db)
     save_db(db)
+    configure_bot_commands()
     if send_test:
         send_message(db, "Xray VPS Manager: Telegram-уведомления подключены. GeoIP-уведомления будут отправляться только в этот чат.")
     print("Telegram bot owner/chat configured.")
@@ -499,6 +602,751 @@ def test_message():
     db = load_db()
     send_message(db, "Xray VPS Manager: тестовое сообщение Telegram-бота.")
     print("Test message sent.")
+
+
+def configure_bot_commands():
+    db = load_db()
+    if not db.get("token"):
+        die("Telegram bot token is not configured.")
+    commands = [
+        {"command": "start", "description": "Открыть меню"},
+        {"command": "status", "description": "Показать подписку"},
+        {"command": "unsubscribe", "description": "Отключить напоминания"},
+        {"command": "help", "description": "Помощь"},
+    ]
+    curl_json(db, "setMyCommands", {"commands": commands}, timeout=30)
+    print("Telegram command menu updated.")
+
+
+def normalize_value(value):
+    return str(value or "").strip().lower()
+
+
+def find_vless_link(text):
+    match = re.search(r"vless://[^\s<>()]+", str(text or ""), flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return match.group(0).rstrip(".,;")
+
+
+def parse_vless_link(text):
+    link = find_vless_link(text)
+    if not link:
+        raise ValueError("VLESS-ссылка не найдена.")
+    parsed = urlsplit(link)
+    if parsed.scheme.lower() != "vless":
+        raise ValueError("Это не VLESS-ссылка.")
+    client_id = unquote(parsed.username or "").strip().lower()
+    if not UUID_RE.fullmatch(client_id):
+        raise ValueError("В ссылке не найден корректный UUID клиента.")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("В ссылке указан некорректный порт.") from exc
+    if not port:
+        raise ValueError("В ссылке не указан порт подключения.")
+    params = {key.lower(): value for key, value in parse_qsl(parsed.query, keep_blank_values=True)}
+    for key in ("security", "pbk", "sni", "sid"):
+        if not params.get(key):
+            raise ValueError(f"В ссылке нет обязательного Reality-параметра: {key}")
+    if normalize_value(params.get("security")) != "reality":
+        raise ValueError("Поддерживаются только VLESS Reality-ссылки.")
+    return {
+        "raw": link,
+        "id": client_id,
+        "host": parsed.hostname or "",
+        "port": str(port or ""),
+        "params": params,
+        "hash": hashlib.sha256(link.encode("utf-8")).hexdigest(),
+    }
+
+
+def client_entry_id(entry):
+    return normalize_value(entry.get("id") or (entry.get("client") or {}).get("id"))
+
+
+def expected_connection_params(client_db, entry):
+    connection_tag = entry.get("connection", "")
+    connection = client_db_connections(client_db).get(connection_tag, {})
+    return {
+        "port": str(connection.get("port", "")),
+        "pbk": connection.get("publicKey", ""),
+        "sni": connection.get("sni", ""),
+        "sid": connection.get("shortId", ""),
+        "fp": connection.get("fingerprint", ""),
+        "security": "reality",
+        "encryption": "none",
+        "type": "tcp",
+        "flow": (entry.get("client") or {}).get("flow", "xtls-rprx-vision"),
+    }
+
+
+def match_vless_to_client(parsed_link):
+    client_db = load_client_db()
+    clients = client_db_clients(client_db)
+    same_uuid = []
+    for name, entry in clients.items():
+        if client_entry_id(entry) == parsed_link["id"]:
+            same_uuid.append((name, entry))
+    if not same_uuid:
+        return None, "По UUID из ссылки клиент в базе не найден."
+
+    matches = []
+    mismatch_notes = []
+    for name, entry in same_uuid:
+        expected = expected_connection_params(client_db, entry)
+        mismatches = []
+        for key, expected_value in expected.items():
+            if not expected_value:
+                continue
+            actual_value = parsed_link["port"] if key == "port" else parsed_link["params"].get(key, "")
+            if actual_value and normalize_value(actual_value) != normalize_value(expected_value):
+                mismatches.append(key)
+        if mismatches:
+            mismatch_notes.append(f"{name}: " + ", ".join(mismatches))
+            continue
+        matches.append((name, entry))
+
+    if len(matches) == 1:
+        return matches[0], ""
+    if len(matches) > 1:
+        return None, "По ссылке найдено несколько клиентов. Обратись к администратору."
+    detail = "; ".join(mismatch_notes) if mismatch_notes else "параметры подключения не совпали"
+    return None, "UUID найден, но Reality-параметры ссылки не совпадают с текущей базой: " + detail
+
+
+def format_access_until(value):
+    if not value:
+        return "бессрочно"
+    moment = parse_time(value)
+    if not moment:
+        return value
+    tzinfo, label = display_timezone()
+    return f"{moment.astimezone(tzinfo).strftime('%Y-%m-%d %H:%M')} {label}"
+
+
+def parse_payment_value(value):
+    raw = str(value or "").strip().replace(",", ".")
+    if not raw or raw == "0":
+        return "", "₽"
+    if any(ch in raw for ch in "\r\n\t"):
+        raise ValueError("Сумма оплаты должна быть одной строкой.")
+    parts = raw.split()
+    amount_raw = parts[0]
+    currency = parts[1] if len(parts) > 1 else "₽"
+    if currency not in ("₽", "$", "€"):
+        raise ValueError("Валюта должна быть одной из: ₽, $, €.")
+    try:
+        amount = Decimal(amount_raw)
+    except InvalidOperation as exc:
+        raise ValueError("Сумма оплаты должна быть числом.") from exc
+    if amount <= 0:
+        return "", currency
+    if amount > Decimal("1000000000"):
+        raise ValueError("Сумма оплаты слишком большая.")
+    return decimal_storage_value(amount), currency
+
+
+def decimal_storage_value(value):
+    return format(Decimal(value).normalize(), "f")
+
+
+def format_decimal_amount(amount):
+    if not amount:
+        return ""
+    value = Decimal(str(amount))
+    if value == value.to_integral_value():
+        return format(value.quantize(Decimal("1")), "f")
+    if value.as_tuple().exponent >= -2:
+        return format(value.quantize(Decimal("0.01")), "f")
+    return format(value.normalize(), "f")
+
+
+def format_payment_amount(amount, currency):
+    if not amount:
+        return "не указана"
+    return f"{format_decimal_amount(amount)} {currency}"
+
+
+def parse_payment_rounding_step(value):
+    raw = str(value or "").strip().replace(",", ".")
+    if not raw:
+        return "10"
+    try:
+        step = Decimal(raw)
+    except InvalidOperation as exc:
+        raise ValueError("Шаг округления должен быть числом.") from exc
+    if step <= 0:
+        raise ValueError("Шаг округления должен быть больше 0.")
+    if step > Decimal("1000000000"):
+        raise ValueError("Шаг округления слишком большой.")
+    return decimal_storage_value(step)
+
+
+def normalize_payment_rounding_mode(value):
+    raw = str(value or "").strip().lower()
+    if raw in ("", "none", "no", "off", "0", "без", "без округления"):
+        return "none"
+    if raw in ("step", "ceil", "up", "round", "round-up", "1", "шаг", "округлять"):
+        return "step"
+    raise ValueError("Режим округления должен быть none или step.")
+
+
+def payment_rounding_settings(db):
+    mode = db.get("paymentRoundingMode", "none")
+    if mode not in ("none", "step"):
+        mode = "none"
+    try:
+        step = parse_payment_rounding_step(db.get("paymentRoundingStep", "10"))
+    except ValueError:
+        step = "10"
+    return mode, step
+
+
+def payment_rounding_label(db):
+    mode, step = payment_rounding_settings(db)
+    if mode == "step":
+        return f"вверх до {format_decimal_amount(step)}"
+    return "без округления"
+
+
+def paid_client_count(client_db=None):
+    client_db = client_db or load_client_db()
+    return sum(1 for entry in client_db_clients(client_db).values() if entry.get("paymentType") == "paid")
+
+
+def payment_share_amount(total_amount, paid_count, rounding_mode="none", rounding_step="10"):
+    if not total_amount or paid_count <= 0:
+        return ""
+    total = Decimal(str(total_amount))
+    share = total / Decimal(paid_count)
+    if normalize_payment_rounding_mode(rounding_mode) == "step":
+        step = Decimal(parse_payment_rounding_step(rounding_step))
+        rounded = (share / step).to_integral_value(rounding=ROUND_CEILING) * step
+        return decimal_storage_value(rounded)
+    return decimal_storage_value(share.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
+
+
+def payment_amount_label(db, client_db=None):
+    total = str(db.get("paymentTotalAmount") or "").strip()
+    currency = db.get("paymentCurrency") or "₽"
+    count = paid_client_count(client_db)
+    rounding_mode, rounding_step = payment_rounding_settings(db)
+    share = payment_share_amount(total, count, rounding_mode, rounding_step)
+    if not total:
+        return "не указана"
+    if count <= 0:
+        return f"не рассчитана: нет платных клиентов (общая сумма: {format_payment_amount(total, currency)})"
+    return format_payment_amount(share, currency)
+
+
+def payment_summary(db, client_db=None):
+    total = str(db.get("paymentTotalAmount") or "").strip()
+    currency = db.get("paymentCurrency") or "₽"
+    count = paid_client_count(client_db)
+    rounding_mode, rounding_step = payment_rounding_settings(db)
+    share = payment_share_amount(total, count, rounding_mode, rounding_step)
+    summary = {
+        "total": format_payment_amount(total, currency),
+        "paidCount": count,
+        "rounding": payment_rounding_label(db),
+        "share": format_payment_amount(share, currency) if share else "не рассчитана",
+    }
+    if not total and count > 0:
+        summary["warning"] = (
+            "Total rent amount is not set. Configure it in "
+            "Telegram бот -> Настроить оплату и округление, "
+            "or run: xray-telegram payment-amount '500 ₽'"
+        )
+    return summary
+
+
+def print_payment_summary(db):
+    summary = payment_summary(db)
+    print(f"Total rent amount: {summary['total']}")
+    print(f"Paid clients: {summary['paidCount']}")
+    print(f"Rounding: {summary['rounding']}")
+    print(f"Amount per paid client: {summary['share']}")
+    if summary.get("warning"):
+        print(f"WARN: {summary['warning']}")
+
+
+def set_payment_amount(value):
+    db = load_db()
+    amount, currency = parse_payment_value(value)
+    db["paymentTotalAmount"] = amount
+    db["paymentCurrency"] = currency
+    db["paymentAmount"] = format_payment_amount(amount, currency) if amount else ""
+    save_db(db)
+    if amount:
+        print_payment_summary(db)
+    else:
+        print("Payment amount cleared.")
+
+
+def set_payment_rounding(mode_value, step_value=None):
+    db = load_db()
+    mode = normalize_payment_rounding_mode(mode_value)
+    if mode == "step":
+        if not step_value:
+            raise ValueError("Для режима step нужно указать шаг округления.")
+        db["paymentRoundingStep"] = parse_payment_rounding_step(step_value)
+    db["paymentRoundingMode"] = mode
+    if "paymentRoundingStep" not in db:
+        db["paymentRoundingStep"] = "10"
+    save_db(db)
+    print_payment_summary(db)
+
+
+def show_payment_amount():
+    db = load_db()
+    print_payment_summary(db)
+
+
+def client_access_summary(entry):
+    status = "отключён" if entry.get("enabled") is False else "включён"
+    reason = entry.get("disabledReason", "")
+    if reason == "expired":
+        status = "отключён: срок истёк"
+    elif reason == "traffic-limit":
+        status = "отключён: лимит трафика"
+    return "\n".join(
+        [
+            f"Статус: {status}",
+            f"Доступ до: {format_access_until(entry.get('expiresAt', ''))}",
+        ]
+    )
+
+
+def client_menu_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Подключить уведомления", "callback_data": "client:subscribe"}],
+            [{"text": "Статус подписки", "callback_data": "client:status"}],
+            [{"text": "Отключить уведомления", "callback_data": "client:unsubscribe"}],
+            [{"text": "Помощь", "callback_data": "client:help"}],
+        ]
+    }
+
+
+def subscription_intro_text():
+    return (
+        "Привет. Я бот Vireika.\n\n"
+        "Я помогу не забыть о переводе за совместную аренду сервера.\n\n"
+        "Чтобы подключить напоминания, нажми кнопку «Подключить уведомления» "
+        "или просто отправь сюда свою VLESS Reality-ссылку. "
+        "По ней я определю твой ключ и включу уведомления."
+    )
+
+
+def subscribe_prompt_text():
+    return (
+        "Отправь сюда свою VLESS Reality-ссылку целиком.\n\n"
+        "Я определю ключ пользователя по параметрам ссылки и включу уведомления."
+    )
+
+
+def send_client_menu(db, chat_id, text=None):
+    send_chat_message(db, chat_id, text or subscription_intro_text(), reply_markup=client_menu_keyboard())
+
+
+def subscription_status_for_chat(db, chat_id):
+    subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
+    if not subscription:
+        return "Ты пока не подписан на напоминания. Отправь свою VLESS-ссылку, чтобы подключить уведомления."
+    client_db = load_client_db()
+    name = subscription.get("client", "")
+    entry = client_db_clients(client_db).get(name)
+    if not entry:
+        return "Подписка найдена, но клиента уже нет в базе. Отправь актуальную VLESS-ссылку или обратись к администратору."
+    if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
+        return "Подписка устарела: клиент был пересоздан. Отправь актуальную VLESS-ссылку заново."
+    return "Текущая подписка:\n" + client_access_summary(entry)
+
+
+def unsubscribe_chat(db, chat_id):
+    removed = db.setdefault("clientSubscriptions", {}).pop(str(chat_id), None)
+    if removed:
+        return "Подписка на напоминания отключена."
+    return "Активной подписки нет."
+
+
+def subscribe_chat_to_client(db, chat, text):
+    parsed_link = parse_vless_link(text)
+    match, reason = match_vless_to_client(parsed_link)
+    if not match:
+        raise ValueError(reason)
+    name, entry = match
+    chat_id = str(chat["id"])
+    db.setdefault("clientSubscriptions", {})[chat_id] = {
+        "client": name,
+        "clientId": client_entry_id(entry),
+        "connection": entry.get("connection", ""),
+        "chatLabel": telegram_chat_label(chat),
+        "linkHash": parsed_link["hash"],
+        "subscribedAt": utc_stamp(),
+        "enabled": True,
+    }
+    return name, entry
+
+
+def handle_user_message(db, update):
+    message = update.get("message") or update.get("edited_message") or {}
+    chat = message.get("chat") or {}
+    if chat.get("type") != "private" or "id" not in chat:
+        return False
+    chat_id = str(chat["id"])
+    text = str(message.get("text") or "").strip()
+    if not text:
+        send_client_menu(db, chat_id, "Отправь текстовую VLESS-ссылку или нажми кнопку ниже.")
+        return True
+    command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    if command in ("/start", "/help"):
+        send_client_menu(db, chat_id)
+        return True
+    if command == "/status":
+        send_client_menu(db, chat_id, subscription_status_for_chat(db, chat_id))
+        return True
+    if command in ("/unsubscribe", "/stop"):
+        send_client_menu(db, chat_id, unsubscribe_chat(db, chat_id))
+        return True
+    if find_vless_link(text):
+        name, entry = subscribe_chat_to_client(db, chat, text)
+        send_client_menu(
+            db,
+            chat_id,
+            "Подписка подключена.\n\n"
+            + client_access_summary(entry)
+            + "\n\nНапоминания придут в 08:00 за 5 дней и за 1 день до окончания доступа.",
+        )
+        return True
+    send_client_menu(db, chat_id, "Я не нашёл VLESS-ссылку. Отправь свою ссылку целиком или нажми кнопку ниже.")
+    return True
+
+
+def handle_callback_query(db, update):
+    callback = update.get("callback_query") or {}
+    callback_id = callback.get("id", "")
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    if chat.get("type") != "private" or "id" not in chat:
+        answer_callback_query(db, callback_id)
+        return False
+    chat_id = str(chat["id"])
+    data = str(callback.get("data") or "")
+
+    if data == "client:subscribe":
+        answer_callback_query(db, callback_id)
+        send_client_menu(db, chat_id, subscribe_prompt_text())
+        return True
+    if data == "client:status":
+        answer_callback_query(db, callback_id)
+        send_client_menu(db, chat_id, subscription_status_for_chat(db, chat_id))
+        return True
+    if data == "client:unsubscribe":
+        answer_callback_query(db, callback_id, "Готово")
+        send_client_menu(db, chat_id, unsubscribe_chat(db, chat_id))
+        return True
+    if data == "client:help":
+        answer_callback_query(db, callback_id)
+        send_client_menu(db, chat_id)
+        return True
+
+    answer_callback_query(db, callback_id, "Неизвестная кнопка")
+    send_client_menu(db, chat_id)
+    return True
+
+
+def handle_telegram_update(db, update):
+    if "callback_query" in update:
+        return handle_callback_query(db, update)
+    return handle_user_message(db, update)
+
+
+def update_private_chat_id(update):
+    message = update.get("message") or update.get("edited_message") or {}
+    chat = message.get("chat") or {}
+    if chat.get("type") == "private" and chat.get("id"):
+        return str(chat["id"])
+    callback = update.get("callback_query") or {}
+    callback_message = callback.get("message") or {}
+    callback_chat = callback_message.get("chat") or {}
+    if callback_chat.get("type") == "private" and callback_chat.get("id"):
+        return str(callback_chat["id"])
+    from_user = callback.get("from") or {}
+    if from_user.get("id"):
+        return str(from_user["id"])
+    return ""
+
+
+def user_poll_configured(db):
+    return bool(db.get("enabled") and db.get("token") and db.get("chatId"))
+
+
+def poll_user_subscriptions(quiet=False, telegram_timeout=USER_POLL_SHORT_TIMEOUT):
+    db = load_db()
+    if not db.get("enabled") or not db.get("token"):
+        if not quiet:
+            print("Telegram bot notifications are not configured or disabled.")
+        return 0
+    if not db.get("chatId"):
+        if not quiet:
+            print("Owner chat is not configured; user subscription polling skipped.")
+        return 0
+    state = db.setdefault("clientSubscriptionState", {})
+    offset = int(state.get("userUpdateOffset", 0) or 0)
+    payload = {"allowed_updates": ["message", "callback_query"], "timeout": max(0, int(telegram_timeout))}
+    if offset:
+        payload["offset"] = offset
+    try:
+        data = curl_json(db, "getUpdates", payload, timeout=max(15, int(telegram_timeout) + 10))
+    except Exception as exc:
+        if not quiet:
+            print(f"ERROR: Telegram user polling failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    updates = data.get("result", [])
+    processed = 0
+    for update in updates:
+        try:
+            update_id = int(update.get("update_id", 0))
+            state["userUpdateOffset"] = max(int(state.get("userUpdateOffset", 0) or 0), update_id + 1)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if handle_telegram_update(db, update):
+                processed += 1
+        except Exception as exc:
+            chat_id = update_private_chat_id(update)
+            if chat_id:
+                try:
+                    send_client_menu(db, chat_id, "Не удалось обработать действие: " + str(exc))
+                except Exception:
+                    pass
+            if not quiet:
+                print(f"ERROR: failed to process Telegram user update: {exc}", file=sys.stderr)
+    state["lastUserPoll"] = utc_stamp()
+    save_db_sections(db, ("clientSubscriptions", "clientSubscriptionState"))
+    if not quiet:
+        print(f"Processed Telegram user messages: {processed}")
+    return 0
+
+
+def run_user_poller():
+    print("Telegram user poller started.", flush=True)
+    while True:
+        try:
+            db = load_db()
+            if not user_poll_configured(db):
+                print("Telegram user poller waits for enabled bot, token, and owner chat.", flush=True)
+                time.sleep(USER_POLLER_SLEEP_UNCONFIGURED)
+                continue
+            rc = poll_user_subscriptions(quiet=True, telegram_timeout=USER_POLL_LONG_TIMEOUT)
+            if rc != 0:
+                time.sleep(USER_POLLER_SLEEP_ERROR)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            print(f"ERROR: Telegram user poller failed: {exc}", file=sys.stderr, flush=True)
+            time.sleep(USER_POLLER_SLEEP_ERROR)
+
+
+def expiry_reminder_schedule(entry, days_before):
+    expires_at = parse_time(entry.get("expiresAt", ""))
+    if not expires_at:
+        return None
+    tzinfo, label = display_timezone()
+    expiry_local = expires_at.astimezone(tzinfo)
+    reminder_date = expiry_local.date() - timedelta(days=days_before)
+    reminder_local = datetime(
+        reminder_date.year,
+        reminder_date.month,
+        reminder_date.day,
+        EXPIRY_REMINDER_HOUR,
+        0,
+        0,
+        tzinfo=tzinfo,
+    )
+    return reminder_local, expiry_local, label
+
+
+def expiry_reminder_due(entry, days_before, now=None):
+    schedule = expiry_reminder_schedule(entry, days_before)
+    if not schedule:
+        return None
+    reminder_local, expiry_local, label = schedule
+    now_local = (now or utc_now()).astimezone(reminder_local.tzinfo)
+    if now_local >= reminder_local and now_local < expiry_local:
+        return reminder_local, expiry_local, label
+    return None
+
+
+def expiry_reminder_key(chat_id, name, entry, days_before):
+    return "|".join(
+        [
+            str(chat_id),
+            str(name),
+            client_entry_id(entry),
+            str(entry.get("expiresAt", "")),
+            f"{days_before}d",
+        ]
+    )
+
+
+def build_expiry_reminder_message(db, entry, days_before, expiry_local, timezone_label):
+    day_word = "день" if days_before == 1 else "дней"
+    return "\n".join(
+        [
+            "Vireika: напоминание об оплате",
+            "",
+            f"Через {days_before} {day_word} заканчивается текущий период.",
+            f"Доступ до: {expiry_local.strftime('%Y-%m-%d %H:%M')} {timezone_label}",
+            f"Сумма оплаты: {payment_amount_label(db)}",
+            "",
+            "Когда будет удобно, переведи оплату за совместную аренду сервера.",
+        ]
+    )
+
+
+def notify_expiry(quiet=False):
+    db = load_db()
+    if not db.get("enabled") or not db.get("token"):
+        if not quiet:
+            print("Telegram bot notifications are not configured or disabled.")
+        return 0
+    client_db = load_client_db()
+    clients = client_db_clients(client_db)
+    subscriptions = db.setdefault("clientSubscriptions", {})
+    state = db.setdefault("clientSubscriptionState", {})
+    sent = state.setdefault("expiryReminders", {})
+    now = utc_now()
+    sent_count = 0
+
+    for chat_id, subscription in list(subscriptions.items()):
+        if not isinstance(subscription, dict) or subscription.get("enabled") is False:
+            continue
+        name = subscription.get("client", "")
+        entry = clients.get(name)
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("paymentType") != "paid":
+            continue
+        if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
+            continue
+        for days_before in EXPIRY_REMINDER_DAYS:
+            due = expiry_reminder_due(entry, days_before, now)
+            if not due:
+                continue
+            key = expiry_reminder_key(chat_id, name, entry, days_before)
+            if key in sent:
+                continue
+            _reminder_local, expiry_local, timezone_label = due
+            message = build_expiry_reminder_message(db, entry, days_before, expiry_local, timezone_label)
+            try:
+                send_chat_message(db, chat_id, message)
+            except Exception as exc:
+                if not quiet:
+                    print(f"ERROR: expiry reminder failed for {name}/{chat_id}: {exc}", file=sys.stderr)
+                continue
+            sent[key] = utc_stamp()
+            sent_count += 1
+
+    if len(sent) > 2000:
+        sent_items = sorted(sent.items(), key=lambda item: item[1])[-2000:]
+        state["expiryReminders"] = dict(sent_items)
+    state["lastExpiryReminderCheck"] = utc_stamp()
+    if sent_count:
+        state["lastExpiryReminder"] = utc_stamp()
+    save_db_sections(db, ("clientSubscriptionState",))
+    if not quiet:
+        print(f"Expiry reminders sent: {sent_count}")
+    return 0
+
+
+def build_access_updated_message(entry):
+    return "\n".join(
+        [
+            "Vireika: всё готово",
+            "",
+            "Спасибо! Оплата за совместную аренду сервера получена.",
+            "",
+            f"Доступ продлён до: {format_access_until(entry.get('expiresAt', ''))}",
+        ]
+    )
+
+
+def notify_access_updated(name, quiet=False):
+    db = load_db()
+    if not db.get("enabled") or not db.get("token"):
+        if not quiet:
+            print("Telegram bot notifications are not configured or disabled.")
+        return 0
+    client_db = load_client_db()
+    entry = client_db_clients(client_db).get(name)
+    if not isinstance(entry, dict):
+        if not quiet:
+            print(f"Client not found: {name}")
+        return 1
+    if entry.get("paymentType") != "paid":
+        if not quiet:
+            print(f"Client is free, access payment notification skipped: {name}")
+        return 0
+    message = build_access_updated_message(entry)
+    sent_count = 0
+    for chat_id, subscription in db.get("clientSubscriptions", {}).items():
+        if not isinstance(subscription, dict) or subscription.get("enabled") is False:
+            continue
+        if subscription.get("client") != name:
+            continue
+        if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
+            continue
+        try:
+            send_chat_message(db, chat_id, message)
+            sent_count += 1
+        except Exception as exc:
+            if not quiet:
+                print(f"ERROR: access update notification failed for {name}/{chat_id}: {exc}", file=sys.stderr)
+    if not quiet:
+        print(f"Access update notifications sent: {sent_count}")
+    return 0
+
+
+def list_client_subscribers():
+    db = load_db()
+    client_db = load_client_db()
+    clients = client_db_clients(client_db)
+    subscriptions = db.get("clientSubscriptions", {})
+    if not subscriptions:
+        print("No client Telegram subscriptions.")
+        return
+    rows = []
+    for chat_id, subscription in sorted(subscriptions.items(), key=lambda item: item[1].get("client", "")):
+        name = subscription.get("client", "-")
+        entry = clients.get(name, {})
+        valid = "yes" if entry and normalize_value(subscription.get("clientId")) == client_entry_id(entry) else "no"
+        rows.append(
+            [
+                name,
+                subscription.get("chatLabel", "-"),
+                chat_id,
+                format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else ""),
+                valid,
+                subscription.get("subscribedAt", "-"),
+            ]
+        )
+    headers = ["CLIENT", "CHAT", "CHAT_ID", "ACCESS_UNTIL", "VALID", "SUBSCRIBED_AT"]
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(str(value)))
+    border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+    print(border)
+    print("| " + " | ".join(headers[index].ljust(widths[index]) for index in range(len(headers))) + " |")
+    print(border)
+    for row in rows:
+        print("| " + " | ".join(str(row[index]).ljust(widths[index]) for index in range(len(row))) + " |")
+    print(border)
 
 
 def load_exceptions():
@@ -668,7 +1516,7 @@ def notify_geoip(quiet=False):
 
     if not candidates:
         state["sentIds"] = sent_ids[-500:]
-        save_db(db)
+        save_db_sections(db, ("geoipState",))
         if not quiet:
             print("No new GeoIP events for Telegram notification.")
         return 0
@@ -683,7 +1531,7 @@ def notify_geoip(quiet=False):
         return 0
     state["sentIds"] = sent_ids[-500:]
     state["lastGeoipNotification"] = utc_stamp()
-    save_db(db)
+    save_db_sections(db, ("geoipState",))
     if not quiet:
         print(f"Telegram GeoIP notification sent: {len(candidates)} events.")
     return 0
@@ -691,13 +1539,20 @@ def notify_geoip(quiet=False):
 
 def status():
     db = load_db()
+    subscriptions = db.get("clientSubscriptions", {})
+    subscription_state = db.get("clientSubscriptionState", {})
     rows = [
         ("Enabled", "yes" if db.get("enabled") else "no"),
         ("Token", mask_token(db.get("token", ""))),
         ("Chat", f"{db.get('chatLabel') or '-'} ({db.get('chatId') or '-'})"),
         ("Route mode", db.get("routeMode", "direct")),
+        ("Payment amount", payment_amount_label(db)),
+        ("Payment rounding", payment_rounding_label(db)),
+        ("Client subscriptions", str(len(subscriptions))),
         ("Config", str(TELEGRAM_DB_PATH)),
         ("Last GeoIP notification", db.get("geoipState", {}).get("lastGeoipNotification") or db.get("lastGeoipNotification") or "never"),
+        ("Last user poll", subscription_state.get("lastUserPoll") or "never"),
+        ("Last expiry reminder", subscription_state.get("lastExpiryReminder") or "never"),
     ]
     width = max(len(key) for key, _value in rows)
     for key, value in rows:
@@ -714,7 +1569,15 @@ def usage():
   xray-telegram disable
   xray-telegram mode direct|cascade
   xray-telegram test
+  xray-telegram commands
   xray-telegram notify-geoip [--quiet]
+  xray-telegram poll-users [--quiet]
+  xray-telegram run-poller
+  xray-telegram notify-expiry [--quiet]
+  xray-telegram notify-access NAME [--quiet]
+  xray-telegram subscribers
+  xray-telegram payment-amount [VALUE]
+  xray-telegram payment-rounding [none|step VALUE]
 """
     )
 
@@ -738,11 +1601,49 @@ def main():
             set_route_mode(args[1])
         elif command == "test" and len(args) == 1:
             test_message()
+        elif command in ("commands", "set-commands") and len(args) == 1:
+            configure_bot_commands()
         elif command == "notify-geoip" and len(args) in (1, 2):
             if len(args) == 2 and args[1] != "--quiet":
                 usage()
                 sys.exit(1)
             sys.exit(notify_geoip(quiet=len(args) == 2))
+        elif command == "poll-users" and len(args) in (1, 2):
+            if len(args) == 2 and args[1] != "--quiet":
+                usage()
+                sys.exit(1)
+            sys.exit(poll_user_subscriptions(quiet=len(args) == 2))
+        elif command in ("run-poller", "poll-daemon") and len(args) == 1:
+            run_user_poller()
+        elif command == "notify-expiry" and len(args) in (1, 2):
+            if len(args) == 2 and args[1] != "--quiet":
+                usage()
+                sys.exit(1)
+            sys.exit(notify_expiry(quiet=len(args) == 2))
+        elif command == "notify-access" and len(args) in (2, 3):
+            if len(args) == 3 and args[2] != "--quiet":
+                usage()
+                sys.exit(1)
+            sys.exit(notify_access_updated(args[1], quiet=len(args) == 3))
+        elif command in ("subscribers", "subscriptions") and len(args) == 1:
+            list_client_subscribers()
+        elif command == "payment-amount" and len(args) in (1, 2):
+            if len(args) == 1:
+                show_payment_amount()
+            else:
+                set_payment_amount(args[1])
+        elif command == "payment-rounding" and len(args) in (1, 2, 3):
+            if len(args) == 1:
+                show_payment_amount()
+            elif args[1] == "step":
+                if len(args) != 3:
+                    raise ValueError("Для режима step нужно указать шаг округления.")
+                set_payment_rounding(args[1], args[2])
+            elif len(args) == 2:
+                set_payment_rounding(args[1])
+            else:
+                usage()
+                sys.exit(1)
         else:
             usage()
             sys.exit(1)

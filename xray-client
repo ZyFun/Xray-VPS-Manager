@@ -19,9 +19,11 @@ INBOUND_TAG = "vless-reality"
 DEFAULT_CONNECTION_NAME = "default"
 STATS_SERVER = "127.0.0.1:10085"
 TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
+XRAY_TELEGRAM = Path("/usr/local/sbin/xray-telegram")
 DEFAULT_SERVER_ADDR = ""
 ONLINE_WINDOW_SECONDS = 300
 BYTES_IN_GB = 1024 ** 3
+PAYMENT_TYPES = {"paid", "free"}
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 CONNECTION_NAME_RE = re.compile(r"^[^\r\n|]{1,64}$")
 FINGERPRINTS = {
@@ -36,8 +38,9 @@ FINGERPRINTS = {
     "random",
     "randomized",
 }
-GREEN = "\033[32m"
+GREEN = "\033[92m"
 RED = "\033[31m"
+YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 
@@ -96,6 +99,18 @@ def parse_access_days(value):
     return days
 
 
+def parse_extend_days(value):
+    raw = (value or "").strip().lower().lstrip("+")
+    if not re.fullmatch(r"[0-9]+", raw):
+        die("Extend days must be a positive number.")
+    days = int(raw, 10)
+    if days < 1:
+        die("Extend days must be a positive number.")
+    if days > 36500:
+        die("Extend days is too large. Use a value up to 36500.")
+    return days
+
+
 def expires_at_from_days(days):
     if days is None:
         return ""
@@ -115,6 +130,43 @@ def set_entry_expiry(entry, days):
         entry.pop("expiresAt", None)
         entry.pop("accessDays", None)
         entry.pop("expiredAt", None)
+
+
+def normalize_payment_type(value):
+    raw = (value or "").strip().lower()
+    if raw in ("paid", "pay", "yes", "y", "1", "платный", "платно", "да"):
+        return "paid"
+    if raw in ("", "free", "no", "n", "0", "бесплатный", "бесплатно", "нет"):
+        return "free"
+    die("Payment type must be paid or free.")
+
+
+def payment_type_label(entry):
+    return "paid" if entry.get("paymentType") == "paid" else "free"
+
+
+def extended_expires_at(entry, days):
+    now = local_now()
+    current = parse_datetime(entry.get("expiresAt", ""))
+    if current is None:
+        base_date = now.date()
+    else:
+        current_date = current.astimezone(now.tzinfo).date()
+        base_date = max(current_date, now.date())
+    expire_date = base_date + timedelta(days=days)
+    return datetime.combine(expire_date, time.min, tzinfo=now.tzinfo).isoformat(timespec="seconds")
+
+
+def extend_entry_expiry(entry, days):
+    if days < 1:
+        die("Extend days must be a positive number.")
+    entry["expiresAt"] = extended_expires_at(entry, days)
+    try:
+        previous_days = int(entry.get("accessDays", 0) or 0)
+    except (TypeError, ValueError):
+        previous_days = 0
+    entry["accessDays"] = previous_days + days if previous_days > 0 else days
+    entry.pop("expiredAt", None)
 
 
 def parse_limit_gb(value):
@@ -270,8 +322,13 @@ def save_config(config):
 
 def load_db():
     if CLIENT_DB_PATH.exists():
-        return json.loads(CLIENT_DB_PATH.read_text())
-    return {"clients": {}}
+        db = json.loads(CLIENT_DB_PATH.read_text())
+    else:
+        db = {"clients": {}}
+    for entry in db.setdefault("clients", {}).values():
+        if isinstance(entry, dict):
+            entry["paymentType"] = normalize_payment_type(entry.get("paymentType", "free"))
+    return db
 
 
 def save_db(db):
@@ -506,9 +563,11 @@ def db_entry_from_client(item, created="", enabled=True, previous=None):
         "trafficLimitExceededPeriod",
         "trafficLimitExceededBytes",
         "trafficLimitResetAt",
+        "paymentType",
     ):
         if key in previous:
             entry[key] = previous[key]
+    entry["paymentType"] = normalize_payment_type(entry.get("paymentType", "free"))
     if "connection" in previous:
         entry["connection"] = previous["connection"]
     if not entry["client"].get("email") and name:
@@ -659,6 +718,10 @@ def validate_fingerprint(value):
 
 
 def color_label(value, text):
+    if value == "free":
+        return f"{GREEN}{text}{RESET}"
+    if value == "paid":
+        return f"{YELLOW}{text}{RESET}"
     if not sys.stdout.isatty():
         return text
     if value in ("enabled", "online", "бессрочно"):
@@ -808,6 +871,7 @@ def client_rows(config, db):
                 "id": item.get("id", ""),
                 "email": raw_email,
                 "status": "enabled",
+                "paymentType": payment_type_label(entry),
                 "expiresAt": entry.get("expiresAt", ""),
                 "connection": entry.get("connection") or tag,
             })
@@ -822,6 +886,7 @@ def client_rows(config, db):
             "id": entry.get("id", ""),
             "email": entry.get("client", {}).get("email", name),
             "status": "disabled" if entry.get("enabled") is False else "missing",
+            "paymentType": payment_type_label(entry),
             "expiresAt": entry.get("expiresAt", ""),
             "connection": entry.get("connection") or default_connection_tag(config),
         })
@@ -856,6 +921,26 @@ def query_user_stats():
 def sync_traffic():
     if TRAFFIC_SYNC.exists():
         run_capture([str(TRAFFIC_SYNC), "--quiet"], timeout=8)
+
+
+def notify_access_updated(name):
+    if not XRAY_TELEGRAM.exists():
+        return
+    result = run_capture([str(XRAY_TELEGRAM), "notify-access", name, "--quiet"], timeout=20)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+        print(f"WARN: Telegram access notification failed: {detail}", file=sys.stderr)
+
+
+def print_payment_summary():
+    if not XRAY_TELEGRAM.exists():
+        return
+    result = run_capture([str(XRAY_TELEGRAM), "payment-amount"], timeout=10)
+    if result.returncode == 0 and result.stdout.strip():
+        print(result.stdout.strip())
+    elif result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+        print(f"WARN: Payment summary unavailable: {detail}", file=sys.stderr)
 
 
 def load_traffic_db():
@@ -1105,8 +1190,8 @@ def table_row(values, widths, color_indexes=None):
 
 
 def print_client_table(rows):
-    headers = ["NAME", "STATUS", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
-    color_indexes = {headers.index("STATUS"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
+    headers = ["NAME", "STATUS", "PAYMENT", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
+    color_indexes = {headers.index("STATUS"), headers.index("PAYMENT"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
     widths = [len(header) for header in headers]
     for row in rows:
         for index, value in enumerate(row):
@@ -1394,6 +1479,7 @@ def cmd_list():
                 [
                     row["name"],
                     row["status"],
+                    row["paymentType"],
                     online,
                     format_traffic(incoming),
                     format_traffic(outgoing),
@@ -1534,8 +1620,9 @@ def db_entry_for_existing_client(config, db, name):
     return entry
 
 
-def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None):
+def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, payment_type="free"):
     validate_name(name)
+    payment_type = normalize_payment_type(payment_type)
     config = load_config()
     db = load_db()
     ensure_connections(config, db)
@@ -1559,6 +1646,7 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None)
     current.append(client)
     entry = db_entry_from_client(client, created=created, enabled=True)
     entry["connection"] = connection_tag
+    entry["paymentType"] = payment_type
     set_entry_expiry(entry, access_days)
     db_clients(db)[name] = entry
 
@@ -1576,10 +1664,26 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None)
 
     print(f"Added client: {name}")
     print(f"Connection: {connection_display_name(config, db, connection_tag)} ({connection_tag})")
+    print(f"Payment type: {payment_type_label(entry)}")
     print(f"Created: {created}")
     print(f"Access until: {format_access_until(entry.get('expiresAt', ''))}")
     print(f"Backup: {backup}")
+    print_payment_summary()
     print(link_for(config, client_id, name, connection_tag, db))
+
+
+def cmd_set_payment(name, payment_value):
+    payment_type = normalize_payment_type(payment_value)
+    config = load_config()
+    db = load_db()
+    ensure_connections(config, db)
+    entry = db_entry_for_existing_client(config, db, name)
+    entry["paymentType"] = payment_type
+    db_clients(db)[name] = entry
+    save_db(db)
+    print(f"Client: {name}")
+    print(f"Payment type: {payment_type_label(entry)}")
+    print_payment_summary()
 
 
 def cmd_remove(name):
@@ -1666,7 +1770,7 @@ def cmd_enable(name):
     if not entry:
         die(f"Client not found: {name}")
     if access_expired(entry):
-        die(f"Access expired for client: {name}. Extend it first: xray-client set-days {name} DAYS")
+        die(f"Access expired for client: {name}. Extend it first: xray-client extend-days {name} DAYS")
     traffic_status = traffic_limit_status(entry, traffic_entry(load_traffic_db(), name))
     if traffic_status and traffic_status["exceeded"]:
         die(
@@ -1701,9 +1805,8 @@ def cmd_enable(name):
     print(link_for(config, client["id"], name, connection_tag, db))
 
 
-def cmd_set_days(name, days_value):
+def apply_access_update(name, update_entry):
     validate_name(name)
-    days = parse_access_days(days_value)
     sync_traffic()
     config = load_config()
     db = load_db()
@@ -1718,7 +1821,7 @@ def cmd_set_days(name, days_value):
         entry = db_entry_from_client(item, created=created, enabled=True)
         entry["connection"] = inbound_tag(inbound)
 
-    set_entry_expiry(entry, days)
+    update_entry(entry)
     traffic_db = load_traffic_db()
     entry, config_changed, status, traffic_status = reconcile_client_access_status(config, db, traffic_db, name, entry)
 
@@ -1752,6 +1855,17 @@ def cmd_set_days(name, days_value):
         )
     if backup:
         print(f"Backup: {backup}")
+    notify_access_updated(name)
+
+
+def cmd_set_days(name, days_value):
+    days = parse_access_days(days_value)
+    apply_access_update(name, lambda entry: set_entry_expiry(entry, days))
+
+
+def cmd_extend_days(name, days_value):
+    days = parse_extend_days(days_value)
+    apply_access_update(name, lambda entry: extend_entry_expiry(entry, days))
 
 
 def cmd_set_limit(name, period_value, limit_gb_value):
@@ -2009,12 +2123,14 @@ def usage():
   xray-client connection-list
   xray-client add-connection NAME PORT SNI [FINGERPRINT]
   xray-client remove-connection NAME_OR_TAG
-  xray-client add NAME [DAYS] [--connection TAG]
+  xray-client add NAME [DAYS] [--connection TAG] [--payment paid|free]
   xray-client disable NAME
   xray-client enable NAME
   xray-client remove NAME
   xray-client link NAME
   xray-client set-days NAME DAYS
+  xray-client extend-days NAME DAYS
+  xray-client set-payment NAME paid|free
   xray-client expire-due [--quiet]
   xray-client traffic-summary [YYYY-MM]
   xray-client traffic-day NAME [YYYY-MM-DD]
@@ -2037,18 +2153,25 @@ def parse_add_args(args):
     name = args[0]
     rest = list(args[1:])
     connection_tag = None
+    payment_type = "free"
     if "--connection" in rest:
         index = rest.index("--connection")
         if index + 1 >= len(rest):
             die("--connection requires TAG")
         connection_tag = rest[index + 1]
         del rest[index:index + 2]
+    if "--payment" in rest:
+        index = rest.index("--payment")
+        if index + 1 >= len(rest):
+            die("--payment requires paid or free")
+        payment_type = normalize_payment_type(rest[index + 1])
+        del rest[index:index + 2]
     if len(rest) > 1:
         usage()
         sys.exit(1)
     if rest:
-        return name, parse_access_days(rest[0]), False, connection_tag
-    return name, None, True, connection_tag
+        return name, parse_access_days(rest[0]), False, connection_tag, payment_type
+    return name, None, True, connection_tag, payment_type
 
 
 def cmd_link(name):
@@ -2079,8 +2202,14 @@ def main():
     elif command in ("remove-connection", "delete-connection") and len(sys.argv) == 3:
         cmd_connection_remove(sys.argv[2])
     elif command == "add":
-        name, access_days, prompt_for_access, connection_tag = parse_add_args(sys.argv[2:])
-        cmd_add(name, access_days, prompt_for_access=prompt_for_access, connection_tag=connection_tag)
+        name, access_days, prompt_for_access, connection_tag, payment_type = parse_add_args(sys.argv[2:])
+        cmd_add(
+            name,
+            access_days,
+            prompt_for_access=prompt_for_access,
+            connection_tag=connection_tag,
+            payment_type=payment_type,
+        )
     elif command in ("disable", "off") and len(sys.argv) == 3:
         cmd_disable(sys.argv[2])
     elif command in ("enable", "on") and len(sys.argv) == 3:
@@ -2091,6 +2220,10 @@ def main():
         cmd_link(sys.argv[2])
     elif command in ("set-days", "access-days") and len(sys.argv) == 4:
         cmd_set_days(sys.argv[2], sys.argv[3])
+    elif command in ("extend-days", "prolong-days") and len(sys.argv) == 4:
+        cmd_extend_days(sys.argv[2], sys.argv[3])
+    elif command in ("set-payment", "payment-type") and len(sys.argv) == 4:
+        cmd_set_payment(sys.argv[2], sys.argv[3])
     elif command == "expire-due" and len(sys.argv) in (2, 3):
         quiet = len(sys.argv) == 3 and sys.argv[2] == "--quiet"
         if len(sys.argv) == 3 and not quiet:

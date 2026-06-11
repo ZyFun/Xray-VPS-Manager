@@ -620,6 +620,23 @@ ExecStart=/usr/local/sbin/xray-activity sync --quiet
 ExecStart=/usr/local/sbin/xray-telegram notify-geoip --quiet
 ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet
 ExecStart=/usr/local/sbin/xray-client expire-due --quiet
+ExecStart=/usr/local/sbin/xray-telegram notify-expiry --quiet
+EOF
+
+cat >/etc/systemd/system/xray-telegram-poller.service <<'EOF'
+[Unit]
+Description=Poll Telegram user messages for Xray VPS Manager
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/xray-telegram run-poller
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
 cat >/etc/systemd/system/xray-traffic-sync.timer <<'EOF'
@@ -667,6 +684,7 @@ systemctl enable --now xray
 systemctl restart xray
 systemctl enable --now xray-traffic-sync.timer
 systemctl enable --now xray-client-expire.timer
+systemctl enable --now xray-telegram-poller.service
 xray-traffic-sync --quiet || true
 xray-client expire-due --quiet || true
 

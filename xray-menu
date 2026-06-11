@@ -28,14 +28,16 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-11 19:35 UTC"
+MENU_UPDATED = "2026-06-11 21:52 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
-GREEN = "\033[32m"
+GREEN = "\033[92m"
 RED = "\033[31m"
+GOLD = "\033[93m"
 RESET = "\033[0m"
+ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 FINGERPRINTS = [
     "chrome",
     "firefox",
@@ -112,8 +114,17 @@ def table_border(widths):
     return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
 
 
+def visible_len(value):
+    return len(ANSI_RE.sub("", str(value)))
+
+
+def visible_ljust(value, width):
+    text = str(value)
+    return text + " " * max(0, width - visible_len(text))
+
+
 def table_row(values, widths):
-    cells = [f" {str(value).ljust(widths[index])} " for index, value in enumerate(values)]
+    cells = [f" {visible_ljust(value, widths[index])} " for index, value in enumerate(values)]
     return "|" + "|".join(cells) + "|"
 
 
@@ -163,6 +174,11 @@ def telegram_menu_actions():
         ("6", "Изменить маршрут"),
         ("7", "Отправить тестовое сообщение"),
         ("8", "Проверить GeoIP-уведомления сейчас"),
+        ("9", "Показать подписки клиентов"),
+        ("10", "Обработать сообщения пользователей"),
+        ("11", "Проверить напоминания об оплате"),
+        ("12", "Настроить оплату и округление"),
+        ("13", "Обновить меню команд Telegram"),
         ("0", "Назад"),
     ]
 
@@ -172,13 +188,14 @@ def client_menu_actions():
         ("1", "Показать клиентов"),
         ("2", "Добавить клиента"),
         ("3", "Изменить срок доступа"),
-        ("4", "Отключить клиента"),
-        ("5", "Включить клиента"),
-        ("6", "Удалить клиента"),
-        ("7", "Вывести ссылку клиента"),
-        ("8", "Проверить просроченных клиентов"),
-        ("9", "Трафик"),
-        ("10", "Журнал активности"),
+        ("4", "Изменить статус оплаты"),
+        ("5", "Отключить клиента"),
+        ("6", "Включить клиента"),
+        ("7", "Удалить клиента"),
+        ("8", "Вывести ссылку клиента"),
+        ("9", "Проверить просроченных клиентов"),
+        ("10", "Трафик"),
+        ("11", "Журнал активности"),
         ("0", "Назад"),
     ]
 
@@ -418,7 +435,7 @@ def load_config():
 
 
 def color(text, code):
-    if not sys.stdout.isatty():
+    if os.environ.get("NO_COLOR"):
         return text
     return f"{code}{text}{RESET}"
 
@@ -429,6 +446,19 @@ def green(text):
 
 def red(text):
     return color(text, RED)
+
+
+def gold(text):
+    return color(text, GOLD)
+
+
+def color_payment_status(value):
+    text = str(value or "")
+    if text == "free":
+        return f"{GREEN}{text}{RESET}"
+    if text == "paid":
+        return f"{GOLD}{text}{RESET}"
+    return text
 
 
 def split_email(email):
@@ -530,6 +560,8 @@ def print_connection_selection_table(rows):
     print(table_row(headers, widths))
     print(border)
     for row in values:
+        row = list(row)
+        row[4] = color_payment_status(row[4])
         print(table_row(row, widths))
     print(border)
 
@@ -749,6 +781,7 @@ def client_rows_for_selection(mode="all"):
             rows.append({
                 "name": name,
                 "status": "enabled",
+                "paymentType": entry.get("paymentType", "free"),
                 "created": entry.get("created") or created or "unknown",
                 "expiresAt": entry.get("expiresAt", ""),
                 "connection": entry.get("connection") or tag,
@@ -763,6 +796,7 @@ def client_rows_for_selection(mode="all"):
         rows.append({
             "name": name,
             "status": "disabled" if entry.get("enabled") is False else "missing",
+            "paymentType": entry.get("paymentType", "free"),
             "created": entry.get("created") or "unknown",
             "expiresAt": entry.get("expiresAt", ""),
             "connection": tag,
@@ -777,19 +811,20 @@ def client_rows_for_selection(mode="all"):
 
 
 def print_client_selection_table(rows):
-    headers = ("№", "CONNECTION", "NAME", "STATUS", "ACCESS UNTIL", "CREATED")
+    headers = ("№", "CONNECTION", "NAME", "STATUS", "PAYMENT", "ACCESS UNTIL", "CREATED")
     values = [
         (
             str(index),
             row["connectionName"],
             row["name"],
             row["status"],
+            row.get("paymentType", "free"),
             format_access_until(row.get("expiresAt", "")),
             row["created"],
         )
         for index, row in enumerate(rows, start=1)
     ]
-    values.append(("0", "Назад", "", "", "", ""))
+    values.append(("0", "Назад", "", "", "", "", ""))
     widths = [
         max(len(headers[column]), *(len(str(row[column])) for row in values))
         for column in range(len(headers))
@@ -799,6 +834,8 @@ def print_client_selection_table(rows):
     print(table_row(headers, widths))
     print(border)
     for row in values:
+        row = list(row)
+        row[4] = color_payment_status(row[4])
         print(table_row(row, widths))
     print(border)
 
@@ -1945,6 +1982,19 @@ def ask_name(action):
     return validate_client_name(name)
 
 
+def ask_payment_type():
+    print("Статус оплаты клиента.")
+    print("1) Бесплатный: не участвует в расчёте общей аренды и не получает напоминания об оплате.")
+    print("2) Платный: участвует в расчёте суммы на клиента и получает напоминания.")
+    choice = input("Статус оплаты [1-бесплатный]: ").strip() or "1"
+    if choice == "1":
+        return "free"
+    if choice == "2":
+        return "paid"
+    print("Действие отменено: неизвестный статус оплаты.")
+    return ""
+
+
 def ask_new_client_command():
     print("Введите имя клиента. Можно сразу указать срок через пробел.")
     print("Примеры: data_test2 или data_test2 30. Пустой срок или 0 означает бессрочно.")
@@ -1956,10 +2006,13 @@ def ask_new_client_command():
     tag = choose_connection("добавления клиента")
     if not tag:
         return []
+    payment_type = ask_payment_type()
+    if not payment_type:
+        return []
     command = ["xray-client", "add", name]
     if len(parts) == 1:
-        return command + ["--connection", tag]
-    return command + [parts[1].strip(), "--connection", tag]
+        return command + ["--connection", tag, "--payment", payment_type]
+    return command + [parts[1].strip(), "--connection", tag, "--payment", payment_type]
 
 
 def add_client_from_menu():
@@ -1975,6 +2028,15 @@ def ask_access_days():
     print("Введите 0 или нажмите Enter, чтобы сделать доступ бессрочным.")
     value = input("ACCESS_DAYS [бессрочно]: ").strip()
     return value or "0"
+
+
+def ask_extend_days():
+    print("Количество дней, которое нужно добавить к текущей дате окончания доступа.")
+    print("Если срок уже истёк или не был установлен, продление пойдёт от сегодняшней даты.")
+    value = input("EXTEND_DAYS: ").strip()
+    if not value:
+        die("Extend days is required.")
+    return value
 
 
 def choose_limit_period():
@@ -2026,7 +2088,86 @@ def update_selected_client_days():
     if not name:
         print("Действие отменено.")
         return
-    call(["xray-client", "set-days", name, ask_access_days()])
+    print("Что сделать со сроком доступа?")
+    print("1) Продлить на N дней: прибавить дни к текущей дате окончания.")
+    print("2) Установить срок N дней от сегодняшней даты.")
+    print("3) Сделать доступ бессрочным.")
+    choice = input("Действие [1-продлить]: ").strip() or "1"
+    if choice == "1":
+        call(["xray-client", "extend-days", name, ask_extend_days()])
+    elif choice == "2":
+        call(["xray-client", "set-days", name, ask_access_days()])
+    elif choice == "3":
+        call(["xray-client", "set-days", name, "0"])
+    else:
+        print("Действие отменено: неизвестный выбор.")
+
+
+def update_selected_client_payment():
+    name = choose_client("изменения статуса оплаты", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    payment_type = ask_payment_type()
+    if not payment_type:
+        return
+    call(["xray-client", "set-payment", name, payment_type])
+
+
+def update_telegram_payment_rounding():
+    print("Округление суммы на платного клиента.")
+    print("1) Оставить текущую настройку.")
+    print("2) Без округления.")
+    print("3) Округлять вверх до выбранного шага. Пример: шаг 10 превратит 223.10 в 230.")
+    choice = input("Округление [1-оставить]: ").strip() or "1"
+    if choice == "1":
+        print("Округление не изменено.")
+        return
+    if choice == "2":
+        call(["xray-telegram", "payment-rounding", "none"])
+        return
+    if choice != "3":
+        print("Действие отменено: неизвестный выбор.")
+        return
+    print("Введите шаг округления. Сумма на клиента будет округляться вверх до кратного шага.")
+    print("Примеры: 10, 50, 100.")
+    step = input("Шаг округления [10]: ").strip().replace(",", ".") or "10"
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", step):
+        die("Payment rounding step must be a positive number.")
+    if float(step) <= 0:
+        die("Payment rounding step must be greater than zero.")
+    call(["xray-telegram", "payment-rounding", "step", step])
+
+
+def update_telegram_payment_amount():
+    call(["xray-telegram", "payment-amount"])
+    print("Введите общую сумму оплаты для всех клиентов.")
+    print("Введите только число. Пример: 500. Введите 0, чтобы очистить значение.")
+    print("Нажмите Enter, чтобы оставить текущую сумму.")
+    amount = input("Сумма оплаты: ").strip().replace(",", ".")
+    if not amount:
+        print("Сумма оплаты не изменена.")
+    elif amount == "0":
+        call(["xray-telegram", "payment-amount", "0"])
+    elif not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", amount):
+        die("Payment amount must be a number.")
+    else:
+        print("Выберите валюту:")
+        print("1) Рубли: ₽")
+        print("2) Доллары: $")
+        print("3) Евро: €")
+        choice = input("Валюта [1-рубли]: ").strip() or "1"
+        currencies = {
+            "1": "₽",
+            "2": "$",
+            "3": "€",
+        }
+        symbol = currencies.get(choice)
+        if not symbol:
+            print("Действие отменено: неизвестная валюта.")
+            return
+        call(["xray-telegram", "payment-amount", f"{amount} {symbol}"])
+    update_telegram_payment_rounding()
 
 
 def print_initial_link():
@@ -2053,7 +2194,7 @@ def check_config():
 
 
 def check_timers():
-    call(["systemctl", "status", "xray-traffic-sync.timer", "xray-client-expire.timer", "--no-pager"])
+    call(["systemctl", "status", "xray-traffic-sync.timer", "xray-client-expire.timer", "xray-telegram-poller.service", "--no-pager"])
 
 
 def show_timezone():
@@ -2845,13 +2986,14 @@ def client_menu_handlers():
         "1": ("Показать клиентов", lambda: call(["xray-client", "list"])),
         "2": ("Добавить клиента", add_client_from_menu),
         "3": ("Изменить срок доступа", update_selected_client_days),
-        "4": ("Отключить клиента", lambda: call_client_command("disable", "отключения", "enabled")),
-        "5": ("Включить клиента", lambda: call_client_command("enable", "включения", "disabled")),
-        "6": ("Удалить клиента", lambda: call_client_command("remove", "удаления", "all")),
-        "7": ("Вывести ссылку клиента", lambda: call_client_command("link", "вывода ссылки", "all")),
-        "8": ("Проверить просроченных клиентов", lambda: call(["xray-client", "expire-due"])),
-        "9": ("Трафик", open_traffic_tools_menu),
-        "10": ("Журнал активности", open_activity_menu),
+        "4": ("Изменить статус оплаты", update_selected_client_payment),
+        "5": ("Отключить клиента", lambda: call_client_command("disable", "отключения", "enabled")),
+        "6": ("Включить клиента", lambda: call_client_command("enable", "включения", "disabled")),
+        "7": ("Удалить клиента", lambda: call_client_command("remove", "удаления", "all")),
+        "8": ("Вывести ссылку клиента", lambda: call_client_command("link", "вывода ссылки", "all")),
+        "9": ("Проверить просроченных клиентов", lambda: call(["xray-client", "expire-due"])),
+        "10": ("Трафик", open_traffic_tools_menu),
+        "11": ("Журнал активности", open_activity_menu),
     }
 
 
@@ -2979,6 +3121,11 @@ def telegram_menu_handlers():
         "6": ("Изменить маршрут", update_telegram_route_mode),
         "7": ("Отправить тестовое сообщение", lambda: call(["xray-telegram", "test"])),
         "8": ("Проверить GeoIP-уведомления сейчас", lambda: call(["xray-telegram", "notify-geoip"])),
+        "9": ("Показать подписки клиентов", lambda: call(["xray-telegram", "subscribers"])),
+        "10": ("Обработать сообщения пользователей", lambda: call(["xray-telegram", "poll-users"])),
+        "11": ("Проверить напоминания об оплате", lambda: call(["xray-telegram", "notify-expiry"])),
+        "12": ("Настроить оплату и округление", update_telegram_payment_amount),
+        "13": ("Обновить меню команд Telegram", lambda: call(["xray-telegram", "commands"])),
     }
 
 

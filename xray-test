@@ -46,7 +46,9 @@ TRAFFIC_SERVICE_COMMANDS = [
     "ExecStart=/usr/local/sbin/xray-telegram notify-geoip --quiet",
     "ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet",
     "ExecStart=/usr/local/sbin/xray-client expire-due --quiet",
+    "ExecStart=/usr/local/sbin/xray-telegram notify-expiry --quiet",
 ]
+TELEGRAM_POLLER_SERVICE_COMMAND = "ExecStart=/usr/local/sbin/xray-telegram run-poller"
 GREEN = "\033[32m"
 RED = "\033[31m"
 YELLOW = "\033[33m"
@@ -299,6 +301,20 @@ def check_telegram_bot_db(diag):
     mode = db.get("routeMode", "direct")
     if mode not in ("direct", "cascade"):
         raise RuntimeError("telegram-bot.json routeMode must be direct or cascade")
+    if not isinstance(db.get("paymentAmount", ""), str):
+        raise RuntimeError("telegram-bot.json paymentAmount must be a string")
+    if not isinstance(db.get("paymentTotalAmount", ""), str):
+        raise RuntimeError("telegram-bot.json paymentTotalAmount must be a string")
+    if db.get("paymentCurrency", "₽") not in ("₽", "$", "€"):
+        raise RuntimeError("telegram-bot.json paymentCurrency must be ₽, $, or €")
+    if db.get("paymentRoundingMode", "none") not in ("none", "step"):
+        raise RuntimeError("telegram-bot.json paymentRoundingMode must be none or step")
+    if not isinstance(db.get("paymentRoundingStep", "10"), str):
+        raise RuntimeError("telegram-bot.json paymentRoundingStep must be a string")
+    if not isinstance(db.get("clientSubscriptions", {}), dict):
+        raise RuntimeError("telegram-bot.json clientSubscriptions must be an object")
+    if not isinstance(db.get("clientSubscriptionState", {}), dict):
+        raise RuntimeError("telegram-bot.json clientSubscriptionState must be an object")
     diag.context["telegram_bot_db"] = db
     return f"{TELEGRAM_BOT_PATH} parsed"
 
@@ -435,7 +451,18 @@ def check_traffic_sync_service():
     missing = [line for line in TRAFFIC_SERVICE_COMMANDS if line not in result.stdout]
     if missing:
         raise RuntimeError("missing service command(s): " + ", ".join(missing))
-    return "xray-traffic-sync.service runs traffic sync, activity sync, Telegram GeoIP notifications, limits, and expiry checks"
+    return "xray-traffic-sync.service runs traffic sync, activity sync, Telegram GeoIP/client notifications, limits, and expiry checks"
+
+
+def check_telegram_poller_service():
+    result = run(["systemctl", "cat", "xray-telegram-poller.service"], timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(compact_output(result))
+    if TELEGRAM_POLLER_SERVICE_COMMAND not in result.stdout:
+        raise RuntimeError("missing service command: " + TELEGRAM_POLLER_SERVICE_COMMAND)
+    if not is_active("xray-telegram-poller.service"):
+        raise RuntimeError("xray-telegram-poller.service is not active")
+    return "xray-telegram-poller.service active for Telegram user long polling"
 
 
 def check_traffic_sync_runtime():
@@ -763,6 +790,7 @@ def run_diagnostics():
     diag.check("Stats API runtime", check_stats_runtime)
     diag.check("Systemd timers", check_timers)
     diag.check("Traffic sync service", check_traffic_sync_service)
+    diag.check("Telegram poller service", check_telegram_poller_service)
     diag.check("Traffic sync runtime", check_traffic_sync_runtime)
     diag.check("Activity log runtime", check_activity_runtime)
     diag.check("Telegram bot runtime", check_telegram_runtime)
