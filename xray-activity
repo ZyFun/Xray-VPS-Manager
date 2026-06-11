@@ -1149,6 +1149,43 @@ def delete_export(value):
     print(f"Freed: {format_size(size)}")
 
 
+def delete_all_exports(confirmed=False):
+    if not confirmed:
+        die("Refusing to delete all activity exports without --yes.")
+    if not EXPORT_DIR.exists():
+        print("No activity export archives found.")
+        return
+
+    archives = []
+    for path in sorted(EXPORT_DIR.glob("*.tar.gz")):
+        try:
+            archive = path.resolve()
+            if archive.parent == EXPORT_DIR.resolve() and archive.is_file():
+                archives.append(archive)
+        except OSError:
+            continue
+
+    if not archives:
+        print("No activity export archives found.")
+        return
+
+    total_size = 0
+    removed = 0
+    for archive in archives:
+        try:
+            size = archive.stat().st_size
+            archive.unlink()
+        except OSError as exc:
+            print(f"WARN: failed to delete {archive}: {exc}")
+            continue
+        total_size += size
+        removed += 1
+
+    print(f"Deleted activity exports: {removed}")
+    print(f"Freed: {format_size(total_size)}")
+    print(f"Directory: {EXPORT_DIR}")
+
+
 def default_ssh_target():
     server_addr = (server_env_values().get("SERVER_ADDR") or os.environ.get("SERVER_ADDR", "")).strip()
     if server_addr:
@@ -1212,6 +1249,7 @@ def usage():
   xray-activity export NAME START_DATE END_DATE [--path-only]
   xray-activity export-list [--plain]
   xray-activity export-delete ARCHIVE_PATH_OR_NAME
+  xray-activity export-delete-all --yes
   xray-activity download-command ARCHIVE_PATH_OR_NAME [SSH_TARGET_OR_USER_HOST] [LOCAL_DIR]
   xray-activity retention [DAYS]
   xray-activity risk-limits
@@ -1253,6 +1291,8 @@ def main():
             list_exports(plain=len(args) == 2)
         elif command in ("export-delete", "delete-export") and len(args) == 2:
             delete_export(args[1])
+        elif command in ("export-delete-all", "delete-all-exports") and len(args) in (1, 2):
+            delete_all_exports(confirmed=len(args) == 2 and args[1] == "--yes")
         elif command == "download-command" and len(args) in (2, 3, 4):
             download_command(args[1], args[2] if len(args) >= 3 else None, args[3] if len(args) >= 4 else "~/Downloads")
         elif command == "retention" and len(args) in (1, 2):

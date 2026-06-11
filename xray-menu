@@ -27,7 +27,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-11 10:43 UTC"
+MENU_UPDATED = "2026-06-11 11:06 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -285,10 +285,11 @@ def activity_menu_actions():
         ("7", "Экспорт отчёта по клиенту"),
         ("8", "Показать архивы экспорта"),
         ("9", "Удалить архив экспорта"),
-        ("10", "Изменить срок хранения журнала"),
-        ("11", "Настроить лимиты suspicious"),
-        ("12", "GeoIP routing: выбрать регион"),
-        ("13", "GeoIP routing: отключить"),
+        ("10", "Удалить все архивы экспорта"),
+        ("11", "Изменить срок хранения журнала"),
+        ("12", "Настроить лимиты suspicious"),
+        ("13", "GeoIP routing: выбрать регион"),
+        ("14", "GeoIP routing: отключить"),
         ("0", "Назад"),
     ]
 
@@ -1949,6 +1950,21 @@ def delete_activity_export_from_menu():
     call(["xray-activity", "export-delete", archive])
 
 
+def delete_all_activity_exports_from_menu():
+    rows = activity_export_rows_for_selection()
+    if not rows:
+        print("Архивы экспорта активности не найдены.")
+        return
+    print()
+    print(f"Будут удалены все архивы экспорта активности: {len(rows)}")
+    print("Это действие удалит только архивы в /root/xray_activity_exports.")
+    print("Журнал активности, traffic.json, clients.json и конфигурация Xray не изменятся.")
+    if not confirm("Удалить все архивы экспорта активности"):
+        print("Удаление отменено.")
+        return
+    call(["xray-activity", "export-delete-all", "--yes"])
+
+
 def activity_retention_value():
     result = subprocess.run(
         ["xray-activity", "retention"],
@@ -2702,10 +2718,11 @@ def activity_menu_handlers():
         "7": ("Экспорт отчёта по клиенту", activity_export_report),
         "8": ("Показать архивы экспорта", lambda: call(["xray-activity", "export-list"])),
         "9": ("Удалить архив экспорта", delete_activity_export_from_menu),
-        "10": ("Изменить срок хранения журнала", update_activity_retention),
-        "11": ("Настроить лимиты suspicious", update_activity_risk_limits),
-        "12": ("GeoIP routing: выбрать регион", set_xray_geoip_routing_region),
-        "13": ("GeoIP routing: отключить", disable_xray_geoip_routing_region),
+        "10": ("Удалить все архивы экспорта", delete_all_activity_exports_from_menu),
+        "11": ("Изменить срок хранения журнала", update_activity_retention),
+        "12": ("Настроить лимиты suspicious", update_activity_risk_limits),
+        "13": ("GeoIP routing: выбрать регион", set_xray_geoip_routing_region),
+        "14": ("GeoIP routing: отключить", disable_xray_geoip_routing_region),
     }
 
 
