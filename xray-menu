@@ -26,7 +26,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-08 17:37 UTC"
+MENU_UPDATED = "2026-06-11 10:08 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -144,9 +144,7 @@ def main_menu_actions():
         ("1", "Клиенты"),
         ("2", "Настройки Xray"),
         ("3", "Безопасность"),
-        ("4", "Просмотр трафика"),
-        ("5", "Журнал активности"),
-        ("6", "Резервные копии"),
+        ("4", "Резервные копии"),
         ("0", "Выход"),
     ]
 
@@ -161,10 +159,8 @@ def client_menu_actions():
         ("6", "Удалить клиента"),
         ("7", "Вывести ссылку клиента"),
         ("8", "Проверить просроченных клиентов"),
-        ("9", "Показать лимиты трафика"),
-        ("10", "Установить лимит трафика"),
-        ("11", "Убрать лимит трафика"),
-        ("12", "Проверить лимиты трафика"),
+        ("9", "Трафик"),
+        ("10", "Журнал активности"),
         ("0", "Назад"),
     ]
 
@@ -228,6 +224,17 @@ def update_menu_actions():
         ("3", "Обновить Xray"),
         ("4", "Показать бэкапы Xray"),
         ("5", "Откатить Xray к предыдущей версии"),
+        ("0", "Назад"),
+    ]
+
+
+def traffic_menu_actions():
+    return [
+        ("1", "Просмотр трафика"),
+        ("2", "Показать лимиты трафика"),
+        ("3", "Установить лимит трафика"),
+        ("4", "Убрать лимит трафика"),
+        ("5", "Проверить лимиты трафика"),
         ("0", "Назад"),
     ]
 
@@ -2564,10 +2571,8 @@ def client_menu_handlers():
         "6": ("Удалить клиента", lambda: call_client_command("remove", "удаления", "all")),
         "7": ("Вывести ссылку клиента", lambda: call_client_command("link", "вывода ссылки", "all")),
         "8": ("Проверить просроченных клиентов", lambda: call(["xray-client", "expire-due"])),
-        "9": ("Показать лимиты трафика", lambda: call(["xray-client", "limit-list"])),
-        "10": ("Установить лимит трафика", update_selected_client_limit),
-        "11": ("Убрать лимит трафика", clear_selected_client_limit),
-        "12": ("Проверить лимиты трафика", lambda: call(["xray-client", "enforce-limits", "--sync"])),
+        "9": ("Трафик", open_traffic_tools_menu),
+        "10": ("Журнал активности", open_activity_menu),
     }
 
 
@@ -2626,6 +2631,16 @@ def update_menu_handlers():
         "3": ("Обновить Xray", lambda: call(["xray-update", "--update"])),
         "4": ("Показать бэкапы Xray", lambda: call(["xray-update", "--backups"])),
         "5": ("Откатить Xray к предыдущей версии", rollback_xray),
+    }
+
+
+def traffic_menu_handlers():
+    return {
+        "1": ("Просмотр трафика", open_traffic_menu),
+        "2": ("Показать лимиты трафика", lambda: call(["xray-client", "limit-list"])),
+        "3": ("Установить лимит трафика", update_selected_client_limit),
+        "4": ("Убрать лимит трафика", clear_selected_client_limit),
+        "5": ("Проверить лимиты трафика", lambda: call(["xray-client", "enforce-limits", "--sync"])),
     }
 
 
@@ -2739,6 +2754,10 @@ def open_client_traffic_menu(name):
     menu_loop(f"Просмотр трафика: {name}", traffic_report_actions(), traffic_report_handlers(name))
 
 
+def open_traffic_tools_menu():
+    menu_loop("Трафик", traffic_menu_actions(), traffic_menu_handlers())
+
+
 def open_traffic_menu():
     while True:
         print()
@@ -2757,9 +2776,7 @@ def main_menu_handlers():
         "1": ("Клиенты", open_clients_menu),
         "2": ("Настройки Xray", open_xray_settings_menu),
         "3": ("Безопасность", open_security_menu),
-        "4": ("Просмотр трафика", open_traffic_menu),
-        "5": ("Журнал активности", open_activity_menu),
-        "6": ("Резервные копии", open_backup_menu),
+        "4": ("Резервные копии", open_backup_menu),
     }
 
 
