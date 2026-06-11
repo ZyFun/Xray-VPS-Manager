@@ -16,11 +16,18 @@ from pathlib import Path
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
+ASSET_NAMES = ("geoip.dat", "geosite.dat")
 BACKUP_DIR = Path("/usr/local/lib/xray-backups")
 GITHUB_API = "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 LATEST_PAGE = "https://github.com/XTLS/Xray-core/releases/latest"
 LATEST_ZIP = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
 LATEST_DGST = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip.dgst"
+LOYALSOLDIER_API = "https://api.github.com/repos/Loyalsoldier/v2ray-rules-dat/releases/latest"
+LOYALSOLDIER_PAGE = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest"
+LOYALSOLDIER_DOWNLOAD = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
+V2FLY_GEOIP_API = "https://api.github.com/repos/v2fly/geoip/releases/latest"
+V2FLY_GEOIP_PAGE = "https://github.com/v2fly/geoip/releases/latest"
+V2FLY_GEOIP_DOWNLOAD = "https://github.com/v2fly/geoip/releases/latest/download"
 
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -162,8 +169,8 @@ def preflight(verbose=True):
 
     check("Xray binary", xray_binary)
     check("curl", lambda: command_exists("curl"))
-    check("geoip.dat", lambda: require_path(XRAY_ASSET_DIR / "geoip.dat", "geoip.dat"))
-    check("geosite.dat", lambda: require_path(XRAY_ASSET_DIR / "geosite.dat", "geosite.dat"))
+    for name in ASSET_NAMES:
+        check(name, lambda name=name: require_path(XRAY_ASSET_DIR / name, name))
 
     config_holder = {}
 
@@ -286,6 +293,45 @@ def download(url, target, required=True):
     return True
 
 
+def latest_tag_from_redirect(latest_page):
+    result = run(["curl", "-fsSLI", "-o", "/dev/null", "-w", "%{url_effective}", latest_page], timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "failed to resolve latest release").strip())
+    return result.stdout.rstrip("/").split("/")[-1]
+
+
+def latest_github_release_label(api_url, latest_page):
+    try:
+        data = http_json(api_url)
+        tag = data.get("tag_name") or data.get("name") or ""
+        if tag:
+            return tag
+        raise RuntimeError("empty tag_name")
+    except Exception as exc:
+        warn(f"GitHub API недоступен, пробую latest redirect: {exc}")
+        return latest_tag_from_redirect(latest_page)
+
+
+def download_direct_assets(base_url, target_dir, names):
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        download(f"{base_url}/{name}", target_dir / name, required=True)
+
+
+def prepare_asset_config_test_dir(asset_dir, names):
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    for name in ASSET_NAMES:
+        target = asset_dir / name
+        if target.exists():
+            continue
+        current = XRAY_ASSET_DIR / name
+        if current.exists():
+            shutil.copy2(current, target)
+    missing = [name for name in ASSET_NAMES if not (asset_dir / name).exists()]
+    if missing:
+        raise RuntimeError("Cannot test assets; missing current file(s): " + ", ".join(missing))
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -370,11 +416,49 @@ def install_candidate(extract_dir):
     shutil.copy2(extract_dir / "xray", XRAY_BIN)
     XRAY_BIN.chmod(0o755)
     XRAY_ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    for name in ("geoip.dat", "geosite.dat"):
+    for name in ASSET_NAMES:
         src = extract_dir / name
         if src.exists():
             shutil.copy2(src, XRAY_ASSET_DIR / name)
             (XRAY_ASSET_DIR / name).chmod(0o644)
+
+
+def require_release_assets(extract_dir):
+    missing = [name for name in ASSET_NAMES if not (extract_dir / name).exists()]
+    if missing:
+        raise RuntimeError("Downloaded archive does not contain: " + ", ".join(missing))
+
+
+def current_asset_hashes(directory=XRAY_ASSET_DIR, names=ASSET_NAMES):
+    hashes = {}
+    for name in names:
+        path = directory / name
+        hashes[name] = sha256(path) if path.exists() else ""
+    return hashes
+
+
+def backup_assets(target, names=ASSET_NAMES):
+    target.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        path = XRAY_ASSET_DIR / name
+        if path.exists():
+            shutil.copy2(path, target / name)
+
+
+def restore_assets(source, names=ASSET_NAMES):
+    XRAY_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        path = source / name
+        if path.exists():
+            shutil.copy2(path, XRAY_ASSET_DIR / name)
+            (XRAY_ASSET_DIR / name).chmod(0o644)
+
+
+def install_assets(extract_dir, names=ASSET_NAMES):
+    XRAY_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        shutil.copy2(extract_dir / name, XRAY_ASSET_DIR / name)
+        (XRAY_ASSET_DIR / name).chmod(0o644)
 
 
 def restart_xray():
@@ -515,11 +599,100 @@ def cmd_update():
     ok(f"Xray updated successfully: {current_version()}")
 
 
+def asset_source(source_value):
+    value = (source_value or "xray").strip().lower()
+    aliases = {
+        "official": "xray",
+        "xray": "xray",
+        "xray-release": "xray",
+        "loyalsoldier": "loyalsoldier",
+        "loyal": "loyalsoldier",
+        "fresh": "loyalsoldier",
+        "v2fly": "v2fly",
+        "v2fly-geoip": "v2fly",
+    }
+    source = aliases.get(value)
+    if source is None:
+        die("Unknown asset source. Use: xray, loyalsoldier, or v2fly.")
+    return source
+
+
+def prepare_asset_source(source, workdir):
+    if source == "xray":
+        release = latest_release()
+        extract_dir, _candidate = download_release(release, workdir)
+        names = ASSET_NAMES
+        require_release_assets(extract_dir)
+        return extract_dir, names, f"official Xray {release['version']}"
+
+    if source == "loyalsoldier":
+        tag = latest_github_release_label(LOYALSOLDIER_API, LOYALSOLDIER_PAGE)
+        asset_dir = workdir / "loyalsoldier"
+        names = ASSET_NAMES
+        download_direct_assets(LOYALSOLDIER_DOWNLOAD, asset_dir, names)
+        return asset_dir, names, f"Loyalsoldier/v2ray-rules-dat {tag}"
+
+    tag = latest_github_release_label(V2FLY_GEOIP_API, V2FLY_GEOIP_PAGE)
+    asset_dir = workdir / "v2fly-geoip"
+    names = ("geoip.dat",)
+    download_direct_assets(V2FLY_GEOIP_DOWNLOAD, asset_dir, names)
+    return asset_dir, names, f"v2fly/geoip {tag} (geoip.dat only)"
+
+
+def cmd_update_assets(source_value="xray"):
+    source = asset_source(source_value)
+    source_label = {
+        "xray": "official latest Xray",
+        "loyalsoldier": "Loyalsoldier fresh rules",
+        "v2fly": "v2fly geoip/domain-list source (geoip.dat only)",
+    }[source]
+    warn(f"Обновляю geo assets из {source_label}...")
+    with tempfile.TemporaryDirectory(prefix="xray-assets-") as tmp:
+        workdir = Path(tmp)
+        asset_dir, names, source_detail = prepare_asset_source(source, workdir)
+        prepare_asset_config_test_dir(asset_dir, names)
+
+        result = config_test(asset_dir=asset_dir)
+        if result.returncode != 0:
+            die((result.stderr or result.stdout or "downloaded assets failed config test").strip())
+
+        current_hashes = current_asset_hashes(names=names)
+        new_hashes = current_asset_hashes(asset_dir, names)
+        changed = [name for name in names if current_hashes.get(name) != new_hashes.get(name)]
+        if not changed:
+            ok(f"{', '.join(names)} already match {source_detail}.")
+            return
+
+        backup = workdir / "asset-backup"
+        backup_assets(backup, names)
+        try:
+            install_assets(asset_dir, changed)
+            result = config_test()
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "installed assets failed config test").strip())
+            restart_xray()
+        except Exception as exc:
+            fail(f"Asset update failed: {exc}")
+            warn("Восстанавливаю предыдущие geo assets...")
+            restore_assets(backup, names)
+            restore_result = config_test()
+            if restore_result.returncode == 0:
+                try:
+                    restart_xray()
+                except Exception as restart_exc:
+                    warn(f"Не удалось перезапустить Xray после восстановления assets: {restart_exc}")
+            die("Обновление geo assets не применено, предыдущие assets восстановлены.")
+
+    ok("Updated assets: " + ", ".join(changed))
+    ok(f"Source: {source_detail}")
+
+
 def usage():
     print("""Usage:
   xray-update --check
   xray-update --test-latest
   xray-update --update
+  xray-update --update-assets [xray|loyalsoldier|v2fly]
   xray-update --rollback [BACKUP_NAME]
   xray-update --backups
 """)
@@ -537,6 +710,12 @@ def main():
         cmd_test_latest()
     elif command in ("--update", "update"):
         cmd_update()
+    elif command in ("--update-assets", "update-assets", "--update-geo"):
+        cmd_update_assets(sys.argv[2] if len(sys.argv) > 2 else "xray")
+    elif command in ("--update-assets-loyalsoldier", "update-assets-loyalsoldier"):
+        cmd_update_assets("loyalsoldier")
+    elif command in ("--update-geoip-v2fly", "update-geoip-v2fly"):
+        cmd_update_assets("v2fly")
     elif command in ("--rollback", "rollback"):
         rollback(sys.argv[2] if len(sys.argv) > 2 else None)
     elif command in ("--backups", "backups", "--list-backups"):
