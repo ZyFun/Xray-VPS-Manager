@@ -29,16 +29,30 @@ API_TAG = "api"
 TEST_INBOUND_TAG = "warp-test-socks"
 TEST_SOCKS_HOST = "127.0.0.1"
 TEST_SOCKS_PORT = 10809
+VERIFY_INBOUND_TAG = "warp-verify-disabled-socks"
+VERIFY_SOCKS_PORT = 10819
 API_HOST = "api.cloudflareclient.com"
 HOSTS_PATH = Path("/etc/hosts")
 HOSTS_PIN_COMMENT = "# xray-vps-manager WARP API pin"
 FALLBACK_API_IPS = ("8.47.69.1", "8.6.112.1")
 GITHUB_API_LATEST = "https://api.github.com/repos/ViRb3/wgcf/releases/latest"
+GREEN = "\033[32m"
+RESET = "\033[0m"
 
 
 def die(message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def color(text, code):
+    if not sys.stdout.isatty():
+        return text
+    return f"{code}{text}{RESET}"
+
+
+def green(text):
+    return color(text, GREEN)
 
 
 def run(command, **kwargs):
@@ -55,6 +69,22 @@ def run_capture(command, timeout=10, **kwargs):
         timeout=timeout,
         **kwargs,
     )
+
+
+def restart_xray():
+    result = run_capture(["systemctl", "restart", "xray"], timeout=30)
+    if result.returncode == 0:
+        return
+
+    run_capture(["systemctl", "reset-failed", "xray"], timeout=10)
+    time.sleep(1.0)
+    retry = run_capture(["systemctl", "restart", "xray"], timeout=30)
+    if retry.returncode == 0:
+        return
+
+    stdout = "\n".join(part for part in (result.stdout, retry.stdout) if part).strip()
+    stderr = "\n".join(part for part in (result.stderr, retry.stderr) if part).strip()
+    raise subprocess.CalledProcessError(retry.returncode, retry.args, stdout, stderr)
 
 
 def require_root():
@@ -92,12 +122,12 @@ def apply_config(config):
     backup = save_config(config)
     try:
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
+        restart_xray()
     except subprocess.CalledProcessError:
         shutil.copy2(backup, CONFIG_PATH)
         shutil.chown(CONFIG_PATH, user="root", group="xray")
         os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
+        restart_xray()
         die(f"New config failed. Restored backup: {backup}")
     return backup
 
@@ -551,6 +581,7 @@ def cmd_disable():
     changed = disable_warp_route(config)
     if not changed:
         print("WARP route is already disabled.")
+        cmd_verify_disabled()
         return
     backup = apply_config(config)
     print("WARP route is disabled.")
@@ -559,6 +590,7 @@ def cmd_disable():
     else:
         print("Catch-all traffic restored to default direct outbound.")
     print(f"Backup: {backup}")
+    cmd_verify_disabled()
 
 
 def cmd_remove():
@@ -583,17 +615,27 @@ def wait_for_tcp(host, port, timeout=8.0):
     return False
 
 
-def add_test_inbound(config):
+def remove_inbound_routes(config, tag):
+    rules = routing_rules(config)
+    kept = []
+    for rule in rules:
+        if tag in rule_values(rule, "inboundTag"):
+            continue
+        kept.append(rule)
+    config["routing"]["rules"] = kept
+
+
+def add_socks_inbound(config, tag, port):
     inbounds = [
         inbound
         for inbound in config.get("inbounds", [])
-        if inbound.get("tag") != TEST_INBOUND_TAG
+        if inbound.get("tag") != tag
     ]
     inbounds.append(
         {
-            "tag": TEST_INBOUND_TAG,
+            "tag": tag,
             "listen": TEST_SOCKS_HOST,
-            "port": TEST_SOCKS_PORT,
+            "port": port,
             "protocol": "socks",
             "settings": {
                 "auth": "noauth",
@@ -606,6 +648,11 @@ def add_test_inbound(config):
         }
     )
     config["inbounds"] = inbounds
+
+
+def add_test_inbound(config):
+    add_socks_inbound(config, TEST_INBOUND_TAG, TEST_SOCKS_PORT)
+    remove_inbound_routes(config, TEST_INBOUND_TAG)
     rules = routing_rules(config)
     rules.insert(
         0,
@@ -615,6 +662,86 @@ def add_test_inbound(config):
             "outboundTag": WARP_OUTBOUND_TAG,
         },
     )
+
+
+def add_verify_disabled_inbound(config):
+    add_socks_inbound(config, VERIFY_INBOUND_TAG, VERIFY_SOCKS_PORT)
+    remove_inbound_routes(config, VERIFY_INBOUND_TAG)
+
+
+def cloudflare_trace_via_proxy(port):
+    proxy = f"socks5h://{TEST_SOCKS_HOST}:{port}"
+    return run_capture(
+        [
+            "curl",
+            "-4",
+            "--proxy",
+            proxy,
+            "--connect-timeout",
+            "8",
+            "--max-time",
+            "20",
+            "-sS",
+            "https://www.cloudflare.com/cdn-cgi/trace",
+        ],
+        timeout=25,
+    )
+
+
+def trace_field(output, name):
+    prefix = f"{name}="
+    return next((line for line in output.splitlines() if line.startswith(prefix)), "")
+
+
+def trace_detail(output):
+    ip_line = trace_field(output, "ip") or "ip=?"
+    warp_line = trace_field(output, "warp") or "warp=?"
+    return f"{ip_line} {warp_line}"
+
+
+def probe_warp_disabled():
+    original_text = CONFIG_PATH.read_text()
+    config = json.loads(original_text)
+    test_config = copy.deepcopy(config)
+    add_verify_disabled_inbound(test_config)
+
+    try:
+        install_config_without_backup(test_config)
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        restart_xray()
+        if not wait_for_tcp(TEST_SOCKS_HOST, VERIFY_SOCKS_PORT):
+            return False, "Temporary SOCKS inbound did not become ready.", False
+        time.sleep(0.5)
+
+        result = cloudflare_trace_via_proxy(VERIFY_SOCKS_PORT)
+        output = result.stdout.strip()
+        error = result.stderr.strip()
+        if result.returncode != 0 or not output:
+            return False, error or output or f"curl exited with {result.returncode}", False
+        warp_line = trace_field(output, "warp")
+        if not warp_line:
+            return False, f"Cloudflare trace did not include warp status: {trace_detail(output)}", False
+        return True, trace_detail(output), warp_line in ("warp=on", "warp=plus")
+    finally:
+        CONFIG_PATH.write_text(original_text)
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        try:
+            run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+            restart_xray()
+        except subprocess.CalledProcessError as exc:
+            print(f"ERROR: Failed to restore Xray after WARP disable verification: {exc}", file=sys.stderr)
+            raise
+
+
+def cmd_verify_disabled():
+    print("Verifying normal Xray route without forcing warp-out...")
+    ok, detail, warp_active = probe_warp_disabled()
+    if not ok:
+        die(f"Could not verify that WARP is disabled: {detail}")
+    if warp_active:
+        die(f"Normal Xray route still uses WARP: {detail}")
+    print(green(f"OK normal Xray route does not use WARP -> {detail}"))
 
 
 def probe_warp_endpoint(endpoint):
@@ -627,37 +754,21 @@ def probe_warp_endpoint(endpoint):
     try:
         install_config_without_backup(test_config)
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
+        restart_xray()
         if not wait_for_tcp(TEST_SOCKS_HOST, TEST_SOCKS_PORT):
             return False, "Temporary SOCKS inbound did not become ready."
         time.sleep(1.5)
 
-        proxy = f"socks5h://{TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}"
         last_detail = ""
         for attempt in range(2):
-            result = run_capture(
-                [
-                    "curl",
-                    "-4",
-                    "--proxy",
-                    proxy,
-                    "--connect-timeout",
-                    "8",
-                    "--max-time",
-                    "20",
-                    "-sS",
-                    "https://www.cloudflare.com/cdn-cgi/trace",
-                ],
-                timeout=25,
-            )
+            result = cloudflare_trace_via_proxy(TEST_SOCKS_PORT)
             output = result.stdout.strip()
             error = result.stderr.strip()
             if result.returncode == 0 and output:
-                warp_line = next((line for line in output.splitlines() if line.startswith("warp=")), "")
-                ip_line = next((line for line in output.splitlines() if line.startswith("ip=")), "")
+                warp_line = trace_field(output, "warp")
                 if warp_line in ("warp=on", "warp=plus"):
-                    return True, f"{ip_line or 'ip=?'} {warp_line}"
-                last_detail = f"{ip_line or 'ip=?'} {warp_line or 'warp=?'}"
+                    return True, trace_detail(output)
+                last_detail = trace_detail(output)
             else:
                 last_detail = error or output or f"curl exited with {result.returncode}"
             if attempt == 0:
@@ -669,7 +780,7 @@ def probe_warp_endpoint(endpoint):
         os.chmod(CONFIG_PATH, 0o640)
         try:
             run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-            run(["systemctl", "restart", "xray"])
+            restart_xray()
         except subprocess.CalledProcessError as exc:
             print(f"ERROR: Failed to restore Xray after endpoint probe: {exc}", file=sys.stderr)
             raise
@@ -717,7 +828,7 @@ def cmd_test():
     try:
         install_config_without_backup(test_config)
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
+        restart_xray()
         proxy = f"socks5h://{TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}"
         print(f"Temporary SOCKS inbound: {TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}")
         if not wait_for_tcp(TEST_SOCKS_HOST, TEST_SOCKS_PORT):
@@ -767,7 +878,7 @@ def cmd_test():
         os.chmod(CONFIG_PATH, 0o640)
         try:
             run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-            run(["systemctl", "restart", "xray"])
+            restart_xray()
         except subprocess.CalledProcessError as exc:
             print(f"ERROR: Failed to restore Xray after test: {exc}", file=sys.stderr)
             raise
@@ -782,6 +893,7 @@ def usage():
   xray-warp create [--force]
   xray-warp enable
   xray-warp disable
+  xray-warp verify-disabled
   xray-warp remove
   xray-warp test
 """
@@ -804,6 +916,8 @@ def main():
             cmd_enable()
         elif command == "disable" and len(sys.argv) == 2:
             cmd_disable()
+        elif command == "verify-disabled" and len(sys.argv) == 2:
+            cmd_verify_disabled()
         elif command == "remove" and len(sys.argv) == 2:
             cmd_remove()
         elif command == "test" and len(sys.argv) == 2:
