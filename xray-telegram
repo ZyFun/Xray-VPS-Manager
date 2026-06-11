@@ -36,6 +36,7 @@ USER_POLL_SHORT_TIMEOUT = 2
 USER_POLL_LONG_TIMEOUT = 45
 USER_POLLER_SLEEP_UNCONFIGURED = 30
 USER_POLLER_SLEEP_ERROR = 5
+TELEGRAM_MESSAGE_LIMIT = 3900
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 DEFAULT_DB = {
     "version": 1,
@@ -919,12 +920,41 @@ def client_access_summary(entry):
 
 
 def client_menu_keyboard():
+    return [
+        [{"text": "Подключить уведомления", "callback_data": "client:subscribe"}],
+        [{"text": "Статус подписки", "callback_data": "client:status"}],
+        [{"text": "Отключить уведомления", "callback_data": "client:unsubscribe"}],
+        [{"text": "Помощь", "callback_data": "client:help"}],
+    ]
+
+
+def is_owner_chat(db, chat_id):
+    return str(chat_id or "") == str(db.get("chatId") or "")
+
+
+def client_keyboard_for_chat(db, chat_id):
+    rows = list(client_menu_keyboard())
+    if is_owner_chat(db, chat_id):
+        rows.append([{"text": "Админ-панель", "callback_data": "admin:menu"}])
+    return {"inline_keyboard": rows}
+
+
+def admin_menu_keyboard():
     return {
         "inline_keyboard": [
-            [{"text": "Подключить уведомления", "callback_data": "client:subscribe"}],
-            [{"text": "Статус подписки", "callback_data": "client:status"}],
-            [{"text": "Отключить уведомления", "callback_data": "client:unsubscribe"}],
-            [{"text": "Помощь", "callback_data": "client:help"}],
+            [
+                {"text": "Статус бота", "callback_data": "admin:status"},
+                {"text": "Подписки клиентов", "callback_data": "admin:subscribers"},
+            ],
+            [
+                {"text": "Проверить GeoIP", "callback_data": "admin:geoip"},
+                {"text": "Проверить напоминания", "callback_data": "admin:expiry"},
+            ],
+            [
+                {"text": "Проверка сервера", "callback_data": "admin:test"},
+                {"text": "Создать backup", "callback_data": "admin:backup"},
+            ],
+            [{"text": "Клиентское меню", "callback_data": "client:help"}],
         ]
     }
 
@@ -946,8 +976,26 @@ def subscribe_prompt_text():
     )
 
 
+def admin_intro_text():
+    return (
+        "Xray VPS Manager: админ-панель\n\n"
+        "Кнопки ниже выполняют только безопасные действия: проверка, сводка и создание резервной копии."
+    )
+
+
+def truncate_telegram_text(text):
+    text = str(text or "")
+    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
+        return text
+    return text[: TELEGRAM_MESSAGE_LIMIT - 80].rstrip() + "\n\n...вывод сокращён..."
+
+
 def send_client_menu(db, chat_id, text=None):
-    send_chat_message(db, chat_id, text or subscription_intro_text(), reply_markup=client_menu_keyboard())
+    send_chat_message(db, chat_id, text or subscription_intro_text(), reply_markup=client_keyboard_for_chat(db, chat_id))
+
+
+def send_admin_menu(db, chat_id, text=None):
+    send_chat_message(db, chat_id, text or admin_intro_text(), reply_markup=admin_menu_keyboard())
 
 
 def subscription_status_for_chat(db, chat_id):
@@ -969,6 +1017,68 @@ def unsubscribe_chat(db, chat_id):
     if removed:
         return "Подписка на напоминания отключена."
     return "Активной подписки нет."
+
+
+def admin_status_text(db):
+    subscriptions = db.get("clientSubscriptions", {})
+    subscription_state = db.get("clientSubscriptionState", {})
+    return "\n".join(
+        [
+            "Xray VPS Manager: статус бота",
+            "",
+            f"Уведомления: {'включены' if db.get('enabled') else 'отключены'}",
+            f"Маршрут Telegram: {db.get('routeMode', 'direct')}",
+            f"Оплата: {payment_amount_label(db)}",
+            f"Округление: {payment_rounding_label(db)}",
+            f"Подписки клиентов: {len(subscriptions)}",
+            f"Последний GeoIP: {db.get('geoipState', {}).get('lastGeoipNotification') or db.get('lastGeoipNotification') or 'never'}",
+            f"Последний poll: {subscription_state.get('lastUserPoll') or 'never'}",
+            f"Последнее напоминание: {subscription_state.get('lastExpiryReminder') or 'never'}",
+        ]
+    )
+
+
+def admin_subscribers_text(db):
+    subscriptions = db.get("clientSubscriptions", {})
+    if not subscriptions:
+        return "Подписок клиентов пока нет."
+    client_db = load_client_db()
+    clients = client_db_clients(client_db)
+    lines = ["Xray VPS Manager: подписки клиентов", ""]
+    for chat_id, subscription in sorted(subscriptions.items(), key=lambda item: item[1].get("client", ""))[:25]:
+        name = subscription.get("client", "-")
+        entry = clients.get(name, {})
+        access_until = format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else "")
+        valid = "актуальна" if entry and normalize_value(subscription.get("clientId")) == client_entry_id(entry) else "требует проверки"
+        lines.append(f"- {name}: {valid}, до {access_until}, чат {subscription.get('chatLabel', chat_id)}")
+    if len(subscriptions) > 25:
+        lines.append(f"...и ещё подписок: {len(subscriptions) - 25}")
+    return "\n".join(lines)
+
+
+def admin_run_server_test_text():
+    test_script = Path("/usr/local/sbin/xray-test")
+    if not test_script.exists():
+        return "xray-test не найден на сервере."
+    result = run_capture([str(test_script)], timeout=90)
+    output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
+    header = "Xray VPS Manager: проверка сервера"
+    if result.returncode == 0:
+        header += "\nСтатус: OK"
+    else:
+        header += f"\nСтатус: ошибка, exit {result.returncode}"
+    return truncate_telegram_text(header + "\n\n" + output.strip())
+
+
+def admin_create_backup_text():
+    backup_script = Path("/usr/local/sbin/xray-backup")
+    if not backup_script.exists():
+        return "xray-backup не найден на сервере."
+    result = run_capture([str(backup_script), "create", "--path-only"], timeout=120)
+    output = (result.stdout or result.stderr or "").strip()
+    if result.returncode != 0:
+        return truncate_telegram_text(f"Не удалось создать backup, exit {result.returncode}.\n\n{output}")
+    return "Backup создан на сервере:\n" + output
 
 
 def subscribe_chat_to_client(db, chat, text):
@@ -1001,6 +1111,12 @@ def handle_user_message(db, update):
         send_client_menu(db, chat_id, "Отправь текстовую VLESS-ссылку или нажми кнопку ниже.")
         return True
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+    if command == "/admin":
+        if is_owner_chat(db, chat_id):
+            send_admin_menu(db, chat_id)
+        else:
+            send_client_menu(db, chat_id)
+        return True
     if command in ("/start", "/help"):
         send_client_menu(db, chat_id)
         return True
@@ -1034,6 +1150,44 @@ def handle_callback_query(db, update):
         return False
     chat_id = str(chat["id"])
     data = str(callback.get("data") or "")
+
+    if data.startswith("admin:"):
+        if not is_owner_chat(db, chat_id):
+            answer_callback_query(db, callback_id, "Админ-панель доступна только владельцу.", show_alert=True)
+            send_client_menu(db, chat_id)
+            return True
+        answer_callback_query(db, callback_id)
+        if data == "admin:menu":
+            send_admin_menu(db, chat_id)
+            return True
+        if data == "admin:status":
+            send_admin_menu(db, chat_id, admin_status_text(db))
+            return True
+        if data == "admin:subscribers":
+            send_admin_menu(db, chat_id, admin_subscribers_text(db))
+            return True
+        if data == "admin:geoip":
+            rc = notify_geoip(quiet=True)
+            text = "GeoIP-проверка выполнена. Если были новые события, бот отправил отдельное уведомление."
+            if rc != 0:
+                text = f"GeoIP-проверка завершилась с ошибкой, exit {rc}."
+            send_admin_menu(db, chat_id, text)
+            return True
+        if data == "admin:expiry":
+            rc = notify_expiry(quiet=True)
+            text = "Проверка напоминаний выполнена."
+            if rc != 0:
+                text = f"Проверка напоминаний завершилась с ошибкой, exit {rc}."
+            send_admin_menu(db, chat_id, text)
+            return True
+        if data == "admin:test":
+            send_admin_menu(db, chat_id, admin_run_server_test_text())
+            return True
+        if data == "admin:backup":
+            send_admin_menu(db, chat_id, admin_create_backup_text())
+            return True
+        send_admin_menu(db, chat_id, "Неизвестная админская кнопка.")
+        return True
 
     if data == "client:subscribe":
         answer_callback_query(db, callback_id)
