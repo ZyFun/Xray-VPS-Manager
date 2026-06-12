@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+import copy
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
+UPSTREAM_TAG = "cascade-upstream"
+DIRECT_TAG = "direct"
+BLOCKED_TAG = "blocked"
+API_TAG = "api"
+GEOIP_WARNING_OUTBOUND_PREFIX = "geoip-warning-"
+TEST_INBOUND_TAG = "cascade-test-socks"
+TEST_SOCKS_HOST = "127.0.0.1"
+TEST_SOCKS_PORT = 10808
+
+
+def die(message):
+    print(f"ERROR: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def one(params, key, default=""):
+    value = params.get(key, [default])
+    return value[0] if value else default
+
+
+def parse_vless(uri):
+    parsed = urlparse(uri.strip())
+    if parsed.scheme.lower() != "vless":
+        die("Only vless:// links are supported.")
+    if not parsed.username or not parsed.hostname:
+        die("The VLESS link must include UUID and host.")
+
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    port = parsed.port or 443
+    network = one(params, "type", "tcp") or "tcp"
+    security = one(params, "security", "none") or "none"
+    encryption = one(params, "encryption", "none") or "none"
+    flow = one(params, "flow", "")
+
+    outbound = {
+        "tag": UPSTREAM_TAG,
+        "protocol": "vless",
+        "settings": {
+            "vnext": [
+                {
+                    "address": parsed.hostname,
+                    "port": port,
+                    "users": [
+                        {
+                            "id": unquote(parsed.username),
+                            "encryption": encryption,
+                        }
+                    ],
+                }
+            ]
+        },
+        "streamSettings": {
+            "network": network,
+            "security": security,
+        },
+    }
+
+    user = outbound["settings"]["vnext"][0]["users"][0]
+    if flow:
+        user["flow"] = flow
+
+    stream = outbound["streamSettings"]
+    if security == "reality":
+        public_key = one(params, "pbk")
+        sni = one(params, "sni")
+        short_id = one(params, "sid")
+        if not public_key or not sni:
+            die("Reality VLESS requires pbk and sni parameters.")
+        reality = {
+            "serverName": sni,
+            "publicKey": public_key,
+            "fingerprint": one(params, "fp", "chrome") or "chrome",
+        }
+        if short_id:
+            reality["shortId"] = short_id
+        spider_x = one(params, "spx", "")
+        if spider_x:
+            reality["spiderX"] = unquote(spider_x)
+        stream["realitySettings"] = reality
+    elif security == "tls":
+        tls = {}
+        sni = one(params, "sni")
+        if sni:
+            tls["serverName"] = sni
+        fp = one(params, "fp")
+        if fp:
+            tls["fingerprint"] = fp
+        stream["tlsSettings"] = tls
+    elif security in ("none", ""):
+        stream["security"] = "none"
+    else:
+        die(f"Unsupported security={security!r}; supported: reality, tls, none.")
+
+    if network == "tcp":
+        header_type = one(params, "headerType", "none") or "none"
+        stream["tcpSettings"] = {"header": {"type": header_type}}
+    elif network == "ws":
+        ws = {}
+        path = one(params, "path")
+        host = one(params, "host")
+        if path:
+            ws["path"] = unquote(path)
+        if host:
+            ws["headers"] = {"Host": host}
+        stream["wsSettings"] = ws
+    elif network == "grpc":
+        service_name = one(params, "serviceName")
+        grpc = {}
+        if service_name:
+            grpc["serviceName"] = unquote(service_name)
+        stream["grpcSettings"] = grpc
+    else:
+        die(f"Unsupported network type={network!r}; supported: tcp, ws, grpc.")
+
+    label = unquote(parsed.fragment) if parsed.fragment else f"{parsed.hostname}:{port}"
+    return outbound, label
+
+
+def ensure_base_outbounds(config):
+    outbounds = config.setdefault("outbounds", [])
+    if not any(item.get("tag") == DIRECT_TAG for item in outbounds):
+        outbounds.append({"tag": DIRECT_TAG, "protocol": "freedom"})
+    if not any(item.get("tag") == BLOCKED_TAG for item in outbounds):
+        outbounds.append({"tag": BLOCKED_TAG, "protocol": "blackhole"})
+    return outbounds
+
+
+def remove_tag(items, tag):
+    return [item for item in items if item.get("tag") != tag]
+
+
+def is_geoip_warning_tag(tag):
+    return str(tag or "").startswith(GEOIP_WARNING_OUTBOUND_PREFIX)
+
+
+def geoip_warning_tags(config):
+    tags = {item.get("tag") for item in config.get("outbounds", []) if is_geoip_warning_tag(item.get("tag"))}
+    tags.update(rule.get("outboundTag") for rule in config.get("routing", {}).get("rules", []) if is_geoip_warning_tag(rule.get("outboundTag")))
+    return sorted(tag for tag in tags if tag)
+
+
+def direct_outbound(config):
+    for outbound in config.setdefault("outbounds", []):
+        if outbound.get("tag") == DIRECT_TAG:
+            return outbound
+    outbound = {"tag": DIRECT_TAG, "protocol": "freedom"}
+    config.setdefault("outbounds", []).append(outbound)
+    return outbound
+
+
+def sync_geoip_warning_outbounds(config, source_outbound=None):
+    tags = geoip_warning_tags(config)
+    if not tags:
+        return
+    source = source_outbound or next((item for item in config.get("outbounds", []) if item.get("tag") == UPSTREAM_TAG), None) or direct_outbound(config)
+    config["outbounds"] = [item for item in config.get("outbounds", []) if not is_geoip_warning_tag(item.get("tag"))]
+    for tag in tags:
+        outbound = copy.deepcopy(source)
+        outbound["tag"] = tag
+        config.setdefault("outbounds", []).append(outbound)
+
+
+def is_api_rule(rule):
+    inbound_tags = rule.get("inboundTag", [])
+    if isinstance(inbound_tags, str):
+        inbound_tags = [inbound_tags]
+    return rule.get("outboundTag") == API_TAG or API_TAG in inbound_tags
+
+
+def configure_cascade(config, outbound):
+    outbounds = ensure_base_outbounds(config)
+    config["outbounds"] = remove_tag(outbounds, UPSTREAM_TAG)
+    config["outbounds"].insert(0, outbound)
+
+    routing = config.setdefault("routing", {})
+    routing.setdefault("domainStrategy", "IPIfNonMatch")
+    old_rules = routing.get("rules", [])
+
+    kept_rules = []
+    private_block_exists = False
+    for rule in old_rules:
+        if rule.get("outboundTag") == UPSTREAM_TAG:
+            continue
+        if (
+            rule.get("type") == "field"
+            and rule.get("outboundTag") == BLOCKED_TAG
+            and "geoip:private" in rule.get("ip", [])
+        ):
+            private_block_exists = True
+        kept_rules.append(rule)
+
+    if not private_block_exists:
+        insert_index = 0
+        while insert_index < len(kept_rules) and is_api_rule(kept_rules[insert_index]):
+            insert_index += 1
+        kept_rules.insert(
+            insert_index,
+            {
+                "type": "field",
+                "ip": ["geoip:private"],
+                "outboundTag": BLOCKED_TAG,
+            },
+        )
+
+    kept_rules.append(
+        {
+            "type": "field",
+            "network": "tcp,udp",
+            "outboundTag": UPSTREAM_TAG,
+        }
+    )
+    routing["rules"] = kept_rules
+    sync_geoip_warning_outbounds(config, outbound)
+
+
+def disable_cascade(config):
+    config["outbounds"] = remove_tag(config.get("outbounds", []), UPSTREAM_TAG)
+    routing = config.setdefault("routing", {})
+    routing["rules"] = [
+        rule
+        for rule in routing.get("rules", [])
+        if rule.get("outboundTag") != UPSTREAM_TAG
+    ]
+    ensure_base_outbounds(config)
+    sync_geoip_warning_outbounds(config, direct_outbound(config))
+
+
+def write_config(config):
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.{timestamp}")
+    shutil.copy2(CONFIG_PATH, backup)
+
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+    shutil.chown(tmp, user="root", group="xray")
+    os.chmod(tmp, 0o640)
+    tmp.replace(CONFIG_PATH)
+    return backup
+
+
+def install_config_without_backup(config):
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+    shutil.chown(tmp, user="root", group="xray")
+    os.chmod(tmp, 0o640)
+    tmp.replace(CONFIG_PATH)
+
+
+def run(command):
+    subprocess.run(command, check=True)
+
+
+def run_capture(command, timeout=20):
+    return subprocess.run(
+        command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+    )
+
+
+def wait_for_tcp(host, port, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    last_error = None
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.25)
+    if last_error:
+        print(f"ERROR: {host}:{port} did not open in time: {last_error}", file=sys.stderr)
+    return False
+
+
+def add_test_inbound(config):
+    inbounds = [
+        item
+        for item in config.setdefault("inbounds", [])
+        if item.get("tag") != TEST_INBOUND_TAG
+    ]
+    inbounds.append(
+        {
+            "tag": TEST_INBOUND_TAG,
+            "listen": TEST_SOCKS_HOST,
+            "port": TEST_SOCKS_PORT,
+            "protocol": "socks",
+            "settings": {
+                "auth": "noauth",
+                "udp": True,
+            },
+            "sniffing": {
+                "enabled": True,
+                "destOverride": ["http", "tls"],
+            },
+        }
+    )
+    config["inbounds"] = inbounds
+
+
+def test_cascade():
+    original_text = CONFIG_PATH.read_text()
+    config = json.loads(original_text)
+    if not any(item.get("tag") == UPSTREAM_TAG for item in config.get("outbounds", [])):
+        die("Cascade outbound is not configured. Run xray-set-cascade first.")
+
+    test_config = copy.deepcopy(config)
+    add_test_inbound(test_config)
+
+    try:
+        install_config_without_backup(test_config)
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+
+        proxy = f"socks5h://{TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}"
+        urls = [
+            "https://ifconfig.me/ip",
+            "https://icanhazip.com",
+            "https://checkip.amazonaws.com",
+        ]
+
+        print(f"Temporary SOCKS inbound: {TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}")
+        if not wait_for_tcp(TEST_SOCKS_HOST, TEST_SOCKS_PORT):
+            die("Temporary SOCKS inbound did not become ready.")
+        time.sleep(0.5)
+        print("Testing outbound through Xray cascade...")
+        ok = False
+        for url in urls:
+            result = run_capture(
+                [
+                    "curl",
+                    "-4",
+                    "--proxy",
+                    proxy,
+                    "--connect-timeout",
+                    "8",
+                    "--max-time",
+                    "20",
+                    "-sS",
+                    url,
+                ],
+                timeout=25,
+            )
+            output = result.stdout.strip()
+            error = result.stderr.strip()
+            if result.returncode == 0 and output:
+                ok = True
+                print(f"OK {url} -> {output}")
+            else:
+                detail = error or output or f"curl exited with {result.returncode}"
+                print(f"FAIL {url} -> {detail}")
+
+        if not ok:
+            die("No test endpoint succeeded through cascade.")
+    finally:
+        CONFIG_PATH.write_text(original_text)
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        try:
+            run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+            run(["systemctl", "restart", "xray"])
+        except subprocess.CalledProcessError as exc:
+            print(f"ERROR: Failed to restore Xray after test: {exc}", file=sys.stderr)
+            raise
+
+    print("Test finished. Original config restored.")
+
+
+def main():
+    if os.geteuid() != 0:
+        die("Run this script as root.")
+    if not CONFIG_PATH.exists():
+        die(f"Config not found: {CONFIG_PATH}")
+
+    if len(sys.argv) > 1 and sys.argv[1] in ("--disable", "--direct", "disable", "direct"):
+        config = json.loads(CONFIG_PATH.read_text())
+        disable_cascade(config)
+        backup = write_config(config)
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+        print(f"Cascade disabled. Backup: {backup}")
+        return
+
+    if len(sys.argv) > 1 and sys.argv[1] in ("--test", "test"):
+        test_cascade()
+        return
+
+    print("Paste upstream VLESS link and press Enter:")
+    uri = sys.stdin.readline().strip()
+    if not uri:
+        die("Empty link.")
+
+    outbound, label = parse_vless(uri)
+    config = json.loads(CONFIG_PATH.read_text())
+    before = copy.deepcopy(config)
+    configure_cascade(config, outbound)
+    backup = write_config(config)
+
+    try:
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        run(["systemctl", "restart", "xray"])
+    except subprocess.CalledProcessError:
+        CONFIG_PATH.write_text(json.dumps(before, indent=2, ensure_ascii=False) + "\n")
+        shutil.chown(CONFIG_PATH, user="root", group="xray")
+        os.chmod(CONFIG_PATH, 0o640)
+        run(["systemctl", "restart", "xray"])
+        die(f"New config failed validation. Restored previous config. Backup: {backup}")
+
+    print(f"Cascade upstream enabled: {label}")
+    print(f"Backup: {backup}")
+    print("All non-private outbound traffic now goes through tag: cascade-upstream")
+    print("To disable cascade: xray-set-cascade --disable")
+
+
+if __name__ == "__main__":
+    main()

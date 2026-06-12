@@ -9,8 +9,8 @@ if (root / "xray_vps_manager").is_dir():
 elif installed.is_dir():
     sys.path.insert(0, str(installed))
 
-from xray_vps_manager.runner import run_command
+from xray_vps_manager.cli import main
 
 
 if __name__ == "__main__":
-    run_command("traffic-sync")
+    main()

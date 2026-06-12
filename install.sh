@@ -51,6 +51,11 @@ need_file xray-backup
 need_file xray-test
 need_file xray-warp
 need_file xray-telegram
+need_file xray-vps-manager
+if [[ ! -d "$SCRIPT_DIR/xray_vps_manager" ]]; then
+  echo "Missing required directory: $SCRIPT_DIR/xray_vps_manager" >&2
+  exit 1
+fi
 
 detect_server_addr() {
   if [[ -n "${SERVER_ADDR:-}" ]]; then
@@ -581,6 +586,13 @@ install -o root -g root -m 0755 "$SCRIPT_DIR/xray-backup" /usr/local/sbin/xray-b
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-test" /usr/local/sbin/xray-test
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-warp" /usr/local/sbin/xray-warp
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-telegram" /usr/local/sbin/xray-telegram
+install -o root -g root -m 0755 "$SCRIPT_DIR/xray-vps-manager" /usr/local/sbin/xray-vps-manager
+install -d -o root -g root -m 0755 /usr/local/lib/xray-vps-manager
+rm -rf /usr/local/lib/xray-vps-manager/xray_vps_manager
+cp -a "$SCRIPT_DIR/xray_vps_manager" /usr/local/lib/xray-vps-manager/
+chown -R root:root /usr/local/lib/xray-vps-manager/xray_vps_manager
+find /usr/local/lib/xray-vps-manager/xray_vps_manager -type d -exec chmod 0755 {} \;
+find /usr/local/lib/xray-vps-manager/xray_vps_manager -type f -exec chmod 0644 {} \;
 
 client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=tcp&flow=xtls-rprx-vision&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F#${SERVER_NAME}"
 

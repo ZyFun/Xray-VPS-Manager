@@ -25,6 +25,8 @@
 
 ```text
 install.sh
+pyproject.toml
+xray-vps-manager
 xray-menu
 xray-client
 xray-set-cascade
@@ -33,8 +35,17 @@ xray-update
 xray-backup
 xray-test
 xray-activity
+xray-telegram
+xray-warp
+xray_vps_manager/
+  cli.py
+  runner.py
+  commands/
+  core/
 README.md
 ```
+
+Корневые команды `xray-menu`, `xray-client`, `xray-telegram` и остальные оставлены для совместимости как тонкие wrapper-скрипты. Основной Python-код команд теперь лежит в `xray_vps_manager/commands`, а общие инфраструктурные helpers постепенно выносятся в `xray_vps_manager/core`.
 
 ## Установка
 
@@ -129,7 +140,7 @@ xray-menu
 +-----------------+--------------------------------------------------------------+
 | Xray Version    | 26.3.27                                                      |
 | Manager Version | v1.0.0                                                       |
-| Manager Updated | 2026-06-11 23:53 UTC                                         |
+| Manager Updated | 2026-06-12 06:44 UTC                                         |
 | Geo Assets      | geoip.dat: 2026-06-11 13:26 MSK; geosite.dat: 2026-06-11...  |
 | Security Audit  | 2026-06-05 15:55 MSK                                         |
 +-----------------+--------------------------------------------------------------+
@@ -1194,6 +1205,8 @@ systemctl status xray-client-expire.timer --no-pager
 /usr/local/sbin/xray-test                безопасная диагностика сервера
 /usr/local/sbin/xray-activity            журнал активности и отчёты по метаданным
 /usr/local/sbin/xray-telegram            Telegram-уведомления о GeoIP-событиях
+/usr/local/sbin/xray-vps-manager         единая CLI-точка входа в команды менеджера
+/usr/local/lib/xray-vps-manager          Python-пакет менеджера
 /root/xray-reality-client.txt            стартовая ссылка
 /root/xray_backups                       архивы резервных копий данных
 /root/xray_activity_exports              экспортированные отчёты активности
