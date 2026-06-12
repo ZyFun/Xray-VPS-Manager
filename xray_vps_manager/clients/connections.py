@@ -8,12 +8,14 @@ from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray.config import (
+    INBOUND_TAG,
     clients,
     connection_name_from_tag,
     connection_settings_from_inbound,
     default_connection_tag,
     find_inbound_by_tag,
     inbound_tag,
+    reality_dest,
     reality_inbounds,
 )
 from xray_vps_manager.clients.models import client_name
@@ -88,6 +90,56 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
             ]
         )
     return rows
+
+
+def used_ports(config: dict[str, Any]) -> set[int]:
+    ports = set()
+    for inbound in config.get("inbounds", []):
+        port = inbound.get("port")
+        if isinstance(port, int):
+            ports.add(port)
+    return ports
+
+
+def next_connection_tag(config: dict[str, Any]) -> str:
+    existing = {inbound_tag(inbound) for inbound in reality_inbounds(config)}
+    if INBOUND_TAG not in existing:
+        return INBOUND_TAG
+    index = 2
+    while True:
+        tag = f"{INBOUND_TAG}-{index}"
+        if tag not in existing:
+            return tag
+        index += 1
+
+
+def make_reality_inbound(tag: str, port: int, sni: str, private_key: str, short_id: str) -> dict[str, Any]:
+    return {
+        "tag": tag,
+        "listen": "0.0.0.0",
+        "port": port,
+        "protocol": "vless",
+        "settings": {
+            "clients": [],
+            "decryption": "none",
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "show": False,
+                "dest": reality_dest(sni),
+                "xver": 0,
+                "serverNames": [sni],
+                "privateKey": private_key,
+                "shortIds": [short_id],
+            },
+        },
+        "sniffing": {
+            "enabled": True,
+            "destOverride": ["http", "tls", "quic"],
+        },
+    }
 
 
 def connection_client_names(config: dict[str, Any], db: dict[str, Any], tag: str) -> list[str]:

@@ -717,53 +717,15 @@ def print_connection_title(config, db, tag):
 
 
 def used_ports(config):
-    ports = set()
-    for inbound in config.get("inbounds", []):
-        port = inbound.get("port")
-        if isinstance(port, int):
-            ports.add(port)
-    return ports
+    return client_connections.used_ports(config)
 
 
 def next_connection_tag(config):
-    existing = {inbound_tag(inbound) for inbound in reality_inbounds(config)}
-    if INBOUND_TAG not in existing:
-        return INBOUND_TAG
-    index = 2
-    while True:
-        tag = f"{INBOUND_TAG}-{index}"
-        if tag not in existing:
-            return tag
-        index += 1
+    return client_connections.next_connection_tag(config)
 
 
 def make_reality_inbound(tag, port, sni, private_key, short_id):
-    return {
-        "tag": tag,
-        "listen": "0.0.0.0",
-        "port": port,
-        "protocol": "vless",
-        "settings": {
-            "clients": [],
-            "decryption": "none",
-        },
-        "streamSettings": {
-            "network": "tcp",
-            "security": "reality",
-            "realitySettings": {
-                "show": False,
-                "dest": reality_dest(sni),
-                "xver": 0,
-                "serverNames": [sni],
-                "privateKey": private_key,
-                "shortIds": [short_id],
-            },
-        },
-        "sniffing": {
-            "enabled": True,
-            "destOverride": ["http", "tls", "quic"],
-        },
-    }
+    return client_connections.make_reality_inbound(tag, port, sni, private_key, short_id)
 
 
 def cmd_connection_list():
