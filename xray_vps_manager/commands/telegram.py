@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import history as traffic_history
 from xray_vps_manager.traffic import repository as traffic_repository
@@ -152,13 +153,7 @@ def set_bot_name(value):
 
 
 def server_env_values():
-    values = {}
-    if SERVER_ENV_PATH.exists():
-        for line in SERVER_ENV_PATH.read_text().splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value.strip().strip('"').strip("'")
-    return values
+    return read_server_env(SERVER_ENV_PATH)
 
 
 def server_name_fragment():
