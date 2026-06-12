@@ -14,7 +14,6 @@ from xray_vps_manager.clients import crud as client_crud
 from xray_vps_manager.clients import limits as client_limits
 from xray_vps_manager.clients import listing as client_listing
 from xray_vps_manager.clients import links as client_links
-from xray_vps_manager.clients import models as client_models
 from xray_vps_manager.clients import payments as client_payments
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import runtime as client_runtime
@@ -237,13 +236,6 @@ def connection_display_name(config, db, tag):
 def connection_rows(config, db):
     try:
         return client_connections.connection_rows(config, db)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def db_entry_from_client(item, created="", enabled=True, previous=None):
-    try:
-        return client_models.db_entry_from_client(item, created=created, enabled=enabled, previous=previous)
     except ValueError as exc:
         die(str(exc))
 
@@ -870,46 +862,20 @@ def cmd_expire_due(quiet=False):
     config = load_config()
     db = load_db()
     ensure_connections(config, db)
-    now = client_access.local_now()
-    due_names = []
-    due_clients = {}
+    try:
+        result = client_status.expire_due_clients(config, db, stamp=utc_now_iso())
+    except ValueError as exc:
+        die(str(exc))
 
-    for inbound in xray_config.reality_inbounds(config):
-        tag = xray_config.inbound_tag(inbound)
-        for item in xray_config.clients(inbound):
-            name = client_models.client_name(item)
-            entry = client_repository.db_clients(db).get(name, {})
-            if client_access.access_expired(entry, now):
-                due_names.append(name)
-                due_clients[name] = (tag, item)
-
-    if not due_names:
+    if not result.has_changes:
         if not quiet:
             print("No expired clients.")
         return
 
-    stamp = utc_now_iso()
-    for name in due_names:
-        tag, item = due_clients[name]
-        _, created = client_models.split_email(item.get("email", ""))
-        previous = client_repository.db_clients(db).get(name, {})
-        entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
-        entry["connection"] = previous.get("connection") or tag
-        entry["disabledAt"] = stamp
-        entry["expiredAt"] = stamp
-        entry["disabledReason"] = "expired"
-        client_repository.db_clients(db)[name] = entry
-
-    due_set = set(due_names)
-    for inbound in xray_config.reality_inbounds(config):
-        inbound["settings"]["clients"] = [
-            item for item in xray_config.clients(inbound) if client_models.client_name(item) not in due_set
-        ]
-
     backup = save_config_restart_xray_and_db(config, db)
 
     if not quiet:
-        print("Disabled expired clients: " + ", ".join(due_names))
+        print("Disabled expired clients: " + ", ".join(result.due_names))
         print(f"Backup: {backup}")
 
 

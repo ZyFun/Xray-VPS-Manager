@@ -42,6 +42,15 @@ class TrafficLimitEnforcementResult:
         return bool(self.reactivated_names or self.due_names)
 
 
+@dataclass
+class ExpireDueResult:
+    due_names: list[str]
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.due_names)
+
+
 def clear_disabled_state(entry: dict[str, Any]) -> None:
     entry.pop("disabledAt", None)
     entry.pop("disabledReason", None)
@@ -264,3 +273,41 @@ def enforce_traffic_limits(
         reactivated_names=reactivated_names,
         due_names=due_names,
     )
+
+
+def expire_due_clients(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    now: datetime | None = None,
+    stamp: str | None = None,
+) -> ExpireDueResult:
+    now = now or local_now()
+    stamp = stamp or utc_stamp()
+    due_names: list[str] = []
+    due_clients: dict[str, tuple[str, dict[str, Any]]] = {}
+
+    for inbound in reality_inbounds(config):
+        tag = inbound_tag(inbound)
+        for item in clients(inbound):
+            name = client_name(item)
+            entry = db_clients(db).get(name, {})
+            if access_expired(entry, now):
+                due_names.append(name)
+                due_clients[name] = (tag, item)
+
+    for name in due_names:
+        tag, item = due_clients[name]
+        _, created = split_email(item.get("email", ""))
+        previous = db_clients(db).get(name, {})
+        entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
+        entry["connection"] = previous.get("connection") or tag
+        entry["disabledAt"] = stamp
+        entry["expiredAt"] = stamp
+        entry["disabledReason"] = "expired"
+        db_clients(db)[name] = entry
+
+    due_set = set(due_names)
+    for inbound in reality_inbounds(config):
+        inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
+
+    return ExpireDueResult(due_names=due_names)
