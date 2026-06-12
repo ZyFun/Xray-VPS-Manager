@@ -1109,14 +1109,14 @@ def cmd_enable(name):
     print(link_for(config, result.client_id, result.name, result.connection_tag, db))
 
 
-def apply_access_update(name, update_entry):
+def run_access_update(name, result_factory):
     validate_name(name)
     sync_traffic()
     config = load_config()
     db = load_db()
     traffic_db = load_traffic_db()
     try:
-        result = client_status.apply_access_update(config, db, traffic_db, name, update_entry)
+        result = result_factory(config, db, traffic_db)
     except ValueError as exc:
         die(str(exc))
     entry = result.entry
@@ -1155,9 +1155,19 @@ def apply_access_update(name, update_entry):
     notify_access_updated(name)
 
 
+def apply_access_update(name, update_entry):
+    run_access_update(
+        name,
+        lambda config, db, traffic_db: client_status.apply_access_update(config, db, traffic_db, name, update_entry),
+    )
+
+
 def cmd_set_days(name, days_value):
     days = parse_access_days(days_value)
-    apply_access_update(name, lambda entry: set_entry_expiry(entry, days))
+    run_access_update(
+        name,
+        lambda config, db, traffic_db: client_status.set_access_days(config, db, traffic_db, name, days),
+    )
 
 
 def cmd_extend_days(name, days_value):

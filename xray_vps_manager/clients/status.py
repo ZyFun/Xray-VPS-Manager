@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from xray_vps_manager.clients import connections
-from xray_vps_manager.clients.access import access_expired, local_now
+from xray_vps_manager.clients.access import access_expired, local_now, set_entry_expiry
 from xray_vps_manager.clients.limits import traffic_limit_status
 from xray_vps_manager.clients.models import client_from_db_entry, client_name, db_entry_from_client, split_email
 from xray_vps_manager.clients.repository import db_clients
@@ -166,3 +166,13 @@ def apply_access_update(
         status=status,
         traffic_status=traffic_status,
     )
+
+
+def set_access_days(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    traffic_db: dict[str, Any],
+    name: str,
+    days: int | None,
+) -> AccessUpdateResult:
+    return apply_access_update(config, db, traffic_db, name, lambda entry: set_entry_expiry(entry, days))
