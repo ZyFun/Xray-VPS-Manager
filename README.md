@@ -1313,6 +1313,46 @@ xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 Если на сервере уже есть `/usr/local/etc/xray/manager.db`, дополнительно создаётся отдельная pre-restore копия SQLite-базы в каталоге резервных копий.
 После восстановления скрипт проверяет `config.json`, перезапускает Xray и включает timers.
 
+## SQLite Миграция Данных
+
+SQLite-база менеджера хранится в:
+
+```text
+/usr/local/etc/xray/manager.db
+```
+
+Проверить состояние базы и флаги чтения/записи:
+
+```bash
+xray-vps-manager sqlite status
+```
+
+Импортировать текущие JSON/JSONL-данные в SQLite:
+
+```bash
+xray-vps-manager sqlite import-json
+```
+
+Если база уже существует, перед импортом создаётся pre-import backup SQLite-базы. Старые JSON-файлы не удаляются и остаются rollback/fallback-источником до финального cutover.
+
+Флаги постепенного переключения:
+
+```bash
+xray-vps-manager sqlite enable-reads
+xray-vps-manager sqlite enable-writes
+xray-vps-manager sqlite disable-reads
+xray-vps-manager sqlite disable-writes
+```
+
+`enable` включает оба флага, `disable` отключает оба:
+
+```bash
+xray-vps-manager sqlite enable
+xray-vps-manager sqlite disable
+```
+
+Перед финальным переключением нужно остановить процессы, которые пишут в текущие JSON-файлы, сделать свежий backup, выполнить импорт, проверить `xray-test`, и только после этого включать SQLite-чтение/запись.
+
 ## Бэкапы
 
 Скрипты создают бэкап конфига перед постоянными изменениями.

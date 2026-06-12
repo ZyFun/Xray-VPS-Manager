@@ -12,6 +12,7 @@ COMMAND_MODULES = {
     "cascade": "xray_vps_manager.commands.set_cascade",
     "client": "xray_vps_manager.commands.client",
     "menu": "xray_vps_manager.commands.menu",
+    "sqlite": "xray_vps_manager.commands.sqlite",
     "telegram": "xray_vps_manager.commands.telegram",
     "test": "xray_vps_manager.commands.test",
     "traffic-sync": "xray_vps_manager.commands.traffic_sync",
