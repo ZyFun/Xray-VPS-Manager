@@ -4,7 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -19,6 +19,7 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import runtime as client_runtime
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.clients import status as client_status
+from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import reports as traffic_reports
@@ -72,14 +73,6 @@ def run_capture(command, timeout=5):
     )
 
 
-def utc_now():
-    return datetime.now(timezone.utc).replace(microsecond=0)
-
-
-def utc_now_iso():
-    return utc_now().isoformat().replace("+00:00", "Z")
-
-
 def parse_access_days(value):
     try:
         return client_access.parse_access_days(value)
@@ -124,14 +117,14 @@ def validate_limit_period(value):
 
 def set_client_traffic_limit(entry, period, limit_bytes):
     try:
-        return client_limits.set_client_traffic_limit(entry, period, limit_bytes, utc_now_iso)
+        return client_limits.set_client_traffic_limit(entry, period, limit_bytes, utc_stamp)
     except ValueError as exc:
         die(str(exc))
 
 
 def clear_client_traffic_limit(entry):
     try:
-        return client_limits.clear_client_traffic_limit(entry, utc_now_iso)
+        return client_limits.clear_client_traffic_limit(entry, utc_stamp)
     except ValueError as exc:
         die(str(exc))
 
@@ -736,7 +729,7 @@ def run_access_update(name, result_factory):
 
 def enforce_traffic_limits(config, db, traffic_db):
     try:
-        return client_status.enforce_traffic_limits(config, db, traffic_db, stamp=utc_now_iso())
+        return client_status.enforce_traffic_limits(config, db, traffic_db, stamp=utc_stamp())
     except ValueError as exc:
         die(str(exc))
 
@@ -854,7 +847,7 @@ def cmd_expire_due(quiet=False):
     db = load_db()
     ensure_connections(config, db)
     try:
-        result = client_status.expire_due_clients(config, db, stamp=utc_now_iso())
+        result = client_status.expire_due_clients(config, db, stamp=utc_stamp())
     except ValueError as exc:
         die(str(exc))
 
