@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from xray_vps_manager.clients.connections import ensure_connections
-from xray_vps_manager.clients.models import payment_type_label, split_email
+from xray_vps_manager.clients.models import split_email
+from xray_vps_manager.clients.payments import payment_type_label
 from xray_vps_manager.clients.repository import db_clients
 from xray_vps_manager.xray.config import clients, default_connection_tag, inbound_tag, reality_inbounds
 

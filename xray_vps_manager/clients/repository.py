@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from xray_vps_manager.clients.models import normalize_payment_type
+from xray_vps_manager.clients.payments import normalize_payment_type
 from xray_vps_manager.core.paths import CLIENT_DB_PATH
 
 

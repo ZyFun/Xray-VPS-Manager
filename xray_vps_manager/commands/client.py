@@ -15,6 +15,7 @@ from xray_vps_manager.clients import limits as client_limits
 from xray_vps_manager.clients import listing as client_listing
 from xray_vps_manager.clients import links as client_links
 from xray_vps_manager.clients import models as client_models
+from xray_vps_manager.clients import payments as client_payments
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.clients import status as client_status
@@ -120,13 +121,20 @@ def set_entry_expiry(entry, days):
 
 def normalize_payment_type(value):
     try:
-        return client_models.normalize_payment_type(value)
+        return client_payments.normalize_payment_type(value)
     except ValueError as exc:
         die(str(exc))
 
 
 def payment_type_label(entry):
-    return client_models.payment_type_label(entry)
+    return client_payments.payment_type_label(entry)
+
+
+def set_entry_payment_type(entry, value):
+    try:
+        return client_payments.set_payment_type(entry, value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def extended_expires_at(entry, days):
@@ -1104,7 +1112,7 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
     current.append(client)
     entry = db_entry_from_client(client, created=created, enabled=True)
     entry["connection"] = connection_tag
-    entry["paymentType"] = payment_type
+    set_entry_payment_type(entry, payment_type)
     set_entry_expiry(entry, access_days)
     db_clients(db)[name] = entry
 
@@ -1131,12 +1139,11 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
 
 
 def cmd_set_payment(name, payment_value):
-    payment_type = normalize_payment_type(payment_value)
     config = load_config()
     db = load_db()
     ensure_connections(config, db)
     entry = db_entry_for_existing_client(config, db, name)
-    entry["paymentType"] = payment_type
+    set_entry_payment_type(entry, payment_value)
     db_clients(db)[name] = entry
     save_db(db)
     print(f"Client: {name}")
