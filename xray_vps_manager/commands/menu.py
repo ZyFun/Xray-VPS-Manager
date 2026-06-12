@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import copy
 import json
 import os
 import re
@@ -12,6 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from xray_vps_manager.commands import (
+    menu_activity_actions,
     menu_activity_exception_actions,
     menu_activity_export_actions,
     menu_backup_actions,
@@ -30,13 +30,8 @@ SSHD_CONFIG_PATH = Path("/etc/ssh/sshd_config")
 SSHD_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/00-xray-vps-manager.conf")
 SSHD_LEGACY_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/99-xray-vps-manager.conf")
 AUTHORIZED_KEYS_PATH = Path("/root/.ssh/authorized_keys")
-CASCADE_UPSTREAM_TAG = "cascade-upstream"
-WARP_OUTBOUND_TAG = "warp-out"
-DIRECT_OUTBOUND_TAG = "direct"
-XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
-XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 15:35 UTC"
+MENU_UPDATED = "2026-06-12 15:47 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -71,22 +66,6 @@ TIMEZONE_PRESETS = [
     ("UTC", "UTC"),
 ]
 TIMEZONE_SEARCH_LIMIT = 30
-GEOIP_REGION_PRESETS = [
-    ("RU", "Россия"),
-    ("US", "США"),
-    ("CN", "Китай"),
-    ("KZ", "Казахстан"),
-    ("BY", "Беларусь"),
-    ("UA", "Украина"),
-    ("TR", "Турция"),
-    ("DE", "Германия"),
-    ("NL", "Нидерланды"),
-    ("FI", "Финляндия"),
-    ("EE", "Эстония"),
-    ("GB", "Великобритания"),
-]
-
-
 def die(message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(1)
@@ -963,16 +942,6 @@ def ensure_blocked_outbound(config):
     return False
 
 
-def ensure_direct_outbound(config):
-    outbounds = config.setdefault("outbounds", [])
-    for outbound in outbounds:
-        if outbound.get("tag") == DIRECT_OUTBOUND_TAG:
-            return outbound
-    outbound = {"tag": DIRECT_OUTBOUND_TAG, "protocol": "freedom"}
-    outbounds.append(outbound)
-    return outbound
-
-
 def routing_rules(config):
     routing = config.setdefault("routing", {})
     routing.setdefault("domainStrategy", "IPIfNonMatch")
@@ -994,79 +963,6 @@ def is_api_rule(rule):
 
 def is_bittorrent_rule(rule):
     return "bittorrent" in rule_values(rule, "protocol")
-
-
-def is_xray_geoip_warning_tag(tag):
-    return str(tag or "").startswith(XRAY_GEOIP_OUTBOUND_PREFIX)
-
-
-def xray_geoip_warning_tag(code):
-    return f"{XRAY_GEOIP_OUTBOUND_PREFIX}{code.upper()}"
-
-
-def xray_geoip_warning_source_outbound(config):
-    outbounds = config.setdefault("outbounds", [])
-    for outbound in outbounds:
-        if outbound.get("tag") == WARP_OUTBOUND_TAG and any(
-            rule.get("outboundTag") == WARP_OUTBOUND_TAG for rule in routing_rules(config)
-        ):
-            return outbound
-    for outbound in outbounds:
-        if outbound.get("tag") == CASCADE_UPSTREAM_TAG:
-            return outbound
-    return ensure_direct_outbound(config)
-
-
-def remove_xray_geoip_warning_config(config):
-    changed = False
-    old_outbounds = config.setdefault("outbounds", [])
-    new_outbounds = [outbound for outbound in old_outbounds if not is_xray_geoip_warning_tag(outbound.get("tag"))]
-    if new_outbounds != old_outbounds:
-        changed = True
-        config["outbounds"] = new_outbounds
-
-    rules = routing_rules(config)
-    new_rules = [rule for rule in rules if not is_xray_geoip_warning_tag(rule.get("outboundTag"))]
-    if new_rules != rules:
-        changed = True
-        config["routing"]["rules"] = new_rules
-    return changed
-
-
-def insert_before_catchall_route(rules, rule):
-    insert_index = len(rules)
-    for index, existing in enumerate(rules):
-        if existing.get("outboundTag") in (WARP_OUTBOUND_TAG, CASCADE_UPSTREAM_TAG) and existing.get("network") == "tcp,udp":
-            insert_index = index
-            break
-    rules.insert(insert_index, rule)
-
-
-def apply_xray_geoip_warning_config(config, code):
-    code = code.upper()
-    remove_xray_geoip_warning_config(config)
-    routing = config.setdefault("routing", {})
-    routing["domainStrategy"] = "IPOnDemand"
-    source = xray_geoip_warning_source_outbound(config)
-    outbound = copy.deepcopy(source)
-    tag = xray_geoip_warning_tag(code)
-    outbound["tag"] = tag
-    config.setdefault("outbounds", []).append(outbound)
-    rule = {
-        "type": "field",
-        "ip": [f"geoip:{code.lower()}"],
-        "outboundTag": tag,
-    }
-    insert_before_catchall_route(routing_rules(config), rule)
-
-
-def restore_xray_geoip_domain_strategy(config, values):
-    previous = values.pop(XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV, "")
-    routing = config.setdefault("routing", {})
-    if previous:
-        routing["domainStrategy"] = previous
-    elif routing.get("domainStrategy") == "IPOnDemand":
-        routing["domainStrategy"] = "IPIfNonMatch"
 
 
 def torrent_block_rule():
@@ -1440,30 +1336,6 @@ def update_timezone():
     print("Новая настройка будет использоваться в следующих расчётах и выводе времени.")
 
 
-def ask_activity_days(default=7):
-    value = input(f"Период в днях [{default}]: ").strip() or str(default)
-    if not re.fullmatch(r"[0-9]+", value) or int(value, 10) < 1:
-        print(f"Некорректный период, использую {default} дней.")
-        return str(default)
-    return value
-
-
-def activity_client_report():
-    name = choose_client("просмотра журнала активности", "all")
-    if not name:
-        print("Действие отменено.")
-        return
-    call(["xray-activity", "client", name, ask_activity_days(7)])
-
-
-def activity_suspicious_report():
-    call(["xray-activity", "suspicious", ask_activity_days(7)])
-
-
-def activity_geoip_risk_details():
-    call(["xray-activity", "geoip-risks", ask_activity_days(7)])
-
-
 def update_telegram_route_mode():
     print("Как Telegram-боту выходить в интернет?")
     print("1) direct: напрямую с этого сервера")
@@ -1476,199 +1348,6 @@ def update_telegram_route_mode():
         call(["xray-telegram", "mode", "cascade"])
     else:
         print("Действие отменено: неизвестный маршрут.")
-
-
-def activity_retention_value():
-    result = subprocess.run(
-        ["xray-activity", "retention"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    output = result.stdout + result.stderr
-    match = re.search(r"(\d+)\s+days", output)
-    return match.group(1) if match else "365"
-
-
-def update_activity_retention():
-    current = activity_retention_value()
-    print("ACTIVITY_RETENTION_DAYS: сколько дней хранить детальные события журнала активности.")
-    print("По умолчанию 365 дней. Допустимый диапазон: 1-3650 дней.")
-    print("Старые события старше нового срока будут удалены сразу после изменения.")
-    value = input(f"ACTIVITY_RETENTION_DAYS [{current}] (Enter - оставить без изменений): ").strip()
-    if not value:
-        print("Изменение отменено.")
-        return
-    call(["xray-activity", "retention", value])
-
-
-def activity_risk_limit_values():
-    defaults = {
-        "burst_events": "1000",
-        "burst_window": "15",
-        "unique_hosts": "500",
-        "unique_ports": "20",
-    }
-    result = subprocess.run(
-        ["xray-activity", "risk-limits"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    output = result.stdout + result.stderr
-    patterns = {
-        "burst_events": r"\|\s*Burst events\s*\|\s*([0-9]+)\s*\|",
-        "burst_window": r"\|\s*Burst window\s*\|\s*([0-9]+)\s+minutes\s*\|",
-        "unique_hosts": r"\|\s*Unique hosts\s*\|\s*([0-9]+)\s*\|",
-        "unique_ports": r"\|\s*Unique ports\s*\|\s*([0-9]+)\s*\|",
-    }
-    for key, pattern in patterns.items():
-        match = re.search(pattern, output)
-        if match:
-            defaults[key] = match.group(1)
-    return defaults
-
-
-def update_activity_risk_limits():
-    current = activity_risk_limit_values()
-    print("Лимиты suspicious определяют, когда клиент попадёт в отчёт подозрительной активности.")
-    print("По умолчанию burst = 1000 событий за 15 минут, чтобы обычный стриминг не попадал в false positive.")
-    print("Нажми Enter на любом пункте, чтобы оставить текущее значение.")
-    burst_events = input(f"BURST_EVENTS [{current['burst_events']}]: ").strip() or current["burst_events"]
-    burst_window = input(f"BURST_WINDOW_MINUTES [{current['burst_window']}]: ").strip() or current["burst_window"]
-    unique_hosts = input(f"UNIQUE_HOSTS [{current['unique_hosts']}]: ").strip() or current["unique_hosts"]
-    unique_ports = input(f"UNIQUE_PORTS [{current['unique_ports']}]: ").strip() or current["unique_ports"]
-    call(["xray-activity", "risk-limits", "set", burst_events, burst_window, unique_hosts, unique_ports])
-
-
-def geoip_codes(query=""):
-    command = ["xray-activity", "geo-list"]
-    if query:
-        command.append(query)
-    result = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode != 0:
-        print(result.stderr.strip() or "Не удалось получить список GeoIP-регионов.")
-        return []
-    return [line.strip().upper() for line in result.stdout.splitlines() if line.strip()]
-
-
-def print_geoip_region_table(rows, include_search=False):
-    headers = ("№", "CODE", "ОПИСАНИЕ")
-    values = [(str(index), code, label) for index, (code, label) in enumerate(rows, start=1)]
-    if include_search:
-        values.append(("S", "Поиск", "найти другой код региона в geoip.dat"))
-    values.append(("0", "Назад", ""))
-    widths = [
-        max(len(headers[column]), *(len(str(row[column])) for row in values))
-        for column in range(len(headers))
-    ]
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in values:
-        print(table_row(row, widths))
-    print(border)
-
-
-def choose_geoip_region_from_rows(rows, prompt):
-    while True:
-        choice = input(prompt).strip().lower()
-        if choice in ("", "0"):
-            return ""
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(rows):
-                return rows[index - 1][0]
-        print("Неизвестный регион. Выбери номер из списка или 0 для возврата.")
-
-
-def search_geoip_region():
-    while True:
-        query = input("Фильтр региона или GeoIP code, например Россия, RU или U (Enter - назад): ").strip()
-        if not query:
-            return ""
-        query_code = query.upper()
-        query_text = query.lower()
-        rows = []
-        seen = set()
-        for code, label in GEOIP_REGION_PRESETS:
-            if query_code in code or query_text in label.lower():
-                rows.append((code, label))
-                seen.add(code)
-        for code in geoip_codes(query_code):
-            if code not in seen:
-                rows.append((code, "geoip.dat"))
-                seen.add(code)
-        if not rows:
-            print("По этому фильтру ничего не найдено.")
-            continue
-        displayed = rows[:30]
-        print_geoip_region_table(displayed)
-        selected = choose_geoip_region_from_rows(displayed, "GeoIP region: ")
-        return selected
-
-
-def choose_geoip_region():
-    while True:
-        print("Выбери GeoIP-регион. Если IP назначения попадает в этот регион, отчёты покажут предупреждение о split tunneling.")
-        print_geoip_region_table(GEOIP_REGION_PRESETS, include_search=True)
-        choice = input("GeoIP region: ").strip().lower()
-        if choice in ("", "0"):
-            return ""
-        if choice in ("s", "search", "поиск"):
-            selected = search_geoip_region()
-            if selected:
-                return selected
-            continue
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(GEOIP_REGION_PRESETS):
-                return GEOIP_REGION_PRESETS[index - 1][0]
-        print("Неизвестный регион. Выбери номер, S для поиска или 0 для возврата.")
-
-
-def set_xray_geoip_routing_region():
-    print("Эта настройка добавит Xray routing rule вида geoip:CODE -> отдельный outbound tag.")
-    print("Маршрут трафика не меняется: outbound дублирует текущий cascade-upstream или direct, но access log получит отдельную метку.")
-    print("Для доменных целей routing будет временно переключён в IPOnDemand, иначе catch-all может сработать до GeoIP-проверки.")
-    code = choose_geoip_region()
-    if not code:
-        print("Действие отменено.")
-        return
-    config = load_config()
-    previous_strategy = config.setdefault("routing", {}).get("domainStrategy", "")
-    apply_xray_geoip_warning_config(config, code)
-    backup = apply_config(config)
-    values = server_env()
-    if not values.get(XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV) and previous_strategy != "IPOnDemand":
-        values[XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV] = previous_strategy
-    values["ACTIVITY_XRAY_GEOIP_WARNING_CODE"] = code
-    write_server_env_values(values)
-    print(f"Xray routing GeoIP-предупреждения включены для региона: {code}")
-    print(f"Outbound tag: {xray_geoip_warning_tag(code)}")
-    print("Routing domainStrategy: IPOnDemand")
-    print(f"Backup: {backup}")
-
-
-def disable_xray_geoip_routing_region():
-    config = load_config()
-    changed = remove_xray_geoip_warning_config(config)
-    values = server_env()
-    restore_xray_geoip_domain_strategy(config, values)
-    changed = True
-    backup = None
-    if changed:
-        backup = apply_config(config)
-    values["ACTIVITY_XRAY_GEOIP_WARNING_CODE"] = ""
-    write_server_env_values(values)
-    print("Xray routing GeoIP-предупреждения отключены.")
-    if backup:
-        print(f"Backup: {backup}")
-    else:
-        print("Изменения config.json не требуются.")
 
 
 def sshd_binary():
@@ -2265,8 +1944,8 @@ def telegram_menu_handlers():
 
 def suspicious_menu_handlers():
     return {
-        "1": ("Сводка suspicious", activity_suspicious_report),
-        "2": ("GeoIP-риски подробно", activity_geoip_risk_details),
+        "1": ("Сводка suspicious", lambda: menu_activity_actions.activity_suspicious_report(call)),
+        "2": ("GeoIP-риски подробно", lambda: menu_activity_actions.activity_geoip_risk_details(call)),
         "3": ("Настройки исключений", open_activity_exception_menu),
     }
 
@@ -2276,7 +1955,10 @@ def activity_exception_menu_handlers():
         "1": ("Показать исключения", lambda: call(["xray-activity", "exceptions"])),
         "2": (
             "Добавить из suspicious",
-            lambda: menu_activity_exception_actions.activity_exception_add_from_suspicious(call, ask_activity_days),
+            lambda: menu_activity_exception_actions.activity_exception_add_from_suspicious(
+                call,
+                menu_activity_actions.ask_activity_days,
+            ),
         ),
         "3": ("Добавить вручную", lambda: menu_activity_exception_actions.activity_exception_add_manual(call)),
         "4": (
@@ -2296,7 +1978,7 @@ def activity_menu_handlers():
         "2": ("Включить парсинг activity log", lambda: call(["xray-activity", "enable"])),
         "3": ("Отключить парсинг activity log", lambda: call(["xray-activity", "disable"])),
         "4": ("Синхронизировать сейчас", lambda: call(["xray-activity", "sync"])),
-        "5": ("Отчёт по клиенту", activity_client_report),
+        "5": ("Отчёт по клиенту", lambda: menu_activity_actions.activity_client_report(choose_client, call)),
         "6": ("Подозрительная активность", open_activity_suspicious_menu),
         "7": (
             "Экспорт отчёта по клиенту",
@@ -2311,10 +1993,10 @@ def activity_menu_handlers():
             "Удалить все архивы экспорта",
             lambda: menu_activity_export_actions.delete_all_activity_exports_from_menu(call, confirm),
         ),
-        "11": ("Изменить срок хранения журнала", update_activity_retention),
-        "12": ("Настроить лимиты suspicious", update_activity_risk_limits),
-        "13": ("GeoIP routing: выбрать регион", set_xray_geoip_routing_region),
-        "14": ("GeoIP routing: отключить", disable_xray_geoip_routing_region),
+        "11": ("Изменить срок хранения журнала", lambda: menu_activity_actions.update_activity_retention(call)),
+        "12": ("Настроить лимиты suspicious", lambda: menu_activity_actions.update_activity_risk_limits(call)),
+        "13": ("GeoIP routing: выбрать регион", menu_activity_actions.set_xray_geoip_routing_region),
+        "14": ("GeoIP routing: отключить", menu_activity_actions.disable_xray_geoip_routing_region),
     }
 
 
