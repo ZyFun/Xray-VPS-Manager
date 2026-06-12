@@ -380,10 +380,6 @@ def parse_month_value(value=None):
     return f"{year:04d}-{month:02d}"
 
 
-def traffic_entry(traffic_db, name):
-    return traffic_repository.traffic_entry(traffic_db, name)
-
-
 def traffic_limit_status(db_entry, traffic_db_entry, now=None):
     try:
         return client_limits.traffic_limit_status(db_entry, traffic_db_entry, now)
@@ -395,10 +391,6 @@ def print_client_table(rows):
     headers = ["NAME", "STATUS", "PAYMENT", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
     color_columns = {headers.index("STATUS"), headers.index("PAYMENT"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
     print_table(headers, rows, empty_message=None, color_columns=color_columns, colorizer=color_label)
-
-
-def print_plain_table(headers, rows):
-    print_table(headers, rows, empty_message=None)
 
 
 def print_connection_title(config, db, tag):
@@ -530,7 +522,7 @@ def traffic_report_context(name):
     traffic_db = load_traffic_db()
     if not known_for_traffic_report(config, db, traffic_db, name):
         die(f"Client not found: {name}")
-    return config, db, traffic_db, traffic_entry(traffic_db, name)
+    return config, db, traffic_db, traffic_repository.traffic_entry(traffic_db, name)
 
 
 def cmd_traffic_summary(month_value=None):
@@ -557,7 +549,7 @@ def cmd_traffic_summary(month_value=None):
     )
 
     print(f"Month: {month_key}")
-    print_plain_table(["NAME", "STATUS", "CONNECTION", "IN", "OUT", "TOTAL", "LIMIT", "ALL TIME"], table_rows)
+    print_table(["NAME", "STATUS", "CONNECTION", "IN", "OUT", "TOTAL", "LIMIT", "ALL TIME"], table_rows, empty_message=None)
 
 
 def cmd_traffic_day(name, day_value=None):
@@ -565,7 +557,7 @@ def cmd_traffic_day(name, day_value=None):
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Day: {day.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
-    print_plain_table(["HOUR", "IN", "OUT", "TOTAL"], traffic_reports.day_hour_rows(entry, day))
+    print_table(["HOUR", "IN", "OUT", "TOTAL"], traffic_reports.day_hour_rows(entry, day), empty_message=None)
 
 
 def cmd_traffic_week(name, start_value=None):
@@ -574,7 +566,7 @@ def cmd_traffic_week(name, start_value=None):
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
-    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
+    print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
 
 
 def cmd_traffic_month(name, month_value=None):
@@ -583,7 +575,7 @@ def cmd_traffic_month(name, month_value=None):
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Month: {month_key} (timezone: {client_settings.manager_timezone_label()})")
-    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
+    print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
 
 
 def cmd_traffic_period(name, start_value, end_value):
@@ -594,7 +586,7 @@ def cmd_traffic_period(name, start_value, end_value):
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
-    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
+    print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
 
 
 def db_entry_for_existing_client(config, db, name):
@@ -783,7 +775,7 @@ def cmd_set_limit(name, period_value, limit_gb_value):
 
     sync_traffic()
     traffic_db = load_traffic_db()
-    status = traffic_limit_status(result.entry, traffic_entry(traffic_db, name))
+    status = traffic_limit_status(result.entry, traffic_repository.traffic_entry(traffic_db, name))
     print(f"Traffic limit: {format_traffic(result.limit_bytes)}/{client_limits.traffic_limit_period_label(result.period)}")
     if status:
         print(f"Current usage: {format_traffic(status['usedBytes'])}")
@@ -809,15 +801,6 @@ def cmd_clear_limit(name):
         print("Status: disabled by previous traffic limit. Use xray-client enable NAME if the client should be enabled now.")
 
 
-def traffic_limit_row(config, db, traffic_db, row):
-    return client_limits.traffic_limit_row(
-        row,
-        client_repository.db_clients(db),
-        traffic_db,
-        connection_display_name(config, db, row["connection"]),
-    )
-
-
 def cmd_limit_list():
     sync_traffic()
     config = load_config()
@@ -829,8 +812,16 @@ def cmd_limit_list():
     if not rows:
         print("No clients.")
         return
-    table_rows = [traffic_limit_row(config, db, traffic_db, row) for row in rows]
-    print_plain_table(["NAME", "STATUS", "CONNECTION", "LIMIT", "USED", "REMAINING", "RESET"], table_rows)
+    table_rows = [
+        client_limits.traffic_limit_row(
+            row,
+            client_repository.db_clients(db),
+            traffic_db,
+            connection_display_name(config, db, row["connection"]),
+        )
+        for row in rows
+    ]
+    print_table(["NAME", "STATUS", "CONNECTION", "LIMIT", "USED", "REMAINING", "RESET"], table_rows, empty_message=None)
 
 
 def cmd_enforce_limits(quiet=False, sync_first=False):
