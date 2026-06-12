@@ -253,13 +253,21 @@ def check_helper_syntax():
 def check_manager_package():
     if not MANAGER_PACKAGE_DIR.is_dir():
         raise RuntimeError(f"manager package not installed: {MANAGER_PACKAGE_DIR}")
-    files = sorted(str(path) for path in MANAGER_PACKAGE_DIR.rglob("*.py"))
+    files = manager_package_python_files()
     if not files:
         raise RuntimeError(f"manager package has no Python files: {MANAGER_PACKAGE_DIR}")
     env = os.environ.copy()
     env["PYTHONPYCACHEPREFIX"] = "/tmp/xray-test-pycache"
     run_ok(["python3", "-m", "py_compile", *files], timeout=60, env=env)
     return f"manager Python package installed and compiles: {len(files)} files"
+
+
+def manager_package_python_files():
+    return sorted(
+        str(path)
+        for path in MANAGER_PACKAGE_DIR.rglob("*.py")
+        if not path.name.startswith("._")
+    )
 
 
 def check_config_json(diag):

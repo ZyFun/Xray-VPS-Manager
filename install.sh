@@ -592,6 +592,7 @@ install -o root -g root -m 0755 "$SCRIPT_DIR/xray-vps-manager" /usr/local/sbin/x
 install -d -o root -g root -m 0755 /usr/local/lib/xray-vps-manager
 rm -rf /usr/local/lib/xray-vps-manager/xray_vps_manager
 cp -a "$SCRIPT_DIR/xray_vps_manager" /usr/local/lib/xray-vps-manager/
+find /usr/local/lib/xray-vps-manager/xray_vps_manager -name '._*' -delete
 chown -R root:root /usr/local/lib/xray-vps-manager/xray_vps_manager
 find /usr/local/lib/xray-vps-manager/xray_vps_manager -type d -exec chmod 0755 {} \;
 find /usr/local/lib/xray-vps-manager/xray_vps_manager -type f -exec chmod 0644 {} \;
