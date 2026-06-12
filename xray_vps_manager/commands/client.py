@@ -744,33 +744,10 @@ def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
     fp = validate_fingerprint(fingerprint_value or "chrome")
     config = load_config()
     db = load_db()
-    ensure_connections(config, db)
-
-    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
-    if name in existing_connection_names:
-        die(f"Connection already exists: {name}")
-
-    if port in used_ports(config):
-        die(f"PORT is already used by another inbound: {port}")
-
-    tag = next_connection_tag(config)
-    private_key, public_key = xray_x25519_keys()
-    short_id = random_short_id()
-    inbound = make_reality_inbound(tag, port, sni, private_key, short_id)
-    config.setdefault("inbounds", []).append(inbound)
-
-    created = utc_now_iso()
-    db_connections(db)[tag] = {
-        "tag": tag,
-        "name": name,
-        "created": created,
-        "port": port,
-        "sni": sni,
-        "dest": reality_dest(sni),
-        "fingerprint": fp,
-        "publicKey": public_key,
-        "shortId": short_id,
-    }
+    try:
+        result = client_connections.add_connection(config, db, name, port, sni, fp)
+    except (ValueError, RuntimeError) as exc:
+        die(str(exc))
 
     backup = save_config(config)
     try:
@@ -784,12 +761,12 @@ def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
         run(["systemctl", "restart", "xray"])
         die(f"New config failed. Restored backup: {backup}")
 
-    print(f"Added connection: {name}")
-    print(f"Tag: {tag}")
-    print(f"PORT: {port}")
-    print(f"REALITY_SNI: {sni}")
-    print(f"REALITY_DEST: {reality_dest(sni)}")
-    print(f"FINGERPRINT: {fp}")
+    print(f"Added connection: {result.name}")
+    print(f"Tag: {result.tag}")
+    print(f"PORT: {result.port}")
+    print(f"REALITY_SNI: {result.sni}")
+    print(f"REALITY_DEST: {result.dest}")
+    print(f"FINGERPRINT: {result.fingerprint}")
     print(f"Backup: {backup}")
 
 

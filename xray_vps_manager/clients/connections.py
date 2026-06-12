@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
+from typing import Callable
 
 from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
 from xray_vps_manager.core.time import utc_stamp
+from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import (
     INBOUND_TAG,
     clients,
@@ -19,6 +22,18 @@ from xray_vps_manager.xray.config import (
     reality_inbounds,
 )
 from xray_vps_manager.clients.models import client_name
+
+
+@dataclass
+class AddConnectionResult:
+    tag: str
+    name: str
+    port: int
+    sni: str
+    dest: str
+    fingerprint: str
+    public_key: str
+    short_id: str
 
 
 def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
@@ -140,6 +155,61 @@ def make_reality_inbound(tag: str, port: int, sni: str, private_key: str, short_
             "destOverride": ["http", "tls", "quic"],
         },
     }
+
+
+def add_connection(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    port: int,
+    sni: str,
+    fingerprint_value: str = "chrome",
+    key_pair_factory: Callable[[], tuple[str, str]] = xray_crypto.xray_x25519_keys,
+    short_id_factory: Callable[[], str] = xray_crypto.random_short_id,
+) -> AddConnectionResult:
+    ensure_connections(config, db)
+
+    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
+    if name in existing_connection_names:
+        raise ValueError(f"Connection already exists: {name}")
+
+    if port in used_ports(config):
+        raise ValueError(f"PORT is already used by another inbound: {port}")
+
+    fp = (fingerprint_value or "chrome").strip().lower()
+    if fp not in FINGERPRINTS:
+        raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
+
+    tag = next_connection_tag(config)
+    private_key, public_key = key_pair_factory()
+    short_id = short_id_factory()
+    inbound = make_reality_inbound(tag, port, sni, private_key, short_id)
+    config.setdefault("inbounds", []).append(inbound)
+
+    dest = reality_dest(sni)
+    created = utc_stamp()
+    db_connections(db)[tag] = {
+        "tag": tag,
+        "name": name,
+        "created": created,
+        "port": port,
+        "sni": sni,
+        "dest": dest,
+        "fingerprint": fp,
+        "publicKey": public_key,
+        "shortId": short_id,
+    }
+
+    return AddConnectionResult(
+        tag=tag,
+        name=name,
+        port=port,
+        sni=sni,
+        dest=dest,
+        fingerprint=fp,
+        public_key=public_key,
+        short_id=short_id,
+    )
 
 
 def connection_client_names(config: dict[str, Any], db: dict[str, Any], tag: str) -> list[str]:
