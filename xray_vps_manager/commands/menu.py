@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from xray_vps_manager.commands import menu_actions
+from xray_vps_manager.commands import menu_actions, menu_ui
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
@@ -32,7 +32,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 14:09 UTC"
+MENU_UPDATED = "2026-06-12 14:17 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -130,58 +130,8 @@ def print_menu_header():
         ("Geo Assets", geo_assets_header_value()),
         ("Security Audit", security_audit_header_value()),
     ]
-    label_width = max(len(row[0]) for row in rows)
-    value_width = max(len(row[1]) for row in rows)
-    total_width = label_width + value_width + 3
-    title_border = "+" + "-" * (total_width + 2) + "+"
-    row_border = table_border([label_width, value_width])
-
-    print(title_border)
-    print(f"| {'Xray VPS Manager'.ljust(total_width)} |")
-    print(row_border)
-    for row in rows:
-        print(table_row(row, [label_width, value_width]))
-    print(row_border)
     warning = security_audit_header_warning()
-    if warning:
-        print(red(f"! {warning}"))
-
-
-def print_menu_table(rows):
-    headers = ("№", "Действие")
-    widths = [
-        max(len(headers[0]), *(len(row[0]) for row in rows)),
-        max(len(headers[1]), *(len(row[1]) for row in rows)),
-    ]
-    border = table_border(widths)
-
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in rows:
-        print(table_row(row, widths))
-    print(border)
-
-
-def action_separator(title):
-    line_width = max(60, len(title) + 10)
-    side = max(2, (line_width - len(title) - 2) // 2)
-    line = "=" * side + f" {title} "
-    line += "=" * max(2, line_width - len(line))
-    return line
-
-
-def begin_action(title):
-    print()
-    print(action_separator(title))
-    print()
-    sys.stdout.flush()
-
-
-def end_action(title):
-    print()
-    print("=" * len(action_separator(title)))
-    sys.stdout.flush()
+    menu_ui.print_header("Xray VPS Manager", rows, warning=red(f"! {warning}") if warning else "")
 
 
 def validate_port(value):
@@ -2782,11 +2732,11 @@ def enable_ssh_password_login():
 
 
 def execute_action(title, func):
-    begin_action(title)
+    menu_ui.begin_action(title)
     try:
         func()
     finally:
-        end_action(title)
+        menu_ui.end_action(title)
 
 
 def client_menu_handlers():
@@ -2976,29 +2926,8 @@ def activity_menu_handlers():
     }
 
 
-def print_section_title(title):
-    print(f"Раздел: {title}")
-
-
 def menu_loop(title, rows, handlers, back_label="Назад"):
-    while True:
-        print()
-        print_menu_header()
-        print()
-        print_section_title(title)
-        print()
-        print_menu_table(rows)
-        choice = input("Выбор: ").strip()
-        if not sys.stdin.isatty():
-            print()
-
-        if choice == "0":
-            return
-        if choice in handlers:
-            action_title, handler = handlers[choice]
-            execute_action(action_title, handler)
-        else:
-            print(f"Неизвестный пункт меню. 0 - {back_label}.")
+    menu_ui.menu_loop(title, rows, handlers, print_menu_header, execute_action, back_label=back_label)
 
 
 def open_clients_menu():
@@ -3062,7 +2991,7 @@ def open_traffic_menu():
         print()
         print_menu_header()
         print()
-        print_section_title("Просмотр трафика")
+        menu_ui.print_section_title("Просмотр трафика")
         print()
         name = choose_traffic_client()
         if not name:
@@ -3089,9 +3018,9 @@ def menu():
         print()
         print_menu_header()
         print()
-        print_section_title("Главное меню")
+        menu_ui.print_section_title("Главное меню")
         print()
-        print_menu_table(menu_actions.main_menu_actions())
+        menu_ui.print_menu_table(menu_actions.main_menu_actions())
         choice = input("Выбор: ").strip()
         if not sys.stdin.isatty():
             print()
