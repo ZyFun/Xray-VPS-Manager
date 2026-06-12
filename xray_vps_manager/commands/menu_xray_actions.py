@@ -208,6 +208,27 @@ def update_assets(call: CommandRunner, source: str) -> None:
     call(["xray-update", "--update-assets", source])
 
 
+def sqlite_status(call: CommandRunner) -> None:
+    call(["xray-vps-manager", "sqlite", "status"])
+
+
+def sqlite_preflight(call: CommandRunner) -> None:
+    call(["xray-vps-manager", "sqlite", "preflight"])
+
+
+def sqlite_validate_cutover(call: CommandRunner) -> None:
+    call(["xray-vps-manager", "sqlite", "validate-cutover"])
+
+
+def sqlite_cutover(call: CommandRunner, confirm: ConfirmCallback) -> None:
+    print("Cutover остановит manager-сервисы записи, создаст бэкап, импортирует JSON/JSONL в SQLite")
+    print("и включит SQLite как основной источник чтения и записи.")
+    if confirm("Выполнить финальное переключение на SQLite?"):
+        call(["xray-vps-manager", "sqlite", "cutover", "--yes"])
+    else:
+        print("Cutover SQLite отменён.")
+
+
 def warp_status(call: CommandRunner) -> None:
     call(["xray-warp", "status"])
 

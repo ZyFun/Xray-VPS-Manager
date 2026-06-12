@@ -20,7 +20,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 17:59 UTC"
+MENU_UPDATED = "2026-06-12 20:37 UTC"
 
 
 def die(message):
@@ -165,6 +165,10 @@ def update_menu_actions():
         ("6", "Обновить geoip/geosite из Xray release"),
         ("7", "Обновить geoip/geosite из Loyalsoldier"),
         ("8", "Обновить geoip.dat из v2fly"),
+        ("9", "SQLite: статус базы"),
+        ("10", "SQLite: preflight без переключения"),
+        ("11", "SQLite: проверить cutover"),
+        ("12", "SQLite: выполнить cutover"),
         ("0", "Назад"),
     ]
 
@@ -416,6 +420,10 @@ def update_menu_handlers():
         "6": ("Обновить geoip/geosite из Xray release", lambda: menu_xray_actions.update_assets(call, "xray")),
         "7": ("Обновить geoip/geosite из Loyalsoldier", lambda: menu_xray_actions.update_assets(call, "loyalsoldier")),
         "8": ("Обновить geoip.dat из v2fly", lambda: menu_xray_actions.update_assets(call, "v2fly")),
+        "9": ("SQLite: статус базы", lambda: menu_xray_actions.sqlite_status(call)),
+        "10": ("SQLite: preflight без переключения", lambda: menu_xray_actions.sqlite_preflight(call)),
+        "11": ("SQLite: проверить cutover", lambda: menu_xray_actions.sqlite_validate_cutover(call)),
+        "12": ("SQLite: выполнить cutover", lambda: menu_xray_actions.sqlite_cutover(call, confirm)),
     }
 
 
