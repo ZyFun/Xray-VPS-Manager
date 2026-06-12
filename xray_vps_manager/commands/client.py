@@ -1059,22 +1059,10 @@ def cmd_disable(name):
     validate_name(name)
     config = load_config()
     db = load_db()
-    ensure_connections(config, db)
-    inbound, item = active_client_any(config, name)
-    if item is None:
-        if name in db_clients(db) and db["clients"][name].get("enabled") is False:
-            die(f"Client already disabled: {name}")
-        die(f"Enabled client not found: {name}")
-
-    _, created = split_email(item.get("email", ""))
-    previous = db_clients(db).get(name, {})
-    if name in db_clients(db):
-        created = previous.get("created", created)
-    entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
-    entry["connection"] = previous.get("connection") or inbound_tag(inbound)
-    entry["disabledAt"] = utc_now_iso()
-    db_clients(db)[name] = entry
-    inbound["settings"]["clients"] = [client for client in clients(inbound) if client_name(client) != name]
+    try:
+        result = client_crud.disable_client(config, db, name)
+    except ValueError as exc:
+        die(str(exc))
 
     backup = save_config(config)
     try:
@@ -1088,7 +1076,7 @@ def cmd_disable(name):
         run(["systemctl", "restart", "xray"])
         die(f"New config failed. Restored backup: {backup}")
 
-    print(f"Disabled client: {name}")
+    print(f"Disabled client: {result.name}")
     print(f"Backup: {backup}")
 
 

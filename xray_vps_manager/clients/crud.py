@@ -8,11 +8,11 @@ from typing import Callable
 
 from xray_vps_manager.clients import access
 from xray_vps_manager.clients import connections
-from xray_vps_manager.clients.models import client_name, db_entry_from_client, normalize_payment_type
+from xray_vps_manager.clients.models import client_name, db_entry_from_client, normalize_payment_type, split_email
 from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray import crypto as xray_crypto
-from xray_vps_manager.xray.config import clients, find_inbound_by_tag, reality_inbounds
+from xray_vps_manager.xray.config import active_client_any, clients, find_inbound_by_tag, inbound_tag, reality_inbounds
 
 
 @dataclass
@@ -29,6 +29,14 @@ class RemoveClientResult:
     name: str
     found_active: bool
     found_in_db: bool
+
+
+@dataclass
+class DisableClientResult:
+    name: str
+    connection_tag: str
+    disabled_at: str
+    entry: dict[str, Any]
 
 
 def resolve_connection_for_add(config: dict[str, Any], db: dict[str, Any], connection_tag: str | None = None) -> str:
@@ -111,3 +119,26 @@ def remove_client(config: dict[str, Any], db: dict[str, Any], name: str) -> Remo
     db_clients(db).pop(name, None)
 
     return RemoveClientResult(name=name, found_active=found_active, found_in_db=found_in_db)
+
+
+def disable_client(config: dict[str, Any], db: dict[str, Any], name: str) -> DisableClientResult:
+    connections.ensure_connections(config, db)
+    inbound, item = active_client_any(config, name)
+    if item is None:
+        if name in db_clients(db) and db_clients(db)[name].get("enabled") is False:
+            raise ValueError(f"Client already disabled: {name}")
+        raise ValueError(f"Enabled client not found: {name}")
+
+    _, created = split_email(item.get("email", ""))
+    previous = db_clients(db).get(name, {})
+    if name in db_clients(db):
+        created = previous.get("created", created)
+    entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
+    connection_tag = previous.get("connection") or inbound_tag(inbound)
+    entry["connection"] = connection_tag
+    disabled_at = utc_stamp()
+    entry["disabledAt"] = disabled_at
+    db_clients(db)[name] = entry
+    inbound["settings"]["clients"] = [client for client in clients(inbound) if client_name(client) != name]
+
+    return DisableClientResult(name=name, connection_tag=connection_tag, disabled_at=disabled_at, entry=entry)
