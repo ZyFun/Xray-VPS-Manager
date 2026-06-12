@@ -1,40 +1,21 @@
 #!/usr/bin/env python3
 import fcntl
-import json
 import os
-import re
 import shlex
-import shutil
 import signal
-import subprocess
 import sys
-import tarfile
-import tempfile
 from datetime import date, datetime, timezone
-from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.activity.constants import ACCESS_LOG_PATH, CLIENT_DB_PATH, CONFIG_PATH, EXPORT_DIR, LOCK_PATH
 from xray_vps_manager.activity import exceptions as activity_exceptions
+from xray_vps_manager.activity import exports as activity_exports
 from xray_vps_manager.activity import parser as activity_parser
 from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import reports as activity_reports
+from xray_vps_manager.activity import settings as activity_settings
+from xray_vps_manager.activity import status as activity_status
 from xray_vps_manager.activity import time as activity_time
-
-CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
-CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
-SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
-ACTIVITY_DB_PATH = Path("/usr/local/etc/xray/activity.json")
-ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
-ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
-CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
-EXPORT_DIR = Path("/root/xray_activity_exports")
-LOCK_PATH = Path("/usr/local/etc/xray/activity.lock")
-ACCESS_LOG_PATH = Path("/var/log/xray/access.log")
-DEFAULT_RETENTION_DAYS = 365
-DEFAULT_RISK_BURST_EVENTS = 1000
-DEFAULT_RISK_BURST_WINDOW_MINUTES = 15
-DEFAULT_RISK_UNIQUE_HOSTS = 500
-DEFAULT_RISK_UNIQUE_PORTS = 20
 
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -48,21 +29,6 @@ def die(message):
 def log(message):
     if "--quiet" not in sys.argv:
         print(message)
-
-
-def run(command, **kwargs):
-    return subprocess.run(command, check=True, text=True, **kwargs)
-
-
-def run_capture(command, timeout=10):
-    return subprocess.run(
-        command,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-    )
 
 
 def require_root():
@@ -106,105 +72,42 @@ def iter_dates(start, end):
 
 
 def server_env_values():
-    values = {}
-    if SERVER_ENV_PATH.exists():
-        for line in SERVER_ENV_PATH.read_text().splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value.strip().strip('"').strip("'")
-    return values
+    return activity_settings.server_env_values()
 
 
 def write_server_env(values):
-    values.pop("ACTIVITY_GEOIP_WARNING_CODE", None)
-    ordered = [
-        "SERVER_ADDR",
-        "SERVER_NAME",
-        "PORT",
-        "REALITY_SNI",
-        "REALITY_DEST",
-        "FINGERPRINT",
-        "MANAGER_TIMEZONE",
-        "SECURITY_AUDIT_LAST_RUN",
-        "ACTIVITY_LOGGING_ENABLED",
-        "ACTIVITY_RETENTION_DAYS",
-        "ACTIVITY_RISK_BURST_EVENTS",
-        "ACTIVITY_RISK_BURST_WINDOW_MINUTES",
-        "ACTIVITY_RISK_UNIQUE_HOSTS",
-        "ACTIVITY_RISK_UNIQUE_PORTS",
-        "ACTIVITY_XRAY_GEOIP_WARNING_CODE",
-        "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY",
-    ]
-    lines = [f"{key}={values.get(key, '')}" for key in ordered if key in values]
-    for key in sorted(values):
-        if key not in ordered:
-            lines.append(f"{key}={values[key]}")
-    tmp = SERVER_ENV_PATH.with_suffix(".env.tmp")
-    tmp.write_text("\n".join(lines) + "\n")
-    try:
-        shutil.chown(tmp, user="root", group="xray")
-    except LookupError:
-        shutil.chown(tmp, user="root")
-    os.chmod(tmp, 0o640)
-    tmp.replace(SERVER_ENV_PATH)
+    activity_settings.write_server_env(values)
 
 
 def activity_enabled():
-    return (server_env_values().get("ACTIVITY_LOGGING_ENABLED") or "false").strip().lower() in ("1", "true", "yes", "y")
+    return activity_settings.activity_enabled()
 
 
 def xray_geoip_warning_code():
-    return (server_env_values().get("ACTIVITY_XRAY_GEOIP_WARNING_CODE") or "").strip().upper()
+    return activity_settings.xray_geoip_warning_code()
 
 
 def retention_days():
-    raw = (server_env_values().get("ACTIVITY_RETENTION_DAYS") or str(DEFAULT_RETENTION_DAYS)).strip()
-    try:
-        value = int(raw, 10)
-    except ValueError:
-        return DEFAULT_RETENTION_DAYS
-    return max(1, value)
+    return activity_settings.retention_days()
 
 
 def parse_retention_days(value):
-    raw = str(value or "").strip()
-    if not re.fullmatch(r"[0-9]+", raw):
-        die("Retention days must be a number from 1 to 3650.")
-    days = int(raw, 10)
-    if days < 1 or days > 3650:
-        die("Retention days must be a number from 1 to 3650.")
-    return days
+    try:
+        return activity_settings.parse_retention_days(value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def env_int(name, default, minimum=1, maximum=1000000):
-    raw = (server_env_values().get(name) or str(default)).strip()
-    try:
-        value = int(raw, 10)
-    except ValueError:
-        return default
-    if value < minimum or value > maximum:
-        return default
-    return value
+    return activity_settings.env_int(server_env_values(), name, default, minimum, maximum)
 
 
 def risk_limits():
-    return {
-        "burstEvents": env_int("ACTIVITY_RISK_BURST_EVENTS", DEFAULT_RISK_BURST_EVENTS, 1, 1000000),
-        "burstWindowMinutes": env_int("ACTIVITY_RISK_BURST_WINDOW_MINUTES", DEFAULT_RISK_BURST_WINDOW_MINUTES, 1, 1440),
-        "uniqueHosts": env_int("ACTIVITY_RISK_UNIQUE_HOSTS", DEFAULT_RISK_UNIQUE_HOSTS, 1, 1000000),
-        "uniquePorts": env_int("ACTIVITY_RISK_UNIQUE_PORTS", DEFAULT_RISK_UNIQUE_PORTS, 1, 65535),
-    }
+    return activity_settings.risk_limits()
 
 
 def with_activity_defaults(env):
-    env.setdefault("ACTIVITY_LOGGING_ENABLED", "false")
-    env.setdefault("ACTIVITY_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))
-    env.setdefault("ACTIVITY_RISK_BURST_EVENTS", str(DEFAULT_RISK_BURST_EVENTS))
-    env.setdefault("ACTIVITY_RISK_BURST_WINDOW_MINUTES", str(DEFAULT_RISK_BURST_WINDOW_MINUTES))
-    env.setdefault("ACTIVITY_RISK_UNIQUE_HOSTS", str(DEFAULT_RISK_UNIQUE_HOSTS))
-    env.setdefault("ACTIVITY_RISK_UNIQUE_PORTS", str(DEFAULT_RISK_UNIQUE_PORTS))
-    env.setdefault("ACTIVITY_XRAY_GEOIP_WARNING_CODE", "")
-    return env
+    return activity_settings.with_activity_defaults(env)
 
 
 def load_json(path, default):
@@ -456,22 +359,17 @@ def set_retention_days(value):
 
 
 def parse_limit_value(label, value, minimum, maximum):
-    raw = str(value or "").strip()
-    if not re.fullmatch(r"[0-9]+", raw):
-        die(f"{label} must be a number from {minimum} to {maximum}.")
-    parsed = int(raw, 10)
-    if parsed < minimum or parsed > maximum:
-        die(f"{label} must be a number from {minimum} to {maximum}.")
-    return parsed
+    try:
+        return activity_settings.parse_limit_value(label, value, minimum, maximum)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def set_risk_limits(burst_events, burst_window_minutes, unique_hosts, unique_ports):
-    values = {
-        "ACTIVITY_RISK_BURST_EVENTS": parse_limit_value("BURST_EVENTS", burst_events, 1, 1000000),
-        "ACTIVITY_RISK_BURST_WINDOW_MINUTES": parse_limit_value("BURST_WINDOW_MINUTES", burst_window_minutes, 1, 1440),
-        "ACTIVITY_RISK_UNIQUE_HOSTS": parse_limit_value("UNIQUE_HOSTS", unique_hosts, 1, 1000000),
-        "ACTIVITY_RISK_UNIQUE_PORTS": parse_limit_value("UNIQUE_PORTS", unique_ports, 1, 65535),
-    }
+    try:
+        values = activity_settings.risk_limit_env_values(burst_events, burst_window_minutes, unique_hosts, unique_ports)
+    except ValueError as exc:
+        die(str(exc))
     env = with_activity_defaults(server_env_values())
     for key, value in values.items():
         env[key] = str(value)
@@ -822,49 +720,9 @@ def export_client(name, start_value, end_value, path_only=False):
     end = parse_date(end_value, "END_DATE")
     if end < start:
         die("END_DATE must not be earlier than START_DATE.")
-    ensure_dirs()
     events = list(iter_events(name, start, end))
     aggregate = aggregate_events(events)
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(EXPORT_DIR, 0o700)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
-    safe_name = re.sub(r"[^A-Za-z0-9_.@-]+", "_", name)
-    archive = EXPORT_DIR / f"xray-activity-{safe_name}-{start.isoformat()}-{end.isoformat()}-{stamp}.tar.gz"
-
-    with tempfile.TemporaryDirectory(prefix="xray-activity-export-") as temp_name:
-        temp_dir = Path(temp_name)
-        events_path = temp_dir / "events.jsonl"
-        summary_path = temp_dir / "summary.json"
-        readme_path = temp_dir / "README.txt"
-        events_path.write_text("\n".join(json.dumps(event, ensure_ascii=False) for event in events) + ("\n" if events else ""))
-        summary_path.write_text(
-            json.dumps(
-                {
-                    "client": name,
-                    "period": {"start": start.isoformat(), "end": end.isoformat(), "timezone": "UTC"},
-                    "generatedAt": utc_stamp(),
-                    "eventCount": aggregate["events"],
-                    "uniqueHosts": len(aggregate["hosts"]),
-                    "topPorts": aggregate["ports"],
-                    "topOutbounds": aggregate["outbounds"],
-                    "risks": aggregate["risks"],
-                },
-                indent=2,
-                ensure_ascii=False,
-            )
-            + "\n"
-        )
-        readme_path.write_text(
-            "Xray VPS Manager activity export.\n"
-            "This archive contains connection metadata only, not decrypted HTTPS contents.\n"
-            "Treat it as sensitive personal data.\n"
-        )
-        with tarfile.open(archive, "w:gz") as tar:
-            tar.add(events_path, arcname="events.jsonl")
-            tar.add(summary_path, arcname="summary.json")
-            tar.add(readme_path, arcname="README.txt")
-
-    os.chmod(archive, 0o600)
+    archive = activity_exports.create_client_export(name, start, end, events, aggregate)
     if path_only:
         print(archive)
     else:
@@ -875,7 +733,7 @@ def export_client(name, start_value, end_value, path_only=False):
 
 def resolve_export_archive(value):
     try:
-        return activity_repository.resolve_export_archive(value)
+        return activity_exports.resolve_export_archive(value)
     except FileNotFoundError:
         die(f"Activity export archive not found: {value}")
     except PermissionError as exc:
@@ -885,7 +743,7 @@ def resolve_export_archive(value):
 
 
 def export_archive_rows():
-    return activity_repository.export_archive_rows(format_size)
+    return activity_exports.export_archive_rows(format_size)
 
 
 def list_exports(plain=False):
@@ -914,35 +772,12 @@ def delete_export(value):
 def delete_all_exports(confirmed=False):
     if not confirmed:
         die("Refusing to delete all activity exports without --yes.")
-    if not EXPORT_DIR.exists():
+    if not EXPORT_DIR.exists() or not activity_exports.export_archives():
         print("No activity export archives found.")
         return
-
-    archives = []
-    for path in sorted(EXPORT_DIR.glob("*.tar.gz")):
-        try:
-            archive = path.resolve()
-            if archive.parent == EXPORT_DIR.resolve() and archive.is_file():
-                archives.append(archive)
-        except OSError:
-            continue
-
-    if not archives:
-        print("No activity export archives found.")
-        return
-
-    total_size = 0
-    removed = 0
-    for archive in archives:
-        try:
-            size = archive.stat().st_size
-            archive.unlink()
-        except OSError as exc:
-            print(f"WARN: failed to delete {archive}: {exc}")
-            continue
-        total_size += size
-        removed += 1
-
+    removed, total_size, warnings = activity_exports.delete_all_exports()
+    for warning in warnings:
+        print(warning)
     print(f"Deleted activity exports: {removed}")
     print(f"Freed: {format_size(total_size)}")
     print(f"Directory: {EXPORT_DIR}")
@@ -950,18 +785,11 @@ def delete_all_exports(confirmed=False):
 
 def default_ssh_target():
     server_addr = (server_env_values().get("SERVER_ADDR") or os.environ.get("SERVER_ADDR", "")).strip()
-    if server_addr:
-        return server_addr if "@" in server_addr else f"root@{server_addr}"
-    return "root@SERVER_HOST"
+    return activity_exports.default_ssh_target(server_addr)
 
 
 def quote_local_path(value):
-    if value == "~":
-        return "~"
-    if value.startswith("~/"):
-        rest = value[2:]
-        return "~/" + (shlex.quote(rest) if rest else "")
-    return shlex.quote(value)
+    return activity_exports.quote_local_path(value)
 
 
 def download_command(value, ssh_target=None, local_path="~/Downloads"):
@@ -973,32 +801,10 @@ def download_command(value, ssh_target=None, local_path="~/Downloads"):
 
 
 def status():
-    db = load_activity_db()
-    config = load_json(CONFIG_PATH, {})
-    access = config.get("log", {}).get("access", "")
-    client_files = list(CLIENT_LOG_DIR.glob("*.jsonl")) if CLIENT_LOG_DIR.exists() else []
-    size = sum(path.stat().st_size for path in client_files if path.exists())
-    exceptions = exception_items()
-    rows = [
-        ["Parser enabled", "yes" if activity_enabled() else "no"],
-        ["Retention", f"{retention_days()} days"],
-        ["Suspicious burst", f"{risk_limits()['burstEvents']} events / {risk_limits()['burstWindowMinutes']} min"],
-        ["Suspicious hosts", risk_limits()["uniqueHosts"]],
-        ["Suspicious ports", risk_limits()["uniquePorts"]],
-        ["Suspicious exceptions", len(exceptions)],
-        ["Xray route GeoIP warnings", xray_geoip_warning_code() or "disabled"],
-        ["Access log", access or "not configured"],
-        ["GeoIP data", str(geoip_path()) if geoip_path() else "geoip.dat not available"],
-        ["Activity DB", str(ACTIVITY_DB_PATH)],
-        ["Exception DB", str(ACTIVITY_EXCEPTIONS_PATH)],
-        ["Client logs", f"{len(client_files)} files, {format_size(size)}"],
-        ["Last sync", db.get("lastSync", "never")],
-    ]
+    rows, warnings = activity_status.status_rows()
     print_table(["SETTING", "VALUE"], rows)
-    if not activity_enabled():
-        print("Activity log parser is disabled. Enable it from menu or run: xray-activity enable")
-    if xray_geoip_warning_code() and xray_geoip_warning_code() not in available_geoip_codes():
-        print(f"WARN: Xray route GeoIP warnings are set to {xray_geoip_warning_code()}, but this region was not found in geoip.dat.")
+    for warning in warnings:
+        print(warning)
 
 
 def usage():

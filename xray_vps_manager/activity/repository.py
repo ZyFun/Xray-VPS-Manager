@@ -6,7 +6,6 @@ import json
 import os
 import re
 import shutil
-import tarfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
@@ -186,57 +185,3 @@ def iter_events(name: str, start: date, end: date, time_parser: Callable[[str | 
         event_time = time_parser(event.get("time"))
         if event_time and start_dt <= event_time < end_dt:
             yield event
-
-
-def resolve_export_archive(value: str) -> Path:
-    path = Path(value).expanduser()
-    if not path.exists():
-        path = EXPORT_DIR / value
-    if not path.exists():
-        raise FileNotFoundError(value)
-    export_root = EXPORT_DIR.resolve()
-    archive = path.resolve()
-    if archive.parent != export_root:
-        raise PermissionError(str(path))
-    if not archive.name.endswith(".tar.gz"):
-        raise ValueError("not-tar-gz")
-    return archive
-
-
-def export_archive_rows(format_size: Callable[[int], str]) -> list[dict]:
-    rows = []
-    if not EXPORT_DIR.exists():
-        return rows
-    for path in sorted(EXPORT_DIR.glob("*.tar.gz"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        client = "-"
-        period = "-"
-        events = "-"
-        try:
-            with tarfile.open(path, "r:gz") as tar:
-                member = tar.getmember("summary.json")
-                handle = tar.extractfile(member)
-                if handle:
-                    summary = json.loads(handle.read().decode("utf-8"))
-                    client = str(summary.get("client") or "-")
-                    period_data = summary.get("period") or {}
-                    start = period_data.get("start") or "-"
-                    end = period_data.get("end") or "-"
-                    period = f"{start}..{end}"
-                    events = str(summary.get("eventCount", "-"))
-        except Exception:
-            pass
-        rows.append({
-            "path": str(path),
-            "file": path.name,
-            "created": datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            "size": format_size(stat.st_size),
-            "client": client,
-            "period": period,
-            "events": events,
-        })
-    return rows
-
