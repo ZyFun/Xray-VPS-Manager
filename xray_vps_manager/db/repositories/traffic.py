@@ -8,6 +8,8 @@ from typing import Any
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories.base import decode_json, encode_json
 
+TRAFFIC_ACCESS_LOG_OFFSET = "traffic-access-log"
+
 
 def upsert_traffic_entry(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
     last = entry.get("last") if isinstance(entry.get("last"), dict) else {}
@@ -74,6 +76,48 @@ def get_traffic_entry(connection: sqlite3.Connection, name: str) -> dict[str, An
 def list_traffic_entries(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     rows = connection.execute("SELECT client_name FROM traffic_totals ORDER BY client_name").fetchall()
     return {row["client_name"]: get_traffic_entry(connection, row["client_name"]) for row in rows}
+
+
+def upsert_access_log_state(connection: sqlite3.Connection, state: dict[str, Any] | None) -> None:
+    if not isinstance(state, dict):
+        return
+    with database.transaction(connection):
+        connection.execute(
+            """
+            INSERT INTO file_offsets(name, path, inode, offset, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                path = excluded.path,
+                inode = excluded.inode,
+                offset = excluded.offset,
+                updated_at = excluded.updated_at
+            """,
+            (
+                TRAFFIC_ACCESS_LOG_OFFSET,
+                state.get("path") or "",
+                state.get("inode"),
+                int(state.get("offset") or 0),
+                state.get("updated") or state.get("updated_at") or "",
+            ),
+        )
+
+
+def get_access_log_state(connection: sqlite3.Connection) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT path, inode, offset, updated_at FROM file_offsets WHERE name = ?",
+        (TRAFFIC_ACCESS_LOG_OFFSET,),
+    ).fetchone()
+    if row is None:
+        return {}
+    state: dict[str, Any] = {
+        "path": row["path"] or "",
+        "offset": int(row["offset"] or 0),
+    }
+    if row["inode"] is not None:
+        state["inode"] = int(row["inode"])
+    if row["updated_at"]:
+        state["updated"] = row["updated_at"]
+    return state
 
 
 def replace_history(connection: sqlite3.Connection, name: str, history: dict[str, Any]) -> None:

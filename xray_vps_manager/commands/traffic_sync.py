@@ -296,7 +296,7 @@ def sync_locked():
 
     stamp = now()
     bucket_time = local_bucket_time()
-    db = traffic_repository.load_traffic_db(TRAFFIC_PATH)
+    db = traffic_repository.load_traffic_db_for_read(TRAFFIC_PATH)
     db["version"] = 2
     db["historyRetentionMonths"] = HISTORY_RETENTION_MONTHS
     entries = db.setdefault("clients", {})

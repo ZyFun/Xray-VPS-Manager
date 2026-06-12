@@ -57,7 +57,11 @@ def load_traffic_db_for_read_result(
 
 
 def load_traffic_db_from_sqlite(connection) -> dict[str, Any]:
-    return {"clients": sqlite_traffic.list_traffic_entries(connection)}
+    db = {"clients": sqlite_traffic.list_traffic_entries(connection)}
+    access_log_state = sqlite_traffic.get_access_log_state(connection)
+    if access_log_state:
+        db["accessLog"] = access_log_state
+    return db
 
 
 def save_traffic_db(
@@ -66,6 +70,9 @@ def save_traffic_db(
     *,
     db_path: str | Path | None = None,
 ) -> None:
+    if sqlite_writes_enabled() and sqlite_reads_enabled():
+        write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
+        return
     save_json(path, db, mode=0o640, group_xray=True)
     mirror_traffic_db_to_sqlite_for_write(db, db_path=db_path)
 
@@ -98,7 +105,15 @@ def ensure_entry(entries: dict, name: str, email: str) -> dict:
     return entry
 
 
-def remove_traffic_clients(names: list[str] | tuple[str, ...] | set[str], path: Path = TRAFFIC_PATH) -> bool:
+def remove_traffic_clients(
+    names: list[str] | tuple[str, ...] | set[str],
+    path: Path = TRAFFIC_PATH,
+    *,
+    db_path: str | Path | None = None,
+) -> bool:
+    if sqlite_writes_enabled() and sqlite_reads_enabled():
+        return remove_traffic_clients_from_sqlite_for_write(names, db_path=db_path, strict=True)
+
     db = load_traffic_db(path)
     clients = db.setdefault("clients", {})
     changed = False
@@ -116,13 +131,26 @@ def mirror_traffic_db_to_sqlite_for_write(
     *,
     db_path: str | Path | None = None,
 ) -> bool:
+    return write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=False)
+
+
+def write_traffic_db_to_sqlite_for_write(
+    db: dict[str, Any],
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> bool:
     if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite writes are enabled but manager database is missing")
         return False
 
     connection = None
     try:
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
             return False
 
         entries = traffic_clients(db)
@@ -133,6 +161,7 @@ def mirror_traffic_db_to_sqlite_for_write(
         with database.transaction(connection):
             for name in sorted(mirrorable_clients):
                 sqlite_traffic.upsert_traffic_entry(connection, name, entries[name])
+            sqlite_traffic.upsert_access_log_state(connection, db.get("accessLog"))
 
             current_clients = set(sqlite_traffic.list_traffic_entries(connection))
             stale_clients = current_clients - mirrorable_clients
@@ -140,6 +169,36 @@ def mirror_traffic_db_to_sqlite_for_write(
                 sqlite_traffic.remove_traffic_clients(connection, stale_clients)
         return True
     except Exception:
+        if strict:
+            raise
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def remove_traffic_clients_from_sqlite_for_write(
+    names: list[str] | tuple[str, ...] | set[str],
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> bool:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+        return False
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+            return False
+        return sqlite_traffic.remove_traffic_clients(connection, names)
+    except Exception:
+        if strict:
+            raise
         return False
     finally:
         if connection is not None:

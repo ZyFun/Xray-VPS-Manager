@@ -96,12 +96,30 @@ class SQLiteRepositoryTests(unittest.TestCase):
             },
         )
         traffic.add_history_delta(self.connection, "alice", "2026-06-12", 8, 50, 70)
+        traffic.upsert_access_log_state(
+            self.connection,
+            {
+                "path": "/var/log/xray/access.log",
+                "inode": 3,
+                "offset": 700,
+                "updated": "2026-06-12T08:03:00Z",
+            },
+        )
 
         entry = traffic.get_traffic_entry(self.connection, "alice")
 
         self.assertEqual(entry["incoming"], 100)
         self.assertEqual(entry["outgoing"], 200)
         self.assertEqual(entry["history"]["2026-06-12"]["08"], {"incoming": 150, "outgoing": 270})
+        self.assertEqual(
+            traffic.get_access_log_state(self.connection),
+            {
+                "path": "/var/log/xray/access.log",
+                "inode": 3,
+                "offset": 700,
+                "updated": "2026-06-12T08:03:00Z",
+            },
+        )
 
     def test_activity_repository_events_and_exceptions(self) -> None:
         event_id = activity.add_event(

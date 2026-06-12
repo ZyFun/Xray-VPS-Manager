@@ -73,6 +73,15 @@ class TrafficRepositoryReadSwitchTests(unittest.TestCase):
                     "history": {"2026-06-12": {"09": {"incoming": 300, "outgoing": 400}}},
                 },
             )
+            sqlite_traffic.upsert_access_log_state(
+                connection,
+                {
+                    "path": "/var/log/xray/access.log",
+                    "inode": 9,
+                    "offset": 900,
+                    "updated": "2026-06-12T09:02:00Z",
+                },
+            )
             if ready:
                 sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
@@ -108,6 +117,7 @@ class TrafficRepositoryReadSwitchTests(unittest.TestCase):
             entry = result.db["clients"]["sqlite_client"]
             self.assertEqual(entry["incoming"], 300)
             self.assertEqual(entry["history"]["2026-06-12"]["09"], {"incoming": 300, "outgoing": 400})
+            self.assertEqual(result.db["accessLog"]["offset"], 900)
 
     def test_read_falls_back_to_json_when_sqlite_database_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

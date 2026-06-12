@@ -185,6 +185,7 @@ class JsonToSQLiteImportTests(unittest.TestCase):
             self.assertEqual(connections.get_connection(connection, "vless-reality")["publicKey"], "pub")
             self.assertEqual(clients.get_client(connection, "alice")["paymentType"], "paid")
             self.assertEqual(traffic.get_traffic_entry(connection, "alice")["history"]["2026-06-12"]["08"]["incoming"], 100)
+            self.assertEqual(traffic.get_access_log_state(connection)["offset"], 123)
             self.assertEqual(list(activity.iter_events(connection, client_name="alice"))[0]["risks"], ["xray-geoip:RU"])
             self.assertEqual(activity.list_exceptions(connection)[0]["value"], "*.example.com")
             self.assertEqual(telegram.get_setting(connection, "botName"), "Vireika")
