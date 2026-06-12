@@ -170,6 +170,13 @@ def set_entry_traffic_limit(entry, period, limit_bytes):
         die(str(exc))
 
 
+def set_client_traffic_limit(entry, period, limit_bytes):
+    try:
+        return client_limits.set_client_traffic_limit(entry, period, limit_bytes, utc_now_iso)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def traffic_limit(entry):
     return client_limits.traffic_limit(entry)
 
@@ -1185,19 +1192,19 @@ def cmd_set_limit(name, period_value, limit_gb_value):
     db = load_db()
     ensure_connections(config, db)
     entry = db_entry_for_existing_client(config, db, name)
-    set_entry_traffic_limit(entry, period, limit_bytes)
-    db_clients(db)[name] = entry
+    result = set_client_traffic_limit(entry, period, limit_bytes)
+    db_clients(db)[name] = result.entry
     save_db(db)
 
     print(f"Client: {name}")
-    if limit_bytes is None:
+    if result.limit_bytes is None:
         print("Traffic limit: без лимита")
         return
 
     sync_traffic()
     traffic_db = load_traffic_db()
-    status = traffic_limit_status(entry, traffic_entry(traffic_db, name))
-    print(f"Traffic limit: {format_traffic(limit_bytes)}/{traffic_limit_period_label(period)}")
+    status = traffic_limit_status(result.entry, traffic_entry(traffic_db, name))
+    print(f"Traffic limit: {format_traffic(result.limit_bytes)}/{traffic_limit_period_label(result.period)}")
     if status:
         print(f"Current usage: {format_traffic(status['usedBytes'])}")
         print(f"Remaining: {format_traffic(status['remainingBytes'])}")

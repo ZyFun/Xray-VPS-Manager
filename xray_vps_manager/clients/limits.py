@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from calendar import monthrange
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
@@ -12,6 +14,13 @@ from xray_vps_manager.traffic.formatting import format_traffic
 from xray_vps_manager.traffic.repository import traffic_entry
 
 BYTES_IN_GB = 1024 ** 3
+
+
+@dataclass
+class TrafficLimitUpdateResult:
+    entry: dict[str, Any]
+    period: str
+    limit_bytes: int | None
 
 
 def parse_limit_gb(value: str | None) -> int | None:
@@ -64,6 +73,20 @@ def set_entry_traffic_limit(entry: dict[str, Any], period: str, limit_bytes: int
         "bytes": int(limit_bytes),
         "setAt": now_iso(),
     }
+
+
+def set_client_traffic_limit(
+    entry: dict[str, Any],
+    period: str,
+    limit_bytes: int | None,
+    now_iso: Callable[[], str],
+) -> TrafficLimitUpdateResult:
+    set_entry_traffic_limit(entry, period, limit_bytes, now_iso)
+    return TrafficLimitUpdateResult(
+        entry=entry,
+        period=validate_limit_period(period),
+        limit_bytes=limit_bytes,
+    )
 
 
 def traffic_limit(entry: dict[str, Any]) -> dict[str, Any] | None:
