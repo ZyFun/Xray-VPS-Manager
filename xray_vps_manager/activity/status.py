@@ -13,12 +13,19 @@ from xray_vps_manager.activity.constants import (
     CONFIG_PATH,
 )
 from xray_vps_manager.activity.reports import format_size
+from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
 
 def client_log_stats() -> tuple[int, int]:
     client_files = list(CLIENT_LOG_DIR.glob("*.jsonl")) if CLIENT_LOG_DIR.exists() else []
     size = sum(path.stat().st_size for path in client_files if path.exists())
     return len(client_files), size
+
+
+def manager_db_status() -> str:
+    if not MANAGER_DB_PATH.exists():
+        return f"{MANAGER_DB_PATH}, missing"
+    return f"{MANAGER_DB_PATH}, {format_size(MANAGER_DB_PATH.stat().st_size)}"
 
 
 def status_rows() -> tuple[list[list[object]], list[str]]:
@@ -40,9 +47,10 @@ def status_rows() -> tuple[list[list[object]], list[str]]:
         ["Xray route GeoIP warnings", geoip_code or "disabled"],
         ["Access log", access or "not configured"],
         ["GeoIP data", str(geoip_path) if geoip_path else "geoip.dat not available"],
-        ["Activity DB", str(ACTIVITY_DB_PATH)],
+        ["Manager DB", manager_db_status()],
+        ["Legacy activity DB", str(ACTIVITY_DB_PATH)],
         ["Exception DB", str(ACTIVITY_EXCEPTIONS_PATH)],
-        ["Client logs", f"{client_file_count} files, {format_size(client_log_size)}"],
+        ["Legacy client logs", f"{client_file_count} files, {format_size(client_log_size)}"],
         ["Last sync", db.get("lastSync", "never")],
     ]
     warnings = []

@@ -537,6 +537,8 @@ xray-activity disable
 xray-activity status
 ```
 
+В статусе строка `Manager DB` показывает текущую SQLite-базу менеджера и её размер. Старые JSON/JSONL-файлы журнала активности отображаются как `Legacy activity DB` и `Legacy client logs`.
+
 Синхронизация выполняется раз в минуту тем же `xray-traffic-sync.timer`, а вручную её можно запустить так:
 
 ```bash
