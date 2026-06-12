@@ -12,6 +12,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.core.terminal import print_table
 
 BACKUP_DIR = Path("/root/xray_backups")
@@ -66,18 +67,8 @@ def run_capture(command, timeout=10):
     )
 
 
-def server_env_values():
-    values = {}
-    if SERVER_ENV_PATH.exists():
-        for line in SERVER_ENV_PATH.read_text().splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value.strip().strip('"').strip("'")
-    return values
-
-
 def default_ssh_target():
-    server_addr = server_env_values().get("SERVER_ADDR") or os.environ.get("SERVER_ADDR", "")
+    server_addr = read_server_env(SERVER_ENV_PATH).get("SERVER_ADDR") or os.environ.get("SERVER_ADDR", "")
     server_addr = server_addr.strip()
     if server_addr:
         return server_addr if "@" in server_addr else f"root@{server_addr}"
