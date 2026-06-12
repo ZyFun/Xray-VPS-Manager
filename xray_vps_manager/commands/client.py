@@ -18,6 +18,7 @@ from xray_vps_manager.clients import links as client_links
 from xray_vps_manager.clients import models as client_models
 from xray_vps_manager.clients import payments as client_payments
 from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.clients import runtime as client_runtime
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.clients import status as client_status
 from xray_vps_manager.core.terminal import print_table
@@ -38,7 +39,6 @@ TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 XRAY_TELEGRAM = Path("/usr/local/sbin/xray-telegram")
 DEFAULT_SERVER_ADDR = ""
 DEFAULT_SERVER_NAME = "Xray"
-ONLINE_WINDOW_SECONDS = 300
 BYTES_IN_GB = 1024 ** 3
 PAYMENT_TYPES = {"paid", "free"}
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
@@ -616,21 +616,6 @@ def remove_traffic_clients(names):
     return traffic_repository.remove_traffic_clients(names, TRAFFIC_PATH)
 
 
-def runtime_traffic_for(stats, email):
-    if stats is None:
-        return None, None
-    uplink = stats.get(f"user>>>{email}>>>traffic>>>uplink", 0)
-    downlink = stats.get(f"user>>>{email}>>>traffic>>>downlink", 0)
-    return uplink, downlink
-
-
-def traffic_for(traffic_db, stats, row):
-    entry = traffic_db.get("clients", {}).get(row["name"])
-    if entry:
-        return int(entry.get("incoming", 0)), int(entry.get("outgoing", 0))
-    return runtime_traffic_for(stats, row["email"])
-
-
 def format_traffic(value):
     return traffic_formatting.format_traffic(value, none_label="n/a")
 
@@ -668,41 +653,6 @@ def traffic_limit_status(db_entry, traffic_db_entry, now=None):
         return client_limits.traffic_limit_status(db_entry, traffic_db_entry, now)
     except ValueError as exc:
         die(str(exc))
-
-
-def parse_time(value):
-    if not value or value in ("never", "unknown"):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def format_time(value):
-    parsed = parse_time(value)
-    if parsed is None:
-        return "never"
-    local = parsed.astimezone(manager_timezone())
-    return local.strftime("%Y-%m-%d %H:%M %Z")
-
-
-def online_state(row, traffic_db):
-    if row["status"] != "enabled":
-        return "offline", "never"
-    entry = traffic_db.get("clients", {}).get(row["name"], {})
-    last_online = entry.get("lastOnline", "")
-    parsed = parse_time(last_online)
-    if parsed is None:
-        return "offline", "never"
-    age = (datetime.now(timezone.utc) - parsed).total_seconds()
-    state = "online" if age <= ONLINE_WINDOW_SECONDS else "offline"
-    return state, format_time(last_online)
-
-
-def traffic_updated_at(row, traffic_db):
-    entry = traffic_db.get("clients", {}).get(row["name"], {})
-    return format_time(entry.get("updated", ""))
 
 
 def print_client_table(rows):
@@ -837,6 +787,7 @@ def cmd_list():
     sync_traffic()
     traffic_db = load_traffic_db()
     stats = query_user_stats()
+    display_timezone = manager_timezone()
     grouped = {}
     for row in rows:
         grouped.setdefault(row["connection"], []).append(row)
@@ -848,11 +799,11 @@ def cmd_list():
         print_connection_title(config, db, tag)
         table_rows = []
         for row in group_rows:
-            incoming, outgoing = traffic_for(traffic_db, stats, row)
+            incoming, outgoing = client_runtime.traffic_for(traffic_db, stats, row)
             total = None if incoming is None or outgoing is None else incoming + outgoing
-            online, last_online = online_state(row, traffic_db)
+            online, last_online = client_runtime.online_state(row, traffic_db, display_timezone)
             db_entry = db_clients(db).get(row["name"], {})
-            traffic_updated = traffic_updated_at(row, traffic_db)
+            traffic_updated = client_runtime.traffic_updated_at(row, traffic_db, display_timezone)
             table_rows.append(
                 [
                     row["name"],
