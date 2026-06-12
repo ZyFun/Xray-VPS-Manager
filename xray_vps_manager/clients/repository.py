@@ -53,12 +53,19 @@ def save_db(
     db_path: str | Path | None = None,
 ) -> None:
     db = normalize_client_defaults(db)
+    if sqlite_writes_enabled() and sqlite_reads_enabled():
+        write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
+        return
+    write_json_db(db, path)
+    mirror_db_to_sqlite_for_write(db, db_path=db_path)
+
+
+def write_json_db(db: dict[str, Any], path: Path = CLIENT_DB_PATH) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
     shutil.chown(tmp, user="root", group="xray")
     os.chmod(tmp, 0o640)
     tmp.replace(path)
-    mirror_db_to_sqlite_for_write(db, db_path=db_path)
 
 
 def load_db_for_read(
@@ -102,13 +109,26 @@ def mirror_db_to_sqlite_for_write(
     *,
     db_path: str | Path | None = None,
 ) -> bool:
+    return write_db_to_sqlite_for_write(db, db_path=db_path, strict=False)
+
+
+def write_db_to_sqlite_for_write(
+    db: dict[str, Any],
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> bool:
     if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite writes are enabled but manager database is missing")
         return False
 
     connection = None
     try:
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
             return False
 
         connections = db_connections(db)
@@ -130,6 +150,8 @@ def mirror_db_to_sqlite_for_write(
                 sqlite_connections.delete_connection(connection, tag)
         return True
     except Exception:
+        if strict:
+            raise
         return False
     finally:
         if connection is not None:
