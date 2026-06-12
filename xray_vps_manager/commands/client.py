@@ -354,6 +354,10 @@ def load_traffic_db():
     return traffic_repository.load_traffic_db(TRAFFIC_PATH)
 
 
+def load_traffic_db_readonly():
+    return traffic_repository.load_traffic_db_for_read(TRAFFIC_PATH)
+
+
 def remove_traffic_clients(names):
     return traffic_repository.remove_traffic_clients(names, TRAFFIC_PATH)
 
@@ -470,7 +474,7 @@ def cmd_list():
         print("No clients.")
         return
     sync_traffic()
-    traffic_db = load_traffic_db()
+    traffic_db = load_traffic_db_readonly()
     stats = query_user_stats()
     display_timezone = client_settings.manager_timezone()
     grouped = {}
@@ -522,7 +526,7 @@ def traffic_report_context(name):
     config = load_config()
     db = load_db_readonly().db
     ensure_connections(config, db)
-    traffic_db = load_traffic_db()
+    traffic_db = load_traffic_db_readonly()
     if not known_for_traffic_report(config, db, traffic_db, name):
         die(f"Client not found: {name}")
     return config, db, traffic_db, traffic_repository.traffic_entry(traffic_db, name)
@@ -542,7 +546,7 @@ def cmd_traffic_summary(month_value=None):
         print("No clients.")
         return
 
-    traffic_db = load_traffic_db()
+    traffic_db = load_traffic_db_readonly()
     table_rows = traffic_reports.month_summary_rows(
         rows,
         traffic_db,
@@ -814,7 +818,7 @@ def cmd_limit_list():
     ensure_connections(config, db)
     if read_result.source == "json":
         save_db(db)
-    traffic_db = load_traffic_db()
+    traffic_db = load_traffic_db_readonly()
     rows = client_listing.client_rows(config, db)
     if not rows:
         print("No clients.")

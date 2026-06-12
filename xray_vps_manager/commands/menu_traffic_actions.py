@@ -14,7 +14,7 @@ from xray_vps_manager.core.terminal import table_border, table_row, visible_len
 from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.traffic.formatting import format_traffic
 from xray_vps_manager.traffic.history import all_time_total, month_total
-from xray_vps_manager.traffic.repository import load_traffic_db, traffic_entry
+from xray_vps_manager.traffic.repository import load_traffic_db_for_read, traffic_entry
 
 CommandRunner = Callable[[list[str]], None]
 
@@ -59,7 +59,7 @@ def sync_traffic_quiet(sync_path: Path = XRAY_TRAFFIC_SYNC) -> None:
 
 def traffic_rows_for_selection(month_key: str) -> list[dict]:
     sync_traffic_quiet()
-    traffic_db = load_traffic_db()
+    traffic_db = load_traffic_db_for_read()
     rows = []
     today = local_today()
     for row in menu_client_actions.client_rows_for_selection("all"):
