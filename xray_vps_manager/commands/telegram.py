@@ -18,6 +18,12 @@ from pathlib import Path
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.telegram import api as telegram_api
+from xray_vps_manager.telegram import keyboards as telegram_keyboards
+from xray_vps_manager.telegram import messages as telegram_messages
+from xray_vps_manager.telegram import payments as telegram_payments
+from xray_vps_manager.telegram import settings as telegram_settings
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -46,49 +52,8 @@ UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 DEFAULT_SERVER_NAME = "Xray"
 DEFAULT_BOT_NAME = "Vireika"
-MAINTENANCE_NOTICE_TEMPLATES = {
-    "start": {
-        "title": "Плановые работы",
-        "lines": [
-            "{bot}: плановые работы",
-            "",
-            "Сейчас я обновляю настройки сервера.",
-            "Во время работ VPN может кратковременно переподключаться.",
-            "",
-            "Ничего делать не нужно. Если связь пропадёт, подключение можно повторить через пару минут.",
-        ],
-    },
-    "done": {
-        "title": "Работы завершены",
-        "lines": [
-            "{bot}: работы завершены",
-            "",
-            "Обновление настроек сервера завершено.",
-            "VPN должен работать в обычном режиме.",
-            "",
-            "Если связь не восстановилась автоматически, можно переподключиться вручную.",
-        ],
-    },
-}
-DEFAULT_DB = {
-    "version": 1,
-    "enabled": False,
-    "token": "",
-    "botName": DEFAULT_BOT_NAME,
-    "chatId": "",
-    "chatLabel": "",
-    "routeMode": "direct",
-    "paymentAmount": "",
-    "paymentTotalAmount": "",
-    "paymentCurrency": "₽",
-    "paymentRoundingMode": "none",
-    "paymentRoundingStep": "10",
-    "geoipState": {"files": {}, "sentIds": []},
-    "clientSubscriptions": {},
-    "clientSubscriptionState": {"userUpdateOffset": 0, "expiryReminders": {}},
-    "dailySummaryState": {},
-    "adminState": {},
-}
+MAINTENANCE_NOTICE_TEMPLATES = telegram_messages.MAINTENANCE_NOTICE_TEMPLATES
+DEFAULT_DB = telegram_settings.DEFAULT_DB
 
 
 def die(message):
@@ -141,122 +106,39 @@ def parse_time(value):
 
 
 def load_json(path, default):
-    if not path.exists():
-        return copy.deepcopy(default)
-    try:
-        data = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return copy.deepcopy(default)
-    return data if isinstance(data, dict) else copy.deepcopy(default)
+    return telegram_settings.load_json(path, default)
 
 
 def chown_xray(path):
-    try:
-        shutil.chown(path, user="root", group="xray")
-    except LookupError:
-        shutil.chown(path, user="root")
+    telegram_settings.chown_xray(path)
 
 
 def ensure_config_dir():
-    TELEGRAM_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    chown_xray(TELEGRAM_DB_PATH.parent)
-    os.chmod(TELEGRAM_DB_PATH.parent, 0o750)
+    telegram_settings.ensure_config_dir(TELEGRAM_DB_PATH)
 
 
 def load_db():
-    db = load_json(TELEGRAM_DB_PATH, DEFAULT_DB)
-    merged = copy.deepcopy(DEFAULT_DB)
-    merged.update(db)
-    geoip_state = merged.get("geoipState")
-    if not isinstance(geoip_state, dict):
-        geoip_state = {}
-    geoip_state.setdefault("files", {})
-    geoip_state.setdefault("sentIds", [])
-    merged["geoipState"] = geoip_state
-    subscriptions = merged.get("clientSubscriptions")
-    if not isinstance(subscriptions, dict):
-        subscriptions = {}
-    merged["clientSubscriptions"] = subscriptions
-    subscription_state = merged.get("clientSubscriptionState")
-    if not isinstance(subscription_state, dict):
-        subscription_state = {}
-    try:
-        subscription_state["userUpdateOffset"] = int(subscription_state.get("userUpdateOffset", 0) or 0)
-    except (TypeError, ValueError):
-        subscription_state["userUpdateOffset"] = 0
-    reminders = subscription_state.get("expiryReminders")
-    if not isinstance(reminders, dict):
-        reminders = {}
-    subscription_state["expiryReminders"] = reminders
-    merged["clientSubscriptionState"] = subscription_state
-    daily_summary_state = merged.get("dailySummaryState")
-    if not isinstance(daily_summary_state, dict):
-        daily_summary_state = {}
-    merged["dailySummaryState"] = daily_summary_state
-    admin_state = merged.get("adminState")
-    if not isinstance(admin_state, dict):
-        admin_state = {}
-    merged["adminState"] = admin_state
-    if not str(merged.get("paymentTotalAmount", "")).strip() and str(merged.get("paymentAmount", "")).strip():
-        try:
-            amount, currency = parse_payment_value(str(merged.get("paymentAmount", "")))
-            merged["paymentTotalAmount"] = amount
-            merged["paymentCurrency"] = currency
-        except ValueError:
-            pass
-    if merged.get("paymentRoundingMode") not in ("none", "step"):
-        merged["paymentRoundingMode"] = "none"
-    try:
-        merged["paymentRoundingStep"] = parse_payment_rounding_step(merged.get("paymentRoundingStep", "10"))
-    except ValueError:
-        merged["paymentRoundingStep"] = "10"
-    if merged.get("routeMode") not in ("direct", "cascade"):
-        merged["routeMode"] = "direct"
-    return merged
+    return telegram_settings.load_db(TELEGRAM_DB_PATH)
 
 
 def save_db(db):
-    ensure_config_dir()
-    tmp = TELEGRAM_DB_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    chown_xray(tmp)
-    os.chmod(tmp, 0o640)
-    tmp.replace(TELEGRAM_DB_PATH)
+    telegram_settings.save_db(db, TELEGRAM_DB_PATH)
 
 
 def save_db_sections(db, sections):
-    current = load_db()
-    for section in sections:
-        if section in db:
-            current[section] = db[section]
-    save_db(current)
+    telegram_settings.save_db_sections(db, sections, TELEGRAM_DB_PATH)
 
 
 def mask_token(token):
-    if not token:
-        return "not configured"
-    if len(token) <= 12:
-        return "***"
-    return token[:6] + "..." + token[-6:]
+    return telegram_settings.mask_token(token)
 
 
 def normalize_display_name(value, default, label):
-    raw = str(value or "").strip()
-    if not raw:
-        return default
-    if any(char in raw for char in "\r\n\t"):
-        raise ValueError(f"{label} must not contain control characters.")
-    if len(raw) > 64:
-        raise ValueError(f"{label} must be 64 characters or shorter.")
-    return raw
+    return telegram_settings.normalize_display_name(value, default, label)
 
 
 def bot_name(db=None):
-    source = db if isinstance(db, dict) else load_db()
-    try:
-        return normalize_display_name(source.get("botName", DEFAULT_BOT_NAME), DEFAULT_BOT_NAME, "BOT_NAME")
-    except ValueError:
-        return DEFAULT_BOT_NAME
+    return telegram_settings.bot_name(db, loader=load_db)
 
 
 def set_bot_name(value):
@@ -463,27 +345,10 @@ def set_route_mode(mode):
 
 
 def curl_json(db, method, payload=None, timeout=30):
-    token = db.get("token", "")
-    if not token:
-        die("Telegram bot token is not configured.")
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    command = ["curl", "-fsS", "--connect-timeout", "10", "--max-time", str(timeout)]
-    if db.get("routeMode") == "cascade":
-        command.extend(["--proxy", f"socks5h://{TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}"])
-    if payload is not None:
-        command.extend(["-H", "Content-Type: application/json", "-d", json.dumps(payload, ensure_ascii=False)])
-    command.append(url)
-    result = run_capture(command, timeout=timeout + 5)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or f"curl exited with {result.returncode}").strip()
-        raise RuntimeError(detail)
     try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Telegram returned invalid JSON: {exc}") from exc
-    if not data.get("ok"):
-        raise RuntimeError(json.dumps(data, ensure_ascii=False))
-    return data
+        return telegram_api.curl_json(db, method, payload=payload, timeout=timeout)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def telegram_chat_label(chat):
@@ -551,15 +416,10 @@ def initialize_geoip_offsets(db):
 
 
 def send_chat_message(db, chat_id, text, reply_markup=None, parse_mode=None):
-    chat_id = str(chat_id or "").strip()
-    if not chat_id:
-        die("Telegram chat is not configured.")
-    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    return curl_json(db, "sendMessage", payload, timeout=30)
+    try:
+        return telegram_api.send_chat_message(db, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def send_message(db, text, parse_mode=None):
@@ -567,16 +427,7 @@ def send_message(db, text, parse_mode=None):
 
 
 def answer_callback_query(db, callback_id, text="", show_alert=False):
-    callback_id = str(callback_id or "").strip()
-    if not callback_id:
-        return None
-    payload = {"callback_query_id": callback_id, "show_alert": bool(show_alert)}
-    if text:
-        payload["text"] = text
-    try:
-        return curl_json(db, "answerCallbackQuery", payload, timeout=15)
-    except Exception:
-        return None
+    return telegram_api.answer_callback_query(db, callback_id, text=text, show_alert=show_alert)
 
 
 def refresh_user_update_offset(db):
@@ -816,88 +667,35 @@ def format_access_until(value):
 
 
 def parse_payment_value(value):
-    raw = str(value or "").strip().replace(",", ".")
-    if not raw or raw == "0":
-        return "", "₽"
-    if any(ch in raw for ch in "\r\n\t"):
-        raise ValueError("Сумма оплаты должна быть одной строкой.")
-    parts = raw.split()
-    amount_raw = parts[0]
-    currency = parts[1] if len(parts) > 1 else "₽"
-    if currency not in ("₽", "$", "€"):
-        raise ValueError("Валюта должна быть одной из: ₽, $, €.")
-    try:
-        amount = Decimal(amount_raw)
-    except InvalidOperation as exc:
-        raise ValueError("Сумма оплаты должна быть числом.") from exc
-    if amount <= 0:
-        return "", currency
-    if amount > Decimal("1000000000"):
-        raise ValueError("Сумма оплаты слишком большая.")
-    return decimal_storage_value(amount), currency
+    return telegram_payments.parse_payment_value(value)
 
 
 def decimal_storage_value(value):
-    return format(Decimal(value).normalize(), "f")
+    return telegram_payments.decimal_storage_value(value)
 
 
 def format_decimal_amount(amount):
-    if not amount:
-        return ""
-    value = Decimal(str(amount))
-    if value == value.to_integral_value():
-        return format(value.quantize(Decimal("1")), "f")
-    if value.as_tuple().exponent >= -2:
-        return format(value.quantize(Decimal("0.01")), "f")
-    return format(value.normalize(), "f")
+    return telegram_payments.format_decimal_amount(amount)
 
 
 def format_payment_amount(amount, currency):
-    if not amount:
-        return "не указана"
-    return f"{format_decimal_amount(amount)} {currency}"
+    return telegram_payments.format_payment_amount(amount, currency)
 
 
 def parse_payment_rounding_step(value):
-    raw = str(value or "").strip().replace(",", ".")
-    if not raw:
-        return "10"
-    try:
-        step = Decimal(raw)
-    except InvalidOperation as exc:
-        raise ValueError("Шаг округления должен быть числом.") from exc
-    if step <= 0:
-        raise ValueError("Шаг округления должен быть больше 0.")
-    if step > Decimal("1000000000"):
-        raise ValueError("Шаг округления слишком большой.")
-    return decimal_storage_value(step)
+    return telegram_payments.parse_payment_rounding_step(value)
 
 
 def normalize_payment_rounding_mode(value):
-    raw = str(value or "").strip().lower()
-    if raw in ("", "none", "no", "off", "0", "без", "без округления"):
-        return "none"
-    if raw in ("step", "ceil", "up", "round", "round-up", "1", "шаг", "округлять"):
-        return "step"
-    raise ValueError("Режим округления должен быть none или step.")
+    return telegram_payments.normalize_payment_rounding_mode(value)
 
 
 def payment_rounding_settings(db):
-    mode = db.get("paymentRoundingMode", "none")
-    if mode not in ("none", "step"):
-        mode = "none"
-    try:
-        step = parse_payment_rounding_step(db.get("paymentRoundingStep", "10"))
-    except ValueError:
-        step = "10"
-    return mode, step
+    return telegram_payments.payment_rounding_settings(db)
 
 
 def payment_rounding_label(db):
-    mode, step = payment_rounding_settings(db)
-    if mode == "step":
-        return f"вверх до {format_decimal_amount(step)}"
-    return "без округления"
+    return telegram_payments.payment_rounding_label(db)
 
 
 def paid_client_count(client_db=None):
@@ -906,15 +704,7 @@ def paid_client_count(client_db=None):
 
 
 def payment_share_amount(total_amount, paid_count, rounding_mode="none", rounding_step="10"):
-    if not total_amount or paid_count <= 0:
-        return ""
-    total = Decimal(str(total_amount))
-    share = total / Decimal(paid_count)
-    if normalize_payment_rounding_mode(rounding_mode) == "step":
-        step = Decimal(parse_payment_rounding_step(rounding_step))
-        rounded = (share / step).to_integral_value(rounding=ROUND_CEILING) * step
-        return decimal_storage_value(rounded)
-    return decimal_storage_value(share.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
+    return telegram_payments.payment_share_amount(total_amount, paid_count, rounding_mode, rounding_step)
 
 
 def payment_amount_label(db, client_db=None):
@@ -1180,101 +970,44 @@ def client_access_summary(entry):
 
 
 def client_menu_keyboard():
-    return [
-        [{"text": "Подключить уведомления", "callback_data": "client:subscribe"}],
-        [{"text": "Статус подписки", "callback_data": "client:status"}],
-        [{"text": "Получить VLESS-ссылку", "callback_data": "client:link"}],
-        [{"text": "Отключить уведомления", "callback_data": "client:unsubscribe"}],
-        [{"text": "Помощь", "callback_data": "client:help"}],
-    ]
+    return telegram_keyboards.client_menu_keyboard()
 
 
 def is_owner_chat(db, chat_id):
-    return str(chat_id or "") == str(db.get("chatId") or "")
+    return telegram_keyboards.is_owner_chat(db, chat_id)
 
 
 def client_keyboard_for_chat(db, chat_id):
-    rows = list(client_menu_keyboard())
-    if is_owner_chat(db, chat_id):
-        rows.append([{"text": "Админ-панель", "callback_data": "admin:menu"}])
-    return {"inline_keyboard": rows}
+    return telegram_keyboards.client_keyboard_for_chat(db, chat_id)
 
 
 def admin_menu_keyboard():
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "Статус бота", "callback_data": "admin:status"},
-                {"text": "Подписки клиентов", "callback_data": "admin:subscribers"},
-            ],
-            [{"text": "Сводка сервера", "callback_data": "admin:daily-summary"}],
-            [
-                {"text": "Проверить GeoIP", "callback_data": "admin:geoip"},
-                {"text": "Проверить напоминания", "callback_data": "admin:expiry"},
-            ],
-            [
-                {"text": "Проверка сервера", "callback_data": "admin:test"},
-                {"text": "Создать backup", "callback_data": "admin:backup"},
-            ],
-            [{"text": "Уведомления", "callback_data": "admin:notices"}],
-            [{"text": "Клиентское меню", "callback_data": "client:help"}],
-        ]
-    }
+    return telegram_keyboards.admin_menu_keyboard()
 
 
 def admin_notices_keyboard():
-    return {
-        "inline_keyboard": [
-            [{"text": "Плановые работы", "callback_data": "admin:notice:start"}],
-            [{"text": "Работы завершены", "callback_data": "admin:notice:done"}],
-            [{"text": "Своё сообщение", "callback_data": "admin:notice:custom"}],
-            [{"text": "Назад", "callback_data": "admin:menu"}],
-        ]
-    }
+    return telegram_keyboards.admin_notices_keyboard()
 
 
 def admin_notice_confirm_keyboard(kind):
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "Отправить", "callback_data": f"admin:notice-send:{kind}"},
-                {"text": "Отмена", "callback_data": "admin:notice-cancel"},
-            ],
-            [{"text": "Назад", "callback_data": "admin:notices"}],
-        ]
-    }
+    return telegram_keyboards.admin_notice_confirm_keyboard(kind)
 
 
 def subscription_intro_text():
     db = load_db()
-    return (
-        f"Привет. Я бот {bot_name(db)}.\n\n"
-        "Я помогу не забыть о переводе за совместную аренду сервера.\n\n"
-        "Чтобы подключить напоминания, нажми кнопку «Подключить уведомления» "
-        "или просто отправь сюда свою VLESS Reality-ссылку. "
-        "По ней я определю твой ключ и включу уведомления."
-    )
+    return telegram_messages.subscription_intro_text(db, bot_name)
 
 
 def subscribe_prompt_text():
-    return (
-        "Отправь сюда свою VLESS Reality-ссылку целиком.\n\n"
-        "Я определю ключ пользователя по параметрам ссылки и включу уведомления."
-    )
+    return telegram_messages.subscribe_prompt_text()
 
 
 def admin_intro_text():
-    return (
-        "Xray VPS Manager: админ-панель\n\n"
-        "Кнопки ниже выполняют проверку, сводку, создание резервной копии и ручные уведомления клиентам."
-    )
+    return telegram_messages.admin_intro_text()
 
 
 def truncate_telegram_text(text):
-    text = str(text or "")
-    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
-        return text
-    return text[: TELEGRAM_MESSAGE_LIMIT - 80].rstrip() + "\n\n...вывод сокращён..."
+    return telegram_messages.truncate_telegram_text(text, TELEGRAM_MESSAGE_LIMIT)
 
 
 def send_client_menu(db, chat_id, text=None, parse_mode=None):
@@ -1295,9 +1028,7 @@ def send_admin_notices_menu(db, chat_id, text=None):
     send_chat_message(
         db,
         chat_id,
-        text
-        or "Xray VPS Manager: уведомления клиентам\n\n"
-        "Выбери готовое сообщение или составь своё. Перед отправкой бот покажет предпросмотр.",
+        text or telegram_messages.admin_notices_intro_text(),
         reply_markup=admin_notices_keyboard(),
     )
 
@@ -1784,17 +1515,14 @@ def expiry_reminder_key(chat_id, name, entry, days_before):
 
 
 def build_expiry_reminder_message(db, entry, days_before, expiry_local, timezone_label):
-    day_word = "день" if days_before == 1 else "дней"
-    return "\n".join(
-        [
-            f"{bot_name(db)}: напоминание об оплате",
-            "",
-            f"Через {days_before} {day_word} заканчивается текущий период.",
-            f"Доступ до: {expiry_local.strftime('%Y-%m-%d %H:%M')} {timezone_label}",
-            f"Сумма оплаты: {payment_amount_label(db)}",
-            "",
-            "Когда будет удобно, переведи оплату за совместную аренду сервера.",
-        ]
+    return telegram_messages.build_expiry_reminder_message(
+        db,
+        entry,
+        days_before,
+        expiry_local,
+        timezone_label,
+        bot_name,
+        payment_amount_label,
     )
 
 
@@ -1854,15 +1582,7 @@ def notify_expiry(quiet=False):
 
 
 def build_access_updated_message(db, entry):
-    return "\n".join(
-        [
-            f"{bot_name(db)}: всё готово",
-            "",
-            "Спасибо! Оплата за совместную аренду сервера получена.",
-            "",
-            f"Доступ продлён до: {format_access_until(entry.get('expiresAt', ''))}",
-        ]
-    )
+    return telegram_messages.build_access_updated_message(db, entry, bot_name, format_access_until)
 
 
 def notify_access_updated(name, quiet=False):
@@ -1902,27 +1622,11 @@ def notify_access_updated(name, quiet=False):
 
 
 def maintenance_notice_message(db, template_id):
-    template_id = normalize_maintenance_template_id(template_id)
-    template = MAINTENANCE_NOTICE_TEMPLATES.get(template_id)
-    if not template:
-        raise ValueError("Неизвестный шаблон уведомления о работах.")
-    return "\n".join(line.format(bot=bot_name(db)) for line in template["lines"])
+    return telegram_messages.maintenance_notice_message(db, template_id, bot_name)
 
 
 def normalize_maintenance_template_id(value):
-    raw = str(value or "").strip().lower()
-    aliases = {
-        "": "start",
-        "1": "start",
-        "start": "start",
-        "begin": "start",
-        "maintenance": "start",
-        "2": "done",
-        "done": "done",
-        "finish": "done",
-        "complete": "done",
-    }
-    return aliases.get(raw, raw)
+    return telegram_messages.normalize_maintenance_template_id(value)
 
 
 def maintenance_notice_recipients(db):

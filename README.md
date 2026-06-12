@@ -44,10 +44,11 @@ xray_vps_manager/
   core/
   clients/
   xray/
+  telegram/
 README.md
 ```
 
-Корневые команды `xray-menu`, `xray-client`, `xray-telegram` и остальные оставлены для совместимости как тонкие wrapper-скрипты. Основной Python-код команд теперь лежит в `xray_vps_manager/commands`, общие инфраструктурные helpers находятся в `xray_vps_manager/core`, логика клиентов постепенно выносится в `xray_vps_manager/clients`, а работа с Xray config и Reality-ключами - в `xray_vps_manager/xray`.
+Корневые команды `xray-menu`, `xray-client`, `xray-telegram` и остальные оставлены для совместимости как тонкие wrapper-скрипты. Основной Python-код команд теперь лежит в `xray_vps_manager/commands`, общие инфраструктурные helpers находятся в `xray_vps_manager/core`, логика клиентов постепенно выносится в `xray_vps_manager/clients`, работа с Xray config и Reality-ключами - в `xray_vps_manager/xray`, а базовый слой Telegram-бота - в `xray_vps_manager/telegram`.
 
 ## Установка
 
@@ -144,7 +145,7 @@ xray-menu
 +-----------------+--------------------------------------------------------------+
 | Xray Version    | 26.3.27                                                      |
 | Manager Version | v1.0.0                                                       |
-| Manager Updated | 2026-06-12 07:14 UTC                                         |
+| Manager Updated | 2026-06-12 07:34 UTC                                         |
 | Geo Assets      | geoip.dat: 2026-06-11 13:26 MSK; geosite.dat: 2026-06-11...  |
 | Security Audit  | 2026-06-05 15:55 MSK                                         |
 +-----------------+--------------------------------------------------------------+
