@@ -6,7 +6,6 @@ import subprocess
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import quote
 
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import connections as client_connections

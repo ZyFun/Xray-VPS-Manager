@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+from xray_vps_manager.commands import menu_actions
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
@@ -31,7 +32,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 14:04 UTC"
+MENU_UPDATED = "2026-06-12 14:09 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -144,209 +145,6 @@ def print_menu_header():
     warning = security_audit_header_warning()
     if warning:
         print(red(f"! {warning}"))
-
-
-def main_menu_actions():
-    return [
-        ("1", "Клиенты"),
-        ("2", "Настройки Xray"),
-        ("3", "Безопасность"),
-        ("4", "Резервные копии"),
-        ("5", "Telegram бот"),
-        ("0", "Выход"),
-    ]
-
-
-def telegram_menu_actions():
-    return [
-        ("1", "Статус бота"),
-        ("2", "Первичная настройка"),
-        ("3", "Донастроить владельца/чат"),
-        ("4", "Включить уведомления"),
-        ("5", "Отключить уведомления"),
-        ("6", "Изменить маршрут"),
-        ("7", "Отправить тестовое сообщение"),
-        ("8", "Проверить GeoIP-уведомления сейчас"),
-        ("9", "Показать подписки клиентов"),
-        ("10", "Обработать сообщения пользователей"),
-        ("11", "Проверить напоминания об оплате"),
-        ("12", "Настроить оплату и округление"),
-        ("13", "Изменить имя бота"),
-        ("14", "Уведомить о работах на сервере"),
-        ("15", "Обновить меню команд Telegram"),
-        ("0", "Назад"),
-    ]
-
-
-def client_menu_actions():
-    return [
-        ("1", "Показать клиентов"),
-        ("2", "Добавить клиента"),
-        ("3", "Изменить срок доступа"),
-        ("4", "Изменить статус оплаты"),
-        ("5", "Отключить клиента"),
-        ("6", "Включить клиента"),
-        ("7", "Удалить клиента"),
-        ("8", "Вывести ссылку клиента"),
-        ("9", "Проверить просроченных клиентов"),
-        ("10", "Трафик"),
-        ("11", "Журнал активности"),
-        ("0", "Назад"),
-    ]
-
-
-def reality_menu_actions():
-    return [
-        ("1", "Показать подключения"),
-        ("2", "Создать подключение"),
-        ("3", "Обновить PORT"),
-        ("4", "Обновить REALITY_SNI и REALITY_DEST"),
-        ("5", "Обновить PORT, REALITY_SNI и REALITY_DEST"),
-        ("6", "Обновить FINGERPRINT"),
-        ("7", "Удалить подключение"),
-        ("0", "Назад"),
-    ]
-
-
-def cascade_menu_actions():
-    return [
-        ("1", "Добавить/заменить каскад"),
-        ("2", "Проверить каскад"),
-        ("3", "Отключить каскад"),
-        ("0", "Назад"),
-    ]
-
-
-def xray_settings_menu_actions():
-    return [
-        ("1", "Статус Xray"),
-        ("2", "Перезапустить Xray"),
-        ("3", "Проверить config.json"),
-        ("4", "Проверить timers"),
-        ("5", "Прогнать все тесты сервера"),
-        ("6", "Настройки Reality"),
-        ("7", "Каскад"),
-        ("8", "Обновление Xray"),
-        ("9", "Стартовая ссылка"),
-        ("10", "WARP"),
-        ("11", "Показать доступ к торрентам"),
-        ("12", "Запретить торренты"),
-        ("13", "Разрешить торренты"),
-        ("14", "Показать часовой пояс"),
-        ("15", "Изменить часовой пояс"),
-        ("0", "Назад"),
-    ]
-
-
-def security_menu_actions():
-    return [
-        ("1", "Проверить безопасность сервера"),
-        ("2", "Показать SSH-доступ"),
-        ("3", "Отключить вход по паролю SSH"),
-        ("4", "Включить вход по паролю SSH"),
-        ("0", "Назад"),
-    ]
-
-
-def update_menu_actions():
-    return [
-        ("1", "Проверить доступность обновления"),
-        ("2", "Проверить latest с текущим config.json"),
-        ("3", "Обновить Xray"),
-        ("4", "Показать бэкапы Xray"),
-        ("5", "Откатить Xray к предыдущей версии"),
-        ("6", "Обновить geoip/geosite из Xray release"),
-        ("7", "Обновить geoip/geosite из Loyalsoldier"),
-        ("8", "Обновить geoip.dat из v2fly"),
-        ("0", "Назад"),
-    ]
-
-
-def warp_menu_actions():
-    return [
-        ("1", "Статус WARP"),
-        ("2", "Создать WARP outbound"),
-        ("3", "Пересоздать WARP профиль"),
-        ("4", "Включить WARP для Xray"),
-        ("5", "Отключить WARP"),
-        ("6", "Проверить WARP"),
-        ("7", "Удалить WARP из config.json"),
-        ("8", "Проверить, что WARP отключен"),
-        ("0", "Назад"),
-    ]
-
-
-def traffic_menu_actions():
-    return [
-        ("1", "Просмотр трафика"),
-        ("2", "Показать лимиты трафика"),
-        ("3", "Установить лимит трафика"),
-        ("4", "Убрать лимит трафика"),
-        ("5", "Проверить лимиты трафика"),
-        ("0", "Назад"),
-    ]
-
-
-def traffic_report_actions():
-    return [
-        ("1", "За день по часам"),
-        ("2", "За неделю по дням"),
-        ("3", "За месяц по дням"),
-        ("4", "За период по дням"),
-        ("0", "Назад"),
-    ]
-
-
-def suspicious_menu_actions():
-    return [
-        ("1", "Сводка suspicious"),
-        ("2", "GeoIP-риски подробно"),
-        ("3", "Настройки исключений"),
-        ("0", "Назад"),
-    ]
-
-
-def activity_exception_menu_actions():
-    return [
-        ("1", "Показать исключения"),
-        ("2", "Добавить из suspicious"),
-        ("3", "Добавить вручную"),
-        ("4", "Удалить исключение"),
-        ("5", "Удалить все исключения"),
-        ("0", "Назад"),
-    ]
-
-
-def backup_menu_actions():
-    return [
-        ("1", "Создать бэкап на сервере"),
-        ("2", "Создать бэкап и показать команду скачивания"),
-        ("3", "Показать бэкапы на сервере"),
-        ("4", "Восстановить из бэкапа на сервере"),
-        ("5", "Показать команду загрузки бэкапа на сервер"),
-        ("6", "Удалить бэкап"),
-        ("0", "Назад"),
-    ]
-
-
-def activity_menu_actions():
-    return [
-        ("1", "Статус журнала активности"),
-        ("2", "Включить парсинг activity log"),
-        ("3", "Отключить парсинг activity log"),
-        ("4", "Синхронизировать сейчас"),
-        ("5", "Отчёт по клиенту"),
-        ("6", "Подозрительная активность"),
-        ("7", "Экспорт отчёта по клиенту"),
-        ("8", "Показать архивы экспорта"),
-        ("9", "Удалить архив экспорта"),
-        ("10", "Удалить все архивы экспорта"),
-        ("11", "Изменить срок хранения журнала"),
-        ("12", "Настроить лимиты suspicious"),
-        ("13", "GeoIP routing: выбрать регион"),
-        ("14", "GeoIP routing: отключить"),
-        ("0", "Назад"),
-    ]
 
 
 def print_menu_table(rows):
@@ -3204,59 +3002,59 @@ def menu_loop(title, rows, handlers, back_label="Назад"):
 
 
 def open_clients_menu():
-    menu_loop("Клиенты", client_menu_actions(), client_menu_handlers())
+    menu_loop("Клиенты", menu_actions.client_menu_actions(), client_menu_handlers())
 
 
 def open_reality_menu():
-    menu_loop("Настройки Reality", reality_menu_actions(), reality_menu_handlers())
+    menu_loop("Настройки Reality", menu_actions.reality_menu_actions(), reality_menu_handlers())
 
 
 def open_cascade_menu():
-    menu_loop("Каскад", cascade_menu_actions(), cascade_menu_handlers())
+    menu_loop("Каскад", menu_actions.cascade_menu_actions(), cascade_menu_handlers())
 
 
 def open_warp_menu():
-    menu_loop("WARP", warp_menu_actions(), warp_menu_handlers())
+    menu_loop("WARP", menu_actions.warp_menu_actions(), warp_menu_handlers())
 
 
 def open_xray_settings_menu():
-    menu_loop("Настройки Xray", xray_settings_menu_actions(), xray_settings_menu_handlers())
+    menu_loop("Настройки Xray", menu_actions.xray_settings_menu_actions(), xray_settings_menu_handlers())
 
 
 def open_security_menu():
-    menu_loop("Безопасность", security_menu_actions(), security_menu_handlers())
+    menu_loop("Безопасность", menu_actions.security_menu_actions(), security_menu_handlers())
 
 
 def open_update_menu():
-    menu_loop("Обновление Xray", update_menu_actions(), update_menu_handlers())
+    menu_loop("Обновление Xray", menu_actions.update_menu_actions(), update_menu_handlers())
 
 
 def open_backup_menu():
-    menu_loop("Резервные копии", backup_menu_actions(), backup_menu_handlers())
+    menu_loop("Резервные копии", menu_actions.backup_menu_actions(), backup_menu_handlers())
 
 
 def open_telegram_menu():
-    menu_loop("Telegram бот", telegram_menu_actions(), telegram_menu_handlers())
+    menu_loop("Telegram бот", menu_actions.telegram_menu_actions(), telegram_menu_handlers())
 
 
 def open_activity_suspicious_menu():
-    menu_loop("Подозрительная активность", suspicious_menu_actions(), suspicious_menu_handlers())
+    menu_loop("Подозрительная активность", menu_actions.suspicious_menu_actions(), suspicious_menu_handlers())
 
 
 def open_activity_exception_menu():
-    menu_loop("Настройки исключений", activity_exception_menu_actions(), activity_exception_menu_handlers())
+    menu_loop("Настройки исключений", menu_actions.activity_exception_menu_actions(), activity_exception_menu_handlers())
 
 
 def open_activity_menu():
-    menu_loop("Журнал активности", activity_menu_actions(), activity_menu_handlers())
+    menu_loop("Журнал активности", menu_actions.activity_menu_actions(), activity_menu_handlers())
 
 
 def open_client_traffic_menu(name):
-    menu_loop(f"Просмотр трафика: {name}", traffic_report_actions(), traffic_report_handlers(name))
+    menu_loop(f"Просмотр трафика: {name}", menu_actions.traffic_report_actions(), traffic_report_handlers(name))
 
 
 def open_traffic_tools_menu():
-    menu_loop("Трафик", traffic_menu_actions(), traffic_menu_handlers())
+    menu_loop("Трафик", menu_actions.traffic_menu_actions(), traffic_menu_handlers())
 
 
 def open_traffic_menu():
@@ -3293,7 +3091,7 @@ def menu():
         print()
         print_section_title("Главное меню")
         print()
-        print_menu_table(main_menu_actions())
+        print_menu_table(menu_actions.main_menu_actions())
         choice = input("Выбор: ").strip()
         if not sys.stdin.isatty():
             print()
