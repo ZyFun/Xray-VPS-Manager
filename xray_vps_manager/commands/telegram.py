@@ -9,6 +9,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.telegram import admin as telegram_admin
@@ -356,18 +357,7 @@ def list_client_subscribers():
                 subscription.get("subscribedAt", "-"),
             ]
         )
-    headers = ["CLIENT", "CHAT", "CHAT_ID", "ACCESS_UNTIL", "VALID", "SUBSCRIBED_AT"]
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(str(value)))
-    border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
-    print(border)
-    print("| " + " | ".join(headers[index].ljust(widths[index]) for index in range(len(headers))) + " |")
-    print(border)
-    for row in rows:
-        print("| " + " | ".join(str(row[index]).ljust(widths[index]) for index in range(len(row))) + " |")
-    print(border)
+    print_table(["CLIENT", "CHAT", "CHAT_ID", "ACCESS_UNTIL", "VALID", "SUBSCRIBED_AT"], rows, empty_message=None)
 
 
 def notify_geoip(quiet=False):
