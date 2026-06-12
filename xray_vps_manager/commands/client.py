@@ -19,7 +19,7 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
-from xray_vps_manager.traffic import history as traffic_history
+from xray_vps_manager.traffic import reports as traffic_reports
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.xray import config as xray_config
 from xray_vps_manager.xray import crypto as xray_crypto
@@ -695,40 +695,8 @@ def parse_month_value(value=None):
     return f"{year:04d}-{month:02d}"
 
 
-def month_bounds(month_key):
-    return traffic_history.month_bounds(month_key, today=local_now().date())
-
-
-def iter_dates(start, end):
-    return traffic_history.iter_dates(start, end)
-
-
-def traffic_bucket_totals(bucket):
-    return traffic_history.traffic_bucket_totals(bucket)
-
-
 def traffic_entry(traffic_db, name):
     return traffic_repository.traffic_entry(traffic_db, name)
-
-
-def history_for_entry(entry):
-    return traffic_history.history_for_entry(entry)
-
-
-def day_hour_totals(entry, day):
-    return traffic_history.day_hour_totals(entry, day, format_traffic)
-
-
-def day_total(entry, day):
-    return traffic_history.day_total(entry, day)
-
-
-def period_day_rows(entry, start, end):
-    return traffic_history.period_day_rows(entry, start, end, format_traffic)
-
-
-def month_total(entry, month_key):
-    return traffic_history.month_total(entry, month_key, today=local_now().date())
 
 
 def traffic_limit_usage(entry, period, now=None):
@@ -743,10 +711,6 @@ def traffic_limit_status(db_entry, traffic_db_entry, now=None):
         return client_limits.traffic_limit_status(db_entry, traffic_db_entry, now)
     except ValueError as exc:
         die(str(exc))
-
-
-def all_time_total(entry):
-    return traffic_history.all_time_total(entry)
 
 
 def parse_time(value):
@@ -1091,22 +1055,15 @@ def cmd_traffic_summary(month_value=None):
         return
 
     traffic_db = load_traffic_db()
-    table_rows = []
-    for row in rows:
-        entry = traffic_entry(traffic_db, row["name"])
-        db_entry = db_clients(db).get(row["name"], {})
-        incoming, outgoing = month_total(entry, month_key)
-        all_in, all_out = all_time_total(entry)
-        table_rows.append([
-            row["name"],
-            row["status"],
-            connection_display_name(config, db, row["connection"]),
-            format_traffic(incoming),
-            format_traffic(outgoing),
-            format_traffic(incoming + outgoing),
-            format_traffic_limit(db_entry),
-            format_traffic(all_in + all_out),
-        ])
+    table_rows = traffic_reports.month_summary_rows(
+        rows,
+        traffic_db,
+        db_clients(db),
+        month_key,
+        connection_label=lambda row: connection_display_name(config, db, row["connection"]),
+        limit_label=format_traffic_limit,
+        today=local_now().date(),
+    )
 
     print(f"Month: {month_key}")
     print_plain_table(["NAME", "STATUS", "CONNECTION", "IN", "OUT", "TOTAL", "LIMIT", "ALL TIME"], table_rows)
@@ -1117,7 +1074,7 @@ def cmd_traffic_day(name, day_value=None):
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Day: {day.isoformat()} (timezone: {manager_timezone_label()})")
-    print_plain_table(["HOUR", "IN", "OUT", "TOTAL"], day_hour_totals(entry, day))
+    print_plain_table(["HOUR", "IN", "OUT", "TOTAL"], traffic_reports.day_hour_rows(entry, day))
 
 
 def cmd_traffic_week(name, start_value=None):
@@ -1126,16 +1083,16 @@ def cmd_traffic_week(name, start_value=None):
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {manager_timezone_label()})")
-    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], period_day_rows(entry, start, end))
+    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
 
 
 def cmd_traffic_month(name, month_value=None):
     month_key = parse_month_value(month_value)
-    start, end = month_bounds(month_key)
+    start, end = traffic_reports.month_bounds(month_key, today=local_now().date())
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Month: {month_key} (timezone: {manager_timezone_label()})")
-    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], period_day_rows(entry, start, end))
+    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
 
 
 def cmd_traffic_period(name, start_value, end_value):
@@ -1146,7 +1103,7 @@ def cmd_traffic_period(name, start_value, end_value):
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {manager_timezone_label()})")
-    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], period_day_rows(entry, start, end))
+    print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
 
 
 def resolve_connection_for_add(config, db, connection_tag=None):
