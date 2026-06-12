@@ -8,11 +8,20 @@ from typing import Callable
 
 from xray_vps_manager.clients import access
 from xray_vps_manager.clients import connections
+from xray_vps_manager.clients import limits as client_limits
+from xray_vps_manager.clients import status as client_status
 from xray_vps_manager.clients.models import client_name, db_entry_from_client, normalize_payment_type, split_email
 from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.core.time import utc_stamp
+from xray_vps_manager.traffic.repository import traffic_entry
 from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import active_client_any, clients, find_inbound_by_tag, inbound_tag, reality_inbounds
+
+
+class EnableTrafficLimitExceeded(ValueError):
+    def __init__(self, traffic_status: dict[str, Any]) -> None:
+        super().__init__("Traffic limit is exhausted for the current period.")
+        self.traffic_status = traffic_status
 
 
 @dataclass
@@ -36,6 +45,14 @@ class DisableClientResult:
     name: str
     connection_tag: str
     disabled_at: str
+    entry: dict[str, Any]
+
+
+@dataclass
+class EnableClientResult:
+    name: str
+    client_id: str
+    connection_tag: str
     entry: dict[str, Any]
 
 
@@ -142,3 +159,33 @@ def disable_client(config: dict[str, Any], db: dict[str, Any], name: str) -> Dis
     inbound["settings"]["clients"] = [client for client in clients(inbound) if client_name(client) != name]
 
     return DisableClientResult(name=name, connection_tag=connection_tag, disabled_at=disabled_at, entry=entry)
+
+
+def enable_client(config: dict[str, Any], db: dict[str, Any], traffic_db: dict[str, Any], name: str) -> EnableClientResult:
+    connections.ensure_connections(config, db)
+    if active_client_any(config, name)[1] is not None:
+        raise ValueError(f"Client already enabled: {name}")
+
+    entry = db_clients(db).get(name)
+    if not entry:
+        raise ValueError(f"Client not found: {name}")
+    if access.access_expired(entry):
+        raise ValueError(f"Access expired for client: {name}. Extend it first: xray-client extend-days {name} DAYS")
+
+    traffic_status = client_limits.traffic_limit_status(entry, traffic_entry(traffic_db, name))
+    if traffic_status and traffic_status["exceeded"]:
+        raise EnableTrafficLimitExceeded(traffic_status)
+
+    client_status.enable_db_client(config, name, entry)
+    client = entry["client"]
+    connection_tag = entry["connection"]
+    entry["enabled"] = True
+    client_status.clear_disabled_state(entry)
+    db_clients(db)[name] = entry
+
+    return EnableClientResult(
+        name=name,
+        client_id=client["id"],
+        connection_tag=connection_tag,
+        entry=entry,
+    )

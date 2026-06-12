@@ -1085,29 +1085,19 @@ def cmd_enable(name):
     sync_traffic()
     config = load_config()
     db = load_db()
-    ensure_connections(config, db)
-    if active_client_any(config, name)[1] is not None:
-        die(f"Client already enabled: {name}")
-    entry = db_clients(db).get(name)
-    if not entry:
-        die(f"Client not found: {name}")
-    if access_expired(entry):
-        die(f"Access expired for client: {name}. Extend it first: xray-client extend-days {name} DAYS")
-    traffic_status = traffic_limit_status(entry, traffic_entry(load_traffic_db(), name))
-    if traffic_status and traffic_status["exceeded"]:
+    traffic_db = load_traffic_db()
+    try:
+        result = client_crud.enable_client(config, db, traffic_db, name)
+    except client_crud.EnableTrafficLimitExceeded as exc:
+        traffic_status = exc.traffic_status
         die(
             "Traffic limit is exhausted for the current "
             f"{traffic_limit_period_label(traffic_status['period'])}. "
             f"Used {format_traffic(traffic_status['usedBytes'])} of {format_traffic(traffic_status['limitBytes'])}. "
             f"Can be enabled after reset: {traffic_status['resetAt']}"
         )
-
-    enable_db_client(config, db, name, entry)
-    client = entry["client"]
-    connection_tag = entry["connection"]
-    entry["enabled"] = True
-    clear_disabled_state(entry)
-    db_clients(db)[name] = entry
+    except ValueError as exc:
+        die(str(exc))
 
     backup = save_config(config)
     try:
@@ -1121,10 +1111,10 @@ def cmd_enable(name):
         run(["systemctl", "restart", "xray"])
         die(f"New config failed. Restored backup: {backup}")
 
-    print(f"Enabled client: {name}")
-    print(f"Connection: {connection_display_name(config, db, connection_tag)} ({connection_tag})")
+    print(f"Enabled client: {result.name}")
+    print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
     print(f"Backup: {backup}")
-    print(link_for(config, client["id"], name, connection_tag, db))
+    print(link_for(config, result.client_id, result.name, result.connection_tag, db))
 
 
 def apply_access_update(name, update_entry):
