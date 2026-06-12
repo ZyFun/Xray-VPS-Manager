@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.traffic import repository as traffic_repository
+from xray_vps_manager.telegram import admin as telegram_admin
 from xray_vps_manager.telegram import api as telegram_api
 from xray_vps_manager.telegram import keyboards as telegram_keyboards
 from xray_vps_manager.telegram import messages as telegram_messages
@@ -39,11 +40,9 @@ USER_POLL_SHORT_TIMEOUT = 2
 USER_POLL_LONG_TIMEOUT = 45
 USER_POLLER_SLEEP_UNCONFIGURED = 30
 USER_POLLER_SLEEP_ERROR = 5
-TELEGRAM_MESSAGE_LIMIT = 3900
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 DEFAULT_SERVER_NAME = "Xray"
 DEFAULT_BOT_NAME = "Vireika"
-MAINTENANCE_NOTICE_TEMPLATES = telegram_messages.MAINTENANCE_NOTICE_TEMPLATES
 DEFAULT_DB = telegram_settings.DEFAULT_DB
 
 
@@ -421,6 +420,18 @@ def notification_context():
     )
 
 
+def admin_context():
+    return telegram_admin.AdminContext(
+        load_client_db=load_client_db,
+        save_db_sections=save_db_sections,
+        format_access_until=format_access_until,
+        run_capture=run_capture,
+        send_chat_message=send_chat_message,
+        bot_name=bot_name,
+        notification_context=notification_context(),
+    )
+
+
 def answer_callback_query(db, callback_id, text="", show_alert=False):
     return telegram_api.answer_callback_query(db, callback_id, text=text, show_alert=show_alert)
 
@@ -628,18 +639,6 @@ def client_keyboard_for_chat(db, chat_id):
     return telegram_keyboards.client_keyboard_for_chat(db, chat_id)
 
 
-def admin_menu_keyboard():
-    return telegram_keyboards.admin_menu_keyboard()
-
-
-def admin_notices_keyboard():
-    return telegram_keyboards.admin_notices_keyboard()
-
-
-def admin_notice_confirm_keyboard(kind):
-    return telegram_keyboards.admin_notice_confirm_keyboard(kind)
-
-
 def subscription_intro_text():
     db = load_db()
     return telegram_messages.subscription_intro_text(db, bot_name)
@@ -647,14 +646,6 @@ def subscription_intro_text():
 
 def subscribe_prompt_text():
     return telegram_messages.subscribe_prompt_text()
-
-
-def admin_intro_text():
-    return telegram_messages.admin_intro_text()
-
-
-def truncate_telegram_text(text):
-    return telegram_messages.truncate_telegram_text(text, TELEGRAM_MESSAGE_LIMIT)
 
 
 def send_client_menu(db, chat_id, text=None, parse_mode=None):
@@ -668,16 +659,11 @@ def send_client_menu(db, chat_id, text=None, parse_mode=None):
 
 
 def send_admin_menu(db, chat_id, text=None):
-    send_chat_message(db, chat_id, text or admin_intro_text(), reply_markup=admin_menu_keyboard())
+    telegram_admin.send_admin_menu(admin_context(), db, chat_id, text)
 
 
 def send_admin_notices_menu(db, chat_id, text=None):
-    send_chat_message(
-        db,
-        chat_id,
-        text or telegram_messages.admin_notices_intro_text(),
-        reply_markup=admin_notices_keyboard(),
-    )
+    telegram_admin.send_admin_notices_menu(admin_context(), db, chat_id, text)
 
 
 def subscription_status_for_chat(db, chat_id):
@@ -703,70 +689,6 @@ def unsubscribe_chat(db, chat_id):
     return telegram_subscriptions.unsubscribe_chat(db, chat_id)
 
 
-def admin_status_text(db):
-    subscriptions = db.get("clientSubscriptions", {})
-    subscription_state = db.get("clientSubscriptionState", {})
-    daily_summary_state = db.get("dailySummaryState", {})
-    return "\n".join(
-        [
-            "Xray VPS Manager: статус бота",
-            "",
-            f"Уведомления: {'включены' if db.get('enabled') else 'отключены'}",
-            f"Маршрут Telegram: {db.get('routeMode', 'direct')}",
-            f"Оплата: {payment_amount_label(db)}",
-            f"Округление: {telegram_payments.payment_rounding_label(db)}",
-            f"Подписки клиентов: {len(subscriptions)}",
-            f"Последний GeoIP: {db.get('geoipState', {}).get('lastGeoipNotification') or db.get('lastGeoipNotification') or 'never'}",
-            f"Последний poll: {subscription_state.get('lastUserPoll') or 'never'}",
-            f"Последнее напоминание: {subscription_state.get('lastExpiryReminder') or 'never'}",
-            f"Последняя сводка: {daily_summary_state.get('lastSentDate') or 'never'}",
-        ]
-    )
-
-
-def admin_subscribers_text(db):
-    subscriptions = db.get("clientSubscriptions", {})
-    if not subscriptions:
-        return "Подписок клиентов пока нет."
-    client_db = load_client_db()
-    clients = telegram_subscriptions.client_db_clients(client_db)
-    lines = ["Xray VPS Manager: подписки клиентов", ""]
-    for chat_id, subscription in sorted(subscriptions.items(), key=lambda item: item[1].get("client", ""))[:25]:
-        name = subscription.get("client", "-")
-        entry = clients.get(name, {})
-        access_until = format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else "")
-        valid = "актуальна" if telegram_subscriptions.subscription_is_current(subscription, entry) else "требует проверки"
-        lines.append(f"- {name}: {valid}, до {access_until}, чат {subscription.get('chatLabel', chat_id)}")
-    if len(subscriptions) > 25:
-        lines.append(f"...и ещё подписок: {len(subscriptions) - 25}")
-    return "\n".join(lines)
-
-
-def admin_run_server_test_text():
-    test_script = Path("/usr/local/sbin/xray-test")
-    if not test_script.exists():
-        return "xray-test не найден на сервере."
-    result = run_capture([str(test_script)], timeout=90)
-    output = (result.stdout or "") + (("\n" + result.stderr) if result.stderr else "")
-    header = "Xray VPS Manager: проверка сервера"
-    if result.returncode == 0:
-        header += "\nСтатус: OK"
-    else:
-        header += f"\nСтатус: ошибка, exit {result.returncode}"
-    return truncate_telegram_text(header + "\n\n" + output.strip())
-
-
-def admin_create_backup_text():
-    backup_script = Path("/usr/local/sbin/xray-backup")
-    if not backup_script.exists():
-        return "xray-backup не найден на сервере."
-    result = run_capture([str(backup_script), "create", "--path-only"], timeout=120)
-    output = (result.stdout or result.stderr or "").strip()
-    if result.returncode != 0:
-        return truncate_telegram_text(f"Не удалось создать backup, exit {result.returncode}.\n\n{output}")
-    return "Backup создан на сервере:\n" + output
-
-
 def subscribe_chat_to_client(db, chat, text):
     return telegram_subscriptions.subscribe_chat_to_client(
         db,
@@ -788,16 +710,7 @@ def handle_user_message(db, update):
     if not text:
         send_client_menu(db, chat_id, "Отправь текстовую VLESS-ссылку или нажми кнопку ниже.")
         return True
-    pending = db.get("adminState", {}).get(chat_id, {})
-    if is_owner_chat(db, chat_id) and pending.get("action") == "custom-notice-text":
-        if text.lower() in ("/cancel", "cancel", "отмена"):
-            clear_admin_state(db, chat_id)
-            send_admin_notices_menu(db, chat_id, "Создание своего сообщения отменено.")
-            return True
-        db.setdefault("adminState", {})["customNoticeText"] = text
-        db["adminState"].pop(chat_id, None)
-        save_db_sections(db, ("adminState",))
-        preview_admin_notice(db, chat_id, "custom")
+    if is_owner_chat(db, chat_id) and telegram_admin.handle_custom_notice_text(admin_context(), db, chat_id, text):
         return True
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
     if command == "/admin":
@@ -850,67 +763,7 @@ def handle_callback_query(db, update):
             send_client_menu(db, chat_id)
             return True
         answer_callback_query(db, callback_id)
-        if data == "admin:menu":
-            send_admin_menu(db, chat_id)
-            return True
-        if data == "admin:status":
-            send_admin_menu(db, chat_id, admin_status_text(db))
-            return True
-        if data == "admin:subscribers":
-            send_admin_menu(db, chat_id, admin_subscribers_text(db))
-            return True
-        if data == "admin:daily-summary":
-            send_admin_menu(db, chat_id, build_daily_summary_message())
-            return True
-        if data == "admin:geoip":
-            rc = notify_geoip(quiet=True)
-            text = "GeoIP-проверка выполнена. Если были новые события, бот отправил отдельное уведомление."
-            if rc != 0:
-                text = f"GeoIP-проверка завершилась с ошибкой, exit {rc}."
-            send_admin_menu(db, chat_id, text)
-            return True
-        if data == "admin:expiry":
-            rc = notify_expiry(quiet=True)
-            text = "Проверка напоминаний выполнена."
-            if rc != 0:
-                text = f"Проверка напоминаний завершилась с ошибкой, exit {rc}."
-            send_admin_menu(db, chat_id, text)
-            return True
-        if data == "admin:test":
-            send_admin_menu(db, chat_id, admin_run_server_test_text())
-            return True
-        if data == "admin:backup":
-            send_admin_menu(db, chat_id, admin_create_backup_text())
-            return True
-        if data == "admin:notices":
-            send_admin_notices_menu(db, chat_id)
-            return True
-        if data in ("admin:notice:start", "admin:notice:done"):
-            preview_admin_notice(db, chat_id, data.rsplit(":", 1)[1])
-            return True
-        if data == "admin:notice:custom":
-            set_custom_notice_waiting(db, chat_id)
-            send_chat_message(
-                db,
-                chat_id,
-                "Отправь следующим сообщением текст, который нужно разослать подписанным клиентам.\n\n"
-                "Если передумаешь, отправь /cancel.",
-                reply_markup={"inline_keyboard": [[{"text": "Отмена", "callback_data": "admin:notice-cancel"}]]},
-            )
-            return True
-        if data.startswith("admin:notice-send:"):
-            kind = data.rsplit(":", 1)[1]
-            if kind not in ("start", "done", "custom"):
-                send_admin_notices_menu(db, chat_id, "Неизвестный тип уведомления.")
-                return True
-            send_admin_notice(db, chat_id, kind)
-            return True
-        if data == "admin:notice-cancel":
-            clear_admin_state(db, chat_id)
-            send_admin_notices_menu(db, chat_id, "Рассылка отменена.")
-            return True
-        send_admin_menu(db, chat_id, "Неизвестная админская кнопка.")
-        return True
+        return telegram_admin.handle_callback(admin_context(), db, chat_id, data)
 
     if data == "client:subscribe":
         answer_callback_query(db, callback_id)
@@ -1042,27 +895,8 @@ def notify_access_updated(name, quiet=False):
     return telegram_notifications.notify_access_updated(notification_context(), name, quiet=quiet)
 
 
-def maintenance_notice_message(db, template_id):
-    return telegram_notifications.maintenance_notice_message(notification_context(), db, template_id)
-
-
-def maintenance_notice_recipients(db):
-    return telegram_notifications.maintenance_notice_recipients(db)
-
-
 def print_maintenance_notice_templates(db):
     telegram_notifications.print_maintenance_notice_templates(notification_context(), db)
-
-
-def send_notice_message(db, message, dry_run=False, yes=False, label="message"):
-    return telegram_notifications.send_notice_message(
-        notification_context(),
-        db,
-        message,
-        dry_run=dry_run,
-        yes=yes,
-        label=label,
-    )
 
 
 def send_maintenance_notice(template_id="start", dry_run=False, yes=False):
@@ -1072,58 +906,6 @@ def send_maintenance_notice(template_id="start", dry_run=False, yes=False):
         dry_run=dry_run,
         yes=yes,
     )
-
-
-def preview_admin_notice(db, chat_id, kind):
-    if kind == "custom":
-        message = str(db.get("adminState", {}).get("customNoticeText") or "").strip()
-        if not message:
-            send_admin_notices_menu(db, chat_id, "Черновик своего сообщения пуст. Нажми «Своё сообщение» и отправь текст заново.")
-            return
-        title = "своё сообщение"
-    else:
-        message = maintenance_notice_message(db, kind)
-        title = MAINTENANCE_NOTICE_TEMPLATES[kind]["title"]
-    recipients = len(maintenance_notice_recipients(db))
-    text = "\n".join(
-        [
-            f"Предпросмотр: {title}",
-            f"Получателей: {recipients}",
-            "",
-            message,
-        ]
-    )
-    send_chat_message(db, chat_id, text, reply_markup=admin_notice_confirm_keyboard(kind))
-
-
-def set_custom_notice_waiting(db, chat_id):
-    db.setdefault("adminState", {})[str(chat_id)] = {"action": "custom-notice-text", "startedAt": utc_stamp()}
-    save_db_sections(db, ("adminState",))
-
-
-def clear_admin_state(db, chat_id):
-    state = db.setdefault("adminState", {})
-    state.pop(str(chat_id), None)
-    state.pop("customNoticeText", None)
-    save_db_sections(db, ("adminState",))
-
-
-def send_admin_notice(db, chat_id, kind):
-    if kind == "custom":
-        message = str(db.get("adminState", {}).get("customNoticeText") or "").strip()
-        if not message:
-            send_admin_notices_menu(db, chat_id, "Черновик своего сообщения пуст. Отправка отменена.")
-            return
-        label = "своё сообщение"
-    else:
-        message = maintenance_notice_message(db, kind)
-        label = MAINTENANCE_NOTICE_TEMPLATES[kind]["title"]
-    rc = send_notice_message(db, message, yes=True, label=label)
-    clear_admin_state(db, chat_id)
-    if rc == 0:
-        send_admin_notices_menu(db, chat_id, "Уведомление отправлено подписанным клиентам.")
-    else:
-        send_admin_notices_menu(db, chat_id, "Уведомление отправлено не всем. Проверь логи сервера.")
 
 
 def list_client_subscribers():
