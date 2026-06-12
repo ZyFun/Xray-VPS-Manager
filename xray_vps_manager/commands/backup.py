@@ -14,6 +14,7 @@ from pathlib import Path
 
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.core.terminal import print_table
+from xray_vps_manager.db import database as sqlite_database
 
 BACKUP_DIR = Path("/root/xray_backups")
 CONFIG_DIR = Path("/usr/local/etc/xray")
@@ -24,6 +25,7 @@ TRAFFIC_PATH = CONFIG_DIR / "traffic.json"
 ACTIVITY_PATH = CONFIG_DIR / "activity.json"
 ACTIVITY_EXCEPTIONS_PATH = CONFIG_DIR / "activity-exceptions.json"
 TELEGRAM_BOT_PATH = CONFIG_DIR / "telegram-bot.json"
+MANAGER_DB_PATH = CONFIG_DIR / "manager.db"
 ACTIVITY_DIR = CONFIG_DIR / "activity"
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 
@@ -35,6 +37,7 @@ BACKUP_FILES = [
     ("usr/local/etc/xray/activity.json", ACTIVITY_PATH, False),
     ("usr/local/etc/xray/activity-exceptions.json", ACTIVITY_EXCEPTIONS_PATH, False),
     ("usr/local/etc/xray/telegram-bot.json", TELEGRAM_BOT_PATH, False),
+    ("usr/local/etc/xray/manager.db", MANAGER_DB_PATH, False),
     ("root/xray-reality-client.txt", CLIENT_LINK_PATH, False),
 ]
 BACKUP_DIRS = [
@@ -174,7 +177,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
     elif not quiet:
         print(f"Backup created: {archive}")
         print(f"Size: {format_size(archive.stat().st_size)}")
-        print("Contains: config.json, clients.json, server.env, traffic.json, activity logs, activity exceptions, Telegram bot config, starter link if present.")
+        print("Contains: config.json, clients.json, server.env, traffic.json, manager.db, activity logs, activity exceptions, Telegram bot config, starter link if present.")
         print("Keep this file private: it contains Reality private keys and client data.")
     return archive
 
@@ -314,6 +317,29 @@ def apply_restore(temp_dir):
     return restored
 
 
+def backup_manager_db_before_restore():
+    if not MANAGER_DB_PATH.exists():
+        return None
+    backup_dir = BACKUP_DIR / "manager-db-pre-restore"
+    try:
+        return sqlite_database.backup_database(
+            MANAGER_DB_PATH,
+            backup_dir=backup_dir,
+            label="pre-restore",
+        )
+    except Exception:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(backup_dir, 0o700)
+        fallback = backup_dir / f"{MANAGER_DB_PATH.stem}-pre-restore-{archive_stamp()}.db"
+        counter = 1
+        while fallback.exists():
+            fallback = backup_dir / f"{MANAGER_DB_PATH.stem}-pre-restore-{archive_stamp()}-{counter}.db"
+            counter += 1
+        shutil.copy2(MANAGER_DB_PATH, fallback)
+        os.chmod(fallback, 0o600)
+        return fallback
+
+
 def stop_timer():
     run_capture(["systemctl", "stop", "xray-traffic-sync.timer"], timeout=10)
 
@@ -336,6 +362,9 @@ def restore_backup(value):
     pre_backup = create_backup(quiet=True, sync=True)
     print(f"Pre-restore backup: {pre_backup}")
     stop_timer()
+    pre_restore_manager_db = backup_manager_db_before_restore()
+    if pre_restore_manager_db:
+        print(f"Pre-restore SQLite backup: {pre_restore_manager_db}")
     temp_dir = extract_archive(archive)
     try:
         restored = apply_restore(temp_dir)
