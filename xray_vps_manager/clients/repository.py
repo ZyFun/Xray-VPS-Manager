@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import os
 import shutil
@@ -10,6 +11,16 @@ from typing import Any
 
 from xray_vps_manager.clients.payments import normalize_payment_type
 from xray_vps_manager.core.paths import CLIENT_DB_PATH
+from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import clients as sqlite_clients
+from xray_vps_manager.db.repositories import connections as sqlite_connections
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled
+
+
+@dataclass(frozen=True)
+class ClientDbReadResult:
+    db: dict[str, Any]
+    source: str
 
 
 def db_clients(db: dict[str, Any]) -> dict[str, Any]:
@@ -41,3 +52,39 @@ def save_db(db: dict[str, Any], path: Path = CLIENT_DB_PATH) -> None:
     shutil.chown(tmp, user="root", group="xray")
     os.chmod(tmp, 0o640)
     tmp.replace(path)
+
+
+def load_db_for_read(
+    path: Path = CLIENT_DB_PATH,
+    *,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    return load_db_for_read_result(path, db_path=db_path).db
+
+
+def load_db_for_read_result(
+    path: Path = CLIENT_DB_PATH,
+    *,
+    db_path: str | Path | None = None,
+) -> ClientDbReadResult:
+    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+        try:
+            connection = database.open_database(db_path)
+            try:
+                if not sqlite_read_ready(connection):
+                    return ClientDbReadResult(load_db(path), "json")
+                return ClientDbReadResult(load_db_from_sqlite(connection), "sqlite")
+            finally:
+                connection.close()
+        except Exception:
+            pass
+    return ClientDbReadResult(load_db(path), "json")
+
+
+def load_db_from_sqlite(connection) -> dict[str, Any]:
+    return normalize_client_defaults(
+        {
+            "connections": sqlite_connections.list_connections(connection),
+            "clients": sqlite_clients.list_clients(connection),
+        }
+    )

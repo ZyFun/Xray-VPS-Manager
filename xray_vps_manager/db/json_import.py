@@ -117,6 +117,7 @@ def import_json_state(
     import_telegram(connection, telegram_db, summary)
 
     validate_import(connection, summary)
+    settings.set_metadata(connection, "jsonImport.completed", "true")
     return summary
 
 

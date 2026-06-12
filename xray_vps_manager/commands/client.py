@@ -157,6 +157,13 @@ def load_db():
         die(str(exc))
 
 
+def load_db_readonly():
+    try:
+        return client_repository.load_db_for_read_result(CLIENT_DB_PATH)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def save_db(db):
     client_repository.save_db(db, CLIENT_DB_PATH)
 
@@ -396,9 +403,11 @@ def print_connection_title(config, db, tag):
 
 def cmd_connection_list():
     config = load_config()
-    db = load_db()
+    read_result = load_db_readonly()
+    db = read_result.db
     ensure_connections(config, db)
-    save_db(db)
+    if read_result.source == "json":
+        save_db(db)
     headers = ["NAME", "TAG", "PORT", "SNI", "FINGERPRINT", "CREATED"]
     print_table(headers, connection_rows(config, db), empty_message=None)
 
@@ -451,9 +460,11 @@ def cmd_connection_remove(identifier):
 
 def cmd_list():
     config = load_config()
-    db = load_db()
+    read_result = load_db_readonly()
+    db = read_result.db
     ensure_connections(config, db)
-    save_db(db)
+    if read_result.source == "json":
+        save_db(db)
     rows = client_listing.client_rows(config, db)
     if not rows:
         print("No clients.")
@@ -509,7 +520,7 @@ def traffic_report_context(name):
     validate_name(name)
     sync_traffic()
     config = load_config()
-    db = load_db()
+    db = load_db_readonly().db
     ensure_connections(config, db)
     traffic_db = load_traffic_db()
     if not known_for_traffic_report(config, db, traffic_db, name):
@@ -521,9 +532,11 @@ def cmd_traffic_summary(month_value=None):
     month_key = parse_month_value(month_value)
     sync_traffic()
     config = load_config()
-    db = load_db()
+    read_result = load_db_readonly()
+    db = read_result.db
     ensure_connections(config, db)
-    save_db(db)
+    if read_result.source == "json":
+        save_db(db)
     rows = client_listing.client_rows(config, db)
     if not rows:
         print("No clients.")
@@ -796,9 +809,11 @@ def cmd_clear_limit(name):
 def cmd_limit_list():
     sync_traffic()
     config = load_config()
-    db = load_db()
+    read_result = load_db_readonly()
+    db = read_result.db
     ensure_connections(config, db)
-    save_db(db)
+    if read_result.source == "json":
+        save_db(db)
     traffic_db = load_traffic_db()
     rows = client_listing.client_rows(config, db)
     if not rows:
@@ -941,7 +956,7 @@ def parse_add_args(args):
 def cmd_link(name):
     validate_name(name)
     config = load_config()
-    db = load_db()
+    db = load_db_readonly().db
     ensure_connections(config, db)
     for row in client_listing.client_rows(config, db):
         if row["name"] == name:

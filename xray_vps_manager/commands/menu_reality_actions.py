@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.clients import connections as connection_store
-from xray_vps_manager.clients.repository import db_connections, load_db, save_db
+from xray_vps_manager.clients.repository import db_connections, load_db, load_db_for_read, save_db
 from xray_vps_manager.clients.settings import (
     fingerprint as server_fingerprint,
     save_server_env_values,
@@ -97,7 +97,7 @@ def current_fingerprint() -> str:
 
 def connection_rows() -> list[dict[str, str | int]]:
     config = load_config()
-    db = load_db()
+    db = load_db_for_read()
     connection_store.ensure_connections(config, db)
     rows = []
     for inbound in reality_inbounds(config):
