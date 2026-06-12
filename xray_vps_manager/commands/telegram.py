@@ -44,7 +44,7 @@ USER_POLLER_SLEEP_ERROR = 5
 TELEGRAM_MESSAGE_LIMIT = 3900
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
-DEFAULT_SERVER_NAME = "Virei"
+DEFAULT_SERVER_NAME = "Xray"
 DEFAULT_BOT_NAME = "Vireika"
 MAINTENANCE_NOTICE_TEMPLATES = {
     "start": {

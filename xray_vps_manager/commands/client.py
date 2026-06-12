@@ -11,6 +11,16 @@ from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.clients import access as client_access
+from xray_vps_manager.clients import connections as client_connections
+from xray_vps_manager.clients import limits as client_limits
+from xray_vps_manager.clients import links as client_links
+from xray_vps_manager.clients import models as client_models
+from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.clients import settings as client_settings
+from xray_vps_manager.xray import config as xray_config
+from xray_vps_manager.xray import crypto as xray_crypto
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -21,7 +31,7 @@ STATS_SERVER = "127.0.0.1:10085"
 TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 XRAY_TELEGRAM = Path("/usr/local/sbin/xray-telegram")
 DEFAULT_SERVER_ADDR = ""
-DEFAULT_SERVER_NAME = "Virei"
+DEFAULT_SERVER_NAME = "Xray"
 ONLINE_WINDOW_SECONDS = 300
 BYTES_IN_GB = 1024 ** 3
 PAYMENT_TYPES = {"paid", "free"}
@@ -75,192 +85,98 @@ def utc_now_iso():
 
 
 def local_now():
-    return datetime.now(manager_timezone()).replace(microsecond=0)
+    return client_access.local_now()
 
 
 def parse_datetime(value):
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    return client_access.parse_datetime(value)
 
 
 def parse_access_days(value):
-    raw = (value or "").strip().lower()
-    if raw in ("", "0", "none", "never", "no", "unlimited", "forever", "бессрочно", "без срока"):
-        return None
-    if not re.fullmatch(r"[0-9]+", raw):
-        die("Access days must be a positive number. Empty or 0 means unlimited access.")
-    days = int(raw, 10)
-    if days < 1:
-        return None
-    if days > 36500:
-        die("Access days is too large. Use a value up to 36500.")
-    return days
+    try:
+        return client_access.parse_access_days(value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def parse_extend_days(value):
-    raw = (value or "").strip().lower().lstrip("+")
-    if not re.fullmatch(r"[0-9]+", raw):
-        die("Extend days must be a positive number.")
-    days = int(raw, 10)
-    if days < 1:
-        die("Extend days must be a positive number.")
-    if days > 36500:
-        die("Extend days is too large. Use a value up to 36500.")
-    return days
+    try:
+        return client_access.parse_extend_days(value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def expires_at_from_days(days):
-    if days is None:
-        return ""
-    now = local_now()
-    expire_date = now.date() + timedelta(days=days)
-    expire_at = datetime.combine(expire_date, time.min, tzinfo=now.tzinfo)
-    return expire_at.isoformat(timespec="seconds")
+    return client_access.expires_at_from_days(days)
 
 
 def set_entry_expiry(entry, days):
-    expires_at = expires_at_from_days(days)
-    if expires_at:
-        entry["expiresAt"] = expires_at
-        entry["accessDays"] = days
-        entry.pop("expiredAt", None)
-    else:
-        entry.pop("expiresAt", None)
-        entry.pop("accessDays", None)
-        entry.pop("expiredAt", None)
+    client_access.set_entry_expiry(entry, days)
 
 
 def normalize_payment_type(value):
-    raw = (value or "").strip().lower()
-    if raw in ("paid", "pay", "yes", "y", "1", "платный", "платно", "да"):
-        return "paid"
-    if raw in ("", "free", "no", "n", "0", "бесплатный", "бесплатно", "нет"):
-        return "free"
-    die("Payment type must be paid or free.")
+    try:
+        return client_models.normalize_payment_type(value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def payment_type_label(entry):
-    return "paid" if entry.get("paymentType") == "paid" else "free"
+    return client_models.payment_type_label(entry)
 
 
 def extended_expires_at(entry, days):
-    now = local_now()
-    current = parse_datetime(entry.get("expiresAt", ""))
-    if current is None:
-        base_date = now.date()
-    else:
-        current_date = current.astimezone(now.tzinfo).date()
-        base_date = max(current_date, now.date())
-    expire_date = base_date + timedelta(days=days)
-    return datetime.combine(expire_date, time.min, tzinfo=now.tzinfo).isoformat(timespec="seconds")
+    return client_access.extended_expires_at(entry, days)
 
 
 def extend_entry_expiry(entry, days):
-    if days < 1:
-        die("Extend days must be a positive number.")
-    entry["expiresAt"] = extended_expires_at(entry, days)
     try:
-        previous_days = int(entry.get("accessDays", 0) or 0)
-    except (TypeError, ValueError):
-        previous_days = 0
-    entry["accessDays"] = previous_days + days if previous_days > 0 else days
-    entry.pop("expiredAt", None)
+        client_access.extend_entry_expiry(entry, days)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def parse_limit_gb(value):
-    raw = (value or "").strip().replace(",", ".").lower()
-    if raw in ("", "0", "none", "no", "unlimited", "forever", "без лимита", "бессрочно"):
-        return None
-    if raw.endswith("gb"):
-        raw = raw[:-2].strip()
-    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", raw):
-        die("Traffic limit must be a number in GB. Empty or 0 means no limit.")
-    gb = float(raw)
-    if gb <= 0:
-        return None
-    if gb > 1048576:
-        die("Traffic limit is too large. Use a value up to 1048576 GB.")
-    return int(gb * BYTES_IN_GB)
+    try:
+        return client_limits.parse_limit_gb(value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def validate_limit_period(value):
-    value = (value or "").strip().lower()
-    aliases = {
-        "day": "daily",
-        "daily": "daily",
-        "d": "daily",
-        "день": "daily",
-        "сутки": "daily",
-        "month": "monthly",
-        "monthly": "monthly",
-        "m": "monthly",
-        "месяц": "monthly",
-    }
-    period = aliases.get(value)
-    if period is None:
-        die("Traffic limit period must be daily or monthly.")
-    return period
+    try:
+        return client_limits.validate_limit_period(value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def set_entry_traffic_limit(entry, period, limit_bytes):
-    if limit_bytes is None:
-        entry.pop("trafficLimit", None)
-        entry.pop("trafficLimitExceededAt", None)
-        entry.pop("trafficLimitExceededPeriod", None)
-        entry.pop("trafficLimitExceededBytes", None)
-        if entry.get("disabledReason") == "traffic-limit":
-            entry.pop("disabledReason", None)
-        return
-
-    entry["trafficLimit"] = {
-        "period": validate_limit_period(period),
-        "bytes": int(limit_bytes),
-        "setAt": utc_now_iso(),
-    }
+    try:
+        client_limits.set_entry_traffic_limit(entry, period, limit_bytes, utc_now_iso)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def traffic_limit(entry):
-    limit = entry.get("trafficLimit")
-    if not isinstance(limit, dict):
-        return None
-    period = limit.get("period")
-    try:
-        limit_bytes = int(limit.get("bytes", 0) or 0)
-    except (TypeError, ValueError):
-        return None
-    if period not in ("daily", "monthly") or limit_bytes <= 0:
-        return None
-    return {"period": period, "bytes": limit_bytes}
+    return client_limits.traffic_limit(entry)
 
 
 def traffic_limit_period_key(period, now=None):
-    now = now or local_now()
-    if period == "daily":
-        return now.date().isoformat()
-    if period == "monthly":
-        return now.strftime("%Y-%m")
-    die("Traffic limit period must be daily or monthly.")
+    try:
+        return client_limits.traffic_limit_period_key(period, now)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def traffic_limit_reset_time(period, now=None):
-    now = now or local_now()
-    if period == "daily":
-        reset = datetime.combine(now.date() + timedelta(days=1), time.min, tzinfo=now.tzinfo)
-    elif period == "monthly":
-        year = now.year + (1 if now.month == 12 else 0)
-        month = 1 if now.month == 12 else now.month + 1
-        reset = datetime(year, month, 1, tzinfo=now.tzinfo)
-    else:
-        die("Traffic limit period must be daily or monthly.")
-    return reset.isoformat(timespec="minutes")
+    try:
+        return client_limits.traffic_limit_reset_time(period, now)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def traffic_limit_period_label(period):
-    return "day" if period == "daily" else "month"
+    return client_limits.traffic_limit_period_label(period)
 
 
 def format_traffic_limit(entry):
@@ -282,63 +198,37 @@ def prompt_access_days():
 
 
 def access_expired(entry, now=None):
-    expires_at = parse_datetime(entry.get("expiresAt", ""))
-    if expires_at is None:
-        return False
-    now = now or local_now()
-    return now >= expires_at.astimezone(now.tzinfo)
+    return client_access.access_expired(entry, now)
 
 
 def format_access_until(value):
-    parsed = parse_datetime(value)
-    if parsed is None:
-        return "бессрочно"
-    return parsed.astimezone(manager_timezone()).strftime("%Y-%m-%d %H:%M")
+    return client_access.format_access_until(value)
 
 
 def access_deadline_at_midnight(value, tz):
-    parsed = parse_datetime(value)
-    if parsed is None:
-        return ""
-    local = parsed.astimezone(tz)
-    return datetime.combine(local.date(), time.min, tzinfo=tz).isoformat(timespec="minutes")
+    return client_access.access_deadline_at_midnight(value, tz)
 
 
 def load_config():
-    if not CONFIG_PATH.exists():
-        die(f"Config not found: {CONFIG_PATH}")
-    return json.loads(CONFIG_PATH.read_text())
+    try:
+        return xray_config.load_config(CONFIG_PATH)
+    except FileNotFoundError as exc:
+        die(str(exc))
 
 
 def save_config(config):
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.{timestamp}")
-    shutil.copy2(CONFIG_PATH, backup)
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(CONFIG_PATH)
-    return backup
+    return xray_config.save_config(config, CONFIG_PATH)
 
 
 def load_db():
-    if CLIENT_DB_PATH.exists():
-        db = json.loads(CLIENT_DB_PATH.read_text())
-    else:
-        db = {"clients": {}}
-    for entry in db.setdefault("clients", {}).values():
-        if isinstance(entry, dict):
-            entry["paymentType"] = normalize_payment_type(entry.get("paymentType", "free"))
-    return db
+    try:
+        return client_repository.load_db(CLIENT_DB_PATH)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def save_db(db):
-    tmp = CLIENT_DB_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(CLIENT_DB_PATH)
+    client_repository.save_db(db, CLIENT_DB_PATH)
 
 
 def normalize_access_deadlines(tz):
@@ -358,235 +248,125 @@ def normalize_access_deadlines(tz):
 
 
 def save_server_env_values(values):
-    ordered = ["SERVER_ADDR", "SERVER_NAME", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT", "MANAGER_TIMEZONE"]
-    lines = [f"{key}={values.get(key, '')}" for key in ordered]
-    for key in sorted(values):
-        if key not in ordered:
-            lines.append(f"{key}={values[key]}")
-
-    tmp = SERVER_ENV_PATH.with_suffix(".env.tmp")
-    tmp.write_text("\n".join(lines) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(SERVER_ENV_PATH)
+    client_settings.save_server_env_values(values, SERVER_ENV_PATH)
 
 
 def find_inbound(config):
-    for inbound in config.get("inbounds", []):
-        if inbound.get("tag") == INBOUND_TAG:
-            return inbound
-    for inbound in config.get("inbounds", []):
-        if inbound.get("protocol") == "vless" and inbound.get("streamSettings", {}).get("security") == "reality":
-            return inbound
-    die("VLESS Reality inbound not found.")
+    try:
+        return xray_config.find_inbound(config)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def reality_inbounds(config):
-    return [
-        inbound
-        for inbound in config.get("inbounds", [])
-        if inbound.get("protocol") == "vless"
-        and inbound.get("streamSettings", {}).get("security") == "reality"
-    ]
+    return xray_config.reality_inbounds(config)
 
 
 def inbound_tag(inbound):
-    return inbound.get("tag") or INBOUND_TAG
+    return xray_config.inbound_tag(inbound)
 
 
 def find_inbound_by_tag(config, tag):
-    for inbound in reality_inbounds(config):
-        if inbound_tag(inbound) == tag:
-            return inbound
-    die(f"Reality connection not found: {tag}")
+    try:
+        return xray_config.find_inbound_by_tag(config, tag)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def default_connection_tag(config):
-    for inbound in reality_inbounds(config):
-        if inbound_tag(inbound) == INBOUND_TAG:
-            return INBOUND_TAG
-    inbounds = reality_inbounds(config)
-    if inbounds:
-        return inbound_tag(inbounds[0])
-    die("VLESS Reality inbound not found.")
+    try:
+        return xray_config.default_connection_tag(config)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def db_connections(db):
-    return db.setdefault("connections", {})
+    return client_repository.db_connections(db)
 
 
 def connection_name_from_tag(tag):
-    return DEFAULT_CONNECTION_NAME if tag == INBOUND_TAG else tag.replace("vless-reality-", "")
+    return xray_config.connection_name_from_tag(tag)
 
 
 def connection_settings_from_inbound(inbound):
-    reality = inbound.get("streamSettings", {}).get("realitySettings", {})
-    sni = (reality.get("serverNames") or [""])[0]
-    port = int(inbound.get("port", 443))
-    return {
-        "tag": inbound_tag(inbound),
-        "port": port,
-        "sni": sni,
-        "dest": reality.get("dest", reality_dest(sni)),
-    }
+    return xray_config.connection_settings_from_inbound(inbound)
 
 
 def reality_dest(sni):
-    return f"{sni}:443" if sni else ""
+    return xray_config.reality_dest(sni)
 
 
 def ensure_connections(config, db):
-    connections = db_connections(db)
-    env = server_env_values()
-    now_stamp = utc_now_iso()
-    for inbound in reality_inbounds(config):
-        settings = connection_settings_from_inbound(inbound)
-        tag = settings["tag"]
-        entry = connections.setdefault(
-            tag,
-            {
-                "tag": tag,
-                "name": connection_name_from_tag(tag),
-                "created": now_stamp,
-            },
-        )
-        entry.setdefault("tag", tag)
-        entry.setdefault("name", connection_name_from_tag(tag))
-        entry["port"] = settings["port"]
-        entry["sni"] = settings["sni"]
-        entry["dest"] = settings["dest"]
-        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
-
-    default_tag = default_connection_tag(config)
-    for inbound in reality_inbounds(config):
-        tag = inbound_tag(inbound)
-        for item in clients(inbound):
-            name = client_name(item)
-            if name in db_clients(db):
-                db_clients(db)[name].setdefault("connection", tag)
-
-    for entry in db_clients(db).values():
-        entry.setdefault("connection", default_tag)
+    try:
+        client_connections.ensure_connections(config, db)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def connection_entry(config, db, tag):
-    ensure_connections(config, db)
-    entry = db_connections(db).get(tag)
-    if not entry:
-        die(f"Connection not found: {tag}")
-    return entry
+    try:
+        return client_connections.connection_entry(config, db, tag)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def connection_display_name(config, db, tag):
-    return connection_entry(config, db, tag).get("name") or connection_name_from_tag(tag)
+    try:
+        return client_connections.connection_display_name(config, db, tag)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def connection_fingerprint(config, db, tag):
-    value = (connection_entry(config, db, tag).get("fingerprint") or fingerprint()).strip().lower()
-    if value not in FINGERPRINTS:
-        die("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
-    return value
+    try:
+        return client_connections.connection_fingerprint(config, db, tag)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def resolve_connection_identifier(config, db, value):
-    identifier = (value or "").strip()
-    if not identifier:
-        die("Connection name or tag is required.")
-    ensure_connections(config, db)
-    connections = db_connections(db)
-    if identifier in connections:
-        return identifier
-
-    matches = [
-        tag
-        for tag, entry in connections.items()
-        if (entry.get("name") or connection_name_from_tag(tag)) == identifier
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        die(f"Connection name is ambiguous: {identifier}. Use TAG instead.")
-    die(f"Connection not found: {identifier}")
+    try:
+        return client_connections.resolve_connection_identifier(config, db, value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def clients(inbound):
-    settings = inbound.setdefault("settings", {})
-    return settings.setdefault("clients", [])
+    return xray_config.clients(inbound)
 
 
 def split_email(email):
-    if "|created=" in email:
-        name, created = email.split("|created=", 1)
-        return name, created
-    return email, ""
+    return client_models.split_email(email)
 
 
 def client_name(item):
-    return split_email(item.get("email", ""))[0]
+    return client_models.client_name(item)
 
 
 def active_client(inbound, name):
-    for item in clients(inbound):
-        if client_name(item) == name:
-            return item
-    return None
+    return xray_config.active_client(inbound, name)
 
 
 def active_client_any(config, name):
-    for inbound in reality_inbounds(config):
-        item = active_client(inbound, name)
-        if item is not None:
-            return inbound, item
-    return None, None
+    return xray_config.active_client_any(config, name)
 
 
 def db_clients(db):
-    return db.setdefault("clients", {})
+    return client_repository.db_clients(db)
 
 
 def db_entry_from_client(item, created="", enabled=True, previous=None):
-    name, email_created = split_email(item.get("email", ""))
-    previous = previous or {}
-    created = created or previous.get("created", "") or email_created
-    entry = {
-        "id": item.get("id", ""),
-        "created": created,
-        "enabled": enabled,
-        "client": dict(item),
-    }
-    for key in (
-        "expiresAt",
-        "accessDays",
-        "expiredAt",
-        "disabledReason",
-        "disabledAt",
-        "trafficLimit",
-        "trafficLimitExceededAt",
-        "trafficLimitExceededPeriod",
-        "trafficLimitExceededBytes",
-        "trafficLimitResetAt",
-        "paymentType",
-    ):
-        if key in previous:
-            entry[key] = previous[key]
-    entry["paymentType"] = normalize_payment_type(entry.get("paymentType", "free"))
-    if "connection" in previous:
-        entry["connection"] = previous["connection"]
-    if not entry["client"].get("email") and name:
-        entry["client"]["email"] = f"{name}|created={created}" if created else name
-    return entry
+    try:
+        return client_models.db_entry_from_client(item, created=created, enabled=enabled, previous=previous)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def client_from_db_entry(name, entry):
-    created = entry.get("created", "")
-    client = dict(entry.get("client") or {})
-    client.setdefault("id", entry.get("id", ""))
-    client.setdefault("flow", "xtls-rprx-vision")
-    client.setdefault("level", 0)
-    client["email"] = f"{name}|created={created}" if created else name
-    if not client.get("id"):
-        die(f"Client has no UUID in database: {name}")
-    return client
+    try:
+        return client_models.client_from_db_entry(name, entry)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def clear_disabled_state(entry):
@@ -734,134 +514,80 @@ def color_label(value, text):
 
 
 def xray_uuid():
-    return subprocess.check_output(["/usr/local/bin/xray", "uuid"], text=True).strip()
+    return xray_crypto.xray_uuid()
 
 
 def xray_x25519_keys():
-    output = subprocess.check_output(["/usr/local/bin/xray", "x25519"], text=True)
-    private_key = ""
-    public_key = ""
-    for line in output.splitlines():
-        if line.startswith("PrivateKey:") or line.startswith("Private key:"):
-            private_key = line.split(": ", 1)[1].strip()
-        if line.startswith("Password (PublicKey):") or line.startswith("PublicKey:") or line.startswith("Public key:"):
-            public_key = line.split(": ", 1)[1].strip()
-    if not private_key or not public_key:
-        die("Failed to generate Reality key pair.")
-    return private_key, public_key
+    try:
+        return xray_crypto.xray_x25519_keys()
+    except RuntimeError as exc:
+        die(str(exc))
 
 
 def random_short_id():
-    return subprocess.check_output(["openssl", "rand", "-hex", "8"], text=True).strip()
+    return xray_crypto.random_short_id()
 
 
 def reality_public_key(private_key):
-    output = subprocess.check_output(["/usr/local/bin/xray", "x25519", "-i", private_key], text=True)
-    for line in output.splitlines():
-        if line.startswith("Password (PublicKey):"):
-            return line.split(": ", 1)[1].strip()
-        if line.startswith("PublicKey:") or line.startswith("Public key:"):
-            return line.split(": ", 1)[1].strip()
-    die("Failed to derive Reality public key.")
+    try:
+        return xray_crypto.reality_public_key(private_key)
+    except RuntimeError as exc:
+        die(str(exc))
 
 
 def server_env_values():
-    values = {}
-    if SERVER_ENV_PATH.exists():
-        for line in SERVER_ENV_PATH.read_text().splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value.strip().strip('"').strip("'")
-    return values
+    return client_settings.server_env_values(SERVER_ENV_PATH)
 
 
 def server_env_value(key, default=""):
-    return server_env_values().get(key) or os.environ.get(key, default)
+    return client_settings.server_env_value(key, default)
 
 
 def normalize_timezone(value):
-    raw = (value or "").strip()
-    if raw.lower() in ("", "server", "local", "default", "system", "сервер", "локально", "по умолчанию"):
-        return ""
     try:
-        ZoneInfo(raw)
-    except ZoneInfoNotFoundError:
-        die("MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time.")
-    return raw
+        return client_settings.normalize_timezone(value)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def configured_timezone_name():
-    return normalize_timezone(server_env_value("MANAGER_TIMEZONE", ""))
+    return client_settings.configured_timezone_name()
 
 
 def manager_timezone():
-    name = configured_timezone_name()
-    if name:
-        return ZoneInfo(name)
-    return datetime.now().astimezone().tzinfo
+    return client_settings.manager_timezone()
 
 
 def manager_timezone_label():
-    name = configured_timezone_name()
-    if name:
-        return name
-    current = datetime.now().astimezone()
-    suffix = current.tzname() or "server local time"
-    return f"server local time ({suffix})"
+    return client_settings.manager_timezone_label()
 
 
 def server_addr():
-    value = server_env_value("SERVER_ADDR", DEFAULT_SERVER_ADDR)
-    if value:
-        return value
-    die(f"SERVER_ADDR is not set. Check {SERVER_ENV_PATH} or set SERVER_ADDR manually.")
+    try:
+        return client_settings.server_addr()
+    except ValueError as exc:
+        die(str(exc))
 
 
 def server_name():
-    value = server_env_value("SERVER_NAME", DEFAULT_SERVER_NAME).strip()
-    if not value:
-        return DEFAULT_SERVER_NAME
-    if not SERVER_NAME_RE.fullmatch(value):
-        die("SERVER_NAME must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
-    return value
+    try:
+        return client_settings.server_name()
+    except ValueError as exc:
+        die(str(exc))
 
 
 def fingerprint():
-    value = server_env_value("FINGERPRINT", "chrome").lower()
-    if value not in FINGERPRINTS:
-        die("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
-    return value
+    try:
+        return client_settings.fingerprint()
+    except ValueError as exc:
+        die(str(exc))
 
 
 def link_for(config, client_id, name, connection_tag=None, db=None):
-    db = db or load_db()
-    ensure_connections(config, db)
-    connection_tag = connection_tag or db_clients(db).get(name, {}).get("connection") or default_connection_tag(config)
-    inbound = find_inbound_by_tag(config, connection_tag)
-    stream = inbound.get("streamSettings", {})
-    reality = stream.get("realitySettings", {})
-    port = inbound.get("port", 443)
-    sni = reality.get("serverNames", [""])[0]
-    private_key = reality.get("privateKey")
-    short_ids = reality.get("shortIds", [""])
-    short_id = short_ids[0] if short_ids else ""
-    if not private_key or not sni:
-        die("Reality privateKey/serverNames not found in inbound.")
-    public_key = reality_public_key(private_key)
-
-    params = {
-        "security": "reality",
-        "encryption": "none",
-        "pbk": public_key,
-        "fp": connection_fingerprint(config, db, connection_tag),
-        "type": stream.get("network", "tcp"),
-        "flow": "xtls-rprx-vision",
-        "sni": sni,
-        "sid": short_id,
-        "spx": "/",
-    }
-    query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params.items())
-    return f"vless://{client_id}@{server_addr()}:{port}?{query}#{quote(server_name(), safe='')}"
+    try:
+        return client_links.link_for(config, client_id, name, connection_tag=connection_tag, db=db, db_loader=load_db)
+    except (RuntimeError, ValueError) as exc:
+        die(str(exc))
 
 
 def client_rows(config, db):
@@ -1118,32 +844,17 @@ def month_total(entry, month_key):
 
 
 def traffic_limit_usage(entry, period, now=None):
-    now = now or local_now()
-    if period == "daily":
-        incoming, outgoing = day_total(entry, now.date())
-    elif period == "monthly":
-        incoming, outgoing = month_total(entry, now.strftime("%Y-%m"))
-    else:
-        die("Traffic limit period must be daily or monthly.")
-    return incoming + outgoing
+    try:
+        return client_limits.traffic_limit_usage(entry, period, now)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def traffic_limit_status(db_entry, traffic_db_entry, now=None):
-    limit = traffic_limit(db_entry)
-    if limit is None:
-        return None
-    now = now or local_now()
-    used = traffic_limit_usage(traffic_db_entry, limit["period"], now)
-    remaining = max(0, limit["bytes"] - used)
-    return {
-        "period": limit["period"],
-        "periodKey": traffic_limit_period_key(limit["period"], now),
-        "limitBytes": limit["bytes"],
-        "usedBytes": used,
-        "remainingBytes": remaining,
-        "resetAt": traffic_limit_reset_time(limit["period"], now),
-        "exceeded": used >= limit["bytes"],
-    }
+    try:
+        return client_limits.traffic_limit_status(db_entry, traffic_db_entry, now)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def all_time_total(entry):
