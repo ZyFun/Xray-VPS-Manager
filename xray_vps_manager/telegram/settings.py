@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 import json
 import os
 import shutil
+from pathlib import Path
 
 from xray_vps_manager.core.paths import TELEGRAM_DB_PATH
+from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import settings as sqlite_settings
+from xray_vps_manager.db.repositories import telegram as sqlite_telegram
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, truthy
 from xray_vps_manager.telegram.payments import parse_payment_rounding_step, parse_payment_value
 
 DEFAULT_BOT_NAME = "Vireika"
@@ -31,6 +37,12 @@ DEFAULT_DB = {
     "dailySummaryState": {},
     "adminState": {},
 }
+
+
+@dataclass(frozen=True)
+class TelegramDbReadResult:
+    db: dict
+    source: str
 
 
 def load_json(path, default):
@@ -115,6 +127,65 @@ def normalize_db(db):
 
 def load_db(path=TELEGRAM_DB_PATH):
     return normalize_db(load_json(path, DEFAULT_DB))
+
+
+def load_db_for_read(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
+    return load_db_for_read_result(path, db_path=db_path).db
+
+
+def load_db_for_read_result(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None) -> TelegramDbReadResult:
+    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+        try:
+            connection = database.open_database(db_path)
+            try:
+                if not sqlite_read_ready(connection):
+                    return TelegramDbReadResult(load_db(path), "json")
+                return TelegramDbReadResult(load_db_from_sqlite(connection), "sqlite")
+            finally:
+                connection.close()
+        except Exception:
+            pass
+    return TelegramDbReadResult(load_db(path), "json")
+
+
+def load_db_from_sqlite(connection) -> dict:
+    db = copy.deepcopy(DEFAULT_DB)
+    for key, value in sqlite_telegram.list_settings(connection).items():
+        if key == "version":
+            try:
+                db[key] = int(value)
+            except (TypeError, ValueError):
+                db[key] = DEFAULT_DB["version"]
+        elif key == "enabled":
+            db[key] = truthy(value)
+        else:
+            db[key] = value
+
+    for key, value in sqlite_settings.list_payment_settings(connection).items():
+        db[key] = value
+
+    for key in ("geoipState", "clientSubscriptionState", "dailySummaryState", "adminState"):
+        db[key] = sqlite_telegram.get_state(connection, key, db.get(key, {}))
+
+    subscriptions = {}
+    for item in sqlite_telegram.list_subscriptions(connection):
+        chat_id = str(item.get("chatId") or "").strip()
+        if not chat_id:
+            continue
+        link_signature = item.get("linkSignature") if isinstance(item.get("linkSignature"), dict) else {}
+        subscriptions[chat_id] = {
+            "client": item.get("clientName") or "",
+            "clientId": item.get("clientUuid") or "",
+            "connection": item.get("connection") or "",
+            "chatLabel": item.get("chatLabel") or "",
+            "linkHash": link_signature.get("linkHash", ""),
+            "subscribedAt": item.get("createdAt") or "",
+            "enabled": item.get("enabled") is not False,
+        }
+        if item.get("updatedAt"):
+            subscriptions[chat_id]["updatedAt"] = item["updatedAt"]
+    db["clientSubscriptions"] = subscriptions
+    return normalize_db(db)
 
 
 def save_db(db, path=TELEGRAM_DB_PATH):

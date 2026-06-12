@@ -9,6 +9,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.telegram import admin as telegram_admin
 from xray_vps_manager.telegram import api as telegram_api
@@ -83,6 +84,10 @@ def load_db():
     return telegram_settings.load_db(TELEGRAM_DB_PATH)
 
 
+def load_db_readonly():
+    return telegram_settings.load_db_for_read(TELEGRAM_DB_PATH)
+
+
 def save_db(db):
     telegram_settings.save_db(db, TELEGRAM_DB_PATH)
 
@@ -96,7 +101,7 @@ def mask_token(token):
 
 
 def bot_name(db=None):
-    return telegram_settings.bot_name(db, loader=load_db)
+    return telegram_settings.bot_name(db, loader=load_db_readonly)
 
 
 def set_bot_name(value):
@@ -134,7 +139,7 @@ def format_event_time(value):
 
 
 def load_client_db():
-    return load_json(CLIENT_DB_PATH, {"clients": {}, "connections": {}})
+    return client_repository.load_db_for_read(CLIENT_DB_PATH)
 
 
 def load_traffic_db():
@@ -279,7 +284,7 @@ def set_payment_rounding(mode_value, step_value=None):
 
 
 def show_payment_amount():
-    db = load_db()
+    db = load_db_readonly()
     print_payment_summary(db)
 
 
@@ -321,7 +326,7 @@ def send_maintenance_notice(template_id="start", dry_run=False, yes=False):
 
 
 def list_client_subscribers():
-    db = load_db()
+    db = load_db_readonly()
     client_db = load_client_db()
     clients = telegram_subscriptions.client_db_clients(client_db)
     subscriptions = db.get("clientSubscriptions", {})
@@ -362,7 +367,7 @@ def notify_geoip(quiet=False):
 
 
 def status():
-    db = load_db()
+    db = load_db_readonly()
     subscriptions = db.get("clientSubscriptions", {})
     subscription_state = db.get("clientSubscriptionState", {})
     rows = [
@@ -430,7 +435,7 @@ def main():
             set_route_mode(args[1])
         elif command == "bot-name" and len(args) in (1, 2):
             if len(args) == 1:
-                print(f"Bot name: {bot_name(load_db())}")
+                print(f"Bot name: {bot_name(load_db_readonly())}")
             else:
                 set_bot_name(args[1])
         elif command == "test" and len(args) == 1:
@@ -471,7 +476,7 @@ def main():
             sys.exit(notify_access_updated(args[1], quiet=len(args) == 3))
         elif command == "maintenance-notice" and len(args) in (1, 2, 3):
             if len(args) == 1 or (len(args) == 2 and args[1] in ("list", "templates")):
-                print_maintenance_notice_templates(load_db())
+                print_maintenance_notice_templates(load_db_readonly())
             else:
                 template_id = args[1]
                 flag = args[2] if len(args) == 3 else ""
