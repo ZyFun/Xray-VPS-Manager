@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import parse_qsl, quote, unquote, urlsplit
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
@@ -26,6 +26,7 @@ from xray_vps_manager.telegram import keyboards as telegram_keyboards
 from xray_vps_manager.telegram import messages as telegram_messages
 from xray_vps_manager.telegram import payments as telegram_payments
 from xray_vps_manager.telegram import settings as telegram_settings
+from xray_vps_manager.telegram import subscriptions as telegram_subscriptions
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
@@ -51,7 +52,6 @@ USER_POLL_LONG_TIMEOUT = 45
 USER_POLLER_SLEEP_UNCONFIGURED = 30
 USER_POLLER_SLEEP_ERROR = 5
 TELEGRAM_MESSAGE_LIMIT = 3900
-UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 DEFAULT_SERVER_NAME = "Xray"
 DEFAULT_BOT_NAME = "Vireika"
@@ -198,11 +198,6 @@ def load_traffic_db():
 def client_db_clients(db):
     clients = db.get("clients", {})
     return clients if isinstance(clients, dict) else {}
-
-
-def client_db_connections(db):
-    connections = db.get("connections", {})
-    return connections if isinstance(connections, dict) else {}
 
 
 def save_config(config):
@@ -557,100 +552,15 @@ def configure_bot_commands():
 
 
 def normalize_value(value):
-    return str(value or "").strip().lower()
+    return telegram_subscriptions.normalize_value(value)
 
 
 def find_vless_link(text):
-    match = re.search(r"vless://[^\s<>()]+", str(text or ""), flags=re.IGNORECASE)
-    if not match:
-        return ""
-    return match.group(0).rstrip(".,;")
-
-
-def parse_vless_link(text):
-    link = find_vless_link(text)
-    if not link:
-        raise ValueError("VLESS-ссылка не найдена.")
-    parsed = urlsplit(link)
-    if parsed.scheme.lower() != "vless":
-        raise ValueError("Это не VLESS-ссылка.")
-    client_id = unquote(parsed.username or "").strip().lower()
-    if not UUID_RE.fullmatch(client_id):
-        raise ValueError("В ссылке не найден корректный UUID клиента.")
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("В ссылке указан некорректный порт.") from exc
-    if not port:
-        raise ValueError("В ссылке не указан порт подключения.")
-    params = {key.lower(): value for key, value in parse_qsl(parsed.query, keep_blank_values=True)}
-    for key in ("security", "pbk", "sni", "sid"):
-        if not params.get(key):
-            raise ValueError(f"В ссылке нет обязательного Reality-параметра: {key}")
-    if normalize_value(params.get("security")) != "reality":
-        raise ValueError("Поддерживаются только VLESS Reality-ссылки.")
-    return {
-        "raw": link,
-        "id": client_id,
-        "host": parsed.hostname or "",
-        "port": str(port or ""),
-        "params": params,
-        "hash": hashlib.sha256(link.encode("utf-8")).hexdigest(),
-    }
+    return telegram_subscriptions.find_vless_link(text)
 
 
 def client_entry_id(entry):
-    return normalize_value(entry.get("id") or (entry.get("client") or {}).get("id"))
-
-
-def expected_connection_params(client_db, entry):
-    connection_tag = entry.get("connection", "")
-    connection = client_db_connections(client_db).get(connection_tag, {})
-    return {
-        "port": str(connection.get("port", "")),
-        "pbk": connection.get("publicKey", ""),
-        "sni": connection.get("sni", ""),
-        "sid": connection.get("shortId", ""),
-        "fp": connection.get("fingerprint", ""),
-        "security": "reality",
-        "encryption": "none",
-        "type": "tcp",
-        "flow": (entry.get("client") or {}).get("flow", "xtls-rprx-vision"),
-    }
-
-
-def match_vless_to_client(parsed_link):
-    client_db = load_client_db()
-    clients = client_db_clients(client_db)
-    same_uuid = []
-    for name, entry in clients.items():
-        if client_entry_id(entry) == parsed_link["id"]:
-            same_uuid.append((name, entry))
-    if not same_uuid:
-        return None, "По UUID из ссылки клиент в базе не найден."
-
-    matches = []
-    mismatch_notes = []
-    for name, entry in same_uuid:
-        expected = expected_connection_params(client_db, entry)
-        mismatches = []
-        for key, expected_value in expected.items():
-            if not expected_value:
-                continue
-            actual_value = parsed_link["port"] if key == "port" else parsed_link["params"].get(key, "")
-            if actual_value and normalize_value(actual_value) != normalize_value(expected_value):
-                mismatches.append(key)
-        if mismatches:
-            mismatch_notes.append(f"{name}: " + ", ".join(mismatches))
-            continue
-        matches.append((name, entry))
-
-    if len(matches) == 1:
-        return matches[0], ""
-    if len(matches) > 1:
-        return None, "По ссылке найдено несколько клиентов. Обратись к администратору."
-    detail = "; ".join(mismatch_notes) if mismatch_notes else "параметры подключения не совпали"
-    return None, "UUID найден, но Reality-параметры ссылки не совпадают с текущей базой: " + detail
+    return telegram_subscriptions.client_entry_id(entry)
 
 
 def format_access_until(value):
@@ -845,18 +755,7 @@ def notify_daily_summary(quiet=False, dry_run=False):
 
 
 def client_access_summary(entry):
-    status = "отключён" if entry.get("enabled") is False else "включён"
-    reason = entry.get("disabledReason", "")
-    if reason == "expired":
-        status = "отключён: срок истёк"
-    elif reason == "traffic-limit":
-        status = "отключён: лимит трафика"
-    return "\n".join(
-        [
-            f"Статус: {status}",
-            f"Доступ до: {format_access_until(entry.get('expiresAt', ''))}",
-        ]
-    )
+    return telegram_subscriptions.client_access_summary(entry, format_access_until)
 
 
 def client_menu_keyboard():
@@ -924,103 +823,26 @@ def send_admin_notices_menu(db, chat_id, text=None):
 
 
 def subscription_status_for_chat(db, chat_id):
-    subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
-    if not subscription:
-        return "Ты пока не подписан на напоминания. Отправь свою VLESS-ссылку, чтобы подключить уведомления."
-    client_db = load_client_db()
-    name = subscription.get("client", "")
-    entry = client_db_clients(client_db).get(name)
-    if not entry:
-        return "Подписка найдена, но клиента уже нет в базе. Отправь актуальную VLESS-ссылку или обратись к администратору."
-    if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
-        return "Подписка устарела: клиент был пересоздан. Отправь актуальную VLESS-ссылку заново."
-    return "Текущая подписка:\n" + client_access_summary(entry)
+    return telegram_subscriptions.subscription_status_for_chat(db, chat_id, load_client_db(), format_access_until)
 
 
 def subscription_entry_for_chat(db, chat_id):
-    subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
-    if not subscription:
-        return None, None, "Ты пока не подписан на напоминания. Сначала отправь свою VLESS-ссылку."
-    client_db = load_client_db()
-    name = subscription.get("client", "")
-    entry = client_db_clients(client_db).get(name)
-    if not entry:
-        return None, None, "Подписка найдена, но клиента уже нет в базе. Отправь актуальную VLESS-ссылку или обратись к администратору."
-    if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
-        return None, None, "Подписка устарела: клиент был пересоздан. Отправь актуальную VLESS-ссылку заново."
-    return name, entry, ""
-
-
-def neutral_vless_fragment(link):
-    raw = str(link or "").strip()
-    if not raw:
-        return raw
-    base = raw.split("#", 1)[0]
-    return base + "#" + server_name_fragment()
-
-
-def telegram_html_escape(value):
-    return html.escape(str(value or ""), quote=False)
-
-
-def current_vless_link_value_for_chat(db, chat_id):
-    name, _entry, error = subscription_entry_for_chat(db, chat_id)
-    if error:
-        return "", error
-    if not XRAY_CLIENT.exists():
-        return "", "xray-client не найден на сервере. Обратись к администратору."
-    result = run_capture([str(XRAY_CLIENT), "link", name], timeout=20)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
-        return "", "Не удалось получить актуальную VLESS-ссылку: " + detail
-    link = ""
-    for line in result.stdout.splitlines():
-        if line.strip().startswith("vless://"):
-            link = line.strip()
-            break
-    if not link:
-        return "", "Не удалось получить актуальную VLESS-ссылку: xray-client не вернул ссылку."
-    return neutral_vless_fragment(link), ""
-
-
-def current_vless_link_for_chat(db, chat_id):
-    link, error = current_vless_link_value_for_chat(db, chat_id)
-    if error:
-        return error
-    return "\n".join(
-        [
-            "Актуальная VLESS Reality-ссылка:",
-            "",
-            link,
-            "",
-            "Если настройки подключения менялись, импортируй эту ссылку заново.",
-        ]
-    )
+    return telegram_subscriptions.subscription_entry_for_chat(db, chat_id, load_client_db())
 
 
 def current_vless_link_code_for_chat(db, chat_id):
-    link, error = current_vless_link_value_for_chat(db, chat_id)
-    if error:
-        return error, None
-    return (
-        "\n".join(
-            [
-                "Актуальная VLESS Reality-ссылка:",
-                "",
-                f"<pre><code>{telegram_html_escape(link)}</code></pre>",
-                "",
-                "Если настройки подключения менялись, импортируй эту ссылку заново.",
-            ]
-        ),
-        "HTML",
+    return telegram_subscriptions.current_vless_link_code_for_chat(
+        db,
+        chat_id,
+        load_client_db(),
+        XRAY_CLIENT,
+        run_capture,
+        server_name_fragment(),
     )
 
 
 def unsubscribe_chat(db, chat_id):
-    removed = db.setdefault("clientSubscriptions", {}).pop(str(chat_id), None)
-    if removed:
-        return "Подписка на напоминания отключена."
-    return "Активной подписки нет."
+    return telegram_subscriptions.unsubscribe_chat(db, chat_id)
 
 
 def admin_status_text(db):
@@ -1055,7 +877,7 @@ def admin_subscribers_text(db):
         name = subscription.get("client", "-")
         entry = clients.get(name, {})
         access_until = format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else "")
-        valid = "актуальна" if entry and normalize_value(subscription.get("clientId")) == client_entry_id(entry) else "требует проверки"
+        valid = "актуальна" if telegram_subscriptions.subscription_is_current(subscription, entry) else "требует проверки"
         lines.append(f"- {name}: {valid}, до {access_until}, чат {subscription.get('chatLabel', chat_id)}")
     if len(subscriptions) > 25:
         lines.append(f"...и ещё подписок: {len(subscriptions) - 25}")
@@ -1088,22 +910,14 @@ def admin_create_backup_text():
 
 
 def subscribe_chat_to_client(db, chat, text):
-    parsed_link = parse_vless_link(text)
-    match, reason = match_vless_to_client(parsed_link)
-    if not match:
-        raise ValueError(reason)
-    name, entry = match
-    chat_id = str(chat["id"])
-    db.setdefault("clientSubscriptions", {})[chat_id] = {
-        "client": name,
-        "clientId": client_entry_id(entry),
-        "connection": entry.get("connection", ""),
-        "chatLabel": telegram_chat_label(chat),
-        "linkHash": parsed_link["hash"],
-        "subscribedAt": utc_stamp(),
-        "enabled": True,
-    }
-    return name, entry
+    return telegram_subscriptions.subscribe_chat_to_client(
+        db,
+        chat,
+        text,
+        load_client_db(),
+        telegram_chat_label(chat),
+        utc_stamp(),
+    )
 
 
 def handle_user_message(db, update):
@@ -1439,7 +1253,7 @@ def notify_expiry(quiet=False):
             continue
         if entry.get("paymentType") != "paid":
             continue
-        if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
+        if not telegram_subscriptions.subscription_matches_entry(subscription, entry):
             continue
         for days_before in EXPIRY_REMINDER_DAYS:
             due = expiry_reminder_due(entry, days_before, now)
@@ -1498,7 +1312,7 @@ def notify_access_updated(name, quiet=False):
             continue
         if subscription.get("client") != name:
             continue
-        if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
+        if not telegram_subscriptions.subscription_matches_entry(subscription, entry):
             continue
         try:
             send_chat_message(db, chat_id, message)
@@ -1644,7 +1458,7 @@ def list_client_subscribers():
     for chat_id, subscription in sorted(subscriptions.items(), key=lambda item: item[1].get("client", "")):
         name = subscription.get("client", "-")
         entry = clients.get(name, {})
-        valid = "yes" if entry and normalize_value(subscription.get("clientId")) == client_entry_id(entry) else "no"
+        valid = "yes" if telegram_subscriptions.subscription_is_current(subscription, entry) else "no"
         rows.append(
             [
                 name,
