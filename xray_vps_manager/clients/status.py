@@ -32,6 +32,16 @@ class AccessUpdateResult:
     traffic_status: dict[str, Any] | None
 
 
+@dataclass
+class TrafficLimitEnforcementResult:
+    reactivated_names: list[str]
+    due_names: list[str]
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.reactivated_names or self.due_names)
+
+
 def clear_disabled_state(entry: dict[str, Any]) -> None:
     entry.pop("disabledAt", None)
     entry.pop("disabledReason", None)
@@ -186,3 +196,71 @@ def extend_access_days(
     days: int,
 ) -> AccessUpdateResult:
     return apply_access_update(config, db, traffic_db, name, lambda entry: extend_entry_expiry(entry, days))
+
+
+def enforce_traffic_limits(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    traffic_db: dict[str, Any],
+    now: datetime | None = None,
+    stamp: str | None = None,
+) -> TrafficLimitEnforcementResult:
+    now = now or local_now()
+    stamp = stamp or utc_stamp()
+    reactivated_names: list[str] = []
+    due_names: list[str] = []
+    due_clients: dict[str, tuple[str, dict[str, Any]]] = {}
+    due_statuses: dict[str, dict[str, Any]] = {}
+
+    for name, entry in db_clients(db).items():
+        if entry.get("enabled") is not False or entry.get("disabledReason") != "traffic-limit":
+            continue
+        status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
+        if not status or status["exceeded"]:
+            continue
+        exceeded_period = entry.get("trafficLimitExceededPeriod", "")
+        if exceeded_period and exceeded_period == status["periodKey"]:
+            continue
+        if access_expired(entry, now):
+            continue
+
+        enable_db_client(config, name, entry)
+        entry["enabled"] = True
+        clear_disabled_state(entry)
+        db_clients(db)[name] = entry
+        reactivated_names.append(name)
+
+    for inbound in reality_inbounds(config):
+        tag = inbound_tag(inbound)
+        for item in clients(inbound):
+            name = client_name(item)
+            entry = db_clients(db).get(name, {})
+            status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
+            if status and status["exceeded"]:
+                due_names.append(name)
+                due_clients[name] = (tag, item)
+                due_statuses[name] = status
+
+    for name in due_names:
+        tag, item = due_clients[name]
+        status = due_statuses[name]
+        _, created = split_email(item.get("email", ""))
+        previous = db_clients(db).get(name, {})
+        entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
+        entry["connection"] = previous.get("connection") or tag
+        entry["disabledAt"] = stamp
+        entry["disabledReason"] = "traffic-limit"
+        entry["trafficLimitExceededAt"] = stamp
+        entry["trafficLimitExceededPeriod"] = status["periodKey"]
+        entry["trafficLimitExceededBytes"] = status["usedBytes"]
+        entry["trafficLimitResetAt"] = status["resetAt"]
+        db_clients(db)[name] = entry
+
+    due_set = set(due_names)
+    for inbound in reality_inbounds(config):
+        inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
+
+    return TrafficLimitEnforcementResult(
+        reactivated_names=reactivated_names,
+        due_names=due_names,
+    )

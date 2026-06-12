@@ -1169,6 +1169,13 @@ def apply_access_update(name, update_entry):
     )
 
 
+def enforce_traffic_limits(config, db, traffic_db):
+    try:
+        return client_status.enforce_traffic_limits(config, db, traffic_db, stamp=utc_now_iso())
+    except ValueError as exc:
+        die(str(exc))
+
+
 def cmd_set_days(name, days_value):
     days = parse_access_days(days_value)
     run_access_update(
@@ -1261,65 +1268,12 @@ def cmd_enforce_limits(quiet=False, sync_first=False):
     db = load_db()
     ensure_connections(config, db)
     traffic_db = load_traffic_db()
-    now = local_now()
-    reactivated_names = []
-    due_names = []
-    due_clients = {}
-    due_statuses = {}
+    result = enforce_traffic_limits(config, db, traffic_db)
 
-    for name, entry in db_clients(db).items():
-        if entry.get("enabled") is not False or entry.get("disabledReason") != "traffic-limit":
-            continue
-        status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
-        if not status or status["exceeded"]:
-            continue
-        exceeded_period = entry.get("trafficLimitExceededPeriod", "")
-        if exceeded_period and exceeded_period == status["periodKey"]:
-            continue
-        if access_expired(entry, now):
-            continue
-
-        enable_db_client(config, db, name, entry)
-        entry["enabled"] = True
-        clear_disabled_state(entry)
-        db_clients(db)[name] = entry
-        reactivated_names.append(name)
-
-    for inbound in reality_inbounds(config):
-        tag = inbound_tag(inbound)
-        for item in clients(inbound):
-            name = client_name(item)
-            entry = db_clients(db).get(name, {})
-            status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
-            if status and status["exceeded"]:
-                due_names.append(name)
-                due_clients[name] = (tag, item)
-                due_statuses[name] = status
-
-    if not reactivated_names and not due_names:
+    if not result.has_changes:
         if not quiet:
             print("No traffic limits exceeded or reset.")
         return
-
-    stamp = utc_now_iso()
-    for name in due_names:
-        tag, item = due_clients[name]
-        status = due_statuses[name]
-        _, created = split_email(item.get("email", ""))
-        previous = db_clients(db).get(name, {})
-        entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
-        entry["connection"] = previous.get("connection") or tag
-        entry["disabledAt"] = stamp
-        entry["disabledReason"] = "traffic-limit"
-        entry["trafficLimitExceededAt"] = stamp
-        entry["trafficLimitExceededPeriod"] = status["periodKey"]
-        entry["trafficLimitExceededBytes"] = status["usedBytes"]
-        entry["trafficLimitResetAt"] = status["resetAt"]
-        db_clients(db)[name] = entry
-
-    due_set = set(due_names)
-    for inbound in reality_inbounds(config):
-        inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
 
     backup = save_config(config)
     try:
@@ -1334,10 +1288,10 @@ def cmd_enforce_limits(quiet=False, sync_first=False):
         die(f"New config failed. Restored backup: {backup}")
 
     if not quiet:
-        if reactivated_names:
-            print("Re-enabled clients after traffic limit reset: " + ", ".join(reactivated_names))
-        if due_names:
-            print("Disabled clients by traffic limit: " + ", ".join(due_names))
+        if result.reactivated_names:
+            print("Re-enabled clients after traffic limit reset: " + ", ".join(result.reactivated_names))
+        if result.due_names:
+            print("Disabled clients by traffic limit: " + ", ".join(result.due_names))
         print(f"Backup: {backup}")
 
 
