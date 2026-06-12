@@ -11,7 +11,16 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from xray_vps_manager.commands import menu_actions, menu_backups, menu_cascade, menu_ui, menu_warp
+from xray_vps_manager.commands import (
+    menu_actions,
+    menu_backups,
+    menu_cascade,
+    menu_security,
+    menu_traffic,
+    menu_ui,
+    menu_updates,
+    menu_warp,
+)
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
@@ -32,7 +41,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 14:35 UTC"
+MENU_UPDATED = "2026-06-12 14:38 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -2805,44 +2814,35 @@ def xray_settings_menu_handlers():
 
 
 def security_menu_handlers():
-    return {
-        "1": ("Проверить безопасность сервера", run_security_audit),
-        "2": ("Показать SSH-доступ", show_ssh_access),
-        "3": ("Отключить вход по паролю SSH", disable_ssh_password_login),
-        "4": ("Включить вход по паролю SSH", enable_ssh_password_login),
-    }
+    return menu_security.handlers(
+        run_security_audit,
+        show_ssh_access,
+        disable_ssh_password_login,
+        enable_ssh_password_login,
+    )
 
 
 def update_menu_handlers():
-    return {
-        "1": ("Проверить доступность обновления", lambda: call(["xray-update", "--check"])),
-        "2": ("Проверить latest с текущим config.json", lambda: call(["xray-update", "--test-latest"])),
-        "3": ("Обновить Xray", lambda: call(["xray-update", "--update"])),
-        "4": ("Показать бэкапы Xray", lambda: call(["xray-update", "--backups"])),
-        "5": ("Откатить Xray к предыдущей версии", rollback_xray),
-        "6": ("Обновить geoip/geosite из Xray release", lambda: call(["xray-update", "--update-assets", "xray"])),
-        "7": ("Обновить geoip/geosite из Loyalsoldier", lambda: call(["xray-update", "--update-assets", "loyalsoldier"])),
-        "8": ("Обновить geoip.dat из v2fly", lambda: call(["xray-update", "--update-assets", "v2fly"])),
-    }
+    return menu_updates.handlers(call, rollback_xray)
 
 
 def traffic_menu_handlers():
-    return {
-        "1": ("Просмотр трафика", open_traffic_menu),
-        "2": ("Показать лимиты трафика", lambda: call(["xray-client", "limit-list"])),
-        "3": ("Установить лимит трафика", update_selected_client_limit),
-        "4": ("Убрать лимит трафика", clear_selected_client_limit),
-        "5": ("Проверить лимиты трафика", lambda: call(["xray-client", "enforce-limits", "--sync"])),
-    }
+    return menu_traffic.handlers(
+        call,
+        open_traffic_menu,
+        update_selected_client_limit,
+        clear_selected_client_limit,
+    )
 
 
 def traffic_report_handlers(name):
-    return {
-        "1": ("Трафик за день по часам", lambda: show_traffic_day(name)),
-        "2": ("Трафик за неделю по дням", lambda: show_traffic_week(name)),
-        "3": ("Трафик за месяц по дням", lambda: show_traffic_month(name)),
-        "4": ("Трафик за период по дням", lambda: show_traffic_period(name)),
-    }
+    return menu_traffic.report_handlers(
+        name,
+        show_traffic_day,
+        show_traffic_week,
+        show_traffic_month,
+        show_traffic_period,
+    )
 
 
 def backup_menu_handlers():
