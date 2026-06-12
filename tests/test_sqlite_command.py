@@ -135,6 +135,64 @@ class SQLiteCommandTests(unittest.TestCase):
             self.assertIn("OK SQLite cutover validation passed.", output)
             self.assertIn("SQLite cutover complete.", output)
 
+    def test_preflight_imports_to_temporary_database_without_touching_manager_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            manager_db_path = root / "manager.db"
+            xray_test = root / "xray-test"
+            xray_test.write_text("#!/bin/sh\n")
+            created_paths = []
+
+            def import_json_files(*, db_path, replace):
+                created_paths.append(Path(db_path))
+                connection = database.open_database(db_path)
+                try:
+                    sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
+                finally:
+                    connection.close()
+                return json_import.ImportSummary(counts={"clients": 1})
+
+            stdout = StringIO()
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", manager_db_path), mock.patch.object(
+                sqlite_command, "XRAY_TEST", xray_test
+            ), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.object(
+                sqlite_command.json_import, "import_json_files", side_effect=import_json_files
+            ) as import_mock, redirect_stdout(stdout):
+                code = sqlite_command.preflight()
+
+            self.assertEqual(code, 0)
+            import_mock.assert_called_once()
+            self.assertEqual(created_paths[0].name, "manager-preflight.db")
+            self.assertFalse(created_paths[0].exists())
+            self.assertFalse(manager_db_path.exists())
+            self.assertIn("OK SQLite preflight passed.", stdout.getvalue())
+
+    def test_preflight_fails_when_xray_test_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            missing_xray_test = root / "missing-xray-test"
+
+            def import_json_files(*, db_path, replace):
+                connection = database.open_database(db_path)
+                try:
+                    sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
+                finally:
+                    connection.close()
+                return json_import.ImportSummary(counts={"clients": 1})
+
+            stdout = StringIO()
+            with mock.patch.object(sqlite_command, "XRAY_TEST", missing_xray_test), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.object(
+                sqlite_command.json_import, "import_json_files", side_effect=import_json_files
+            ), redirect_stdout(stdout):
+                code = sqlite_command.preflight()
+
+            self.assertEqual(code, 1)
+            self.assertIn("ERROR xray-test not found", stdout.getvalue())
+
     def test_cutover_disables_flags_and_restarts_writers_when_cutover_validation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

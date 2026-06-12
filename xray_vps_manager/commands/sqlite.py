@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from xray_vps_manager.commands import backup as backup_command
@@ -121,10 +122,10 @@ def import_json(replace: bool = True) -> int:
     return 0
 
 
-def validate_database_ready() -> dict[str, int]:
-    if not MANAGER_DB_PATH.exists():
-        raise RuntimeError(f"SQLite database was not created: {MANAGER_DB_PATH}")
-    connection = database.open_database(MANAGER_DB_PATH)
+def validate_database_file_ready(db_path: Path) -> dict[str, int]:
+    if not db_path.exists():
+        raise RuntimeError(f"SQLite database was not created: {db_path}")
+    connection = database.open_database(db_path)
     try:
         quick_check = database.quick_check(connection)
         if quick_check != "ok":
@@ -137,6 +138,10 @@ def validate_database_ready() -> dict[str, int]:
         return database_counts(connection)
     finally:
         connection.close()
+
+
+def validate_database_ready() -> dict[str, int]:
+    return validate_database_file_ready(MANAGER_DB_PATH)
 
 
 def relationship_issues(connection) -> list[str]:
@@ -264,6 +269,50 @@ def run_cutover_validation() -> None:
         raise RuntimeError("SQLite cutover validation failed")
 
 
+def print_import_warnings(summary: json_import.ImportSummary) -> None:
+    if not summary.warnings:
+        return
+    print("Warnings:")
+    for warning in summary.warnings:
+        print(f" - {warning}")
+
+
+def preflight() -> int:
+    require_root()
+    issues = []
+    with tempfile.TemporaryDirectory(prefix="xray-sqlite-preflight-") as tmp_dir:
+        temp_db_path = Path(tmp_dir) / "manager-preflight.db"
+        print("Running JSON-to-SQLite preflight import...")
+        try:
+            summary = json_import.import_json_files(db_path=temp_db_path, replace=True)
+            print_counts(summary.counts)
+            print_import_warnings(summary)
+            print("Validating temporary SQLite database...")
+            counts = validate_database_file_ready(temp_db_path)
+            print_counts(counts)
+            connection = database.open_database(temp_db_path)
+            try:
+                issues.extend(relationship_issues(connection))
+            finally:
+                connection.close()
+        except Exception as exc:
+            print(f"ERROR preflight import/validation failed: {exc}")
+            return 1
+
+    if not XRAY_TEST.exists():
+        issues.append(f"xray-test not found: {XRAY_TEST}")
+
+    if issues:
+        print()
+        for issue in issues:
+            print(f"ERROR {issue}")
+        return 1
+
+    print()
+    print("OK SQLite preflight passed. Real manager.db was not changed.")
+    return 0
+
+
 def run_systemctl(args: list[str], *, timeout: int = 30) -> None:
     result = subprocess.run(
         ["systemctl", *args],
@@ -346,10 +395,7 @@ def cutover(*, yes: bool = False, run_test: bool = True) -> int:
         print("Importing JSON state into SQLite...")
         summary = json_import.import_json_files(db_path=MANAGER_DB_PATH, replace=True)
         print_counts(summary.counts)
-        if summary.warnings:
-            print("Warnings:")
-            for warning in summary.warnings:
-                print(f" - {warning}")
+        print_import_warnings(summary)
 
         print("Validating SQLite database...")
         counts = validate_database_ready()
@@ -402,6 +448,7 @@ def usage() -> None:
         """Usage:
   xray-vps-manager sqlite status
   xray-vps-manager sqlite import-json [--no-replace]
+  xray-vps-manager sqlite preflight
   xray-vps-manager sqlite validate-cutover
   xray-vps-manager sqlite cutover [--yes] [--skip-test]
   xray-vps-manager sqlite enable-reads
@@ -426,6 +473,8 @@ def main() -> None:
     if command == "import-json":
         replace = "--no-replace" not in args
         sys.exit(import_json(replace=replace))
+    if command == "preflight" and not args:
+        sys.exit(preflight())
     if command == "validate-cutover" and not args:
         sys.exit(validate_cutover())
     if command == "cutover":
