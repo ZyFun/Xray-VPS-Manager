@@ -100,3 +100,68 @@ def payment_share_amount(total_amount, paid_count, rounding_mode="none", roundin
         rounded = (share / step).to_integral_value(rounding=ROUND_CEILING) * step
         return decimal_storage_value(rounded)
     return decimal_storage_value(share.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
+
+
+def client_entries(client_db):
+    if not isinstance(client_db, dict):
+        return {}
+    clients = client_db.get("clients", {})
+    return clients if isinstance(clients, dict) else {}
+
+
+def paid_client_count(client_db):
+    return sum(1 for entry in client_entries(client_db).values() if entry.get("paymentType") == "paid")
+
+
+def payment_amount_label(db, client_db):
+    total = str(db.get("paymentTotalAmount") or "").strip()
+    currency = db.get("paymentCurrency") or "₽"
+    count = paid_client_count(client_db)
+    rounding_mode, rounding_step = payment_rounding_settings(db)
+    share = payment_share_amount(total, count, rounding_mode, rounding_step)
+    if not total:
+        return "не указана"
+    if count <= 0:
+        return f"не рассчитана: нет платных клиентов (общая сумма: {format_payment_amount(total, currency)})"
+    return format_payment_amount(share, currency)
+
+
+def payment_summary(db, client_db):
+    total = str(db.get("paymentTotalAmount") or "").strip()
+    currency = db.get("paymentCurrency") or "₽"
+    count = paid_client_count(client_db)
+    rounding_mode, rounding_step = payment_rounding_settings(db)
+    share = payment_share_amount(total, count, rounding_mode, rounding_step)
+    summary = {
+        "total": format_payment_amount(total, currency),
+        "paidCount": count,
+        "rounding": payment_rounding_label(db),
+        "share": format_payment_amount(share, currency) if share else "не рассчитана",
+    }
+    if not total and count > 0:
+        summary["warning"] = (
+            "Total rent amount is not set. Configure it in "
+            "Telegram бот -> Настроить оплату и округление, "
+            "or run: xray-telegram payment-amount '500 ₽'"
+        )
+    return summary
+
+
+def apply_payment_amount(db, value):
+    amount, currency = parse_payment_value(value)
+    db["paymentTotalAmount"] = amount
+    db["paymentCurrency"] = currency
+    db["paymentAmount"] = format_payment_amount(amount, currency) if amount else ""
+    return amount, currency
+
+
+def apply_payment_rounding(db, mode_value, step_value=None):
+    mode = normalize_payment_rounding_mode(mode_value)
+    if mode == "step":
+        if not step_value:
+            raise ValueError("Для режима step нужно указать шаг округления.")
+        db["paymentRoundingStep"] = parse_payment_rounding_step(step_value)
+    db["paymentRoundingMode"] = mode
+    if "paymentRoundingStep" not in db:
+        db["paymentRoundingStep"] = "10"
+    return mode, db["paymentRoundingStep"]

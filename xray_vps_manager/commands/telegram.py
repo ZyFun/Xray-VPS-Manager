@@ -13,7 +13,6 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from pathlib import Path
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -664,83 +663,12 @@ def format_access_until(value):
     return f"{moment.astimezone(tzinfo).strftime('%Y-%m-%d %H:%M')} {label}"
 
 
-def parse_payment_value(value):
-    return telegram_payments.parse_payment_value(value)
-
-
-def decimal_storage_value(value):
-    return telegram_payments.decimal_storage_value(value)
-
-
-def format_decimal_amount(amount):
-    return telegram_payments.format_decimal_amount(amount)
-
-
-def format_payment_amount(amount, currency):
-    return telegram_payments.format_payment_amount(amount, currency)
-
-
-def parse_payment_rounding_step(value):
-    return telegram_payments.parse_payment_rounding_step(value)
-
-
-def normalize_payment_rounding_mode(value):
-    return telegram_payments.normalize_payment_rounding_mode(value)
-
-
-def payment_rounding_settings(db):
-    return telegram_payments.payment_rounding_settings(db)
-
-
-def payment_rounding_label(db):
-    return telegram_payments.payment_rounding_label(db)
-
-
-def paid_client_count(client_db=None):
-    client_db = client_db or load_client_db()
-    return sum(1 for entry in client_db_clients(client_db).values() if entry.get("paymentType") == "paid")
-
-
-def payment_share_amount(total_amount, paid_count, rounding_mode="none", rounding_step="10"):
-    return telegram_payments.payment_share_amount(total_amount, paid_count, rounding_mode, rounding_step)
-
-
 def payment_amount_label(db, client_db=None):
-    total = str(db.get("paymentTotalAmount") or "").strip()
-    currency = db.get("paymentCurrency") or "₽"
-    count = paid_client_count(client_db)
-    rounding_mode, rounding_step = payment_rounding_settings(db)
-    share = payment_share_amount(total, count, rounding_mode, rounding_step)
-    if not total:
-        return "не указана"
-    if count <= 0:
-        return f"не рассчитана: нет платных клиентов (общая сумма: {format_payment_amount(total, currency)})"
-    return format_payment_amount(share, currency)
+    return telegram_payments.payment_amount_label(db, client_db or load_client_db())
 
 
-def payment_summary(db, client_db=None):
-    total = str(db.get("paymentTotalAmount") or "").strip()
-    currency = db.get("paymentCurrency") or "₽"
-    count = paid_client_count(client_db)
-    rounding_mode, rounding_step = payment_rounding_settings(db)
-    share = payment_share_amount(total, count, rounding_mode, rounding_step)
-    summary = {
-        "total": format_payment_amount(total, currency),
-        "paidCount": count,
-        "rounding": payment_rounding_label(db),
-        "share": format_payment_amount(share, currency) if share else "не рассчитана",
-    }
-    if not total and count > 0:
-        summary["warning"] = (
-            "Total rent amount is not set. Configure it in "
-            "Telegram бот -> Настроить оплату и округление, "
-            "or run: xray-telegram payment-amount '500 ₽'"
-        )
-    return summary
-
-
-def print_payment_summary(db):
-    summary = payment_summary(db)
+def print_payment_summary(db, client_db=None):
+    summary = telegram_payments.payment_summary(db, client_db or load_client_db())
     print(f"Total rent amount: {summary['total']}")
     print(f"Paid clients: {summary['paidCount']}")
     print(f"Rounding: {summary['rounding']}")
@@ -751,10 +679,7 @@ def print_payment_summary(db):
 
 def set_payment_amount(value):
     db = load_db()
-    amount, currency = parse_payment_value(value)
-    db["paymentTotalAmount"] = amount
-    db["paymentCurrency"] = currency
-    db["paymentAmount"] = format_payment_amount(amount, currency) if amount else ""
+    amount, _currency = telegram_payments.apply_payment_amount(db, value)
     save_db(db)
     if amount:
         print_payment_summary(db)
@@ -764,14 +689,7 @@ def set_payment_amount(value):
 
 def set_payment_rounding(mode_value, step_value=None):
     db = load_db()
-    mode = normalize_payment_rounding_mode(mode_value)
-    if mode == "step":
-        if not step_value:
-            raise ValueError("Для режима step нужно указать шаг округления.")
-        db["paymentRoundingStep"] = parse_payment_rounding_step(step_value)
-    db["paymentRoundingMode"] = mode
-    if "paymentRoundingStep" not in db:
-        db["paymentRoundingStep"] = "10"
+    telegram_payments.apply_payment_rounding(db, mode_value, step_value)
     save_db(db)
     print_payment_summary(db)
 
@@ -1116,7 +1034,7 @@ def admin_status_text(db):
             f"Уведомления: {'включены' if db.get('enabled') else 'отключены'}",
             f"Маршрут Telegram: {db.get('routeMode', 'direct')}",
             f"Оплата: {payment_amount_label(db)}",
-            f"Округление: {payment_rounding_label(db)}",
+            f"Округление: {telegram_payments.payment_rounding_label(db)}",
             f"Подписки клиентов: {len(subscriptions)}",
             f"Последний GeoIP: {db.get('geoipState', {}).get('lastGeoipNotification') or db.get('lastGeoipNotification') or 'never'}",
             f"Последний poll: {subscription_state.get('lastUserPoll') or 'never'}",
@@ -1950,7 +1868,7 @@ def status():
         ("Chat", f"{db.get('chatLabel') or '-'} ({db.get('chatId') or '-'})"),
         ("Route mode", db.get("routeMode", "direct")),
         ("Payment amount", payment_amount_label(db)),
-        ("Payment rounding", payment_rounding_label(db)),
+        ("Payment rounding", telegram_payments.payment_rounding_label(db)),
         ("Client subscriptions", str(len(subscriptions))),
         ("Config", str(TELEGRAM_DB_PATH)),
         ("Last GeoIP notification", db.get("geoipState", {}).get("lastGeoipNotification") or db.get("lastGeoipNotification") or "never"),
