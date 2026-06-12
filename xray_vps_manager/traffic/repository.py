@@ -9,8 +9,9 @@ from typing import Any
 from xray_vps_manager.core.json_store import load_json, save_json
 from xray_vps_manager.core.paths import TRAFFIC_PATH
 from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
 
 
 @dataclass(frozen=True)
@@ -59,8 +60,14 @@ def load_traffic_db_from_sqlite(connection) -> dict[str, Any]:
     return {"clients": sqlite_traffic.list_traffic_entries(connection)}
 
 
-def save_traffic_db(db: dict[str, Any], path: Path = TRAFFIC_PATH) -> None:
+def save_traffic_db(
+    db: dict[str, Any],
+    path: Path = TRAFFIC_PATH,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
     save_json(path, db, mode=0o640, group_xray=True)
+    mirror_traffic_db_to_sqlite_for_write(db, db_path=db_path)
 
 
 def traffic_clients(db: dict | None) -> dict:
@@ -102,3 +109,38 @@ def remove_traffic_clients(names: list[str] | tuple[str, ...] | set[str], path: 
     if changed:
         save_traffic_db(db, path)
     return changed
+
+
+def mirror_traffic_db_to_sqlite_for_write(
+    db: dict[str, Any],
+    *,
+    db_path: str | Path | None = None,
+) -> bool:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        return False
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            return False
+
+        entries = traffic_clients(db)
+        known_clients = set(sqlite_clients.list_clients(connection))
+        desired_clients = {str(name) for name, entry in entries.items() if isinstance(entry, dict)}
+        mirrorable_clients = desired_clients & known_clients
+
+        with database.transaction(connection):
+            for name in sorted(mirrorable_clients):
+                sqlite_traffic.upsert_traffic_entry(connection, name, entries[name])
+
+            current_clients = set(sqlite_traffic.list_traffic_entries(connection))
+            stale_clients = current_clients - mirrorable_clients
+            if stale_clients:
+                sqlite_traffic.remove_traffic_clients(connection, stale_clients)
+        return True
+    except Exception:
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
