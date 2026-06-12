@@ -70,6 +70,24 @@ def connection_fingerprint(config: dict[str, Any], db: dict[str, Any], tag: str)
     return value
 
 
+def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any]]:
+    ensure_connections(config, db)
+    fallback_fingerprint = fingerprint()
+    rows = []
+    for tag, entry in db_connections(db).items():
+        rows.append(
+            [
+                entry.get("name", connection_name_from_tag(tag)),
+                tag,
+                entry.get("port", ""),
+                entry.get("sni", ""),
+                entry.get("fingerprint", fallback_fingerprint),
+                entry.get("created", "unknown"),
+            ]
+        )
+    return rows
+
+
 def resolve_connection_identifier(config: dict[str, Any], db: dict[str, Any], value: str) -> str:
     identifier = (value or "").strip()
     if not identifier:

@@ -333,6 +333,13 @@ def connection_fingerprint(config, db, tag):
         die(str(exc))
 
 
+def connection_rows(config, db):
+    try:
+        return client_connections.connection_rows(config, db)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def resolve_connection_identifier(config, db, value):
     try:
         return client_connections.resolve_connection_identifier(config, db, value)
@@ -764,18 +771,8 @@ def cmd_connection_list():
     db = load_db()
     ensure_connections(config, db)
     save_db(db)
-    rows = []
-    for tag, entry in db_connections(db).items():
-        rows.append([
-            entry.get("name", connection_name_from_tag(tag)),
-            tag,
-            entry.get("port", ""),
-            entry.get("sni", ""),
-            entry.get("fingerprint", fingerprint()),
-            entry.get("created", "unknown"),
-        ])
     headers = ["NAME", "TAG", "PORT", "SNI", "FINGERPRINT", "CREATED"]
-    print_table(headers, rows, empty_message=None)
+    print_table(headers, connection_rows(config, db), empty_message=None)
 
 
 def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
