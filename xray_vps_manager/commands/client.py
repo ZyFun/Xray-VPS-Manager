@@ -142,7 +142,7 @@ def prompt_access_days():
         return None
     print()
     print("ACCESS_DAYS: количество календарных дней доступа.")
-    print(f"Клиент будет автоматически отключён в 00:00 по часовому поясу менеджера: {manager_timezone_label()}.")
+    print(f"Клиент будет автоматически отключён в 00:00 по часовому поясу менеджера: {client_settings.manager_timezone_label()}.")
     print("Нажми Enter или введи 0, чтобы добавить клиента бессрочно.")
     value = input("ACCESS_DAYS [бессрочно]: ").strip()
     return parse_access_days(value)
@@ -175,7 +175,7 @@ def normalize_access_deadlines(tz):
         return 0
     db = load_db()
     changed = 0
-    for entry in db_clients(db).values():
+    for entry in client_repository.db_clients(db).values():
         expires_at = entry.get("expiresAt", "")
         normalized = client_access.access_deadline_at_midnight(expires_at, tz)
         if normalized and normalized != expires_at:
@@ -188,22 +188,6 @@ def normalize_access_deadlines(tz):
 
 def save_server_env_values(values):
     client_settings.save_server_env_values(values, SERVER_ENV_PATH)
-
-
-def reality_inbounds(config):
-    return xray_config.reality_inbounds(config)
-
-
-def inbound_tag(inbound):
-    return xray_config.inbound_tag(inbound)
-
-
-def db_connections(db):
-    return client_repository.db_connections(db)
-
-
-def connection_name_from_tag(tag):
-    return xray_config.connection_name_from_tag(tag)
 
 
 def ensure_connections(config, db):
@@ -232,22 +216,6 @@ def connection_rows(config, db):
         return client_connections.connection_rows(config, db)
     except ValueError as exc:
         die(str(exc))
-
-
-def clients(inbound):
-    return xray_config.clients(inbound)
-
-
-def split_email(email):
-    return client_models.split_email(email)
-
-
-def client_name(item):
-    return client_models.client_name(item)
-
-
-def db_clients(db):
-    return client_repository.db_clients(db)
 
 
 def db_entry_from_client(item, created="", enabled=True, previous=None):
@@ -304,10 +272,6 @@ def color_label(value, text):
     return text
 
 
-def server_env_values():
-    return client_settings.server_env_values(SERVER_ENV_PATH)
-
-
 def normalize_timezone(value):
     try:
         return client_settings.normalize_timezone(value)
@@ -315,27 +279,11 @@ def normalize_timezone(value):
         die(str(exc))
 
 
-def configured_timezone_name():
-    return client_settings.configured_timezone_name()
-
-
-def manager_timezone():
-    return client_settings.manager_timezone()
-
-
-def manager_timezone_label():
-    return client_settings.manager_timezone_label()
-
-
 def link_for(config, client_id, name, connection_tag=None, db=None):
     try:
         return client_links.link_for(config, client_id, name, connection_tag=connection_tag, db=db, db_loader=load_db)
     except (RuntimeError, ValueError) as exc:
         die(str(exc))
-
-
-def client_rows(config, db):
-    return client_listing.client_rows(config, db)
 
 
 def query_user_stats():
@@ -440,7 +388,7 @@ def print_plain_table(headers, rows):
 
 def print_connection_title(config, db, tag):
     entry = connection_entry(config, db, tag)
-    name = entry.get("name") or connection_name_from_tag(tag)
+    name = entry.get("name") or xray_config.connection_name_from_tag(tag)
     port = entry.get("port", "")
     sni = entry.get("sni", "")
     print()
@@ -527,19 +475,19 @@ def cmd_list():
     db = load_db()
     ensure_connections(config, db)
     save_db(db)
-    rows = client_rows(config, db)
+    rows = client_listing.client_rows(config, db)
     if not rows:
         print("No clients.")
         return
     sync_traffic()
     traffic_db = load_traffic_db()
     stats = query_user_stats()
-    display_timezone = manager_timezone()
+    display_timezone = client_settings.manager_timezone()
     grouped = {}
     for row in rows:
         grouped.setdefault(row["connection"], []).append(row)
 
-    for tag in db_connections(db):
+    for tag in client_repository.db_connections(db):
         group_rows = grouped.get(tag, [])
         if not group_rows:
             continue
@@ -549,7 +497,7 @@ def cmd_list():
             incoming, outgoing = client_runtime.traffic_for(traffic_db, stats, row)
             total = None if incoming is None or outgoing is None else incoming + outgoing
             online, last_online = client_runtime.online_state(row, traffic_db, display_timezone)
-            db_entry = db_clients(db).get(row["name"], {})
+            db_entry = client_repository.db_clients(db).get(row["name"], {})
             traffic_updated = client_runtime.traffic_updated_at(row, traffic_db, display_timezone)
             table_rows.append(
                 [
@@ -571,11 +519,11 @@ def cmd_list():
 
 
 def known_for_traffic_report(config, db, traffic_db, name):
-    if name in db_clients(db):
+    if name in client_repository.db_clients(db):
         return True
     if name in traffic_db.get("clients", {}):
         return True
-    return any(row["name"] == name for row in client_rows(config, db))
+    return any(row["name"] == name for row in client_listing.client_rows(config, db))
 
 
 def traffic_report_context(name):
@@ -597,7 +545,7 @@ def cmd_traffic_summary(month_value=None):
     db = load_db()
     ensure_connections(config, db)
     save_db(db)
-    rows = client_rows(config, db)
+    rows = client_listing.client_rows(config, db)
     if not rows:
         print("No clients.")
         return
@@ -606,7 +554,7 @@ def cmd_traffic_summary(month_value=None):
     table_rows = traffic_reports.month_summary_rows(
         rows,
         traffic_db,
-        db_clients(db),
+        client_repository.db_clients(db),
         month_key,
         connection_label=lambda row: connection_display_name(config, db, row["connection"]),
         limit_label=client_limits.format_traffic_limit,
@@ -621,7 +569,7 @@ def cmd_traffic_day(name, day_value=None):
     day = parse_date_value(day_value or client_access.local_now().date().isoformat())
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
-    print(f"Day: {day.isoformat()} (timezone: {manager_timezone_label()})")
+    print(f"Day: {day.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_plain_table(["HOUR", "IN", "OUT", "TOTAL"], traffic_reports.day_hour_rows(entry, day))
 
 
@@ -630,7 +578,7 @@ def cmd_traffic_week(name, start_value=None):
     end = start + timedelta(days=6)
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
-    print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {manager_timezone_label()})")
+    print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
 
 
@@ -639,7 +587,7 @@ def cmd_traffic_month(name, month_value=None):
     start, end = traffic_reports.month_bounds(month_key, today=client_access.local_now().date())
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
-    print(f"Month: {month_key} (timezone: {manager_timezone_label()})")
+    print(f"Month: {month_key} (timezone: {client_settings.manager_timezone_label()})")
     print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
 
 
@@ -650,7 +598,7 @@ def cmd_traffic_period(name, start_value, end_value):
         die("END_DATE must be the same as or later than START_DATE.")
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
-    print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {manager_timezone_label()})")
+    print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
 
 
@@ -707,7 +655,7 @@ def cmd_set_payment(name, payment_value):
     ensure_connections(config, db)
     entry = db_entry_for_existing_client(config, db, name)
     set_entry_payment_type(entry, payment_value)
-    db_clients(db)[name] = entry
+    client_repository.db_clients(db)[name] = entry
     save_db(db)
     print(f"Client: {name}")
     print(f"Payment type: {client_payments.payment_type_label(entry)}")
@@ -880,7 +828,7 @@ def cmd_set_limit(name, period_value, limit_gb_value):
     ensure_connections(config, db)
     entry = db_entry_for_existing_client(config, db, name)
     result = set_client_traffic_limit(entry, period, limit_bytes)
-    db_clients(db)[name] = result.entry
+    client_repository.db_clients(db)[name] = result.entry
     save_db(db)
 
     print(f"Client: {name}")
@@ -907,7 +855,7 @@ def cmd_clear_limit(name):
     ensure_connections(config, db)
     entry = db_entry_for_existing_client(config, db, name)
     result = clear_client_traffic_limit(entry)
-    db_clients(db)[name] = result.entry
+    client_repository.db_clients(db)[name] = result.entry
     save_db(db)
 
     print(f"Client: {name}")
@@ -919,7 +867,7 @@ def cmd_clear_limit(name):
 def traffic_limit_row(config, db, traffic_db, row):
     return client_limits.traffic_limit_row(
         row,
-        db_clients(db),
+        client_repository.db_clients(db),
         traffic_db,
         connection_display_name(config, db, row["connection"]),
     )
@@ -932,7 +880,7 @@ def cmd_limit_list():
     ensure_connections(config, db)
     save_db(db)
     traffic_db = load_traffic_db()
-    rows = client_rows(config, db)
+    rows = client_listing.client_rows(config, db)
     if not rows:
         print("No clients.")
         return
@@ -982,14 +930,12 @@ def cmd_expire_due(quiet=False):
     now = client_access.local_now()
     due_names = []
     due_clients = {}
-    current_by_tag = {}
 
-    for inbound in reality_inbounds(config):
-        tag = inbound_tag(inbound)
-        current_by_tag[tag] = clients(inbound)
-        for item in clients(inbound):
-            name = client_name(item)
-            entry = db_clients(db).get(name, {})
+    for inbound in xray_config.reality_inbounds(config):
+        tag = xray_config.inbound_tag(inbound)
+        for item in xray_config.clients(inbound):
+            name = client_models.client_name(item)
+            entry = client_repository.db_clients(db).get(name, {})
             if client_access.access_expired(entry, now):
                 due_names.append(name)
                 due_clients[name] = (tag, item)
@@ -1002,18 +948,20 @@ def cmd_expire_due(quiet=False):
     stamp = utc_now_iso()
     for name in due_names:
         tag, item = due_clients[name]
-        _, created = split_email(item.get("email", ""))
-        previous = db_clients(db).get(name, {})
+        _, created = client_models.split_email(item.get("email", ""))
+        previous = client_repository.db_clients(db).get(name, {})
         entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
         entry["connection"] = previous.get("connection") or tag
         entry["disabledAt"] = stamp
         entry["expiredAt"] = stamp
         entry["disabledReason"] = "expired"
-        db_clients(db)[name] = entry
+        client_repository.db_clients(db)[name] = entry
 
     due_set = set(due_names)
-    for inbound in reality_inbounds(config):
-        inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
+    for inbound in xray_config.reality_inbounds(config):
+        inbound["settings"]["clients"] = [
+            item for item in xray_config.clients(inbound) if client_models.client_name(item) not in due_set
+        ]
 
     backup = save_config(config)
     try:
@@ -1033,7 +981,7 @@ def cmd_expire_due(quiet=False):
 
 
 def cmd_timezone():
-    name = configured_timezone_name()
+    name = client_settings.configured_timezone_name()
     current = client_access.local_now()
     print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
     print(f"Current time: {current.strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -1041,10 +989,10 @@ def cmd_timezone():
 
 def cmd_set_timezone(value):
     name = normalize_timezone(value)
-    values = server_env_values()
+    values = client_settings.server_env_values(SERVER_ENV_PATH)
     values["MANAGER_TIMEZONE"] = name
     save_server_env_values(values)
-    normalized = normalize_access_deadlines(manager_timezone())
+    normalized = normalize_access_deadlines(client_settings.manager_timezone())
     print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
     print(f"Current time: {client_access.local_now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     if normalized:
@@ -1113,7 +1061,7 @@ def cmd_link(name):
     config = load_config()
     db = load_db()
     ensure_connections(config, db)
-    for row in client_rows(config, db):
+    for row in client_listing.client_rows(config, db):
         if row["name"] == name:
             print(link_for(config, row["id"], name, row["connection"], db))
             return
