@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.paths import SERVER_ENV_PATH
+from xray_vps_manager.core.server_env import read_server_env, write_server_env
 
 DEFAULT_SERVER_ADDR = ""
 DEFAULT_SERVER_NAME = "Xray"
@@ -29,31 +29,19 @@ SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 
 
 def server_env_values(path: Path = SERVER_ENV_PATH) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if path.exists():
-        for line in path.read_text().splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value.strip().strip('"').strip("'")
-    return values
+    return read_server_env(path)
 
 
-def server_env_value(key: str, default: str = "") -> str:
-    return server_env_values().get(key) or os.environ.get(key, default)
+def server_env_value(key: str, default: str = "", path: Path = SERVER_ENV_PATH) -> str:
+    return server_env_values(path).get(key) or os.environ.get(key, default)
 
 
 def save_server_env_values(values: dict[str, str], path: Path = SERVER_ENV_PATH) -> None:
     ordered = ["SERVER_ADDR", "SERVER_NAME", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT", "MANAGER_TIMEZONE"]
-    lines = [f"{key}={values.get(key, '')}" for key in ordered]
-    for key in sorted(values):
-        if key not in ordered:
-            lines.append(f"{key}={values[key]}")
-
-    tmp = path.with_suffix(".env.tmp")
-    tmp.write_text("\n".join(lines) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(path)
+    updated = dict(values)
+    for key in ordered:
+        updated.setdefault(key, "")
+    write_server_env(updated, path=path, ordered_keys=ordered)
 
 
 def normalize_timezone(value: str | None) -> str:
