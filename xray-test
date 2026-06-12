@@ -47,6 +47,7 @@ TRAFFIC_SERVICE_COMMANDS = [
     "ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet",
     "ExecStart=/usr/local/sbin/xray-client expire-due --quiet",
     "ExecStart=/usr/local/sbin/xray-telegram notify-expiry --quiet",
+    "ExecStart=/usr/local/sbin/xray-telegram notify-daily-summary --quiet",
 ]
 TELEGRAM_POLLER_SERVICE_COMMAND = "ExecStart=/usr/local/sbin/xray-telegram run-poller"
 GREEN = "\033[32m"
@@ -317,6 +318,8 @@ def check_telegram_bot_db(diag):
         raise RuntimeError("telegram-bot.json clientSubscriptions must be an object")
     if not isinstance(db.get("clientSubscriptionState", {}), dict):
         raise RuntimeError("telegram-bot.json clientSubscriptionState must be an object")
+    if not isinstance(db.get("dailySummaryState", {}), dict):
+        raise RuntimeError("telegram-bot.json dailySummaryState must be an object")
     if not isinstance(db.get("adminState", {}), dict):
         raise RuntimeError("telegram-bot.json adminState must be an object")
     diag.context["telegram_bot_db"] = db
@@ -457,7 +460,7 @@ def check_traffic_sync_service():
     missing = [line for line in TRAFFIC_SERVICE_COMMANDS if line not in result.stdout]
     if missing:
         raise RuntimeError("missing service command(s): " + ", ".join(missing))
-    return "xray-traffic-sync.service runs traffic sync, activity sync, Telegram GeoIP/client notifications, limits, and expiry checks"
+    return "xray-traffic-sync.service runs traffic sync, activity sync, Telegram notifications, limits, expiry checks, and daily summaries"
 
 
 def check_telegram_poller_service():

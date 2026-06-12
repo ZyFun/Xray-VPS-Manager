@@ -2,6 +2,7 @@
 import copy
 import fnmatch
 import hashlib
+import html
 import ipaddress
 import json
 import os
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
+TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 TELEGRAM_DB_PATH = Path("/usr/local/etc/xray/telegram-bot.json")
 ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
 CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
@@ -33,6 +35,8 @@ TELEGRAM_SOCKS_PORT = 10810
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 EXPIRY_REMINDER_DAYS = (5, 1)
 EXPIRY_REMINDER_HOUR = 8
+DAILY_SUMMARY_HOUR = 8
+ONLINE_WINDOW_SECONDS = 300
 USER_POLL_SHORT_TIMEOUT = 2
 USER_POLL_LONG_TIMEOUT = 45
 USER_POLLER_SLEEP_UNCONFIGURED = 30
@@ -82,6 +86,7 @@ DEFAULT_DB = {
     "geoipState": {"files": {}, "sentIds": []},
     "clientSubscriptions": {},
     "clientSubscriptionState": {"userUpdateOffset": 0, "expiryReminders": {}},
+    "dailySummaryState": {},
     "adminState": {},
 }
 
@@ -184,6 +189,10 @@ def load_db():
         reminders = {}
     subscription_state["expiryReminders"] = reminders
     merged["clientSubscriptionState"] = subscription_state
+    daily_summary_state = merged.get("dailySummaryState")
+    if not isinstance(daily_summary_state, dict):
+        daily_summary_state = {}
+    merged["dailySummaryState"] = daily_summary_state
     admin_state = merged.get("adminState")
     if not isinstance(admin_state, dict):
         admin_state = {}
@@ -301,6 +310,10 @@ def load_config():
 
 def load_client_db():
     return load_json(CLIENT_DB_PATH, {"clients": {}, "connections": {}})
+
+
+def load_traffic_db():
+    return load_json(TRAFFIC_PATH, {"clients": {}})
 
 
 def client_db_clients(db):
@@ -537,18 +550,20 @@ def initialize_geoip_offsets(db):
     state["updated"] = utc_stamp()
 
 
-def send_chat_message(db, chat_id, text, reply_markup=None):
+def send_chat_message(db, chat_id, text, reply_markup=None, parse_mode=None):
     chat_id = str(chat_id or "").strip()
     if not chat_id:
         die("Telegram chat is not configured.")
     payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if reply_markup:
         payload["reply_markup"] = reply_markup
     return curl_json(db, "sendMessage", payload, timeout=30)
 
 
-def send_message(db, text):
-    return send_chat_message(db, db.get("chatId"), text)
+def send_message(db, text, parse_mode=None):
+    return send_chat_message(db, db.get("chatId"), text, parse_mode=parse_mode)
 
 
 def answer_callback_query(db, callback_id, text="", show_alert=False):
@@ -978,6 +993,177 @@ def show_payment_amount():
     print_payment_summary(db)
 
 
+def format_traffic(value):
+    value = int(value or 0)
+    if value < 1024:
+        return "0.00KB"
+    units = [
+        ("KB", 1024),
+        ("MB", 1024 ** 2),
+        ("GB", 1024 ** 3),
+    ]
+    for suffix, size in units:
+        next_size = size * 1024
+        if value < next_size or suffix == "GB":
+            return f"{value / size:.2f}{suffix}"
+    return "0.00KB"
+
+
+def traffic_bucket_totals(bucket):
+    if not isinstance(bucket, dict):
+        return 0, 0
+    return int(bucket.get("incoming", 0) or 0), int(bucket.get("outgoing", 0) or 0)
+
+
+def traffic_day_total(entry, day_key):
+    history = entry.get("history", {})
+    if not isinstance(history, dict):
+        return 0, 0
+    hours = history.get(day_key, {})
+    if not isinstance(hours, dict):
+        return 0, 0
+    incoming = 0
+    outgoing = 0
+    for bucket in hours.values():
+        bucket_in, bucket_out = traffic_bucket_totals(bucket)
+        incoming += bucket_in
+        outgoing += bucket_out
+    return incoming, outgoing
+
+
+def systemd_state(unit):
+    result = run_capture(["systemctl", "is-active", unit], timeout=5)
+    if result.returncode == 0:
+        return result.stdout.strip() or "active"
+    return (result.stdout or result.stderr or "unknown").strip() or "unknown"
+
+
+def disk_usage_label(path="/"):
+    usage = shutil.disk_usage(path)
+    used = usage.total - usage.free
+    percent = int((used / usage.total) * 100) if usage.total else 0
+    return f"{percent}% занято, свободно {format_traffic(usage.free)}"
+
+
+def client_enabled(entry):
+    return entry.get("enabled") is not False
+
+
+def online_clients_count(client_db, traffic_db):
+    now = utc_now()
+    count = 0
+    clients = client_db_clients(client_db)
+    for name, entry in clients.items():
+        if not client_enabled(entry):
+            continue
+        traffic_entry = traffic_db.get("clients", {}).get(name, {})
+        parsed = parse_time(traffic_entry.get("lastOnline", ""))
+        if parsed and (now - parsed).total_seconds() <= ONLINE_WINDOW_SECONDS:
+            count += 1
+    return count
+
+
+def daily_traffic_rows(client_db, traffic_db, day_key):
+    names = set(client_db_clients(client_db)) | set(traffic_db.get("clients", {}))
+    rows = []
+    total_in = 0
+    total_out = 0
+    for name in sorted(names):
+        entry = traffic_db.get("clients", {}).get(name, {})
+        incoming, outgoing = traffic_day_total(entry, day_key)
+        total = incoming + outgoing
+        total_in += incoming
+        total_out += outgoing
+        if total > 0:
+            rows.append({"name": name, "incoming": incoming, "outgoing": outgoing, "total": total})
+    rows.sort(key=lambda item: item["total"], reverse=True)
+    return rows, total_in, total_out
+
+
+def build_daily_summary_message(target_day=None):
+    db = load_db()
+    tzinfo, timezone_label = display_timezone()
+    now_local = utc_now().astimezone(tzinfo)
+    day = target_day or (now_local.date() - timedelta(days=1))
+    day_key = day.isoformat()
+    client_db = load_client_db()
+    traffic_db = load_traffic_db()
+    clients = client_db_clients(client_db)
+    enabled_count = sum(1 for entry in clients.values() if client_enabled(entry))
+    rows, total_in, total_out = daily_traffic_rows(client_db, traffic_db, day_key)
+    total = total_in + total_out
+
+    lines = [
+        "Xray VPS Manager: ежедневная сводка",
+        "",
+        f"Период трафика: {day_key} ({timezone_label})",
+        f"Xray: {systemd_state('xray.service')}",
+        f"Telegram poller: {systemd_state('xray-telegram-poller.service')}",
+        f"Клиенты: включено {enabled_count} из {len(clients)}, online сейчас: {online_clients_count(client_db, traffic_db)}",
+        f"Диск /: {disk_usage_label('/')}",
+        "",
+        "Трафик за предыдущий день:",
+        f"IN: {format_traffic(total_in)}",
+        f"OUT: {format_traffic(total_out)}",
+        f"TOTAL: {format_traffic(total)}",
+    ]
+    if rows:
+        lines.extend(["", "Топ клиентов:"])
+        for index, row in enumerate(rows[:5], start=1):
+            lines.append(
+                f"{index}. {row['name']}: {format_traffic(row['total'])} "
+                f"(IN {format_traffic(row['incoming'])} / OUT {format_traffic(row['outgoing'])})"
+            )
+        if len(rows) > 5:
+            lines.append(f"...и ещё клиентов с трафиком: {len(rows) - 5}")
+    else:
+        lines.extend(["", "Трафика за этот день не было."])
+    return "\n".join(lines)
+
+
+def notify_daily_summary(quiet=False, dry_run=False):
+    db = load_db()
+    if not db.get("enabled") or not db.get("token") or not db.get("chatId"):
+        if not quiet:
+            print("Telegram bot notifications are not configured or disabled.")
+        return 0
+
+    tzinfo, _timezone_label = display_timezone()
+    now_local = utc_now().astimezone(tzinfo)
+    target_day = now_local.date() - timedelta(days=1)
+    target_key = target_day.isoformat()
+    state = db.setdefault("dailySummaryState", {})
+
+    if dry_run:
+        print(build_daily_summary_message(target_day))
+        return 0
+
+    if now_local.hour < DAILY_SUMMARY_HOUR:
+        if not quiet:
+            print(f"Daily summary is not due yet: local time {now_local.strftime('%H:%M')}.")
+        return 0
+
+    if state.get("lastSentDate") == target_key:
+        if not quiet:
+            print(f"Daily summary already sent for {target_key}.")
+        return 0
+
+    message = build_daily_summary_message(target_day)
+    try:
+        send_message(db, message)
+    except Exception as exc:
+        if not quiet:
+            print(f"ERROR: daily summary notification failed: {exc}", file=sys.stderr)
+        return 1
+
+    state["lastSentDate"] = target_key
+    state["lastSentAt"] = utc_stamp()
+    save_db_sections(db, ("dailySummaryState",))
+    if not quiet:
+        print(f"Daily summary sent for {target_key}.")
+    return 0
+
+
 def client_access_summary(entry):
     status = "отключён" if entry.get("enabled") is False else "включён"
     reason = entry.get("disabledReason", "")
@@ -1021,6 +1207,7 @@ def admin_menu_keyboard():
                 {"text": "Статус бота", "callback_data": "admin:status"},
                 {"text": "Подписки клиентов", "callback_data": "admin:subscribers"},
             ],
+            [{"text": "Сводка сервера", "callback_data": "admin:daily-summary"}],
             [
                 {"text": "Проверить GeoIP", "callback_data": "admin:geoip"},
                 {"text": "Проверить напоминания", "callback_data": "admin:expiry"},
@@ -1090,8 +1277,14 @@ def truncate_telegram_text(text):
     return text[: TELEGRAM_MESSAGE_LIMIT - 80].rstrip() + "\n\n...вывод сокращён..."
 
 
-def send_client_menu(db, chat_id, text=None):
-    send_chat_message(db, chat_id, text or subscription_intro_text(), reply_markup=client_keyboard_for_chat(db, chat_id))
+def send_client_menu(db, chat_id, text=None, parse_mode=None):
+    send_chat_message(
+        db,
+        chat_id,
+        text or subscription_intro_text(),
+        reply_markup=client_keyboard_for_chat(db, chat_id),
+        parse_mode=parse_mode,
+    )
 
 
 def send_admin_menu(db, chat_id, text=None):
@@ -1145,31 +1338,60 @@ def neutral_vless_fragment(link):
     return base + "#" + server_name_fragment()
 
 
-def current_vless_link_for_chat(db, chat_id):
+def telegram_html_escape(value):
+    return html.escape(str(value or ""), quote=False)
+
+
+def current_vless_link_value_for_chat(db, chat_id):
     name, _entry, error = subscription_entry_for_chat(db, chat_id)
     if error:
-        return error
+        return "", error
     if not XRAY_CLIENT.exists():
-        return "xray-client не найден на сервере. Обратись к администратору."
+        return "", "xray-client не найден на сервере. Обратись к администратору."
     result = run_capture([str(XRAY_CLIENT), "link", name], timeout=20)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
-        return "Не удалось получить актуальную VLESS-ссылку: " + detail
+        return "", "Не удалось получить актуальную VLESS-ссылку: " + detail
     link = ""
     for line in result.stdout.splitlines():
         if line.strip().startswith("vless://"):
             link = line.strip()
             break
     if not link:
-        return "Не удалось получить актуальную VLESS-ссылку: xray-client не вернул ссылку."
+        return "", "Не удалось получить актуальную VLESS-ссылку: xray-client не вернул ссылку."
+    return neutral_vless_fragment(link), ""
+
+
+def current_vless_link_for_chat(db, chat_id):
+    link, error = current_vless_link_value_for_chat(db, chat_id)
+    if error:
+        return error
     return "\n".join(
         [
             "Актуальная VLESS Reality-ссылка:",
             "",
-            neutral_vless_fragment(link),
+            link,
             "",
             "Если настройки подключения менялись, импортируй эту ссылку заново.",
         ]
+    )
+
+
+def current_vless_link_code_for_chat(db, chat_id):
+    link, error = current_vless_link_value_for_chat(db, chat_id)
+    if error:
+        return error, None
+    return (
+        "\n".join(
+            [
+                "Актуальная VLESS Reality-ссылка:",
+                "",
+                f"<pre><code>{telegram_html_escape(link)}</code></pre>",
+                "",
+                "Если настройки подключения менялись, импортируй эту ссылку заново.",
+            ]
+        ),
+        "HTML",
     )
 
 
@@ -1183,6 +1405,7 @@ def unsubscribe_chat(db, chat_id):
 def admin_status_text(db):
     subscriptions = db.get("clientSubscriptions", {})
     subscription_state = db.get("clientSubscriptionState", {})
+    daily_summary_state = db.get("dailySummaryState", {})
     return "\n".join(
         [
             "Xray VPS Manager: статус бота",
@@ -1195,6 +1418,7 @@ def admin_status_text(db):
             f"Последний GeoIP: {db.get('geoipState', {}).get('lastGeoipNotification') or db.get('lastGeoipNotification') or 'never'}",
             f"Последний poll: {subscription_state.get('lastUserPoll') or 'never'}",
             f"Последнее напоминание: {subscription_state.get('lastExpiryReminder') or 'never'}",
+            f"Последняя сводка: {daily_summary_state.get('lastSentDate') or 'never'}",
         ]
     )
 
@@ -1296,7 +1520,8 @@ def handle_user_message(db, update):
         send_client_menu(db, chat_id, subscription_status_for_chat(db, chat_id))
         return True
     if command == "/link":
-        send_client_menu(db, chat_id, current_vless_link_for_chat(db, chat_id))
+        text, parse_mode = current_vless_link_code_for_chat(db, chat_id)
+        send_client_menu(db, chat_id, text, parse_mode=parse_mode)
         return True
     if command in ("/unsubscribe", "/stop"):
         send_client_menu(db, chat_id, unsubscribe_chat(db, chat_id))
@@ -1340,6 +1565,9 @@ def handle_callback_query(db, update):
             return True
         if data == "admin:subscribers":
             send_admin_menu(db, chat_id, admin_subscribers_text(db))
+            return True
+        if data == "admin:daily-summary":
+            send_admin_menu(db, chat_id, build_daily_summary_message())
             return True
         if data == "admin:geoip":
             rc = notify_geoip(quiet=True)
@@ -1401,7 +1629,8 @@ def handle_callback_query(db, update):
         return True
     if data == "client:link":
         answer_callback_query(db, callback_id)
-        send_client_menu(db, chat_id, current_vless_link_for_chat(db, chat_id))
+        text, parse_mode = current_vless_link_code_for_chat(db, chat_id)
+        send_client_menu(db, chat_id, text, parse_mode=parse_mode)
         return True
     if data == "client:unsubscribe":
         answer_callback_query(db, callback_id, "Готово")
@@ -2072,6 +2301,8 @@ def usage():
   xray-telegram notify-geoip [--quiet]
   xray-telegram poll-users [--quiet]
   xray-telegram run-poller
+  xray-telegram daily-summary [--dry-run]
+  xray-telegram notify-daily-summary [--quiet|--dry-run]
   xray-telegram notify-expiry [--quiet]
   xray-telegram notify-access NAME [--quiet]
   xray-telegram maintenance-notice [start|done] [--dry-run|--yes]
@@ -2120,6 +2351,16 @@ def main():
             sys.exit(poll_user_subscriptions(quiet=len(args) == 2))
         elif command in ("run-poller", "poll-daemon") and len(args) == 1:
             run_user_poller()
+        elif command == "daily-summary" and len(args) in (1, 2):
+            if len(args) == 2 and args[1] != "--dry-run":
+                usage()
+                sys.exit(1)
+            print(build_daily_summary_message())
+        elif command == "notify-daily-summary" and len(args) in (1, 2):
+            if len(args) == 2 and args[1] not in ("--quiet", "--dry-run"):
+                usage()
+                sys.exit(1)
+            sys.exit(notify_daily_summary(quiet=len(args) == 2 and args[1] == "--quiet", dry_run=len(args) == 2 and args[1] == "--dry-run"))
         elif command == "notify-expiry" and len(args) in (1, 2):
             if len(args) == 2 and args[1] != "--quiet":
                 usage()
