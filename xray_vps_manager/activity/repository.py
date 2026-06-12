@@ -1,0 +1,242 @@
+"""Activity JSON and JSONL storage helpers."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import tarfile
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Callable, Iterable
+
+from xray_vps_manager.activity.constants import (
+    ACTIVITY_DB_PATH,
+    ACTIVITY_DIR,
+    CLIENT_LOG_DIR,
+    EXPORT_DIR,
+)
+from xray_vps_manager.activity.parser import parse_json_line
+from xray_vps_manager.activity.time import parse_time, utc_stamp
+
+
+def load_json(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return default
+
+
+def chown_xray(path: Path) -> None:
+    try:
+        shutil.chown(path, user="root", group="xray")
+    except LookupError:
+        shutil.chown(path, user="root")
+
+
+def ensure_dirs() -> None:
+    ACTIVITY_DIR.mkdir(parents=True, exist_ok=True)
+    CLIENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    chown_xray(ACTIVITY_DIR)
+    chown_xray(CLIENT_LOG_DIR)
+    shutil.chown(EXPORT_DIR, user="root")
+    os.chmod(ACTIVITY_DIR, 0o750)
+    os.chmod(CLIENT_LOG_DIR, 0o750)
+    os.chmod(EXPORT_DIR, 0o700)
+
+
+def save_activity_db(db: dict) -> None:
+    ensure_dirs()
+    tmp = ACTIVITY_DB_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
+    chown_xray(tmp)
+    os.chmod(tmp, 0o640)
+    tmp.replace(ACTIVITY_DB_PATH)
+
+
+def load_activity_db(retention_days: int, enabled: bool) -> dict:
+    db = load_json(ACTIVITY_DB_PATH, {})
+    if not isinstance(db, dict):
+        db = {}
+    db.setdefault("version", 1)
+    db.setdefault("clients", {})
+    db.setdefault("accessLog", {})
+    db["retentionDays"] = retention_days
+    db["enabled"] = enabled
+    return db
+
+
+def safe_client_file(name: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.@-]+", "_", name).strip("._")
+    return CLIENT_LOG_DIR / f"{safe or 'client'}.jsonl"
+
+
+def append_event(event: dict) -> None:
+    ensure_dirs()
+    path = safe_client_file(event["client"])
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+    chown_xray(path)
+    os.chmod(path, 0o640)
+
+
+def update_summary(db: dict, event: dict) -> None:
+    clients = db.setdefault("clients", {})
+    entry = clients.setdefault(event["client"], {"days": {}, "totalEvents": 0})
+    entry["email"] = event.get("email", "")
+    entry["connection"] = event.get("connection", "")
+    entry["totalEvents"] = int(entry.get("totalEvents", 0)) + 1
+    entry.setdefault("firstSeen", event["time"])
+    entry["lastSeen"] = event["time"]
+
+    day_key = event["time"][:10]
+    day = entry.setdefault("days", {}).setdefault(
+        day_key,
+        {
+            "events": 0,
+            "hosts": {},
+            "ports": {},
+            "outbounds": {},
+            "risks": {},
+        },
+    )
+    day["events"] = int(day.get("events", 0)) + 1
+    if event.get("host"):
+        day.setdefault("hosts", {})[event["host"]] = int(day.setdefault("hosts", {}).get(event["host"], 0)) + 1
+    if event.get("port"):
+        day.setdefault("ports", {})[str(event["port"])] = int(day.setdefault("ports", {}).get(str(event["port"]), 0)) + 1
+    if event.get("outbound"):
+        day.setdefault("outbounds", {})[event["outbound"]] = int(day.setdefault("outbounds", {}).get(event["outbound"], 0)) + 1
+    for risk in event.get("risks", []):
+        day.setdefault("risks", {})[risk] = int(day.setdefault("risks", {}).get(risk, 0)) + 1
+
+
+def prune_db_summary(db: dict, cutoff: date) -> None:
+    for entry in db.setdefault("clients", {}).values():
+        days = entry.get("days", {})
+        if not isinstance(days, dict):
+            entry["days"] = {}
+            continue
+        for key in list(days):
+            try:
+                if date.fromisoformat(key) < cutoff:
+                    del days[key]
+            except ValueError:
+                del days[key]
+
+
+def prune_client_log(path: Path, cutoff_dt: datetime) -> int:
+    if not path.exists():
+        return 0
+    kept = []
+    removed = 0
+    for line in path.read_text(errors="replace").splitlines():
+        event = parse_json_line(line)
+        if event is None:
+            removed += 1
+            continue
+        event_time = parse_time(event.get("time"))
+        if event_time and event_time >= cutoff_dt:
+            kept.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+        else:
+            removed += 1
+    tmp = path.with_suffix(".jsonl.tmp")
+    tmp.write_text("\n".join(kept) + ("\n" if kept else ""))
+    chown_xray(tmp)
+    os.chmod(tmp, 0o640)
+    tmp.replace(path)
+    return removed
+
+
+def prune_activity(
+    db: dict,
+    retention_days: int,
+    today: date,
+    now,
+    force: bool = False,
+) -> int:
+    last_prune = parse_time(db.get("lastPrune", ""))
+    if not force and last_prune and now - last_prune < timedelta(hours=20):
+        return 0
+    cutoff_date = today - timedelta(days=retention_days - 1)
+    cutoff_dt = datetime.combine(cutoff_date, datetime.min.time(), tzinfo=timezone.utc)
+    prune_db_summary(db, cutoff_date)
+    removed = 0
+    if CLIENT_LOG_DIR.exists():
+        for path in CLIENT_LOG_DIR.glob("*.jsonl"):
+            removed += prune_client_log(path, cutoff_dt)
+    db["lastPrune"] = utc_stamp()
+    return removed
+
+
+def iter_events(name: str, start: date, end: date, time_parser: Callable[[str | None], datetime | None]) -> Iterable[dict]:
+    path = safe_client_file(name)
+    if not path.exists():
+        return
+    start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    for line in path.read_text(errors="replace").splitlines():
+        event = parse_json_line(line)
+        if event is None:
+            continue
+        event_time = time_parser(event.get("time"))
+        if event_time and start_dt <= event_time < end_dt:
+            yield event
+
+
+def resolve_export_archive(value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.exists():
+        path = EXPORT_DIR / value
+    if not path.exists():
+        raise FileNotFoundError(value)
+    export_root = EXPORT_DIR.resolve()
+    archive = path.resolve()
+    if archive.parent != export_root:
+        raise PermissionError(str(path))
+    if not archive.name.endswith(".tar.gz"):
+        raise ValueError("not-tar-gz")
+    return archive
+
+
+def export_archive_rows(format_size: Callable[[int], str]) -> list[dict]:
+    rows = []
+    if not EXPORT_DIR.exists():
+        return rows
+    for path in sorted(EXPORT_DIR.glob("*.tar.gz"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        client = "-"
+        period = "-"
+        events = "-"
+        try:
+            with tarfile.open(path, "r:gz") as tar:
+                member = tar.getmember("summary.json")
+                handle = tar.extractfile(member)
+                if handle:
+                    summary = json.loads(handle.read().decode("utf-8"))
+                    client = str(summary.get("client") or "-")
+                    period_data = summary.get("period") or {}
+                    start = period_data.get("start") or "-"
+                    end = period_data.get("end") or "-"
+                    period = f"{start}..{end}"
+                    events = str(summary.get("eventCount", "-"))
+        except Exception:
+            pass
+        rows.append({
+            "path": str(path),
+            "file": path.name,
+            "created": datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "size": format_size(stat.st_size),
+            "client": client,
+            "period": period,
+            "events": events,
+        })
+    return rows
+

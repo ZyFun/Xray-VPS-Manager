@@ -44,12 +44,13 @@ xray_vps_manager/
   core/
   clients/
   traffic/
+  activity/
   xray/
   telegram/
 README.md
 ```
 
-Корневые команды `xray-menu`, `xray-client`, `xray-telegram` и остальные оставлены для совместимости как тонкие wrapper-скрипты. Основной Python-код команд теперь лежит в `xray_vps_manager/commands`, общие инфраструктурные helpers находятся в `xray_vps_manager/core`, логика клиентов постепенно выносится в `xray_vps_manager/clients`, хранение и агрегация трафика - в `xray_vps_manager/traffic`, работа с Xray config и Reality-ключами - в `xray_vps_manager/xray`, а базовый слой Telegram-бота - в `xray_vps_manager/telegram`.
+Корневые команды `xray-menu`, `xray-client`, `xray-telegram` и остальные оставлены для совместимости как тонкие wrapper-скрипты. Основной Python-код команд теперь лежит в `xray_vps_manager/commands`, общие инфраструктурные helpers находятся в `xray_vps_manager/core`, логика клиентов постепенно выносится в `xray_vps_manager/clients`, хранение и агрегация трафика - в `xray_vps_manager/traffic`, парсинг и отчёты журнала активности - в `xray_vps_manager/activity`, работа с Xray config и Reality-ключами - в `xray_vps_manager/xray`, а базовый слой Telegram-бота - в `xray_vps_manager/telegram`.
 
 ## Установка
 

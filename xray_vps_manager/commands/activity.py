@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 import fcntl
-import fnmatch
-import ipaddress
 import json
 import os
 import re
@@ -12,11 +10,15 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from calendar import monthrange
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from xray_vps_manager.activity import exceptions as activity_exceptions
+from xray_vps_manager.activity import parser as activity_parser
+from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.activity import reports as activity_reports
+from xray_vps_manager.activity import time as activity_time
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
@@ -28,30 +30,11 @@ CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
 EXPORT_DIR = Path("/root/xray_activity_exports")
 LOCK_PATH = Path("/usr/local/etc/xray/activity.lock")
 ACCESS_LOG_PATH = Path("/var/log/xray/access.log")
-XRAY_BIN = Path("/usr/local/bin/xray")
-GEOIP_PATHS = [
-    Path("/usr/local/share/xray/geoip.dat"),
-    Path("/usr/share/xray/geoip.dat"),
-    Path("/usr/local/share/v2ray/geoip.dat"),
-    Path("/usr/share/v2ray/geoip.dat"),
-]
-INBOUND_TAG = "vless-reality"
-XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 DEFAULT_RETENTION_DAYS = 365
-SMTP_PORTS = {"25", "465", "587", "2525"}
-ADMIN_PORTS = {"22", "23", "135", "139", "445", "3389", "5900"}
 DEFAULT_RISK_BURST_EVENTS = 1000
 DEFAULT_RISK_BURST_WINDOW_MINUTES = 15
 DEFAULT_RISK_UNIQUE_HOSTS = 500
 DEFAULT_RISK_UNIQUE_PORTS = 20
-ACCESS_RE = re.compile(
-    r"^(?P<time>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?\s+(?P<body>.*?)\s+email:\s+(?P<email>.+)$"
-)
-ROUTE_RE = re.compile(r"\[([^\]]+)\]")
-TARGET_RE = re.compile(r"\b(?P<status>accepted|rejected)\s+(?P<target>(?P<network>tcp|udp):\S+)")
-NETWORK_TARGET_RE = re.compile(r"\b(?P<target>(?P<network>tcp|udp):\S+)")
-GEOIP_CODES_CACHE = None
-EXCEPTION_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:*?/-]+$")
 
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -88,31 +71,19 @@ def require_root():
 
 
 def utc_now():
-    return datetime.now(timezone.utc).replace(microsecond=0)
+    return activity_time.utc_now()
 
 
 def utc_stamp():
-    return utc_now().isoformat().replace("+00:00", "Z")
+    return activity_time.utc_stamp()
 
 
 def parse_time(value):
-    if not value:
-        return None
-    raw = str(value).strip()
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return activity_time.parse_time(value)
 
 
 def access_time_to_iso(value):
-    parsed = datetime.strptime(value, "%Y/%m/%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    return parsed.isoformat().replace("+00:00", "Z")
+    return activity_time.access_time_to_iso(value)
 
 
 def parse_date(value, label="DATE"):
@@ -123,20 +94,15 @@ def parse_date(value, label="DATE"):
 
 
 def today_utc_date():
-    return utc_now().date()
+    return activity_time.today_utc_date()
 
 
 def date_range_from_days(days):
-    end = today_utc_date()
-    start = end - timedelta(days=max(1, int(days)) - 1)
-    return start, end
+    return activity_time.date_range_from_days(days)
 
 
 def iter_dates(start, end):
-    current = start
-    while current <= end:
-        yield current
-        current += timedelta(days=1)
+    return activity_time.iter_dates(start, end)
 
 
 def server_env_values():
@@ -242,495 +208,143 @@ def with_activity_defaults(env):
 
 
 def load_json(path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return default
+    return activity_repository.load_json(path, default)
 
 
 def chown_xray(path):
-    try:
-        shutil.chown(path, user="root", group="xray")
-    except LookupError:
-        shutil.chown(path, user="root")
+    activity_repository.chown_xray(path)
 
 
 def ensure_dirs():
-    ACTIVITY_DIR.mkdir(parents=True, exist_ok=True)
-    CLIENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    chown_xray(ACTIVITY_DIR)
-    chown_xray(CLIENT_LOG_DIR)
-    shutil.chown(EXPORT_DIR, user="root")
-    os.chmod(ACTIVITY_DIR, 0o750)
-    os.chmod(CLIENT_LOG_DIR, 0o750)
-    os.chmod(EXPORT_DIR, 0o700)
+    activity_repository.ensure_dirs()
 
 
 def save_activity_db(db):
-    ensure_dirs()
-    tmp = ACTIVITY_DB_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    chown_xray(tmp)
-    os.chmod(tmp, 0o640)
-    tmp.replace(ACTIVITY_DB_PATH)
+    activity_repository.save_activity_db(db)
 
 
 def load_activity_db():
-    db = load_json(ACTIVITY_DB_PATH, {})
-    if not isinstance(db, dict):
-        db = {}
-    db.setdefault("version", 1)
-    db.setdefault("clients", {})
-    db.setdefault("accessLog", {})
-    db["retentionDays"] = retention_days()
-    db["enabled"] = activity_enabled()
-    return db
+    return activity_repository.load_activity_db(retention_days(), activity_enabled())
 
 
 def normalize_exception_value(value, fatal=True):
-    def fail(message):
+    try:
+        return activity_exceptions.normalize_exception_value(value, fatal=fatal)
+    except ValueError as exc:
         if fatal:
-            die(message)
-        raise ValueError(message)
-
-    raw = str(value or "").strip()
-    if not raw:
-        fail("Exception value must not be empty.")
-
-    if raw.startswith(("tcp:", "udp:")):
-        _network, host, _port = parse_target(raw)
-        raw = host or raw
-
-    if "://" in raw:
-        parsed = urlparse(raw)
-        raw = parsed.hostname or raw
-
-    raw = raw.strip().strip("[]").strip().lower()
-    if not raw:
-        fail("Exception value must contain a domain, IP, CIDR, or wildcard mask.")
-
-    if "/" not in raw and raw.count(":") == 1:
-        host, port = raw.rsplit(":", 1)
-        if port.isdigit():
-            raw = host.strip("[]")
-
-    if not EXCEPTION_VALUE_RE.fullmatch(raw):
-        fail("Exception may contain only letters, digits, dot, dash, underscore, *, ?, /, and :.")
-    return raw
+            die(str(exc))
+        raise
 
 
 def classify_exception_value(value, fatal=True):
-    normalized = normalize_exception_value(value, fatal=fatal)
-    if "/" in normalized:
-        try:
-            ipaddress.ip_network(normalized, strict=False)
-            return normalized, "cidr"
-        except ValueError:
-            if fatal:
-                die("CIDR exception must be a valid IP network, for example 203.0.113.0/24.")
-            raise
     try:
-        ipaddress.ip_address(normalized)
-        return normalized, "ip"
-    except ValueError:
-        pass
-    if "*" in normalized or "?" in normalized:
-        return normalized, "mask"
-    return normalized, "domain"
+        return activity_exceptions.classify_exception_value(value, fatal=fatal)
+    except ValueError as exc:
+        if fatal:
+            die(str(exc))
+        raise
 
 
 def load_activity_exceptions():
-    db = load_json(ACTIVITY_EXCEPTIONS_PATH, {})
-    if not isinstance(db, dict):
-        db = {}
-    items = []
-    seen = set()
-    for item in db.get("items", []):
-        if isinstance(item, str):
-            item = {"value": item, "source": "legacy"}
-        if not isinstance(item, dict):
-            continue
-        try:
-            value, kind = classify_exception_value(item.get("value", ""), fatal=False)
-        except ValueError:
-            continue
-        if value in seen:
-            continue
-        seen.add(value)
-        items.append({
-            "value": value,
-            "kind": kind,
-            "createdAt": item.get("createdAt") or utc_stamp(),
-            "source": item.get("source") or "manual",
-        })
-    return {"version": 1, "items": items}
+    return activity_exceptions.load_activity_exceptions()
 
 
 def save_activity_exceptions(db):
-    ensure_dirs()
-    tmp = ACTIVITY_EXCEPTIONS_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    chown_xray(tmp)
-    os.chmod(tmp, 0o640)
-    tmp.replace(ACTIVITY_EXCEPTIONS_PATH)
+    activity_exceptions.save_activity_exceptions(db)
 
 
 def exception_items():
-    return load_activity_exceptions().get("items", [])
+    return activity_exceptions.exception_items()
 
 
 def host_for_exception_match(host):
-    value = str(host or "").strip().strip("[]").lower()
-    if not value:
-        return ""
-    if "/" not in value and value.count(":") == 1:
-        candidate, port = value.rsplit(":", 1)
-        if port.isdigit():
-            value = candidate.strip("[]")
-    return value
+    return activity_exceptions.host_for_exception_match(host)
 
 
 def exception_matches_host(item, host):
-    value = item.get("value", "")
-    kind = item.get("kind", "")
-    host_value = host_for_exception_match(host)
-    if not value or not host_value:
-        return False
-    if kind == "cidr":
-        try:
-            return ipaddress.ip_address(host_value) in ipaddress.ip_network(value, strict=False)
-        except ValueError:
-            return False
-    if kind == "ip":
-        return host_value == value
-    if kind == "mask":
-        return fnmatch.fnmatchcase(host_value, value)
-    return host_value == value
+    return activity_exceptions.exception_matches_host(item, host)
 
 
 def event_exception(event, exceptions=None):
-    exceptions = exceptions if exceptions is not None else exception_items()
-    host = event.get("host") or ""
-    for item in exceptions:
-        if exception_matches_host(item, host):
-            return item
-    return None
+    return activity_exceptions.event_exception(event, exceptions)
 
 
 def safe_client_file(name):
-    safe = re.sub(r"[^A-Za-z0-9_.@-]+", "_", name).strip("._")
-    return CLIENT_LOG_DIR / f"{safe or 'client'}.jsonl"
+    return activity_repository.safe_client_file(name)
 
 
 def split_email(email):
-    if "|created=" in email:
-        name, _created = email.split("|created=", 1)
-        return name
-    return email
+    return activity_parser.split_email(email)
 
 
 def reality_inbounds(config):
-    return [
-        inbound
-        for inbound in config.get("inbounds", [])
-        if inbound.get("protocol") == "vless"
-        and inbound.get("streamSettings", {}).get("security") == "reality"
-    ]
+    return activity_parser.reality_inbounds(config)
 
 
 def known_clients():
-    clients = {}
     config = load_json(CONFIG_PATH, {})
-    for inbound in reality_inbounds(config):
-        tag = inbound.get("tag") or INBOUND_TAG
-        for item in inbound.get("settings", {}).get("clients", []):
-            email = item.get("email", "")
-            if not email:
-                continue
-            name = split_email(email)
-            clients[name] = {"email": email, "connection": tag}
-
     db = load_json(CLIENT_DB_PATH, {"clients": {}})
-    for name, entry in db.get("clients", {}).items():
-        clients.setdefault(
-            name,
-            {
-                "email": entry.get("client", {}).get("email") or name,
-                "connection": entry.get("connection") or INBOUND_TAG,
-            },
-        )
-    return clients
+    return activity_parser.config_clients(config, db)
 
 
 def parse_target(value):
-    if not value or ":" not in value:
-        return "", "", ""
-    network, rest = value.split(":", 1)
-    host = rest
-    port = ""
-    if rest.startswith("[") and "]:" in rest:
-        host, port = rest[1:].split("]:", 1)
-    elif ":" in rest:
-        host, port = rest.rsplit(":", 1)
-    return network, host, port
+    return activity_parser.parse_target(value)
 
 
 def read_varint(data, index):
-    shift = 0
-    value = 0
-    while index < len(data):
-        byte = data[index]
-        index += 1
-        value |= (byte & 0x7F) << shift
-        if not byte & 0x80:
-            return value, index
-        shift += 7
-    raise ValueError("truncated varint")
+    return activity_parser.read_varint(data, index)
 
 
 def parse_proto_fields(data):
-    index = 0
-    fields = []
-    while index < len(data):
-        key, index = read_varint(data, index)
-        field_number = key >> 3
-        wire_type = key & 0x07
-        if wire_type == 0:
-            value, index = read_varint(data, index)
-            fields.append((field_number, wire_type, value))
-        elif wire_type == 1:
-            value = data[index:index + 8]
-            index += 8
-            fields.append((field_number, wire_type, value))
-        elif wire_type == 2:
-            length, index = read_varint(data, index)
-            value = data[index:index + length]
-            index += length
-            fields.append((field_number, wire_type, value))
-        elif wire_type == 5:
-            value = data[index:index + 4]
-            index += 4
-            fields.append((field_number, wire_type, value))
-        else:
-            raise ValueError(f"unsupported protobuf wire type: {wire_type}")
-    return fields
+    return activity_parser.parse_proto_fields(data)
 
 
 def geoip_path():
-    for path in GEOIP_PATHS:
-        if path.exists():
-            return path
-    return None
+    return activity_parser.geoip_path()
 
 
 def iter_geoip_entries():
-    path = geoip_path()
-    if not path:
-        return
-    data = path.read_bytes()
-    for field_number, wire_type, geoip_blob in parse_proto_fields(data):
-        if field_number != 1 or wire_type != 2:
-            continue
-        country_code = ""
-        for inner_number, inner_type, inner_value in parse_proto_fields(geoip_blob):
-            if inner_number == 1 and inner_type == 2:
-                country_code = inner_value.decode("utf-8", errors="ignore").upper()
-        if country_code:
-            yield country_code
+    yield from activity_parser.iter_geoip_entries()
 
 
 def available_geoip_codes():
-    global GEOIP_CODES_CACHE
-    if GEOIP_CODES_CACHE is None:
-        try:
-            GEOIP_CODES_CACHE = sorted(set(iter_geoip_entries()))
-        except Exception:
-            GEOIP_CODES_CACHE = []
-    return GEOIP_CODES_CACHE
+    return activity_parser.available_geoip_codes()
 
 
 def parse_route(body):
-    match = ROUTE_RE.search(body)
-    if not match:
-        return "", ""
-    parts = [part.strip() for part in match.group(1).split("->")]
-    if len(parts) >= 2:
-        return parts[0], parts[-1]
-    return parts[0], ""
+    return activity_parser.parse_route(body)
 
 
 def parse_source(body):
-    first = body.split(" ", 1)[0].strip()
-    if first and ":" in first and not first.startswith(("accepted", "rejected", "tcp:", "udp:")):
-        return first
-    return ""
+    return activity_parser.parse_source(body)
 
 
 def event_risks(event):
-    risks = []
-    port = str(event.get("port") or "")
-    outbound = (event.get("outbound") or "").lower()
-    target = (event.get("target") or "").lower()
-    if port in SMTP_PORTS:
-        risks.append("smtp")
-    if port in ADMIN_PORTS:
-        risks.append("admin-port")
-    if "block" in outbound or "blocked" in outbound or "blackhole" in outbound:
-        risks.append("blocked")
-    if "bittorrent" in target or "torrent" in outbound:
-        risks.append("torrent")
-    if outbound.startswith(XRAY_GEOIP_OUTBOUND_PREFIX):
-        code = outbound[len(XRAY_GEOIP_OUTBOUND_PREFIX):].upper()
-        if code:
-            risks.append(f"xray-geoip:{code}")
-    return risks
+    return activity_parser.event_risks(event)
 
 
 def parse_access_line(line, clients):
-    match = ACCESS_RE.match(line)
-    if not match:
-        return None
-    email = match.group("email").strip()
-    name = split_email(email)
-    if name not in clients:
-        return None
-
-    body = match.group("body")
-    target_match = TARGET_RE.search(body)
-    status = ""
-    target = ""
-    network = ""
-    if target_match:
-        status = target_match.group("status")
-        target = target_match.group("target")
-        network = target_match.group("network")
-    else:
-        target_match = NETWORK_TARGET_RE.search(body)
-        if target_match:
-            target = target_match.group("target")
-            network = target_match.group("network")
-
-    if target:
-        network, host, port = parse_target(target)
-    else:
-        host = ""
-        port = ""
-
-    inbound, outbound = parse_route(body)
-    event = {
-        "time": access_time_to_iso(match.group("time")),
-        "client": name,
-        "email": clients[name]["email"],
-        "connection": clients[name].get("connection", ""),
-        "source": parse_source(body),
-        "status": status,
-        "network": network,
-        "target": target,
-        "host": host,
-        "port": port,
-        "inbound": inbound,
-        "outbound": outbound,
-    }
-    risks = event_risks(event)
-    if risks:
-        event["risks"] = risks
-    return event
+    return activity_parser.parse_access_line(line, clients)
 
 
 def append_event(event):
-    ensure_dirs()
-    path = safe_client_file(event["client"])
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-    chown_xray(path)
-    os.chmod(path, 0o640)
+    activity_repository.append_event(event)
 
 
 def update_summary(db, event):
-    clients = db.setdefault("clients", {})
-    entry = clients.setdefault(event["client"], {"days": {}, "totalEvents": 0})
-    entry["email"] = event.get("email", "")
-    entry["connection"] = event.get("connection", "")
-    entry["totalEvents"] = int(entry.get("totalEvents", 0)) + 1
-    entry.setdefault("firstSeen", event["time"])
-    entry["lastSeen"] = event["time"]
-
-    day_key = event["time"][:10]
-    day = entry.setdefault("days", {}).setdefault(
-        day_key,
-        {
-            "events": 0,
-            "hosts": {},
-            "ports": {},
-            "outbounds": {},
-            "risks": {},
-        },
-    )
-    day["events"] = int(day.get("events", 0)) + 1
-    if event.get("host"):
-        day.setdefault("hosts", {})[event["host"]] = int(day.setdefault("hosts", {}).get(event["host"], 0)) + 1
-    if event.get("port"):
-        day.setdefault("ports", {})[str(event["port"])] = int(day.setdefault("ports", {}).get(str(event["port"]), 0)) + 1
-    if event.get("outbound"):
-        day.setdefault("outbounds", {})[event["outbound"]] = int(day.setdefault("outbounds", {}).get(event["outbound"], 0)) + 1
-    for risk in event.get("risks", []):
-        day.setdefault("risks", {})[risk] = int(day.setdefault("risks", {}).get(risk, 0)) + 1
+    activity_repository.update_summary(db, event)
 
 
 def prune_db_summary(db, cutoff):
-    for entry in db.setdefault("clients", {}).values():
-        days = entry.get("days", {})
-        if not isinstance(days, dict):
-            entry["days"] = {}
-            continue
-        for key in list(days):
-            try:
-                if date.fromisoformat(key) < cutoff:
-                    del days[key]
-            except ValueError:
-                del days[key]
+    activity_repository.prune_db_summary(db, cutoff)
 
 
 def prune_client_log(path, cutoff_dt):
-    if not path.exists():
-        return 0
-    kept = []
-    removed = 0
-    for line in path.read_text(errors="replace").splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            removed += 1
-            continue
-        event_time = parse_time(event.get("time"))
-        if event_time and event_time >= cutoff_dt:
-            kept.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
-        else:
-            removed += 1
-    tmp = path.with_suffix(".jsonl.tmp")
-    tmp.write_text("\n".join(kept) + ("\n" if kept else ""))
-    chown_xray(tmp)
-    os.chmod(tmp, 0o640)
-    tmp.replace(path)
-    return removed
+    return activity_repository.prune_client_log(path, cutoff_dt)
 
 
 def prune_activity(db, force=False):
-    last_prune = parse_time(db.get("lastPrune", ""))
-    if not force and last_prune and utc_now() - last_prune < timedelta(hours=20):
-        return 0
-    cutoff_date = today_utc_date() - timedelta(days=retention_days() - 1)
-    cutoff_dt = datetime.combine(cutoff_date, datetime.min.time(), tzinfo=timezone.utc)
-    prune_db_summary(db, cutoff_date)
-    removed = 0
-    if CLIENT_LOG_DIR.exists():
-        for path in CLIENT_LOG_DIR.glob("*.jsonl"):
-            removed += prune_client_log(path, cutoff_dt)
-    db["lastPrune"] = utc_stamp()
-    return removed
+    return activity_repository.prune_activity(db, retention_days(), today_utc_date(), utc_now(), force=force)
 
 
 def initialize_access_offset(db):
@@ -901,10 +515,7 @@ def disable_activity():
 
 
 def top_items(counter, limit=3):
-    if not isinstance(counter, dict) or not counter:
-        return "-"
-    items = sorted(counter.items(), key=lambda item: int(item[1]), reverse=True)[:limit]
-    return ", ".join(f"{key}({value})" for key, value in items)
+    return activity_reports.top_items(counter, limit=limit)
 
 
 def table_border(widths):
@@ -933,89 +544,19 @@ def print_table(headers, rows):
 
 
 def format_size(value):
-    value = int(value or 0)
-    if value < 1024:
-        return f"{value}B"
-    for suffix, size in (("KB", 1024), ("MB", 1024 ** 2), ("GB", 1024 ** 3)):
-        next_size = size * 1024
-        if value < next_size or suffix == "GB":
-            return f"{value / size:.2f}{suffix}"
+    return activity_reports.format_size(value)
 
 
 def iter_events(name, start, end):
-    path = safe_client_file(name)
-    if not path.exists():
-        return
-    start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
-    end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
-    for line in path.read_text(errors="replace").splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        event_time = parse_time(event.get("time"))
-        if event_time and start_dt <= event_time < end_dt:
-            yield event
+    yield from activity_repository.iter_events(name, start, end, parse_time)
 
 
 def aggregate_events(events, skip_exceptions=False, exceptions=None):
-    exceptions = exceptions if exceptions is not None else exception_items()
-    result = {
-        "events": 0,
-        "hosts": {},
-        "ports": {},
-        "outbounds": {},
-        "risks": {},
-        "exceptions": {},
-        "hours": {},
-        "times": [],
-        "sources": {},
-    }
-    for event in events:
-        matched_exception = event_exception(event, exceptions)
-        if matched_exception:
-            value = matched_exception.get("value", "")
-            if value:
-                result["exceptions"][value] = result["exceptions"].get(value, 0) + 1
-            if skip_exceptions:
-                continue
-        result["events"] += 1
-        if event.get("host"):
-            result["hosts"][event["host"]] = result["hosts"].get(event["host"], 0) + 1
-        if event.get("port"):
-            port = str(event["port"])
-            result["ports"][port] = result["ports"].get(port, 0) + 1
-        if event.get("outbound"):
-            result["outbounds"][event["outbound"]] = result["outbounds"].get(event["outbound"], 0) + 1
-        if event.get("source"):
-            result["sources"][event["source"]] = result["sources"].get(event["source"], 0) + 1
-        if not matched_exception:
-            for risk in event.get("risks", []):
-                result["risks"][risk] = result["risks"].get(risk, 0) + 1
-        event_time = parse_time(event.get("time"))
-        if event_time:
-            result["times"].append(event_time)
-            hour_key = event_time.strftime("%Y-%m-%d %H:00")
-            result["hours"][hour_key] = result["hours"].get(hour_key, 0) + 1
-    return result
+    return activity_reports.aggregate_events(events, skip_exceptions=skip_exceptions, exceptions=exceptions)
 
 
 def rolling_burst(times, window_minutes):
-    ordered = sorted(time for time in times if time)
-    if not ordered:
-        return 0, None
-    best_count = 0
-    best_start = None
-    end_index = 0
-    window = timedelta(minutes=window_minutes)
-    for start_index, start_time in enumerate(ordered):
-        while end_index < len(ordered) and ordered[end_index] < start_time + window:
-            end_index += 1
-        count = end_index - start_index
-        if count > best_count:
-            best_count = count
-            best_start = start_time
-    return best_count, best_start
+    return activity_reports.rolling_burst(times, window_minutes)
 
 
 def report_client(name, days_value="7"):
@@ -1046,33 +587,11 @@ def report_client(name, days_value="7"):
 
 
 def risk_findings(name, aggregate):
-    findings = []
-    risks = aggregate["risks"]
-    limits = risk_limits()
-    if risks.get("smtp", 0) > 0:
-        findings.append(("smtp", f"SMTP-like ports used: {risks['smtp']}", "Уточнить назначение трафика; при необходимости временно отключить клиента."))
-    if risks.get("blocked", 0) > 0 or risks.get("torrent", 0) > 0:
-        count = risks.get("blocked", 0) + risks.get("torrent", 0)
-        findings.append(("blocked", f"Blocked/torrent events: {count}", "Проверить отчёт клиента и оставить запрет торрентов включённым."))
-    for risk, count in sorted(risks.items()):
-        if risk.startswith("xray-geoip:"):
-            code = risk.split(":", 1)[1]
-            findings.append((risk, f"Xray routed destination events in geoip:{code}: {count}", f"Xray routing зафиксировал трафик в регион {code}; проверить раздельное туннелирование клиента."))
-    burst_count, burst_start = rolling_burst(aggregate.get("times", []), limits["burstWindowMinutes"])
-    if burst_count >= limits["burstEvents"]:
-        start = burst_start.strftime("%Y-%m-%d %H:%M UTC") if burst_start else "unknown time"
-        findings.append(("burst", f"{burst_count} events during {limits['burstWindowMinutes']} min from {start}", "Похоже на автоматизацию/парсинг; проверить клиента и лимиты."))
-    if len(aggregate["hosts"]) >= limits["uniqueHosts"]:
-        findings.append(("many-hosts", f"Unique hosts: {len(aggregate['hosts'])}", "Похоже на парсинг или сканирование; запросить объяснение у клиента."))
-    if len(aggregate["ports"]) >= limits["uniquePorts"]:
-        findings.append(("many-ports", f"Unique ports: {len(aggregate['ports'])}", "Похоже на сканирование; временно отключить клиента при повторении."))
-    return findings
+    return activity_reports.risk_findings(aggregate, risk_limits())
 
 
 def risk_names_for_event(event):
-    risks = set(event.get("risks") or [])
-    risks.update(event_risks(event))
-    return sorted(str(risk) for risk in risks if risk)
+    return activity_reports.risk_names_for_event(event)
 
 
 def suspicious(days_value="7"):
@@ -1099,7 +618,7 @@ def suspicious(days_value="7"):
 
 
 def geoip_risks_for_event(event):
-    return sorted(risk for risk in risk_names_for_event(event) if str(risk).startswith("xray-geoip:"))
+    return activity_reports.geoip_risks_for_event(event)
 
 
 def activity_display_timezone():
@@ -1125,14 +644,7 @@ def format_event_time(value, tzinfo):
 
 
 def split_ip_or_domain(host):
-    value = (host or "").strip().strip("[]")
-    if not value:
-        return "-", "-"
-    try:
-        ipaddress.ip_address(value)
-        return value, "-"
-    except ValueError:
-        return "-", value
+    return activity_reports.split_ip_or_domain(host)
 
 
 def geoip_risk_details(days_value="7"):
@@ -1175,7 +687,7 @@ def geoip_risk_details(days_value="7"):
 
 def add_exception(value, source="manual"):
     normalized, kind = classify_exception_value(value)
-    source = re.sub(r"[^A-Za-z0-9_.@:-]+", "_", str(source or "manual")).strip("_") or "manual"
+    source = activity_exceptions.normalize_source(source)
     db = load_activity_exceptions()
     for item in db.get("items", []):
         if item.get("value") == normalized:
@@ -1362,59 +874,18 @@ def export_client(name, start_value, end_value, path_only=False):
 
 
 def resolve_export_archive(value):
-    path = Path(value).expanduser()
-    if not path.exists():
-        path = EXPORT_DIR / value
-    if not path.exists():
-        die(f"Activity export archive not found: {value}")
     try:
-        export_root = EXPORT_DIR.resolve()
-        archive = path.resolve()
-    except OSError:
+        return activity_repository.resolve_export_archive(value)
+    except FileNotFoundError:
         die(f"Activity export archive not found: {value}")
-    if archive.parent != export_root:
-        die(f"Refusing to use an archive outside {EXPORT_DIR}: {path}")
-    if not archive.name.endswith(".tar.gz"):
+    except PermissionError as exc:
+        die(f"Refusing to use an archive outside {EXPORT_DIR}: {exc}")
+    except ValueError:
         die("Refusing to use a file that does not look like a .tar.gz activity export.")
-    return archive
 
 
 def export_archive_rows():
-    rows = []
-    if not EXPORT_DIR.exists():
-        return rows
-    for path in sorted(EXPORT_DIR.glob("*.tar.gz"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        client = "-"
-        period = "-"
-        events = "-"
-        try:
-            with tarfile.open(path, "r:gz") as tar:
-                member = tar.getmember("summary.json")
-                handle = tar.extractfile(member)
-                if handle:
-                    summary = json.loads(handle.read().decode("utf-8"))
-                    client = str(summary.get("client") or "-")
-                    period_data = summary.get("period") or {}
-                    start = period_data.get("start") or "-"
-                    end = period_data.get("end") or "-"
-                    period = f"{start}..{end}"
-                    events = str(summary.get("eventCount", "-"))
-        except Exception:
-            pass
-        rows.append({
-            "path": str(path),
-            "file": path.name,
-            "created": datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-            "size": format_size(stat.st_size),
-            "client": client,
-            "period": period,
-            "events": events,
-        })
-    return rows
+    return activity_repository.export_archive_rows(format_size)
 
 
 def list_exports(plain=False):
