@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -30,9 +31,18 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 10:15 UTC"
+MENU_UPDATED = "2026-06-12 10:24 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
+MENU_ENV_REQUIRED_KEYS = [
+    "SERVER_ADDR",
+    "SERVER_NAME",
+    "PORT",
+    "REALITY_SNI",
+    "REALITY_DEST",
+    "FINGERPRINT",
+    "MANAGER_TIMEZONE",
+]
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 GREEN = "\033[92m"
@@ -1205,37 +1215,14 @@ def choose_activity_exception_candidate():
 
 
 def server_env():
-    values = {}
-    if SERVER_ENV_PATH.exists():
-        for line in SERVER_ENV_PATH.read_text().splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value.strip().strip('"').strip("'")
-    return values
+    return read_server_env(SERVER_ENV_PATH)
 
 
 def write_server_env_values(values):
-    values.pop("ACTIVITY_GEOIP_WARNING_CODE", None)
-    ordered = [
-        "SERVER_ADDR",
-        "SERVER_NAME",
-        "PORT",
-        "REALITY_SNI",
-        "REALITY_DEST",
-        "FINGERPRINT",
-        "MANAGER_TIMEZONE",
-        SECURITY_AUDIT_ENV_KEY,
-    ]
-    lines = [f"{key}={values.get(key, '')}" for key in ordered if key in values or key != SECURITY_AUDIT_ENV_KEY]
-    for key in sorted(values):
-        if key not in ordered:
-            lines.append(f"{key}={values[key]}")
-
-    tmp = SERVER_ENV_PATH.with_suffix(".env.tmp")
-    tmp.write_text("\n".join(lines) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(SERVER_ENV_PATH)
+    updated = dict(values)
+    for key in MENU_ENV_REQUIRED_KEYS:
+        updated.setdefault(key, "")
+    write_server_env_file(updated, path=SERVER_ENV_PATH, ordered_keys=ORDERED_ENV_KEYS)
 
 
 def normalize_timezone(value):
