@@ -112,6 +112,8 @@ class SQLiteCommandTests(unittest.TestCase):
             ), mock.patch.object(
                 sqlite_command, "stop_writers"
             ) as stop_writers, mock.patch.object(
+                sqlite_command, "verify_writers_stopped"
+            ) as verify_writers_stopped, mock.patch.object(
                 sqlite_command, "start_writers"
             ) as start_writers, mock.patch.object(
                 sqlite_command.backup_command, "create_backup", return_value=root / "backup.tar.gz"
@@ -124,6 +126,7 @@ class SQLiteCommandTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             stop_writers.assert_called_once_with()
+            verify_writers_stopped.assert_called_once_with()
             start_writers.assert_called_once_with()
             create_backup.assert_called_once_with(path_only=False, quiet=True, sync=False)
             import_mock.assert_called_once_with(db_path=db_path, replace=True)
@@ -231,6 +234,62 @@ class SQLiteCommandTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Access denied"):
                 sqlite_command.run_systemctl(["stop", "xray-traffic-sync.service"], allow_missing=True)
 
+    def test_verify_writers_stopped_accepts_inactive_and_missing_units(self) -> None:
+        def run(command, **_kwargs):
+            unit = command[-1]
+            if unit == "xray-client-expire.service":
+                return subprocess.CompletedProcess(command, 4, stdout="", stderr="Unit xray-client-expire.service could not be found.")
+            return subprocess.CompletedProcess(command, 3, stdout="inactive\n", stderr="")
+
+        stdout = StringIO()
+        with mock.patch.object(sqlite_command.subprocess, "run", side_effect=run), redirect_stdout(stdout):
+            sqlite_command.verify_writers_stopped()
+
+        self.assertIn("WARNING systemd unit skipped: is-active xray-client-expire.service", stdout.getvalue())
+
+    def test_verify_writers_stopped_fails_when_unit_is_active(self) -> None:
+        def run(command, **_kwargs):
+            unit = command[-1]
+            if unit == "xray-telegram-poller.service":
+                return subprocess.CompletedProcess(command, 0, stdout="active\n", stderr="")
+            return subprocess.CompletedProcess(command, 3, stdout="inactive\n", stderr="")
+
+        with mock.patch.object(sqlite_command.subprocess, "run", side_effect=run):
+            with self.assertRaisesRegex(RuntimeError, "xray-telegram-poller.service=active"):
+                sqlite_command.verify_writers_stopped()
+
+    def test_cutover_stops_before_backup_when_writer_verification_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            env_path = root / "server.env"
+            write_server_env({"SERVER_ADDR": "example.com"}, env_path)
+
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                sqlite_command, "SERVER_ENV_PATH", env_path
+            ), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.object(
+                sqlite_command, "stop_writers"
+            ) as stop_writers, mock.patch.object(
+                sqlite_command, "verify_writers_stopped", side_effect=RuntimeError("writers still active")
+            ) as verify_writers_stopped, mock.patch.object(
+                sqlite_command, "start_writers"
+            ) as start_writers, mock.patch.object(
+                sqlite_command.backup_command, "create_backup"
+            ) as create_backup, mock.patch.object(
+                sqlite_command.json_import, "import_json_files"
+            ) as import_json_files, redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    sqlite_command.cutover(yes=True)
+
+            self.assertEqual(caught.exception.code, 1)
+            stop_writers.assert_called_once_with()
+            verify_writers_stopped.assert_called_once_with()
+            start_writers.assert_called_once_with()
+            create_backup.assert_not_called()
+            import_json_files.assert_not_called()
+
     def test_cutover_disables_flags_and_restarts_writers_when_cutover_validation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -252,6 +311,8 @@ class SQLiteCommandTests(unittest.TestCase):
                 sqlite_command.os, "geteuid", return_value=0
             ), mock.patch.object(
                 sqlite_command, "stop_writers"
+            ), mock.patch.object(
+                sqlite_command, "verify_writers_stopped"
             ), mock.patch.object(
                 sqlite_command, "start_writers"
             ) as start_writers, mock.patch.object(
@@ -291,6 +352,8 @@ class SQLiteCommandTests(unittest.TestCase):
                 sqlite_command.os, "geteuid", return_value=0
             ), mock.patch.object(
                 sqlite_command, "stop_writers"
+            ), mock.patch.object(
+                sqlite_command, "verify_writers_stopped"
             ), mock.patch.object(
                 sqlite_command, "start_writers"
             ) as start_writers, mock.patch.object(

@@ -55,6 +55,7 @@ SYSTEMD_MISSING_UNIT_MARKERS = (
     "could not be found",
     "does not exist",
 )
+RUNNING_WRITER_STATES = {"active", "activating", "reloading", "deactivating"}
 XRAY_TEST = Path("/usr/local/sbin/xray-test")
 
 
@@ -328,8 +329,8 @@ def is_missing_systemd_unit(detail: str) -> bool:
     return any(marker in lower for marker in SYSTEMD_MISSING_UNIT_MARKERS)
 
 
-def run_systemctl(args: list[str], *, timeout: int = 30, allow_missing: bool = False) -> None:
-    result = subprocess.run(
+def systemctl_result(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
+    return subprocess.run(
         ["systemctl", *args],
         check=False,
         text=True,
@@ -337,6 +338,10 @@ def run_systemctl(args: list[str], *, timeout: int = 30, allow_missing: bool = F
         stderr=subprocess.PIPE,
         timeout=timeout,
     )
+
+
+def run_systemctl(args: list[str], *, timeout: int = 30, allow_missing: bool = False) -> None:
+    result = systemctl_result(args, timeout=timeout)
     if result.returncode != 0:
         detail = systemctl_detail(result)
         if allow_missing and is_missing_systemd_unit(detail):
@@ -348,6 +353,25 @@ def run_systemctl(args: list[str], *, timeout: int = 30, allow_missing: bool = F
 def stop_writers() -> None:
     for unit in WRITER_STOP_UNITS:
         run_systemctl(["stop", unit], allow_missing=True)
+
+
+def writer_unit_state(unit: str) -> str | None:
+    result = systemctl_result(["is-active", unit], timeout=10)
+    detail = systemctl_detail(result)
+    if result.returncode != 0 and is_missing_systemd_unit(detail):
+        print(f"WARNING systemd unit skipped: is-active {unit} ({detail})")
+        return None
+    return (result.stdout or detail or "unknown").strip().splitlines()[0].strip().lower()
+
+
+def verify_writers_stopped() -> None:
+    active = []
+    for unit in WRITER_STOP_UNITS:
+        state = writer_unit_state(unit)
+        if state in RUNNING_WRITER_STATES:
+            active.append(f"{unit}={state}")
+    if active:
+        raise RuntimeError("manager writer units are still active after stop: " + ", ".join(active))
 
 
 def start_writers() -> None:
@@ -402,6 +426,9 @@ def cutover(*, yes: bool = False, run_test: bool = True) -> int:
         print("Stopping manager writer services...")
         stop_writers()
         writers_stopped = True
+
+        print("Verifying manager writer services are stopped...")
+        verify_writers_stopped()
 
         print("Creating pre-cutover backup...")
         backup_path = backup_command.create_backup(path_only=False, quiet=True, sync=False)
