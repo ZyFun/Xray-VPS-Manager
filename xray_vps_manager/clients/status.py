@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from xray_vps_manager.clients import connections
 from xray_vps_manager.clients.access import access_expired, local_now
 from xray_vps_manager.clients.limits import traffic_limit_status
 from xray_vps_manager.clients.models import client_from_db_entry, client_name, db_entry_from_client, split_email
@@ -19,6 +22,14 @@ from xray_vps_manager.xray.config import (
     inbound_tag,
     reality_inbounds,
 )
+
+
+@dataclass
+class AccessUpdateResult:
+    entry: dict[str, Any]
+    config_changed: bool
+    status: str
+    traffic_status: dict[str, Any] | None
 
 
 def clear_disabled_state(entry: dict[str, Any]) -> None:
@@ -127,3 +138,31 @@ def reconcile_client_access_status(
     clear_disabled_state(entry)
     db_clients(db)[name] = entry
     return entry, changed, "enabled", None
+
+
+def apply_access_update(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    traffic_db: dict[str, Any],
+    name: str,
+    update_entry: Callable[[dict[str, Any]], None],
+) -> AccessUpdateResult:
+    connections.ensure_connections(config, db)
+    entry = db_clients(db).get(name)
+
+    if not entry:
+        inbound, item = active_client_any(config, name)
+        if item is None:
+            raise ValueError(f"Client not found: {name}")
+        _, created = split_email(item.get("email", ""))
+        entry = db_entry_from_client(item, created=created, enabled=True)
+        entry["connection"] = inbound_tag(inbound)
+
+    update_entry(entry)
+    entry, config_changed, status, traffic_status = reconcile_client_access_status(config, db, traffic_db, name, entry)
+    return AccessUpdateResult(
+        entry=entry,
+        config_changed=config_changed,
+        status=status,
+        traffic_status=traffic_status,
+    )

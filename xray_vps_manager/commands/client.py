@@ -1114,23 +1114,15 @@ def apply_access_update(name, update_entry):
     sync_traffic()
     config = load_config()
     db = load_db()
-    ensure_connections(config, db)
-    entry = db_clients(db).get(name)
-
-    if not entry:
-        inbound, item = active_client_any(config, name)
-        if item is None:
-            die(f"Client not found: {name}")
-        _, created = split_email(item.get("email", ""))
-        entry = db_entry_from_client(item, created=created, enabled=True)
-        entry["connection"] = inbound_tag(inbound)
-
-    update_entry(entry)
     traffic_db = load_traffic_db()
-    entry, config_changed, status, traffic_status = reconcile_client_access_status(config, db, traffic_db, name, entry)
+    try:
+        result = client_status.apply_access_update(config, db, traffic_db, name, update_entry)
+    except ValueError as exc:
+        die(str(exc))
+    entry = result.entry
 
     backup = None
-    if config_changed:
+    if result.config_changed:
         backup = save_config(config)
         try:
             run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
@@ -1147,11 +1139,12 @@ def apply_access_update(name, update_entry):
 
     print(f"Client: {name}")
     print(f"Access until: {format_access_until(entry.get('expiresAt', ''))}")
-    if status == "enabled":
+    if result.status == "enabled":
         print("Status: enabled")
-    elif status == "disabled-expired":
+    elif result.status == "disabled-expired":
         print("Status: disabled by expired access")
-    elif status == "disabled-traffic-limit":
+    elif result.status == "disabled-traffic-limit":
+        traffic_status = result.traffic_status
         print(
             "Status: disabled by traffic limit. "
             f"Used {format_traffic(traffic_status['usedBytes'])} of {format_traffic(traffic_status['limitBytes'])}; "
