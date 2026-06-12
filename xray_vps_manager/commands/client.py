@@ -787,44 +787,19 @@ def server_env_values_for_connection(config, db, tag):
 def cmd_connection_remove(identifier):
     config = load_config()
     db = load_db()
-    ensure_connections(config, db)
-    tag = resolve_connection_identifier(config, db, identifier)
-
-    if len(reality_inbounds(config)) <= 1:
-        die("Cannot remove the last Reality connection.")
-
-    display_name = connection_display_name(config, db, tag)
-    removed_client_names = connection_client_names(config, db, tag)
-    config["inbounds"] = [
-        inbound
-        for inbound in config.get("inbounds", [])
-        if not (
-            inbound.get("protocol") == "vless"
-            and inbound.get("streamSettings", {}).get("security") == "reality"
-            and inbound_tag(inbound) == tag
-        )
-    ]
-
-    db_connections(db).pop(tag, None)
-    for name in removed_client_names:
-        db_clients(db).pop(name, None)
-
-    env_update = None
-    env_switch_tag = ""
-    if tag == INBOUND_TAG:
-        remaining = reality_inbounds(config)
-        if remaining:
-            env_switch_tag = inbound_tag(remaining[0])
-            env_update = server_env_values_for_connection(config, db, env_switch_tag)
+    try:
+        result = client_connections.remove_connection(config, db, identifier)
+    except ValueError as exc:
+        die(str(exc))
 
     backup = save_config(config)
     try:
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
         run(["systemctl", "restart", "xray"])
         save_db(db)
-        if env_update is not None:
-            save_server_env_values(env_update)
-        traffic_removed = remove_traffic_clients(removed_client_names)
+        if result.env_update is not None:
+            save_server_env_values(result.env_update)
+        traffic_removed = remove_traffic_clients(result.removed_client_names)
     except subprocess.CalledProcessError:
         shutil.copy2(backup, CONFIG_PATH)
         shutil.chown(CONFIG_PATH, user="root", group="xray")
@@ -832,13 +807,13 @@ def cmd_connection_remove(identifier):
         run(["systemctl", "restart", "xray"])
         die(f"New config failed. Restored backup: {backup}")
 
-    print(f"Removed connection: {display_name}")
-    print(f"Tag: {tag}")
-    print("Removed clients: " + (", ".join(removed_client_names) if removed_client_names else "none"))
+    print(f"Removed connection: {result.display_name}")
+    print(f"Tag: {result.tag}")
+    print("Removed clients: " + (", ".join(result.removed_client_names) if result.removed_client_names else "none"))
     if traffic_removed:
         print("Removed traffic history for deleted clients.")
-    if env_switch_tag:
-        print(f"server.env switched to connection: {connection_display_name(config, db, env_switch_tag)} ({env_switch_tag})")
+    if result.env_switch_tag:
+        print(f"server.env switched to connection: {result.env_switch_name} ({result.env_switch_tag})")
     print(f"Backup: {backup}")
 
 

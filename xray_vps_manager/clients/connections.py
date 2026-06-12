@@ -36,6 +36,16 @@ class AddConnectionResult:
     short_id: str
 
 
+@dataclass
+class RemoveConnectionResult:
+    tag: str
+    display_name: str
+    removed_client_names: list[str]
+    env_switch_tag: str = ""
+    env_switch_name: str = ""
+    env_update: dict[str, str] | None = None
+
+
 def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
     connections = db_connections(db)
     env = server_env_values()
@@ -209,6 +219,49 @@ def add_connection(
         fingerprint=fp,
         public_key=public_key,
         short_id=short_id,
+    )
+
+
+def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: str) -> RemoveConnectionResult:
+    ensure_connections(config, db)
+    tag = resolve_connection_identifier(config, db, identifier)
+
+    if len(reality_inbounds(config)) <= 1:
+        raise ValueError("Cannot remove the last Reality connection.")
+
+    display_name = connection_display_name(config, db, tag)
+    removed_client_names = connection_client_names(config, db, tag)
+    config["inbounds"] = [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if not (
+            inbound.get("protocol") == "vless"
+            and inbound.get("streamSettings", {}).get("security") == "reality"
+            and inbound_tag(inbound) == tag
+        )
+    ]
+
+    db_connections(db).pop(tag, None)
+    for name in removed_client_names:
+        db_clients(db).pop(name, None)
+
+    env_update = None
+    env_switch_tag = ""
+    env_switch_name = ""
+    if tag == INBOUND_TAG:
+        remaining = reality_inbounds(config)
+        if remaining:
+            env_switch_tag = inbound_tag(remaining[0])
+            env_switch_name = connection_display_name(config, db, env_switch_tag)
+            env_update = server_env_values_for_connection(config, db, env_switch_tag)
+
+    return RemoveConnectionResult(
+        tag=tag,
+        display_name=display_name,
+        removed_client_names=removed_client_names,
+        env_switch_tag=env_switch_tag,
+        env_switch_name=env_switch_name,
+        env_update=env_update,
     )
 
 
