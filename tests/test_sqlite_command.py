@@ -130,7 +130,52 @@ class SQLiteCommandTests(unittest.TestCase):
             values = read_server_env(env_path)
             self.assertEqual(values["MANAGER_SQLITE_READS_ENABLED"], "true")
             self.assertEqual(values["MANAGER_SQLITE_WRITES_ENABLED"], "true")
-            self.assertIn("SQLite cutover complete.", stdout.getvalue())
+            output = stdout.getvalue()
+            self.assertIn("Validating SQLite cutover...", output)
+            self.assertIn("OK SQLite cutover validation passed.", output)
+            self.assertIn("SQLite cutover complete.", output)
+
+    def test_cutover_disables_flags_and_restarts_writers_when_cutover_validation_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            env_path = root / "server.env"
+            write_server_env({"SERVER_ADDR": "example.com"}, env_path)
+
+            def import_json_files(*, db_path, replace):
+                connection = database.open_database(db_path)
+                try:
+                    sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
+                finally:
+                    connection.close()
+                return json_import.ImportSummary(counts={"clients": 1})
+
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                sqlite_command, "SERVER_ENV_PATH", env_path
+            ), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.object(
+                sqlite_command, "stop_writers"
+            ), mock.patch.object(
+                sqlite_command, "start_writers"
+            ) as start_writers, mock.patch.object(
+                sqlite_command.backup_command, "create_backup", return_value=root / "backup.tar.gz"
+            ), mock.patch.object(
+                sqlite_command.json_import, "import_json_files", side_effect=import_json_files
+            ), mock.patch.object(
+                sqlite_command, "run_cutover_validation", side_effect=RuntimeError("validation failed")
+            ), mock.patch.object(
+                sqlite_command, "run_xray_test"
+            ) as run_xray_test, redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    sqlite_command.cutover(yes=True)
+
+            self.assertEqual(caught.exception.code, 1)
+            start_writers.assert_called_once_with()
+            run_xray_test.assert_not_called()
+            values = read_server_env(env_path)
+            self.assertEqual(values["MANAGER_SQLITE_READS_ENABLED"], "false")
+            self.assertEqual(values["MANAGER_SQLITE_WRITES_ENABLED"], "false")
 
     def test_cutover_disables_flags_and_restarts_writers_when_validation_fails_after_enable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

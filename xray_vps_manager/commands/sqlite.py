@@ -17,7 +17,9 @@ from xray_vps_manager.db import database, json_import, schema
 from xray_vps_manager.telegram import settings as telegram_settings
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.db.storage import (
+    SQLITE_READS_ENV,
     SQLITE_READS_SERVER_ENV,
+    SQLITE_WRITES_ENV,
     SQLITE_WRITES_SERVER_ENV,
     sqlite_read_ready,
     sqlite_reads_enabled,
@@ -257,6 +259,11 @@ def validate_cutover() -> int:
     return 0
 
 
+def run_cutover_validation() -> None:
+    if validate_cutover() != 0:
+        raise RuntimeError("SQLite cutover validation failed")
+
+
 def run_systemctl(args: list[str], *, timeout: int = 30) -> None:
     result = subprocess.run(
         ["systemctl", *args],
@@ -284,6 +291,8 @@ def write_sqlite_flags(reads: bool, writes: bool) -> None:
     values[SQLITE_READS_SERVER_ENV] = "true" if reads else "false"
     values[SQLITE_WRITES_SERVER_ENV] = "true" if writes else "false"
     write_server_env(values, SERVER_ENV_PATH)
+    os.environ[SQLITE_READS_ENV] = "1" if reads else "0"
+    os.environ[SQLITE_WRITES_ENV] = "1" if writes else "0"
 
 
 def run_xray_test() -> str:
@@ -349,6 +358,9 @@ def cutover(*, yes: bool = False, run_test: bool = True) -> int:
         print("Enabling SQLite reads and writes...")
         write_sqlite_flags(True, True)
         flags_enabled = True
+
+        print("Validating SQLite cutover...")
+        run_cutover_validation()
 
         print("Starting manager writer services...")
         start_writers()

@@ -1359,7 +1359,7 @@ xray-vps-manager sqlite disable
 xray-vps-manager sqlite cutover --yes
 ```
 
-Cutover останавливает manager-сервисы, которые могут писать в JSON, создаёт pre-cutover backup, импортирует JSON/JSONL в SQLite, проверяет базу, включает SQLite-чтение/запись, запускает writer-сервисы обратно и выполняет `xray-test`.
+Cutover останавливает manager-сервисы, которые могут писать в JSON, создаёт pre-cutover backup, импортирует JSON/JSONL в SQLite, проверяет базу, включает SQLite-чтение/запись, проверяет read-layer и связи SQLite, запускает writer-сервисы обратно и выполняет `xray-test`.
 
 После переключения можно отдельно проверить, что база готова, оба SQLite-флага включены, read-layer клиентов, трафика, Telegram и журнала активности использует SQLite, а в основных связях нет осиротевших строк:
 
