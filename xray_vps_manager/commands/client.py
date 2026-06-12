@@ -163,16 +163,16 @@ def validate_limit_period(value):
         die(str(exc))
 
 
-def set_entry_traffic_limit(entry, period, limit_bytes):
+def set_client_traffic_limit(entry, period, limit_bytes):
     try:
-        client_limits.set_entry_traffic_limit(entry, period, limit_bytes, utc_now_iso)
+        return client_limits.set_client_traffic_limit(entry, period, limit_bytes, utc_now_iso)
     except ValueError as exc:
         die(str(exc))
 
 
-def set_client_traffic_limit(entry, period, limit_bytes):
+def clear_client_traffic_limit(entry):
     try:
-        return client_limits.set_client_traffic_limit(entry, period, limit_bytes, utc_now_iso)
+        return client_limits.clear_client_traffic_limit(entry, utc_now_iso)
     except ValueError as exc:
         die(str(exc))
 
@@ -1219,14 +1219,13 @@ def cmd_clear_limit(name):
     db = load_db()
     ensure_connections(config, db)
     entry = db_entry_for_existing_client(config, db, name)
-    was_disabled_by_limit = entry.get("enabled") is False and entry.get("disabledReason") == "traffic-limit"
-    set_entry_traffic_limit(entry, "daily", None)
-    db_clients(db)[name] = entry
+    result = clear_client_traffic_limit(entry)
+    db_clients(db)[name] = result.entry
     save_db(db)
 
     print(f"Client: {name}")
     print("Traffic limit: без лимита")
-    if was_disabled_by_limit:
+    if result.was_disabled_by_limit:
         print("Status: disabled by previous traffic limit. Use xray-client enable NAME if the client should be enabled now.")
 
 

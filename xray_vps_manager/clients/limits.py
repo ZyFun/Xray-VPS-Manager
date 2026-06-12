@@ -23,6 +23,12 @@ class TrafficLimitUpdateResult:
     limit_bytes: int | None
 
 
+@dataclass
+class TrafficLimitClearResult:
+    entry: dict[str, Any]
+    was_disabled_by_limit: bool
+
+
 def parse_limit_gb(value: str | None) -> int | None:
     raw = (value or "").strip().replace(",", ".").lower()
     if raw in ("", "0", "none", "no", "unlimited", "forever", "без лимита", "бессрочно"):
@@ -86,6 +92,15 @@ def set_client_traffic_limit(
         entry=entry,
         period=validate_limit_period(period),
         limit_bytes=limit_bytes,
+    )
+
+
+def clear_client_traffic_limit(entry: dict[str, Any], now_iso: Callable[[], str]) -> TrafficLimitClearResult:
+    was_disabled_by_limit = entry.get("enabled") is False and entry.get("disabledReason") == "traffic-limit"
+    set_entry_traffic_limit(entry, "daily", None, now_iso)
+    return TrafficLimitClearResult(
+        entry=entry,
+        was_disabled_by_limit=was_disabled_by_limit,
     )
 
 
