@@ -25,7 +25,7 @@ class BackupSQLiteTests(unittest.TestCase):
             files = {
                 "config.json": "{}\n",
                 "clients.json": '{"clients": {}}\n',
-                "server.env": "SERVER_ADDR=example.com\n",
+                "server.env": "SERVER_ADDR=old.example.com\nSERVER_NAME=Virei\nSECURITY_AUDIT_LAST_RUN=2026-06-01T00:00:00Z\n",
                 "manager.db": "sqlite bytes",
             }
             for name, content in files.items():
@@ -46,13 +46,104 @@ class BackupSQLiteTests(unittest.TestCase):
             with tarfile.open(archive, "r:gz") as tar:
                 names = set(tar.getnames())
                 manager_db = tar.extractfile("usr/local/etc/xray/manager.db").read().decode()
+                server_env = tar.extractfile("usr/local/etc/xray/server.env").read().decode()
                 manifest = json.loads(tar.extractfile("manifest.json").read())
 
             self.assertIn("usr/local/etc/xray/manager.db", names)
             self.assertEqual(manager_db, "sqlite bytes")
+            self.assertNotIn("SERVER_ADDR", server_env)
+            self.assertNotIn("SECURITY_AUDIT_LAST_RUN", server_env)
+            self.assertIn("SERVER_NAME=Virei", server_env)
+            self.assertEqual(
+                manifest["hostSpecificServerEnvKeysOmitted"],
+                ["SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN"],
+            )
+            self.assertNotIn("hostname", manifest)
             self.assertTrue(
                 any(item["archive"] == "usr/local/etc/xray/manager.db" for item in manifest["files"])
             )
+
+    def test_apply_restore_preserves_current_server_addr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            temp_dir = root / "restore"
+            (temp_dir / "usr/local/etc/xray").mkdir(parents=True)
+            (temp_dir / "usr/local/etc/xray/config.json").write_text("{}\n")
+            (temp_dir / "usr/local/etc/xray/server.env").write_text(
+                "SERVER_ADDR=old.example.com\n"
+                "SERVER_NAME=Virei\n"
+                "MANAGER_TIMEZONE=Europe/Moscow\n"
+                "SECURITY_AUDIT_LAST_RUN=2026-06-01T00:00:00Z\n"
+            )
+
+            target_config_dir = root / "target" / "xray"
+            target_config_dir.mkdir(parents=True)
+            (target_config_dir / "server.env").write_text(
+                "SERVER_ADDR=new.example.com\n"
+                "SECURITY_AUDIT_LAST_RUN=2026-06-12T00:00:00Z\n"
+            )
+            config_target = target_config_dir / "config.json"
+            server_env_target = target_config_dir / "server.env"
+            backup_files = [
+                ("usr/local/etc/xray/config.json", config_target, True),
+                ("usr/local/etc/xray/server.env", server_env_target, True),
+            ]
+
+            with mock.patch.object(backup, "CONFIG_DIR", target_config_dir), mock.patch.object(
+                backup, "BACKUP_FILES", backup_files
+            ), mock.patch.object(backup, "BACKUP_DIRS", []), mock.patch.object(
+                backup, "chown_xray"
+            ), mock.patch.object(
+                backup.shutil, "chown"
+            ):
+                restored = backup.apply_restore(temp_dir)
+
+            values = dict(
+                line.split("=", 1)
+                for line in server_env_target.read_text().splitlines()
+                if "=" in line
+            )
+            self.assertEqual(values["SERVER_ADDR"], "new.example.com")
+            self.assertEqual(values["SECURITY_AUDIT_LAST_RUN"], "2026-06-12T00:00:00Z")
+            self.assertEqual(values["SERVER_NAME"], "Virei")
+            self.assertEqual(values["MANAGER_TIMEZONE"], "Europe/Moscow")
+            self.assertIn(str(server_env_target), restored)
+
+    def test_apply_restore_drops_host_specific_values_when_current_server_has_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            temp_dir = root / "restore"
+            (temp_dir / "usr/local/etc/xray").mkdir(parents=True)
+            (temp_dir / "usr/local/etc/xray/config.json").write_text("{}\n")
+            (temp_dir / "usr/local/etc/xray/server.env").write_text(
+                "SERVER_ADDR=old.example.com\n"
+                "SERVER_NAME=Virei\n"
+                "SECURITY_AUDIT_LAST_RUN=2026-06-01T00:00:00Z\n"
+            )
+
+            target_config_dir = root / "target" / "xray"
+            config_target = target_config_dir / "config.json"
+            server_env_target = target_config_dir / "server.env"
+            backup_files = [
+                ("usr/local/etc/xray/config.json", config_target, True),
+                ("usr/local/etc/xray/server.env", server_env_target, True),
+            ]
+
+            with mock.patch.object(backup, "CONFIG_DIR", target_config_dir), mock.patch.object(
+                backup, "BACKUP_FILES", backup_files
+            ), mock.patch.object(backup, "BACKUP_DIRS", []), mock.patch.object(
+                backup, "chown_xray"
+            ), mock.patch.object(
+                backup.shutil, "chown"
+            ), mock.patch.dict(
+                backup.os.environ, {}, clear=True
+            ):
+                backup.apply_restore(temp_dir)
+
+            server_env = server_env_target.read_text()
+            self.assertNotIn("SERVER_ADDR", server_env)
+            self.assertNotIn("SECURITY_AUDIT_LAST_RUN", server_env)
+            self.assertIn("SERVER_NAME=Virei", server_env)
 
     def test_apply_restore_restores_manager_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

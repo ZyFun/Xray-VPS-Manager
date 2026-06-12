@@ -4,7 +4,6 @@ import json
 import os
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
 import tarfile
@@ -12,7 +11,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 
@@ -27,18 +26,18 @@ ACTIVITY_EXCEPTIONS_PATH = CONFIG_DIR / "activity-exceptions.json"
 TELEGRAM_BOT_PATH = CONFIG_DIR / "telegram-bot.json"
 MANAGER_DB_PATH = CONFIG_DIR / "manager.db"
 ACTIVITY_DIR = CONFIG_DIR / "activity"
-CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
+SERVER_ENV_ARCNAME = "usr/local/etc/xray/server.env"
+HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN")
 
 BACKUP_FILES = [
     ("usr/local/etc/xray/config.json", CONFIG_PATH, True),
     ("usr/local/etc/xray/clients.json", CLIENT_DB_PATH, True),
-    ("usr/local/etc/xray/server.env", SERVER_ENV_PATH, True),
+    (SERVER_ENV_ARCNAME, SERVER_ENV_PATH, True),
     ("usr/local/etc/xray/traffic.json", TRAFFIC_PATH, False),
     ("usr/local/etc/xray/activity.json", ACTIVITY_PATH, False),
     ("usr/local/etc/xray/activity-exceptions.json", ACTIVITY_EXCEPTIONS_PATH, False),
     ("usr/local/etc/xray/telegram-bot.json", TELEGRAM_BOT_PATH, False),
     ("usr/local/etc/xray/manager.db", MANAGER_DB_PATH, False),
-    ("root/xray-reality-client.txt", CLIENT_LINK_PATH, False),
 ]
 BACKUP_DIRS = [
     ("usr/local/etc/xray/activity", ACTIVITY_DIR, False),
@@ -105,6 +104,37 @@ def add_json(tar, name, payload):
     tar.addfile(info, io.BytesIO(data))
 
 
+def server_env_text(values):
+    values = dict(values)
+    values.pop("ACTIVITY_GEOIP_WARNING_CODE", None)
+    lines = [f"{key}={values.get(key, '')}" for key in ORDERED_ENV_KEYS if key in values]
+    for key in sorted(values):
+        if key not in ORDERED_ENV_KEYS:
+            lines.append(f"{key}={values[key]}")
+    return "\n".join(lines) + "\n"
+
+
+def add_text(tar, name, text, mode=0o640):
+    data = text.encode()
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    info.mode = mode
+    info.mtime = int(datetime.now(timezone.utc).timestamp())
+    tar.addfile(info, io.BytesIO(data))
+    return len(data)
+
+
+def portable_server_env_values(path=SERVER_ENV_PATH):
+    values = read_server_env(path)
+    for key in HOST_SPECIFIC_SERVER_ENV_KEYS:
+        values.pop(key, None)
+    return values
+
+
+def add_portable_server_env(tar, arcname, source):
+    return add_text(tar, arcname, server_env_text(portable_server_env_values(source)))
+
+
 def sync_traffic():
     sync = Path("/usr/local/sbin/xray-traffic-sync")
     if sync.exists():
@@ -138,12 +168,15 @@ def create_backup(path_only=False, quiet=False, sync=True):
                 if required:
                     die(f"Required file not found: {source}")
                 continue
-            tar.add(source, arcname=arcname, recursive=False)
-            stat = source.stat()
+            if arcname == SERVER_ENV_ARCNAME:
+                size = add_portable_server_env(tar, arcname, source)
+            else:
+                tar.add(source, arcname=arcname, recursive=False)
+                size = source.stat().st_size
             files.append({
                 "source": str(source),
                 "archive": arcname,
-                "size": stat.st_size,
+                "size": size,
             })
 
         for arcname, source, required in BACKUP_DIRS:
@@ -164,8 +197,8 @@ def create_backup(path_only=False, quiet=False, sync=True):
             "manifest.json",
             {
                 "createdAt": utc_stamp(),
-                "hostname": socket.gethostname(),
                 "xrayVersion": xray_version(),
+                "hostSpecificServerEnvKeysOmitted": list(HOST_SPECIFIC_SERVER_ENV_KEYS),
                 "files": files,
                 "warning": "This archive contains Xray private keys, client UUIDs, traffic data, and activity metadata.",
             },
@@ -177,7 +210,8 @@ def create_backup(path_only=False, quiet=False, sync=True):
     elif not quiet:
         print(f"Backup created: {archive}")
         print(f"Size: {format_size(archive.stat().st_size)}")
-        print("Contains: config.json, clients.json, server.env, traffic.json, manager.db, activity logs, activity exceptions, Telegram bot config, starter link if present.")
+        print("Contains: config.json, clients.json, portable server.env, traffic.json, manager.db, activity logs, activity exceptions, Telegram bot config.")
+        print("Host-specific server.env values such as SERVER_ADDR are not stored; restore keeps the current server values.")
         print("Keep this file private: it contains Reality private keys and client data.")
     return archive
 
@@ -275,6 +309,41 @@ def copy_if_exists(temp_dir, arcname, target, mode):
     return True
 
 
+def merged_restored_server_env(archive_values, current_values):
+    merged = dict(archive_values)
+
+    current_addr = (current_values.get("SERVER_ADDR") or os.environ.get("SERVER_ADDR", "")).strip()
+    if current_addr:
+        merged["SERVER_ADDR"] = current_addr
+    else:
+        merged.pop("SERVER_ADDR", None)
+
+    for key in HOST_SPECIFIC_SERVER_ENV_KEYS:
+        if key == "SERVER_ADDR":
+            continue
+        current_value = (current_values.get(key) or "").strip()
+        if current_value:
+            merged[key] = current_value
+        else:
+            merged.pop(key, None)
+    return merged
+
+
+def copy_server_env_if_exists(temp_dir, arcname, target):
+    source = temp_dir / arcname
+    if not source.exists():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    archive_values = read_server_env(source)
+    current_values = read_server_env(target)
+    write_server_env(
+        merged_restored_server_env(archive_values, current_values),
+        path=target,
+        ordered_keys=ORDERED_ENV_KEYS,
+    )
+    return True
+
+
 def chown_tree_xray(path):
     if path.is_dir():
         chown_xray(path)
@@ -304,8 +373,11 @@ def apply_restore(temp_dir):
         die("Backup does not contain config.json.")
     restored = []
     for arcname, target, required in BACKUP_FILES:
-        mode = 0o600 if target == CLIENT_LINK_PATH else 0o640
-        if copy_if_exists(temp_dir, arcname, target, mode):
+        if arcname == SERVER_ENV_ARCNAME:
+            copied = copy_server_env_if_exists(temp_dir, arcname, target)
+        else:
+            copied = copy_if_exists(temp_dir, arcname, target, 0o640)
+        if copied:
             restored.append(str(target))
         elif required:
             die(f"Backup does not contain required file: {arcname}")

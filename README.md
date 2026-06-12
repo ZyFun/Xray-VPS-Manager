@@ -1273,11 +1273,12 @@ xray-backup create
 /usr/local/etc/xray/telegram-bot.json
 /usr/local/etc/xray/manager.db
 /usr/local/etc/xray/activity
-/root/xray-reality-client.txt
 ```
 
 Архивы хранятся на сервере в `/root/xray_backups`.
 Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
+
+`server.env` сохраняется как переносимая конфигурация. Host-specific значения, например `SERVER_ADDR` и `SECURITY_AUDIT_LAST_RUN`, в новый архив не записываются. При восстановлении `xray-backup restore` сохраняет текущий `SERVER_ADDR` нового сервера, чтобы новые VLESS-ссылки генерировались с актуальным адресом.
 
 Показать бэкапы на сервере:
 
@@ -1320,6 +1321,7 @@ xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 Перед восстановлением скрипт автоматически создаёт pre-restore бэкап текущего состояния.
 Если на сервере уже есть `/usr/local/etc/xray/manager.db`, дополнительно создаётся отдельная pre-restore копия SQLite-базы в каталоге резервных копий.
 После восстановления скрипт проверяет `config.json`, перезапускает Xray и включает timers.
+Если архив переносится на сервер с новым IP или доменом, сначала установи менеджер на новом сервере, затем восстанови архив. `SERVER_ADDR` из нового `server.env` будет сохранён, а старый адрес из архива не перезапишет новый.
 
 ## SQLite Миграция Данных
 
