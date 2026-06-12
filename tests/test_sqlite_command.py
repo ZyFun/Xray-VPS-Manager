@@ -2,6 +2,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -192,6 +193,43 @@ class SQLiteCommandTests(unittest.TestCase):
 
             self.assertEqual(code, 1)
             self.assertIn("ERROR xray-test not found", stdout.getvalue())
+
+    def test_stop_writers_stops_units_individually_and_skips_missing_units(self) -> None:
+        def run(command, **_kwargs):
+            unit = command[-1]
+            if unit == "xray-client-expire.service":
+                return subprocess.CompletedProcess(command, 5, stdout="", stderr="Unit xray-client-expire.service not loaded.")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        stdout = StringIO()
+        with mock.patch.object(sqlite_command.subprocess, "run", side_effect=run) as run_mock, redirect_stdout(stdout):
+            sqlite_command.stop_writers()
+
+        calls = [call.args[0] for call in run_mock.call_args_list]
+        self.assertEqual(calls, [["systemctl", "stop", unit] for unit in sqlite_command.WRITER_STOP_UNITS])
+        self.assertIn("WARNING systemd unit skipped: stop xray-client-expire.service", stdout.getvalue())
+
+    def test_start_writers_starts_units_individually_and_skips_missing_units(self) -> None:
+        def run(command, **_kwargs):
+            unit = command[-1]
+            if unit == "xray-telegram-poller.service":
+                return subprocess.CompletedProcess(command, 5, stdout="", stderr="Unit xray-telegram-poller.service could not be found.")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        stdout = StringIO()
+        with mock.patch.object(sqlite_command.subprocess, "run", side_effect=run) as run_mock, redirect_stdout(stdout):
+            sqlite_command.start_writers()
+
+        calls = [call.args[0] for call in run_mock.call_args_list]
+        self.assertEqual(calls, [["systemctl", "enable", "--now", unit] for unit in sqlite_command.WRITER_START_UNITS])
+        self.assertIn("WARNING systemd unit skipped: enable --now xray-telegram-poller.service", stdout.getvalue())
+
+    def test_run_systemctl_keeps_real_failures_fatal(self) -> None:
+        result = subprocess.CompletedProcess(["systemctl", "stop", "xray-traffic-sync.service"], 1, stdout="", stderr="Access denied")
+
+        with mock.patch.object(sqlite_command.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "Access denied"):
+                sqlite_command.run_systemctl(["stop", "xray-traffic-sync.service"], allow_missing=True)
 
     def test_cutover_disables_flags_and_restarts_writers_when_cutover_validation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

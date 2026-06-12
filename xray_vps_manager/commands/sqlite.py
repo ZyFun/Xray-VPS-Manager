@@ -49,6 +49,12 @@ WRITER_START_UNITS = (
     "xray-client-expire.timer",
     "xray-telegram-poller.service",
 )
+SYSTEMD_MISSING_UNIT_MARKERS = (
+    "not loaded",
+    "not found",
+    "could not be found",
+    "does not exist",
+)
 XRAY_TEST = Path("/usr/local/sbin/xray-test")
 
 
@@ -313,7 +319,16 @@ def preflight() -> int:
     return 0
 
 
-def run_systemctl(args: list[str], *, timeout: int = 30) -> None:
+def systemctl_detail(result: subprocess.CompletedProcess) -> str:
+    return (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+
+
+def is_missing_systemd_unit(detail: str) -> bool:
+    lower = detail.lower()
+    return any(marker in lower for marker in SYSTEMD_MISSING_UNIT_MARKERS)
+
+
+def run_systemctl(args: list[str], *, timeout: int = 30, allow_missing: bool = False) -> None:
     result = subprocess.run(
         ["systemctl", *args],
         check=False,
@@ -323,16 +338,21 @@ def run_systemctl(args: list[str], *, timeout: int = 30) -> None:
         timeout=timeout,
     )
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+        detail = systemctl_detail(result)
+        if allow_missing and is_missing_systemd_unit(detail):
+            print(f"WARNING systemd unit skipped: {' '.join(args)} ({detail})")
+            return
         raise RuntimeError(f"systemctl {' '.join(args)} failed: {detail}")
 
 
 def stop_writers() -> None:
-    run_systemctl(["stop", *WRITER_STOP_UNITS])
+    for unit in WRITER_STOP_UNITS:
+        run_systemctl(["stop", unit], allow_missing=True)
 
 
 def start_writers() -> None:
-    run_systemctl(["enable", "--now", *WRITER_START_UNITS])
+    for unit in WRITER_START_UNITS:
+        run_systemctl(["enable", "--now", unit], allow_missing=True)
 
 
 def write_sqlite_flags(reads: bool, writes: bool) -> None:
