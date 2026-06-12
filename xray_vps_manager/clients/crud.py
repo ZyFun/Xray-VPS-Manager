@@ -75,6 +75,21 @@ def all_client_names(config: dict[str, Any], db: dict[str, Any]) -> set[str]:
     return names
 
 
+def db_entry_for_existing_client(config: dict[str, Any], db: dict[str, Any], name: str) -> dict[str, Any]:
+    entry = db_clients(db).get(name)
+    if entry:
+        return entry
+
+    inbound, item = active_client_any(config, name)
+    if item is None:
+        raise ValueError(f"Client not found: {name}")
+    _, created = split_email(item.get("email", ""))
+    entry = db_entry_from_client(item, created=created, enabled=True)
+    entry["connection"] = inbound_tag(inbound)
+    db_clients(db)[name] = entry
+    return entry
+
+
 def prepare_add_client(config: dict[str, Any], db: dict[str, Any], name: str, connection_tag: str | None = None) -> str:
     selected_tag = resolve_connection_for_add(config, db, connection_tag)
     if name in all_client_names(config, db):

@@ -962,18 +962,10 @@ def all_client_names(config, db):
 
 def db_entry_for_existing_client(config, db, name):
     validate_name(name)
-    entry = db_clients(db).get(name)
-    if entry:
-        return entry
-
-    inbound, item = active_client_any(config, name)
-    if item is None:
-        die(f"Client not found: {name}")
-    _, created = split_email(item.get("email", ""))
-    entry = db_entry_from_client(item, created=created, enabled=True)
-    entry["connection"] = inbound_tag(inbound)
-    db_clients(db)[name] = entry
-    return entry
+    try:
+        return client_crud.db_entry_for_existing_client(config, db, name)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, payment_type="free"):
