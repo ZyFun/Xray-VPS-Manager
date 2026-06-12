@@ -259,24 +259,26 @@ def import_activity_events(connection: sqlite3.Connection, client_log_dir: Path,
         return
     client_names = set(clients.list_clients(connection))
     for path in sorted(client_log_dir.glob("*.jsonl")):
-        for index, line in enumerate(path.read_text(errors="replace").splitlines(), start=1):
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                summary.warn(f"activity event skipped: invalid JSON in {path.name}:{index}")
-                continue
-            if not isinstance(event, dict):
-                summary.warn(f"activity event skipped: non-object in {path.name}:{index}")
-                continue
-            name = str(event.get("client") or event.get("client_name") or "")
-            if name not in client_names:
-                summary.increment("skipped_activity_events")
-                summary.warn(f"activity event skipped: client {name or '-'} is absent from clients.json")
-                continue
-            activity.add_event(connection, event)
-            summary.increment("activity_events")
+        with database.transaction(connection):
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for index, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        summary.warn(f"activity event skipped: invalid JSON in {path.name}:{index}")
+                        continue
+                    if not isinstance(event, dict):
+                        summary.warn(f"activity event skipped: non-object in {path.name}:{index}")
+                        continue
+                    name = str(event.get("client") or event.get("client_name") or "")
+                    if name not in client_names:
+                        summary.increment("skipped_activity_events")
+                        summary.warn(f"activity event skipped: client {name or '-'} is absent from clients.json")
+                        continue
+                    activity.add_event(connection, event)
+                    summary.increment("activity_events")
 
 
 def import_telegram(connection: sqlite3.Connection, db: dict[str, Any], summary: ImportSummary) -> None:

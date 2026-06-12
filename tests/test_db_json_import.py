@@ -1,6 +1,9 @@
 from pathlib import Path
+from contextlib import contextmanager
+import json
 import tempfile
 import unittest
+from unittest import mock
 
 from fixture_json_state import write_json_state_fixture
 from xray_vps_manager.db import database, json_import
@@ -64,6 +67,45 @@ class JsonToSQLiteImportTests(unittest.TestCase):
                 self.assertEqual(clients.get_client(connection, "alice")["id"], "00000000-0000-0000-0000-000000000001")
             finally:
                 connection.close()
+
+    def test_activity_events_are_imported_inside_file_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            activity_dir = root / "activity"
+            activity_dir.mkdir()
+            log_path = activity_dir / "alice.jsonl"
+            log_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"time": "2026-06-12T08:00:00Z", "client": "alice", "target": "tcp:example.com:443"}),
+                        json.dumps({"time": "2026-06-12T08:01:00Z", "client": "alice", "target": "tcp:example.org:443"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            connection = database.open_database(":memory:")
+            clients.upsert_client(
+                connection,
+                "alice",
+                {"id": "00000000-0000-0000-0000-000000000001", "enabled": True},
+            )
+            summary = json_import.ImportSummary()
+            transaction_entry_states = []
+            original_transaction = database.transaction
+
+            @contextmanager
+            def recording_transaction(conn):
+                transaction_entry_states.append(conn.in_transaction)
+                with original_transaction(conn) as active:
+                    yield active
+
+            with mock.patch.object(json_import.database, "transaction", recording_transaction):
+                json_import.import_activity_events(connection, activity_dir, summary)
+
+            self.assertEqual(summary.counts["activity_events"], 2)
+            self.assertEqual(transaction_entry_states.count(False), 1)
+            self.assertGreaterEqual(transaction_entry_states.count(True), 2)
 
 
 if __name__ == "__main__":
