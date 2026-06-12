@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import connections as client_connections
+from xray_vps_manager.clients import crud as client_crud
 from xray_vps_manager.clients import limits as client_limits
 from xray_vps_manager.clients import listing as client_listing
 from xray_vps_manager.clients import links as client_links
@@ -949,22 +950,14 @@ def cmd_traffic_period(name, start_value, end_value):
 
 
 def resolve_connection_for_add(config, db, connection_tag=None):
-    ensure_connections(config, db)
-    connections = list(db_connections(db))
-    if connection_tag:
-        if connection_tag not in db_connections(db):
-            die(f"Connection not found: {connection_tag}")
-        return connection_tag
-    if len(connections) == 1:
-        return connections[0]
-    die("Multiple connections found. Use --connection TAG.")
+    try:
+        return client_crud.resolve_connection_for_add(config, db, connection_tag)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def all_client_names(config, db):
-    names = set(db_clients(db))
-    for inbound in reality_inbounds(config):
-        names.update(client_name(item) for item in clients(inbound) if client_name(item))
-    return names
+    return client_crud.all_client_names(config, db)
 
 
 def db_entry_for_existing_client(config, db, name):
@@ -988,30 +981,17 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
     payment_type = normalize_payment_type(payment_type)
     config = load_config()
     db = load_db()
-    ensure_connections(config, db)
-    connection_tag = resolve_connection_for_add(config, db, connection_tag)
-    inbound = find_inbound_by_tag(config, connection_tag)
-    current = clients(inbound)
-    if name in all_client_names(config, db):
-        die(f"Client already exists: {name}")
+    try:
+        connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag)
+    except ValueError as exc:
+        die(str(exc))
 
     if prompt_for_access:
         access_days = prompt_access_days()
-
-    created = utc_now_iso()
-    client_id = xray_uuid()
-    client = {
-        "id": client_id,
-        "flow": "xtls-rprx-vision",
-        "level": 0,
-        "email": f"{name}|created={created}",
-    }
-    current.append(client)
-    entry = db_entry_from_client(client, created=created, enabled=True)
-    entry["connection"] = connection_tag
-    set_entry_payment_type(entry, payment_type)
-    set_entry_expiry(entry, access_days)
-    db_clients(db)[name] = entry
+    try:
+        result = client_crud.add_client(config, db, name, access_days, connection_tag, payment_type)
+    except ValueError as exc:
+        die(str(exc))
 
     backup = save_config(config)
     try:
@@ -1026,13 +1006,13 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
         die(f"New config failed. Restored backup: {backup}")
 
     print(f"Added client: {name}")
-    print(f"Connection: {connection_display_name(config, db, connection_tag)} ({connection_tag})")
-    print(f"Payment type: {payment_type_label(entry)}")
-    print(f"Created: {created}")
-    print(f"Access until: {format_access_until(entry.get('expiresAt', ''))}")
+    print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
+    print(f"Payment type: {payment_type_label(result.entry)}")
+    print(f"Created: {result.created}")
+    print(f"Access until: {format_access_until(result.entry.get('expiresAt', ''))}")
     print(f"Backup: {backup}")
     print_payment_summary()
-    print(link_for(config, client_id, name, connection_tag, db))
+    print(link_for(config, result.client_id, name, result.connection_tag, db))
 
 
 def cmd_set_payment(name, payment_value):

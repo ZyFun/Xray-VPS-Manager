@@ -1,0 +1,88 @@
+"""Client create/update/delete domain helpers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+from typing import Callable
+
+from xray_vps_manager.clients import access
+from xray_vps_manager.clients import connections
+from xray_vps_manager.clients.models import client_name, db_entry_from_client, normalize_payment_type
+from xray_vps_manager.clients.repository import db_clients, db_connections
+from xray_vps_manager.core.time import utc_stamp
+from xray_vps_manager.xray import crypto as xray_crypto
+from xray_vps_manager.xray.config import clients, find_inbound_by_tag, reality_inbounds
+
+
+@dataclass
+class AddClientResult:
+    name: str
+    client_id: str
+    created: str
+    connection_tag: str
+    entry: dict[str, Any]
+
+
+def resolve_connection_for_add(config: dict[str, Any], db: dict[str, Any], connection_tag: str | None = None) -> str:
+    connections.ensure_connections(config, db)
+    connection_tags = list(db_connections(db))
+    if connection_tag:
+        if connection_tag not in db_connections(db):
+            raise ValueError(f"Connection not found: {connection_tag}")
+        return connection_tag
+    if len(connection_tags) == 1:
+        return connection_tags[0]
+    raise ValueError("Multiple connections found. Use --connection TAG.")
+
+
+def all_client_names(config: dict[str, Any], db: dict[str, Any]) -> set[str]:
+    names = set(db_clients(db))
+    for inbound in reality_inbounds(config):
+        names.update(client_name(item) for item in clients(inbound) if client_name(item))
+    return names
+
+
+def prepare_add_client(config: dict[str, Any], db: dict[str, Any], name: str, connection_tag: str | None = None) -> str:
+    selected_tag = resolve_connection_for_add(config, db, connection_tag)
+    if name in all_client_names(config, db):
+        raise ValueError(f"Client already exists: {name}")
+    return selected_tag
+
+
+def add_client(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    access_days: int | None = None,
+    connection_tag: str | None = None,
+    payment_type: str = "free",
+    uuid_factory: Callable[[], str] = xray_crypto.xray_uuid,
+) -> AddClientResult:
+    connections.ensure_connections(config, db)
+    selected_tag = prepare_add_client(config, db, name, connection_tag)
+    inbound = find_inbound_by_tag(config, selected_tag)
+    current = clients(inbound)
+
+    created = utc_stamp()
+    client_id = uuid_factory()
+    client = {
+        "id": client_id,
+        "flow": "xtls-rprx-vision",
+        "level": 0,
+        "email": f"{name}|created={created}",
+    }
+    current.append(client)
+    entry = db_entry_from_client(client, created=created, enabled=True)
+    entry["connection"] = selected_tag
+    entry["paymentType"] = normalize_payment_type(payment_type)
+    access.set_entry_expiry(entry, access_days)
+    db_clients(db)[name] = entry
+
+    return AddClientResult(
+        name=name,
+        client_id=client_id,
+        created=created,
+        connection_tag=selected_tag,
+        entry=entry,
+    )
