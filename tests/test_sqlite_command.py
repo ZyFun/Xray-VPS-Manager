@@ -179,6 +179,54 @@ class SQLiteCommandTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.code, 1)
 
+    def test_validate_cutover_passes_when_database_and_flags_are_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            connection = database.open_database(db_path)
+            try:
+                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
+            finally:
+                connection.close()
+
+            stdout = StringIO()
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", db_path), mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
+                clear=True,
+            ), redirect_stdout(stdout):
+                code = sqlite_command.validate_cutover()
+
+            self.assertEqual(code, 0)
+            output = stdout.getvalue()
+            self.assertIn("OK SQLite cutover validation passed.", output)
+            self.assertIn("clients_source: sqlite", output)
+            self.assertIn("traffic_source: sqlite", output)
+            self.assertIn("telegram_source: sqlite", output)
+            self.assertIn("activity_source: sqlite", output)
+
+    def test_validate_cutover_fails_when_flags_are_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            connection = database.open_database(db_path)
+            try:
+                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
+            finally:
+                connection.close()
+
+            stdout = StringIO()
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", db_path), mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "0", "XRAY_MANAGER_SQLITE_WRITES": "0"},
+                clear=True,
+            ), redirect_stdout(stdout):
+                code = sqlite_command.validate_cutover()
+
+            self.assertEqual(code, 1)
+            output = stdout.getvalue()
+            self.assertIn("ERROR SQLite reads flag is disabled", output)
+            self.assertIn("ERROR SQLite writes flag is disabled", output)
+            self.assertIn("ERROR clients read layer is not using SQLite", output)
+
 
 if __name__ == "__main__":
     unittest.main()

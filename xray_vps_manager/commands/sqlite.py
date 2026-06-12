@@ -9,9 +9,13 @@ import sys
 from pathlib import Path
 
 from xray_vps_manager.commands import backup as backup_command
+from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.paths import MANAGER_DB_PATH, SERVER_ENV_PATH
 from xray_vps_manager.core.server_env import read_server_env, write_server_env
 from xray_vps_manager.db import database, json_import, schema
+from xray_vps_manager.telegram import settings as telegram_settings
+from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.db.storage import (
     SQLITE_READS_SERVER_ENV,
     SQLITE_WRITES_SERVER_ENV,
@@ -131,6 +135,126 @@ def validate_database_ready() -> dict[str, int]:
         return database_counts(connection)
     finally:
         connection.close()
+
+
+def relationship_issues(connection) -> list[str]:
+    checks = (
+        (
+            "clients with missing Reality connection",
+            """
+            SELECT COUNT(*)
+            FROM clients c
+            WHERE c.connection_tag IS NOT NULL
+              AND c.connection_tag != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM reality_connections r WHERE r.tag = c.connection_tag
+              )
+            """,
+        ),
+        (
+            "traffic rows with missing client",
+            """
+            SELECT COUNT(*)
+            FROM traffic_totals t
+            WHERE NOT EXISTS (
+                SELECT 1 FROM clients c WHERE c.name = t.client_name
+            )
+            """,
+        ),
+        (
+            "activity rows with missing client",
+            """
+            SELECT COUNT(*)
+            FROM activity_events a
+            WHERE NOT EXISTS (
+                SELECT 1 FROM clients c WHERE c.name = a.client_name
+            )
+            """,
+        ),
+        (
+            "Telegram subscriptions with missing client",
+            """
+            SELECT COUNT(*)
+            FROM telegram_subscriptions t
+            WHERE t.client_name IS NOT NULL
+              AND t.client_name != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM clients c WHERE c.name = t.client_name
+              )
+            """,
+        ),
+    )
+    issues = []
+    for label, query in checks:
+        count = int(connection.execute(query).fetchone()[0])
+        if count:
+            issues.append(f"{label}: {count}")
+    return issues
+
+
+def validate_read_layers() -> tuple[list[str], dict[str, str]]:
+    issues = []
+    sources: dict[str, str] = {}
+
+    client_result = client_repository.load_db_for_read_result(db_path=MANAGER_DB_PATH)
+    sources["clients"] = client_result.source
+    if client_result.source != "sqlite":
+        issues.append("clients read layer is not using SQLite")
+
+    traffic_result = traffic_repository.load_traffic_db_for_read_result(db_path=MANAGER_DB_PATH)
+    sources["traffic"] = traffic_result.source
+    if traffic_result.source != "sqlite":
+        issues.append("traffic read layer is not using SQLite")
+
+    telegram_result = telegram_settings.load_db_for_read_result(db_path=MANAGER_DB_PATH)
+    sources["telegram"] = telegram_result.source
+    if telegram_result.source != "sqlite":
+        issues.append("Telegram read layer is not using SQLite")
+
+    activity_clients = activity_repository.event_client_names_for_read(db_path=MANAGER_DB_PATH)
+    sources["activity"] = "sqlite" if activity_clients is not None else "json"
+    if activity_clients is None:
+        issues.append("activity read layer is not using SQLite")
+
+    return issues, sources
+
+
+def validate_cutover() -> int:
+    issues = []
+    try:
+        counts = validate_database_ready()
+    except Exception as exc:
+        print(f"ERROR database readiness: {exc}")
+        return 1
+
+    if not sqlite_reads_enabled():
+        issues.append("SQLite reads flag is disabled")
+    if not sqlite_writes_enabled():
+        issues.append("SQLite writes flag is disabled")
+
+    read_issues, sources = validate_read_layers()
+    issues.extend(read_issues)
+
+    connection = database.open_database(MANAGER_DB_PATH)
+    try:
+        issues.extend(relationship_issues(connection))
+    finally:
+        connection.close()
+
+    print("SQLite cutover validation")
+    print_counts(counts)
+    for name in sorted(sources):
+        print(f"{name}_source: {sources[name]}")
+
+    if issues:
+        print()
+        for issue in issues:
+            print(f"ERROR {issue}")
+        return 1
+
+    print()
+    print("OK SQLite cutover validation passed.")
+    return 0
 
 
 def run_systemctl(args: list[str], *, timeout: int = 30) -> None:
@@ -266,6 +390,7 @@ def usage() -> None:
         """Usage:
   xray-vps-manager sqlite status
   xray-vps-manager sqlite import-json [--no-replace]
+  xray-vps-manager sqlite validate-cutover
   xray-vps-manager sqlite cutover [--yes] [--skip-test]
   xray-vps-manager sqlite enable-reads
   xray-vps-manager sqlite disable-reads
@@ -289,6 +414,8 @@ def main() -> None:
     if command == "import-json":
         replace = "--no-replace" not in args
         sys.exit(import_json(replace=replace))
+    if command == "validate-cutover" and not args:
+        sys.exit(validate_cutover())
     if command == "cutover":
         allowed = {"--yes", "--skip-test"}
         unknown = [arg for arg in args if arg not in allowed]
