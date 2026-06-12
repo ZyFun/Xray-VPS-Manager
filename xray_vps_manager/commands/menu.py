@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from xray_vps_manager.commands import menu_activity_export_actions, menu_backup_actions
+from xray_vps_manager.commands import menu_activity_exception_actions, menu_activity_export_actions, menu_backup_actions
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
@@ -32,7 +32,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 15:16 UTC"
+MENU_UPDATED = "2026-06-12 15:25 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -922,149 +922,6 @@ def choose_traffic_client():
             if 1 <= index <= len(rows):
                 return rows[index - 1]["name"]
         print("Неизвестный клиент. Выбери номер из списка или 0 для возврата.")
-
-
-def activity_exception_rows():
-    result = subprocess.run(
-        ["xray-activity", "exceptions", "--plain"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        print(result.stderr.strip() or result.stdout.strip() or "Не удалось получить список исключений активности.")
-        return []
-    rows = []
-    for line in result.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 4:
-            continue
-        value, kind, created, source = parts[:4]
-        rows.append({
-            "value": value,
-            "kind": kind,
-            "created": created,
-            "source": source,
-        })
-    return rows
-
-
-def print_activity_exception_table(rows):
-    headers = ("№", "VALUE", "KIND", "CREATED", "SOURCE")
-    values = [
-        (str(index), row["value"], row["kind"], row["created"], row["source"])
-        for index, row in enumerate(rows, start=1)
-    ]
-    values.append(("0", "Назад", "", "", ""))
-    widths = [
-        max(len(headers[column]), *(len(str(row[column])) for row in values))
-        for column in range(len(headers))
-    ]
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in values:
-        print(table_row(row, widths))
-    print(border)
-
-
-def choose_activity_exception(action):
-    rows = activity_exception_rows()
-    if not rows:
-        print("Исключения suspicious не настроены.")
-        return ""
-    print(f"Выбери исключение для действия: {action}.")
-    print_activity_exception_table(rows)
-    while True:
-        choice = input("Исключение: ").strip()
-        if choice == "0":
-            return ""
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(rows):
-                return rows[index - 1]["value"]
-        print("Неизвестное исключение. Выбери номер из списка или 0 для возврата.")
-
-
-def activity_exception_candidate_rows(days):
-    result = subprocess.run(
-        ["xray-activity", "exception-candidates", days, "--plain"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        print(result.stderr.strip() or result.stdout.strip() or "Не удалось получить кандидатов для исключений.")
-        return []
-    rows = []
-    for line in result.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 8:
-            continue
-        value, kind, events, clients, risks, ports, last_seen, sample = parts[:8]
-        rows.append({
-            "value": value,
-            "kind": kind,
-            "events": events,
-            "clients": clients,
-            "risks": risks,
-            "ports": ports,
-            "lastSeen": last_seen,
-            "sample": sample,
-        })
-    return rows
-
-
-def print_activity_exception_candidate_table(rows):
-    headers = ("№", "VALUE", "KIND", "EVENTS", "CLIENTS", "RISKS", "PORTS", "LAST SEEN")
-    values = [
-        (
-            str(index),
-            row["value"],
-            row["kind"],
-            row["events"],
-            row["clients"],
-            row["risks"],
-            row["ports"],
-            row["lastSeen"],
-        )
-        for index, row in enumerate(rows, start=1)
-    ]
-    values.append(("0", "Назад", "", "", "", "", "", ""))
-    widths = [
-        max(len(headers[column]), *(len(str(row[column])) for row in values))
-        for column in range(len(headers))
-    ]
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in values:
-        print(table_row(row, widths))
-    print(border)
-
-
-def choose_activity_exception_candidate():
-    days = ask_activity_days(7)
-    rows = activity_exception_candidate_rows(days)
-    if not rows:
-        print("Кандидаты для исключений не найдены.")
-        return ""
-    print("Выбери адрес или IP из подозрительной активности, который нужно добавить в исключения.")
-    print("Уже добавленные исключения в этот список не попадают.")
-    print_activity_exception_candidate_table(rows[:50])
-    while True:
-        choice = input("Кандидат: ").strip()
-        if choice == "0":
-            return ""
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= min(len(rows), 50):
-                return rows[index - 1]["value"]
-        print("Неизвестный кандидат. Выбери номер из списка или 0 для возврата.")
 
 
 def server_env():
@@ -1998,47 +1855,6 @@ def activity_geoip_risk_details():
     call(["xray-activity", "geoip-risks", ask_activity_days(7)])
 
 
-def activity_exception_add_from_suspicious():
-    value = choose_activity_exception_candidate()
-    if not value:
-        print("Действие отменено.")
-        return
-    call(["xray-activity", "exception-add", value, "suspicious-menu"])
-
-
-def activity_exception_add_manual():
-    print("Введи домен, IP, CIDR или маску для исключения из suspicious.")
-    print("Примеры: mask.icloud.com, *.apple.com, 203.0.113.10, 203.0.113.0/24")
-    print("Исключение не удаляет события из журнала, а скрывает совпавшие цели из suspicious/GeoIP-рисков.")
-    value = input("Исключение: ").strip()
-    if not value:
-        print("Действие отменено.")
-        return
-    call(["xray-activity", "exception-add", value, "manual-menu"])
-
-
-def activity_exception_delete_from_menu():
-    value = choose_activity_exception("удаления")
-    if not value:
-        print("Действие отменено.")
-        return
-    call(["xray-activity", "exception-delete", value])
-
-
-def activity_exception_delete_all_from_menu():
-    rows = activity_exception_rows()
-    if not rows:
-        print("Исключения suspicious не настроены.")
-        return
-    print()
-    print(f"Будут удалены все исключения suspicious: {len(rows)}")
-    print("Журнал активности, клиенты и конфигурация Xray не изменятся.")
-    if not confirm("Удалить все исключения suspicious"):
-        print("Удаление отменено.")
-        return
-    call(["xray-activity", "exception-delete-all", "--yes"])
-
-
 def update_telegram_route_mode():
     print("Как Telegram-боту выходить в интернет?")
     print("1) direct: напрямую с этого сервера")
@@ -2849,10 +2665,19 @@ def suspicious_menu_handlers():
 def activity_exception_menu_handlers():
     return {
         "1": ("Показать исключения", lambda: call(["xray-activity", "exceptions"])),
-        "2": ("Добавить из suspicious", activity_exception_add_from_suspicious),
-        "3": ("Добавить вручную", activity_exception_add_manual),
-        "4": ("Удалить исключение", activity_exception_delete_from_menu),
-        "5": ("Удалить все исключения", activity_exception_delete_all_from_menu),
+        "2": (
+            "Добавить из suspicious",
+            lambda: menu_activity_exception_actions.activity_exception_add_from_suspicious(call, ask_activity_days),
+        ),
+        "3": ("Добавить вручную", lambda: menu_activity_exception_actions.activity_exception_add_manual(call)),
+        "4": (
+            "Удалить исключение",
+            lambda: menu_activity_exception_actions.activity_exception_delete_from_menu(call),
+        ),
+        "5": (
+            "Удалить все исключения",
+            lambda: menu_activity_exception_actions.activity_exception_delete_all_from_menu(call, confirm),
+        ),
     }
 
 
