@@ -26,6 +26,11 @@ def telegram_db() -> dict:
         "paymentCurrency": "$",
         "paymentRoundingMode": "step",
         "paymentRoundingStep": "50",
+        "paymentTransferMethod": "phone",
+        "paymentPhone": "+79991234567",
+        "paymentBank": "Т-Банк (Тинькофф)",
+        "paymentCard": "",
+        "paymentBankAccount": "",
         "geoipState": {"sentIds": ["geo-1"]},
         "clientSubscriptionState": {"userUpdateOffset": 10, "expiryReminders": {"111": "sent"}},
         "dailySummaryState": {"lastSentDay": "2026-06-12"},
@@ -86,6 +91,7 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
             )
             sqlite_telegram.set_setting(connection, "botName", "OldBot")
             sqlite_settings.set_payment_setting(connection, "paymentTotalAmount", "1")
+            sqlite_settings.set_payment_setting(connection, "paymentTransferMethod", "none")
             sqlite_telegram.set_state(connection, "dailySummaryState", {"lastSentDay": "old"})
             sqlite_telegram.upsert_subscription(
                 connection,
@@ -160,6 +166,9 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
                 self.assertEqual(sqlite_telegram.get_setting(connection, "enabled"), "true")
                 self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTotalAmount"), "500")
                 self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentCurrency"), "$")
+                self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTransferMethod"), "phone")
+                self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentPhone"), "+79991234567")
+                self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentBank"), "Т-Банк (Тинькофф)")
                 self.assertEqual(sqlite_telegram.get_state(connection, "dailySummaryState"), {"lastSentDay": "2026-06-12"})
                 subscriptions = sqlite_telegram.list_subscriptions(connection)
             finally:

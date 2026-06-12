@@ -15,7 +15,12 @@ from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled, truthy
-from xray_vps_manager.telegram.payments import parse_payment_rounding_step, parse_payment_value
+from xray_vps_manager.telegram.payments import (
+    PAYMENT_SETTING_KEYS,
+    normalize_payment_transfer_method,
+    parse_payment_rounding_step,
+    parse_payment_value,
+)
 
 DEFAULT_BOT_NAME = "Vireika"
 
@@ -32,6 +37,11 @@ DEFAULT_DB = {
     "paymentCurrency": "₽",
     "paymentRoundingMode": "none",
     "paymentRoundingStep": "10",
+    "paymentTransferMethod": "none",
+    "paymentPhone": "",
+    "paymentBank": "",
+    "paymentCard": "",
+    "paymentBankAccount": "",
     "geoipState": {"files": {}, "sentIds": []},
     "clientSubscriptions": {},
     "clientSubscriptionState": {"userUpdateOffset": 0, "expiryReminders": {}},
@@ -121,6 +131,13 @@ def normalize_db(db):
         merged["paymentRoundingStep"] = parse_payment_rounding_step(merged.get("paymentRoundingStep", "10"))
     except ValueError:
         merged["paymentRoundingStep"] = "10"
+    try:
+        merged["paymentTransferMethod"] = normalize_payment_transfer_method(merged.get("paymentTransferMethod", "none"))
+    except ValueError:
+        merged["paymentTransferMethod"] = "none"
+    for key in ("paymentPhone", "paymentBank", "paymentCard", "paymentBankAccount"):
+        if not isinstance(merged.get(key, ""), str):
+            merged[key] = ""
     if merged.get("routeMode") not in ("direct", "cascade"):
         merged["routeMode"] = "direct"
     return merged
@@ -241,7 +258,7 @@ def write_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None, stric
         with database.transaction(connection):
             for key in ("version", "enabled", "token", "botName", "chatId", "chatLabel", "routeMode"):
                 sqlite_telegram.set_setting(connection, key, _sqlite_scalar(normalized.get(key, "")))
-            for key in ("paymentAmount", "paymentTotalAmount", "paymentCurrency", "paymentRoundingMode", "paymentRoundingStep"):
+            for key in PAYMENT_SETTING_KEYS:
                 sqlite_settings.set_payment_setting(connection, key, str(normalized.get(key, "")))
             for key in ("geoipState", "clientSubscriptionState", "dailySummaryState", "adminState"):
                 state = normalized.get(key)

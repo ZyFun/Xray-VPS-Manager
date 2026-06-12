@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from xray_vps_manager.telegram.payments import PAYMENT_PHONE_BANKS
+
 CommandRunner = Callable[[list[str]], None]
 ConfirmCallback = Callable[[str], bool]
 
@@ -125,6 +127,66 @@ def update_payment_amount(call: CommandRunner) -> None:
             return
         call(["xray-telegram", "payment-amount", f"{amount} {symbol}"])
     update_payment_rounding(call)
+
+
+def ask_payment_bank() -> str:
+    print("Выберите банк для перевода по номеру телефона.")
+    banks = {str(index): name for index, name in enumerate(PAYMENT_PHONE_BANKS, start=1)}
+    for number, name in banks.items():
+        print(f"{number}) {name}")
+    print("6) Указать название вручную")
+    choice = input("Банк [1-Т-Банк]: ").strip() or "1"
+    if choice in banks:
+        return banks[choice]
+    if choice == "6":
+        value = input("Название банка: ").strip()
+        if not value:
+            die("Bank name is required.")
+        return value
+    print("Действие отменено: неизвестный банк.")
+    return ""
+
+
+def update_payment_details(call: CommandRunner) -> None:
+    call(["xray-telegram", "payment-details"])
+    print("Как дополнить сообщение с напоминанием об оплате?")
+    print("1) Оставить текущие реквизиты.")
+    print("2) Не указывать реквизиты. Сообщение останется как сейчас.")
+    print("3) Перевод по номеру карты.")
+    print("4) Перевод на счёт банка.")
+    print("5) Перевод по номеру телефона.")
+    choice = input("Реквизиты [1-оставить]: ").strip() or "1"
+    if choice == "1":
+        print("Реквизиты не изменены.")
+        return
+    if choice == "2":
+        call(["xray-telegram", "payment-details", "none"])
+        return
+    if choice == "3":
+        print("Введите номер карты одной строкой. Он будет показан клиенту в напоминании.")
+        card = input("Номер карты: ").strip()
+        if not card:
+            die("Card number is required.")
+        call(["xray-telegram", "payment-details", "card", card])
+        return
+    if choice == "4":
+        print("Введите банковский счёт или реквизиты одной строкой. Они будут показаны клиенту в напоминании.")
+        account = input("Счёт банка: ").strip()
+        if not account:
+            die("Bank account is required.")
+        call(["xray-telegram", "payment-details", "bank-account", account])
+        return
+    if choice == "5":
+        print("Введите номер телефона одной строкой. Например: +7 999 123-45-67.")
+        phone = input("Номер телефона: ").strip()
+        if not phone:
+            die("Phone number is required.")
+        bank = ask_payment_bank()
+        if not bank:
+            return
+        call(["xray-telegram", "payment-details", "phone", phone, bank])
+        return
+    print("Действие отменено: неизвестный выбор.")
 
 
 def update_bot_name(call: CommandRunner) -> None:

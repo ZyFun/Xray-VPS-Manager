@@ -37,6 +37,8 @@ class JsonToSQLiteImportTests(unittest.TestCase):
             self.assertEqual(telegram.get_setting(connection, "botName"), "Vireika")
             self.assertEqual(telegram.get_state(connection, "dailySummaryState"), {"lastSentDay": "2026-06-11"})
             self.assertEqual(settings.get_payment_setting(connection, "paymentTotalAmount"), "500")
+            self.assertEqual(settings.get_payment_setting(connection, "paymentTransferMethod"), "phone")
+            self.assertEqual(settings.get_payment_setting(connection, "paymentPhone"), "+79991234567")
 
     def test_import_is_repeatable_with_replace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

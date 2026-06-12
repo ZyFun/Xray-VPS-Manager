@@ -35,7 +35,27 @@ class TelegramMessageTests(unittest.TestCase):
         self.assertIn("Через 5 дней заканчивается текущий период.", text)
         self.assertIn("Доступ до: 2026-07-04 00:00 Europe/Moscow", text)
         self.assertIn("Сумма оплаты: 500 ₽", text)
+        self.assertNotIn("Перевод нужно выполнить", text)
         self.assertNotIn("internal_client", text)
+
+    def test_expiry_reminder_includes_phone_payment_details(self) -> None:
+        text = messages.build_expiry_reminder_message(
+            {
+                "paymentTransferMethod": "phone",
+                "paymentPhone": "+79991234567",
+                "paymentBank": "Т-Банк (Тинькофф)",
+            },
+            {},
+            1,
+            datetime(2026, 7, 4, 0, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+            "Europe/Moscow",
+            bot_name,
+            payment_amount_label,
+        )
+
+        self.assertIn("Через 1 день заканчивается текущий период.", text)
+        self.assertIn("Перевод нужно выполнить по номеру телефона:\n+79991234567", text)
+        self.assertIn("Банк: Т-Банк (Тинькофф)", text)
 
     def test_access_updated_message_uses_friendly_payment_received_text(self) -> None:
         text = messages.build_access_updated_message(

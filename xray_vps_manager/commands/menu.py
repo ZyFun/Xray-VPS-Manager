@@ -20,7 +20,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 22:41 UTC"
+MENU_UPDATED = "2026-06-12 23:39 UTC"
 
 
 def die(message):
@@ -78,9 +78,10 @@ def telegram_menu_actions():
         ("10", "Обработать сообщения пользователей"),
         ("11", "Проверить напоминания об оплате"),
         ("12", "Настроить оплату и округление"),
-        ("13", "Изменить имя бота"),
-        ("14", "Уведомить о работах на сервере"),
-        ("15", "Обновить меню команд Telegram"),
+        ("13", "Настроить реквизиты оплаты"),
+        ("14", "Изменить имя бота"),
+        ("15", "Уведомить о работах на сервере"),
+        ("16", "Обновить меню команд Telegram"),
         ("0", "Назад"),
     ]
 
@@ -477,9 +478,10 @@ def telegram_menu_handlers():
         "10": ("Обработать сообщения пользователей", lambda: menu_telegram_actions.poll_users(call)),
         "11": ("Проверить напоминания об оплате", lambda: menu_telegram_actions.notify_expiry(call)),
         "12": ("Настроить оплату и округление", lambda: menu_telegram_actions.update_payment_amount(call)),
-        "13": ("Изменить имя бота", lambda: menu_telegram_actions.update_bot_name(call)),
-        "14": ("Уведомить о работах на сервере", lambda: menu_telegram_actions.send_maintenance_notice(call, confirm)),
-        "15": ("Обновить меню команд Telegram", lambda: menu_telegram_actions.update_commands_menu(call)),
+        "13": ("Настроить реквизиты оплаты", lambda: menu_telegram_actions.update_payment_details(call)),
+        "14": ("Изменить имя бота", lambda: menu_telegram_actions.update_bot_name(call)),
+        "15": ("Уведомить о работах на сервере", lambda: menu_telegram_actions.send_maintenance_notice(call, confirm)),
+        "16": ("Обновить меню команд Telegram", lambda: menu_telegram_actions.update_commands_menu(call)),
     }
 
 

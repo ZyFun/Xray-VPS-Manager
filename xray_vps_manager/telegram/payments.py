@@ -4,6 +4,28 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 
+PAYMENT_SETTING_KEYS = (
+    "paymentAmount",
+    "paymentTotalAmount",
+    "paymentCurrency",
+    "paymentRoundingMode",
+    "paymentRoundingStep",
+    "paymentTransferMethod",
+    "paymentPhone",
+    "paymentBank",
+    "paymentCard",
+    "paymentBankAccount",
+)
+
+PAYMENT_TRANSFER_METHODS = ("none", "phone", "card", "bank-account")
+PAYMENT_PHONE_BANKS = (
+    "Т-Банк (Тинькофф)",
+    "Сбербанк",
+    "ВТБ",
+    "Альфа-Банк",
+    "Газпромбанк",
+)
+
 
 def decimal_storage_value(value):
     return format(Decimal(value).normalize(), "f")
@@ -137,6 +159,7 @@ def payment_summary(db, client_db):
         "paidCount": count,
         "rounding": payment_rounding_label(db),
         "share": format_payment_amount(share, currency) if share else "не рассчитана",
+        "transfer": payment_transfer_label(db),
     }
     if not total and count > 0:
         summary["warning"] = (
@@ -165,3 +188,132 @@ def apply_payment_rounding(db, mode_value, step_value=None):
     if "paymentRoundingStep" not in db:
         db["paymentRoundingStep"] = "10"
     return mode, db["paymentRoundingStep"]
+
+
+def _one_line(value, label, max_length=128):
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(f"{label} не может быть пустым.")
+    if any(char in raw for char in "\r\n\t"):
+        raise ValueError(f"{label} должно быть одной строкой.")
+    if len(raw) > max_length:
+        raise ValueError(f"{label} слишком длинное.")
+    return raw
+
+
+def normalize_phone_number(value):
+    raw = _one_line(value, "Номер телефона", max_length=64)
+    digits = "".join(char for char in raw if char.isdigit())
+    if len(digits) < 7:
+        raise ValueError("Номер телефона слишком короткий.")
+    if raw.lstrip().startswith("+"):
+        return f"+{digits}"
+    if len(digits) == 11 and digits.startswith("8"):
+        return f"+7{digits[1:]}"
+    return f"+{digits}"
+
+
+def normalize_payment_transfer_method(value):
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "": "none",
+        "none": "none",
+        "clear": "none",
+        "off": "none",
+        "no": "none",
+        "0": "none",
+        "phone": "phone",
+        "phone-number": "phone",
+        "tel": "phone",
+        "1": "phone",
+        "card": "card",
+        "card-number": "card",
+        "2": "card",
+        "bank": "bank-account",
+        "bank-account": "bank-account",
+        "account": "bank-account",
+        "3": "bank-account",
+    }
+    method = aliases.get(raw, raw)
+    if method not in PAYMENT_TRANSFER_METHODS:
+        raise ValueError("Способ перевода должен быть none, phone, card или bank-account.")
+    return method
+
+
+def normalized_payment_transfer(db):
+    try:
+        method = normalize_payment_transfer_method(db.get("paymentTransferMethod", "none"))
+    except ValueError:
+        method = "none"
+    if method == "phone":
+        phone = str(db.get("paymentPhone") or "").strip()
+        bank = str(db.get("paymentBank") or "").strip()
+        if phone and bank:
+            return method, phone, bank
+        return "none", "", ""
+    if method == "card":
+        card = str(db.get("paymentCard") or "").strip()
+        if card:
+            return method, card, ""
+        return "none", "", ""
+    if method == "bank-account":
+        account = str(db.get("paymentBankAccount") or "").strip()
+        if account:
+            return method, account, ""
+        return "none", "", ""
+    return "none", "", ""
+
+
+def payment_transfer_label(db):
+    method, value, bank = normalized_payment_transfer(db)
+    if method == "phone":
+        return f"по номеру телефона {value}, банк: {bank}"
+    if method == "card":
+        return f"по номеру карты {value}"
+    if method == "bank-account":
+        return f"на банковский счёт {value}"
+    return "не указаны"
+
+
+def payment_transfer_message_lines(db):
+    method, value, bank = normalized_payment_transfer(db)
+    if method == "phone":
+        return [
+            "Перевод нужно выполнить по номеру телефона:",
+            value,
+            f"Банк: {bank}",
+        ]
+    if method == "card":
+        return [f"Перевод нужно выполнить по номеру карты: {value}"]
+    if method == "bank-account":
+        return [f"Перевод нужно выполнить на банковский счёт: {value}"]
+    return []
+
+
+def clear_payment_transfer(db):
+    db["paymentTransferMethod"] = "none"
+    db["paymentPhone"] = ""
+    db["paymentBank"] = ""
+    db["paymentCard"] = ""
+    db["paymentBankAccount"] = ""
+
+
+def apply_payment_transfer(db, method_value, value="", bank=""):
+    method = normalize_payment_transfer_method(method_value)
+    clear_payment_transfer(db)
+    if method == "none":
+        return method
+    if method == "phone":
+        db["paymentTransferMethod"] = method
+        db["paymentPhone"] = normalize_phone_number(value)
+        db["paymentBank"] = _one_line(bank, "Банк", max_length=64)
+        return method
+    if method == "card":
+        db["paymentTransferMethod"] = method
+        db["paymentCard"] = _one_line(value, "Номер карты", max_length=64)
+        return method
+    if method == "bank-account":
+        db["paymentTransferMethod"] = method
+        db["paymentBankAccount"] = _one_line(value, "Банковский счёт", max_length=128)
+        return method
+    raise ValueError("Неизвестный способ перевода.")

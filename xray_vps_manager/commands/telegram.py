@@ -262,6 +262,7 @@ def print_payment_summary(db, client_db=None):
     print(f"Paid clients: {summary['paidCount']}")
     print(f"Rounding: {summary['rounding']}")
     print(f"Amount per paid client: {summary['share']}")
+    print(f"Payment details: {summary['transfer']}")
     if summary.get("warning"):
         print(f"WARN: {summary['warning']}")
 
@@ -285,6 +286,13 @@ def set_payment_rounding(mode_value, step_value=None):
 
 def show_payment_amount():
     db = load_db_readonly()
+    print_payment_summary(db)
+
+
+def set_payment_details(method, value="", bank=""):
+    db = load_db()
+    telegram_payments.apply_payment_transfer(db, method, value, bank)
+    save_db(db)
     print_payment_summary(db)
 
 
@@ -378,6 +386,7 @@ def status():
         ("Route mode", db.get("routeMode", "direct")),
         ("Payment amount", payment_amount_label(db)),
         ("Payment rounding", telegram_payments.payment_rounding_label(db)),
+        ("Payment details", telegram_payments.payment_transfer_label(db)),
         ("Client subscriptions", str(len(subscriptions))),
         ("Config", str(TELEGRAM_DB_PATH)),
         ("Last GeoIP notification", db.get("geoipState", {}).get("lastGeoipNotification") or db.get("lastGeoipNotification") or "never"),
@@ -412,6 +421,7 @@ def usage():
   xray-telegram subscribers
   xray-telegram payment-amount [VALUE]
   xray-telegram payment-rounding [none|step VALUE]
+  xray-telegram payment-details [none|phone PHONE BANK|card CARD_NUMBER|bank-account ACCOUNT]
 """
     )
 
@@ -500,6 +510,18 @@ def main():
                 set_payment_rounding(args[1], args[2])
             elif len(args) == 2:
                 set_payment_rounding(args[1])
+            else:
+                usage()
+                sys.exit(1)
+        elif command == "payment-details" and len(args) >= 1:
+            if len(args) == 1:
+                show_payment_amount()
+            elif args[1] in ("none", "clear", "off") and len(args) == 2:
+                set_payment_details(args[1])
+            elif args[1] == "phone" and len(args) >= 4:
+                set_payment_details(args[1], args[2], " ".join(args[3:]))
+            elif args[1] in ("card", "bank-account") and len(args) >= 3:
+                set_payment_details(args[1], " ".join(args[2:]))
             else:
                 usage()
                 sys.exit(1)

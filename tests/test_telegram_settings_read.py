@@ -33,6 +33,9 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
                 "paymentCurrency": "₽",
                 "paymentRoundingMode": "none",
                 "paymentRoundingStep": "10",
+                "paymentTransferMethod": "phone",
+                "paymentPhone": "+79991112233",
+                "paymentBank": "Сбербанк",
                 "clientSubscriptions": {
                     "111": {
                         "client": "json_client",
@@ -91,6 +94,8 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
                 "paymentCurrency": "$",
                 "paymentRoundingMode": "step",
                 "paymentRoundingStep": "50",
+                "paymentTransferMethod": "card",
+                "paymentCard": "2200 0000 0000 0000",
             }.items():
                 sqlite_settings.set_payment_setting(connection, key, value)
             sqlite_telegram.set_state(connection, "dailySummaryState", {"lastSentDay": "2026-06-12"})
@@ -142,6 +147,8 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
             self.assertEqual(result.db["botName"], "SQLiteBot")
             self.assertEqual(result.db["paymentTotalAmount"], "500")
             self.assertEqual(result.db["paymentCurrency"], "$")
+            self.assertEqual(result.db["paymentTransferMethod"], "card")
+            self.assertEqual(result.db["paymentCard"], "2200 0000 0000 0000")
             self.assertEqual(result.db["dailySummaryState"], {"lastSentDay": "2026-06-12"})
             self.assertEqual(
                 result.db["clientSubscriptions"]["222"],

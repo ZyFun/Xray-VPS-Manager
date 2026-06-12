@@ -26,6 +26,7 @@ from xray_vps_manager.core.paths import (
 from xray_vps_manager.activity.exceptions import classify_exception_value
 from xray_vps_manager.db import database, schema
 from xray_vps_manager.db.repositories import activity, clients, connections, settings, telegram, traffic
+from xray_vps_manager.telegram.payments import PAYMENT_SETTING_KEYS
 from xray_vps_manager.db.repositories.base import encode_json
 
 
@@ -290,7 +291,7 @@ def import_telegram(connection: sqlite3.Connection, db: dict[str, Any], summary:
             telegram.set_setting(connection, key, str(db.get(key) or ""))
             summary.increment("telegram_settings")
 
-    for key in ("paymentAmount", "paymentTotalAmount", "paymentCurrency", "paymentRoundingMode", "paymentRoundingStep"):
+    for key in PAYMENT_SETTING_KEYS:
         if key in db:
             settings.set_payment_setting(connection, key, str(db.get(key) or ""))
             summary.increment("payment_settings")

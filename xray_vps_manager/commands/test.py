@@ -328,6 +328,11 @@ def check_telegram_bot_db(diag):
         raise RuntimeError("telegram-bot.json paymentRoundingMode must be none or step")
     if not isinstance(db.get("paymentRoundingStep", "10"), str):
         raise RuntimeError("telegram-bot.json paymentRoundingStep must be a string")
+    if db.get("paymentTransferMethod", "none") not in ("none", "phone", "card", "bank-account"):
+        raise RuntimeError("telegram-bot.json paymentTransferMethod must be none, phone, card, or bank-account")
+    for key in ("paymentPhone", "paymentBank", "paymentCard", "paymentBankAccount"):
+        if not isinstance(db.get(key, ""), str):
+            raise RuntimeError(f"telegram-bot.json {key} must be a string")
     if not isinstance(db.get("clientSubscriptions", {}), dict):
         raise RuntimeError("telegram-bot.json clientSubscriptions must be an object")
     if not isinstance(db.get("clientSubscriptionState", {}), dict):

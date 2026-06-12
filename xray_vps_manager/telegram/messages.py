@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from xray_vps_manager.telegram import payments
+
 TELEGRAM_MESSAGE_LIMIT = 3900
 
 MAINTENANCE_NOTICE_TEMPLATES = {
@@ -70,17 +72,21 @@ def truncate_telegram_text(text, limit=TELEGRAM_MESSAGE_LIMIT):
 
 def build_expiry_reminder_message(db, entry, days_before, expiry_local, timezone_label, bot_name, payment_amount_label):
     day_word = "день" if days_before == 1 else "дней"
-    return "\n".join(
+    lines = [
+        f"{bot_name(db)}: напоминание об оплате",
+        "",
+        f"Через {days_before} {day_word} заканчивается текущий период.",
+        f"Доступ до: {expiry_local.strftime('%Y-%m-%d %H:%M')} {timezone_label}",
+        f"Сумма оплаты: {payment_amount_label(db)}",
+    ]
+    lines.extend(payments.payment_transfer_message_lines(db))
+    lines.extend(
         [
-            f"{bot_name(db)}: напоминание об оплате",
-            "",
-            f"Через {days_before} {day_word} заканчивается текущий период.",
-            f"Доступ до: {expiry_local.strftime('%Y-%m-%d %H:%M')} {timezone_label}",
-            f"Сумма оплаты: {payment_amount_label(db)}",
             "",
             "Когда будет удобно, переведи оплату за совместную аренду сервера.",
         ]
     )
+    return "\n".join(lines)
 
 
 def build_access_updated_message(db, entry, bot_name, format_access_until):
