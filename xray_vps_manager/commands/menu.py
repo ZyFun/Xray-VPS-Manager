@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from xray_vps_manager.commands import menu_backup_actions, menu_local_transfer
+from xray_vps_manager.commands import menu_activity_export_actions, menu_backup_actions
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
@@ -32,7 +32,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 15:05 UTC"
+MENU_UPDATED = "2026-06-12 15:16 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -922,83 +922,6 @@ def choose_traffic_client():
             if 1 <= index <= len(rows):
                 return rows[index - 1]["name"]
         print("Неизвестный клиент. Выбери номер из списка или 0 для возврата.")
-
-
-def activity_export_rows_for_selection():
-    result = subprocess.run(
-        ["xray-activity", "export-list", "--plain"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        print(result.stderr.strip() or result.stdout.strip() or "Не удалось получить список экспортов активности.")
-        return []
-
-    rows = []
-    for line in result.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 6:
-            continue
-        path, created, size, client, period, events = parts[:6]
-        rows.append({
-            "path": path,
-            "file": Path(path).name,
-            "created": created,
-            "size": size,
-            "client": client,
-            "period": period,
-            "events": events,
-        })
-    return rows
-
-
-def print_activity_export_selection_table(rows):
-    headers = ("№", "FILE", "CREATED", "SIZE", "CLIENT", "PERIOD", "EVENTS")
-    values = [
-        (
-            str(index),
-            row["file"],
-            row["created"],
-            row["size"],
-            row["client"],
-            row["period"],
-            row["events"],
-        )
-        for index, row in enumerate(rows, start=1)
-    ]
-    values.append(("0", "Назад", "", "", "", "", ""))
-    widths = [
-        max(len(headers[column]), *(len(str(row[column])) for row in values))
-        for column in range(len(headers))
-    ]
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in values:
-        print(table_row(row, widths))
-    print(border)
-
-
-def choose_activity_export(action):
-    rows = activity_export_rows_for_selection()
-    if not rows:
-        print("Архивы экспорта активности на сервере не найдены.")
-        return ""
-
-    print(f"Выбери архив экспорта активности для действия: {action}.")
-    print_activity_export_selection_table(rows)
-    while True:
-        choice = input("Архив: ").strip()
-        if choice == "0":
-            return ""
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(rows):
-                return rows[index - 1]["path"]
-        print("Неизвестный архив. Выбери номер из списка или 0 для возврата.")
 
 
 def activity_exception_rows():
@@ -2130,67 +2053,6 @@ def update_telegram_route_mode():
         print("Действие отменено: неизвестный маршрут.")
 
 
-def activity_export_report():
-    name = choose_client("экспорта журнала активности", "all")
-    if not name:
-        print("Действие отменено.")
-        return
-    today = datetime.now(timezone.utc).date()
-    default_start = today - timedelta(days=6)
-    start = input(f"START_DATE [{default_start.isoformat()}]: ").strip() or default_start.isoformat()
-    end = input(f"END_DATE [{today.isoformat()}]: ").strip() or today.isoformat()
-    result = subprocess.run(
-        ["xray-activity", "export", name, start, end, "--path-only"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        print(result.stderr.strip() or result.stdout.strip() or "Не удалось создать экспорт журнала активности.")
-        return
-
-    archive = result.stdout.strip().splitlines()[-1]
-    print(f"Экспорт создан на сервере: {archive}")
-    print()
-    print("Ниже будет команда для локального терминала на компьютере, с которого нужно скачать архив.")
-    default_target = menu_local_transfer.default_ssh_target()
-    ssh_target = input(f"SSH target/user@host [{default_target}]: ").strip() or default_target
-    default_dir = menu_local_transfer.choose_local_download_dir()
-    local_dir = input(f"Куда сохранить на локальной машине [{default_dir}]: ").strip() or default_dir
-    print()
-    call(["xray-activity", "download-command", archive, ssh_target, local_dir])
-
-
-def delete_activity_export_from_menu():
-    archive = choose_activity_export("удаления")
-    if not archive:
-        print("Действие отменено.")
-        return
-    print()
-    print(f"Будет удалён архив экспорта активности: {archive}")
-    print("Это действие удалит только архив на сервере. Журнал активности и данные Xray не изменятся.")
-    if not confirm("Удалить выбранный архив экспорта"):
-        print("Удаление отменено.")
-        return
-    call(["xray-activity", "export-delete", archive])
-
-
-def delete_all_activity_exports_from_menu():
-    rows = activity_export_rows_for_selection()
-    if not rows:
-        print("Архивы экспорта активности не найдены.")
-        return
-    print()
-    print(f"Будут удалены все архивы экспорта активности: {len(rows)}")
-    print("Это действие удалит только архивы в /root/xray_activity_exports.")
-    print("Журнал активности, traffic.json, clients.json и конфигурация Xray не изменятся.")
-    if not confirm("Удалить все архивы экспорта активности"):
-        print("Удаление отменено.")
-        return
-    call(["xray-activity", "export-delete-all", "--yes"])
-
-
 def activity_retention_value():
     result = subprocess.run(
         ["xray-activity", "retention"],
@@ -3002,10 +2864,19 @@ def activity_menu_handlers():
         "4": ("Синхронизировать сейчас", lambda: call(["xray-activity", "sync"])),
         "5": ("Отчёт по клиенту", activity_client_report),
         "6": ("Подозрительная активность", open_activity_suspicious_menu),
-        "7": ("Экспорт отчёта по клиенту", activity_export_report),
+        "7": (
+            "Экспорт отчёта по клиенту",
+            lambda: menu_activity_export_actions.activity_export_report(choose_client, call),
+        ),
         "8": ("Показать архивы экспорта", lambda: call(["xray-activity", "export-list"])),
-        "9": ("Удалить архив экспорта", delete_activity_export_from_menu),
-        "10": ("Удалить все архивы экспорта", delete_all_activity_exports_from_menu),
+        "9": (
+            "Удалить архив экспорта",
+            lambda: menu_activity_export_actions.delete_activity_export_from_menu(call, confirm),
+        ),
+        "10": (
+            "Удалить все архивы экспорта",
+            lambda: menu_activity_export_actions.delete_all_activity_exports_from_menu(call, confirm),
+        ),
         "11": ("Изменить срок хранения журнала", update_activity_retention),
         "12": ("Настроить лимиты suspicious", update_activity_risk_limits),
         "13": ("GeoIP routing: выбрать регион", set_xray_geoip_routing_region),
