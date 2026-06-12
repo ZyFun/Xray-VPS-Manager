@@ -12,6 +12,8 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core.server_env import read_server_env
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -107,20 +109,6 @@ def load_json(path):
         return json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{path} is not valid JSON: {exc}")
-
-
-def load_env(path):
-    if not path.exists():
-        raise RuntimeError(f"not found: {path}")
-    values = {}
-    for line in path.read_text().splitlines():
-        if not line.strip() or line.strip().startswith("#"):
-            continue
-        if "=" not in line:
-            raise RuntimeError(f"invalid line without '=': {line}")
-        key, value = line.split("=", 1)
-        values[key] = value.strip().strip('"').strip("'")
-    return values
 
 
 def parse_xray_version(output):
@@ -341,7 +329,7 @@ def check_telegram_bot_db(diag):
 
 
 def check_server_env(diag):
-    values = load_env(SERVER_ENV_PATH)
+    values = read_server_env(SERVER_ENV_PATH, strict=True, require_exists=True)
     diag.context["server_env"] = values
     missing = [key for key in ("SERVER_ADDR", "SERVER_NAME", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT") if key not in values]
     if missing:

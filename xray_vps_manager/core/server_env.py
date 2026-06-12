@@ -28,12 +28,24 @@ ORDERED_ENV_KEYS = [
 ]
 
 
-def read_server_env(path: Path = SERVER_ENV_PATH) -> dict[str, str]:
+def read_server_env(
+    path: Path = SERVER_ENV_PATH,
+    *,
+    strict: bool = False,
+    require_exists: bool = False,
+) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
+        if require_exists:
+            raise RuntimeError(f"not found: {path}")
         return values
     for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
         if "=" not in line:
+            if strict:
+                raise RuntimeError(f"invalid line without '=': {line}")
             continue
         key, value = line.split("=", 1)
         values[key] = value.strip().strip('"').strip("'")
