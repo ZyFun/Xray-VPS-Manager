@@ -104,6 +104,12 @@ def delete_subscription(connection: sqlite3.Connection, chat_id: str, client_uui
     return result.rowcount > 0
 
 
+def delete_all_subscriptions(connection: sqlite3.Connection) -> int:
+    with database.transaction(connection):
+        result = connection.execute("DELETE FROM telegram_subscriptions")
+    return int(result.rowcount or 0)
+
+
 def _subscription_from_row(row) -> dict[str, Any]:
     return {
         "id": int(row["id"]),

@@ -11,9 +11,10 @@ from pathlib import Path
 
 from xray_vps_manager.core.paths import TELEGRAM_DB_PATH
 from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, truthy
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled, truthy
 from xray_vps_manager.telegram.payments import parse_payment_rounding_step, parse_payment_value
 
 DEFAULT_BOT_NAME = "Vireika"
@@ -188,21 +189,82 @@ def load_db_from_sqlite(connection) -> dict:
     return normalize_db(db)
 
 
-def save_db(db, path=TELEGRAM_DB_PATH):
+def save_db(db, path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
+    db = normalize_db(db)
     ensure_config_dir(path)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
     chown_xray(tmp)
     os.chmod(tmp, 0o640)
     tmp.replace(path)
+    mirror_db_to_sqlite_for_write(db, db_path=db_path)
 
 
-def save_db_sections(db, sections, path=TELEGRAM_DB_PATH):
+def save_db_sections(db, sections, path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
     current = load_db(path)
     for section in sections:
         if section in db:
             current[section] = db[section]
-    save_db(current, path)
+    save_db(current, path, db_path=db_path)
+
+
+def mirror_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None) -> bool:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        return False
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            return False
+
+        normalized = normalize_db(db)
+        known_clients = set(sqlite_clients.list_clients(connection))
+        with database.transaction(connection):
+            for key in ("version", "enabled", "token", "botName", "chatId", "chatLabel", "routeMode"):
+                sqlite_telegram.set_setting(connection, key, _sqlite_scalar(normalized.get(key, "")))
+            for key in ("paymentAmount", "paymentTotalAmount", "paymentCurrency", "paymentRoundingMode", "paymentRoundingStep"):
+                sqlite_settings.set_payment_setting(connection, key, str(normalized.get(key, "")))
+            for key in ("geoipState", "clientSubscriptionState", "dailySummaryState", "adminState"):
+                state = normalized.get(key)
+                sqlite_telegram.set_state(connection, key, state if isinstance(state, dict) else {})
+
+            sqlite_telegram.delete_all_subscriptions(connection)
+            subscriptions = normalized.get("clientSubscriptions", {})
+            if isinstance(subscriptions, dict):
+                for chat_id, subscription in subscriptions.items():
+                    if not isinstance(subscription, dict):
+                        continue
+                    client_uuid = str(subscription.get("clientId") or subscription.get("clientUuid") or "").strip()
+                    if not client_uuid:
+                        continue
+                    client_name = str(subscription.get("client") or subscription.get("clientName") or "").strip()
+                    sqlite_telegram.upsert_subscription(
+                        connection,
+                        {
+                            "chatId": str(chat_id),
+                            "chatLabel": subscription.get("chatLabel") or "",
+                            "clientName": client_name if client_name in known_clients else "",
+                            "clientUuid": client_uuid,
+                            "connection": subscription.get("connection") or "",
+                            "linkSignature": {"linkHash": subscription.get("linkHash") or ""},
+                            "enabled": subscription.get("enabled") is not False,
+                            "createdAt": subscription.get("subscribedAt") or subscription.get("createdAt") or "",
+                            "updatedAt": subscription.get("updatedAt") or subscription.get("subscribedAt") or "",
+                        },
+                    )
+        return True
+    except Exception:
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _sqlite_scalar(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def mask_token(token):
