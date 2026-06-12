@@ -9,6 +9,50 @@ CommandRunner = Callable[[list[str]], None]
 ConfirmCallback = Callable[[str], bool]
 
 
+def show_status(call: CommandRunner) -> None:
+    call(["xray-telegram", "status"])
+
+
+def setup_bot(call: CommandRunner) -> None:
+    call(["xray-telegram", "setup"])
+
+
+def configure_owner(call: CommandRunner) -> None:
+    call(["xray-telegram", "owner"])
+
+
+def enable_notifications(call: CommandRunner) -> None:
+    call(["xray-telegram", "enable"])
+
+
+def disable_notifications(call: CommandRunner) -> None:
+    call(["xray-telegram", "disable"])
+
+
+def send_test_message(call: CommandRunner) -> None:
+    call(["xray-telegram", "test"])
+
+
+def notify_geoip_now(call: CommandRunner) -> None:
+    call(["xray-telegram", "notify-geoip"])
+
+
+def show_subscribers(call: CommandRunner) -> None:
+    call(["xray-telegram", "subscribers"])
+
+
+def poll_users(call: CommandRunner) -> None:
+    call(["xray-telegram", "poll-users"])
+
+
+def notify_expiry(call: CommandRunner) -> None:
+    call(["xray-telegram", "notify-expiry"])
+
+
+def update_commands_menu(call: CommandRunner) -> None:
+    call(["xray-telegram", "commands"])
+
+
 def die(message: str) -> None:
     raise SystemExit(message)
 

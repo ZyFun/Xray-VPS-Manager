@@ -13,6 +13,10 @@ ConfirmCallback = Callable[[str], bool]
 DaysPrompt = Callable[[int], str]
 
 
+def show_activity_exceptions(call: CommandRunner) -> None:
+    call(["xray-activity", "exceptions"])
+
+
 def activity_exception_rows() -> list[dict[str, str]]:
     result = subprocess.run(
         ["xray-activity", "exceptions", "--plain"],

@@ -14,6 +14,10 @@ CommandRunner = Callable[[list[str]], None]
 ConfirmCallback = Callable[[str], bool]
 
 
+def list_backups(call: CommandRunner) -> None:
+    call(["xray-backup", "list"])
+
+
 def backup_rows_for_selection() -> list[dict[str, str]]:
     result = subprocess.run(
         ["xray-backup", "list", "--plain"],

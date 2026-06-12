@@ -49,6 +49,22 @@ CommandRunner = Callable[[list[str]], None]
 ClientChooser = Callable[[str, str], str]
 
 
+def show_activity_status(call: CommandRunner) -> None:
+    call(["xray-activity", "status"])
+
+
+def enable_activity_parser(call: CommandRunner) -> None:
+    call(["xray-activity", "enable"])
+
+
+def disable_activity_parser(call: CommandRunner) -> None:
+    call(["xray-activity", "disable"])
+
+
+def sync_activity_now(call: CommandRunner) -> None:
+    call(["xray-activity", "sync"])
+
+
 def die(message: str) -> None:
     raise SystemExit(message)
 

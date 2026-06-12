@@ -16,6 +16,10 @@ ConfirmCallback = Callable[[str], bool]
 ClientChooser = Callable[[str, str], str]
 
 
+def list_activity_exports(call: CommandRunner) -> None:
+    call(["xray-activity", "export-list"])
+
+
 def activity_export_rows_for_selection() -> list[dict[str, str]]:
     result = subprocess.run(
         ["xray-activity", "export-list", "--plain"],

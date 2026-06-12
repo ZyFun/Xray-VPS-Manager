@@ -17,6 +17,22 @@ CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 CommandRunner = Callable[[list[str]], None]
 
 
+def show_clients(call: CommandRunner) -> None:
+    call(["xray-client", "list"])
+
+
+def expire_due(call: CommandRunner) -> None:
+    call(["xray-client", "expire-due"])
+
+
+def show_traffic_limits(call: CommandRunner) -> None:
+    call(["xray-client", "limit-list"])
+
+
+def enforce_traffic_limits(call: CommandRunner) -> None:
+    call(["xray-client", "enforce-limits", "--sync"])
+
+
 def die(message: str) -> None:
     raise SystemExit(message)
 

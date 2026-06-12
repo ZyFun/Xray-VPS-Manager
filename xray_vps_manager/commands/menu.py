@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-import json
 import os
-import re
-import shutil
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from xray_vps_manager.commands import (
     menu_activity_actions,
@@ -17,83 +11,28 @@ from xray_vps_manager.commands import (
     menu_client_actions,
     menu_reality_actions,
     menu_security_actions,
+    menu_status,
     menu_telegram_actions,
+    menu_timezone_actions,
     menu_traffic_actions,
+    menu_xray_actions,
 )
-from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
-from xray_vps_manager.core.terminal import table_border, table_row
+from xray_vps_manager.core.terminal import red, table_border, table_row
 
-CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
-SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
-CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
-XRAY_ASSET_DIR = Path("/usr/local/share/xray")
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 16:25 UTC"
-SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
-SECURITY_AUDIT_STALE_DAYS = 30
-MENU_ENV_REQUIRED_KEYS = [
-    "SERVER_ADDR",
-    "SERVER_NAME",
-    "PORT",
-    "REALITY_SNI",
-    "REALITY_DEST",
-    "FINGERPRINT",
-    "MANAGER_TIMEZONE",
-]
-GREEN = "\033[92m"
-RED = "\033[31m"
-RESET = "\033[0m"
-TIMEZONE_PRESETS = [
-    ("", "Системное время сервера"),
-    ("Europe/Moscow", "Москва"),
-    ("Europe/Kaliningrad", "Калининград"),
-    ("Europe/Samara", "Самара"),
-    ("Asia/Yekaterinburg", "Екатеринбург"),
-    ("Asia/Omsk", "Омск"),
-    ("Asia/Novosibirsk", "Новосибирск"),
-    ("Asia/Krasnoyarsk", "Красноярск"),
-    ("Asia/Irkutsk", "Иркутск"),
-    ("Asia/Yakutsk", "Якутск"),
-    ("Asia/Vladivostok", "Владивосток"),
-    ("Asia/Magadan", "Магадан"),
-    ("Asia/Sakhalin", "Сахалин"),
-    ("Asia/Kamchatka", "Камчатка"),
-    ("UTC", "UTC"),
-]
-TIMEZONE_SEARCH_LIMIT = 30
+MENU_UPDATED = "2026-06-12 16:40 UTC"
 def die(message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(1)
 
 
-def run(command, **kwargs):
-    return subprocess.run(command, check=True, **kwargs)
-
-
-def current_xray_version():
-    try:
-        result = subprocess.run(
-            ["/usr/local/bin/xray", "version"],
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except FileNotFoundError:
-        return "unknown"
-    if result.returncode != 0 or not result.stdout:
-        return "unknown"
-    match = re.search(r"(\d+(?:\.\d+){1,3})", result.stdout.splitlines()[0])
-    return match.group(1) if match else result.stdout.splitlines()[0]
-
-
 def print_menu_header():
     rows = [
-        ("Xray Version", current_xray_version()),
+        ("Xray Version", menu_status.current_xray_version()),
         ("Manager Version", MENU_VERSION),
         ("Manager Updated", MENU_UPDATED),
-        ("Geo Assets", geo_assets_header_value()),
-        ("Security Audit", security_audit_header_value()),
+        ("Geo Assets", menu_status.geo_assets_header_value()),
+        ("Security Audit", menu_status.security_audit_header_value()),
     ]
     label_width = max(len(row[0]) for row in rows)
     value_width = max(len(row[1]) for row in rows)
@@ -107,7 +46,7 @@ def print_menu_header():
     for row in rows:
         print(table_row(row, [label_width, value_width]))
     print(row_border)
-    warning = security_audit_header_warning()
+    warning = menu_status.security_audit_header_warning()
     if warning:
         print(red(f"! {warning}"))
 
@@ -352,390 +291,13 @@ def end_action(title):
     sys.stdout.flush()
 
 
-def load_json(path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return default
-
-
-def load_config():
-    if not CONFIG_PATH.exists():
-        die(f"Config not found: {CONFIG_PATH}")
-    return json.loads(CONFIG_PATH.read_text())
-
-
-def color(text, code):
-    if os.environ.get("NO_COLOR"):
-        return text
-    return f"{code}{text}{RESET}"
-
-
-def green(text):
-    return color(text, GREEN)
-
-
-def red(text):
-    return color(text, RED)
-
-
-def server_env():
-    return read_server_env(SERVER_ENV_PATH)
-
-
-def write_server_env_values(values):
-    updated = dict(values)
-    for key in MENU_ENV_REQUIRED_KEYS:
-        updated.setdefault(key, "")
-    write_server_env_file(updated, path=SERVER_ENV_PATH, ordered_keys=ORDERED_ENV_KEYS)
-
-
-def normalize_timezone(value):
-    raw = (value or "").strip()
-    if raw.lower() in ("", "server", "local", "default", "system", "сервер", "локально", "по умолчанию"):
-        return ""
-    try:
-        ZoneInfo(raw)
-    except ZoneInfoNotFoundError:
-        die("MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time.")
-    return raw
-
-
-def configured_timezone_name():
-    return normalize_timezone(server_env().get("MANAGER_TIMEZONE", ""))
-
-
-def manager_timezone():
-    name = configured_timezone_name()
-    if name:
-        return ZoneInfo(name)
-    return datetime.now().astimezone().tzinfo
-
-
-def manager_timezone_label():
-    name = configured_timezone_name()
-    if name:
-        return name
-    current = datetime.now().astimezone()
-    suffix = current.tzname() or "server local time"
-    return f"server local time ({suffix})"
-
-
-def parse_utc_timestamp(value):
-    raw = (value or "").strip()
-    if not raw:
-        return None
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def utc_stamp():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def format_manager_time(moment):
-    local = moment.astimezone(manager_timezone())
-    tz_name = local.tzname() or manager_timezone_label()
-    return local.strftime("%Y-%m-%d %H:%M ") + tz_name
-
-
-def asset_mtime_label(name):
-    path = XRAY_ASSET_DIR / name
-    if not path.exists():
-        return f"{name}: missing"
-    moment = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-    return f"{name}: {format_manager_time(moment)}"
-
-
-def geo_assets_header_value():
-    return "; ".join(asset_mtime_label(name) for name in ("geoip.dat", "geosite.dat"))
-
-
-def last_security_audit_time():
-    return parse_utc_timestamp(server_env().get(SECURITY_AUDIT_ENV_KEY, ""))
-
-
-def security_audit_header_value():
-    last_run = last_security_audit_time()
-    if not last_run:
-        return "не выполнялась"
-    return format_manager_time(last_run)
-
-
-def security_audit_is_stale():
-    last_run = last_security_audit_time()
-    if not last_run:
-        return True
-    return datetime.now(timezone.utc) - last_run >= timedelta(days=SECURITY_AUDIT_STALE_DAYS)
-
-
-def security_audit_header_warning():
-    if not security_audit_is_stale():
-        return ""
-    return "Рекомендуется запустить: Безопасность -> Проверить безопасность сервера."
-
-
-def record_security_audit_run():
-    values = server_env()
-    stamp = utc_stamp()
-    values[SECURITY_AUDIT_ENV_KEY] = stamp
-    write_server_env_values(values)
-    return parse_utc_timestamp(stamp)
-
-
-def timezone_value_label(value):
-    return value or "server"
-
-
-def print_timezone_selection_table(rows, include_search=False):
-    headers = ("№", "TIMEZONE", "ОПИСАНИЕ")
-    values = [
-        (str(index), timezone_value_label(value), label)
-        for index, (value, label) in enumerate(rows, start=1)
-    ]
-    if include_search:
-        values.append(("S", "Поиск", "найти другой часовой пояс"))
-    values.append(("0", "Назад", ""))
-    widths = [
-        max(len(headers[column]), *(len(str(row[column])) for row in values))
-        for column in range(len(headers))
-    ]
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in values:
-        print(table_row(row, widths))
-    print(border)
-
-
-def timezone_search_matches(query):
-    needle = query.strip().lower()
-    if not needle:
-        return []
-    try:
-        zones = sorted(available_timezones())
-    except Exception:
-        zones = sorted(value for value, _ in TIMEZONE_PRESETS if value)
-    return [(zone, "") for zone in zones if needle in zone.lower()][:TIMEZONE_SEARCH_LIMIT]
-
-
-def choose_timezone_from_rows(rows, prompt):
-    while True:
-        choice = input(prompt).strip()
-        if choice in ("", "0"):
-            return None
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(rows):
-                return rows[index - 1][0]
-        print("Неизвестный часовой пояс. Выбери номер из списка или 0 для возврата.")
-
-
-def search_timezone():
-    while True:
-        query = input("Фильтр timezone, например Moscow или Europe (Enter - назад): ").strip()
-        if not query:
-            return None
-        matches = timezone_search_matches(query)
-        if not matches:
-            print("По этому фильтру ничего не найдено.")
-            continue
-        print_timezone_selection_table(matches)
-        selected = choose_timezone_from_rows(matches, "Часовой пояс: ")
-        if selected is not None:
-            return selected
-
-
-def choose_timezone():
-    current = configured_timezone_name() or "server"
-    print(f"Текущее значение: {current}")
-    while True:
-        print_timezone_selection_table(TIMEZONE_PRESETS, include_search=True)
-        choice = input("Часовой пояс: ").strip().lower()
-        if choice in ("", "0"):
-            return None
-        if choice in ("s", "search", "поиск"):
-            selected = search_timezone()
-            if selected is not None:
-                return selected
-            continue
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(TIMEZONE_PRESETS):
-                return TIMEZONE_PRESETS[index - 1][0]
-        print("Неизвестный часовой пояс. Выбери номер из списка, S для поиска или 0 для возврата.")
-
-
-def write_config(config):
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.{timestamp}")
-    shutil.copy2(CONFIG_PATH, backup)
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(CONFIG_PATH)
-    return backup
-
-
-def apply_config(config):
-    backup = write_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
-    return backup
-
-
-def ensure_blocked_outbound(config):
-    outbounds = config.setdefault("outbounds", [])
-    if not any(outbound.get("tag") == "blocked" for outbound in outbounds):
-        outbounds.append({"tag": "blocked", "protocol": "blackhole"})
-        return True
-    return False
-
-
-def routing_rules(config):
-    routing = config.setdefault("routing", {})
-    routing.setdefault("domainStrategy", "IPIfNonMatch")
-    return routing.setdefault("rules", [])
-
-
-def rule_values(rule, key):
-    value = rule.get(key, [])
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return value
-    return []
-
-
-def is_api_rule(rule):
-    return rule.get("outboundTag") == "api" or "api" in rule_values(rule, "inboundTag")
-
-
-def is_bittorrent_rule(rule):
-    return "bittorrent" in rule_values(rule, "protocol")
-
-
-def torrent_block_rule():
-    return {
-        "type": "field",
-        "protocol": ["bittorrent"],
-        "outboundTag": "blocked",
-    }
-
-
-def torrent_block_enabled(config):
-    return any(rule.get("outboundTag") == "blocked" and is_bittorrent_rule(rule) for rule in routing_rules(config))
-
-
-def print_torrent_status():
-    config = load_config()
-    if torrent_block_enabled(config):
-        print(f"Торренты: {green('запрещены')}")
-    else:
-        print(f"Торренты: {red('разрешены')}")
-        print("Рекомендуемое состояние для сервера: запрещены.")
-
-
-def insert_torrent_rule(rules):
-    insert_index = 0
-    while insert_index < len(rules) and is_api_rule(rules[insert_index]):
-        insert_index += 1
-    rules.insert(insert_index, torrent_block_rule())
-
-
-def set_torrent_block(blocked):
-    config = load_config()
-    changed = ensure_blocked_outbound(config)
-    rules = routing_rules(config)
-    rules_without_torrent = [rule for rule in rules if not is_bittorrent_rule(rule)]
-
-    if blocked:
-        insert_torrent_rule(rules_without_torrent)
-
-    if rules_without_torrent != rules:
-        changed = True
-
-    if not changed:
-        print_torrent_status()
-        print("Изменения не требуются.")
-        return
-
-    config["routing"]["rules"] = rules_without_torrent
-    backup = apply_config(config)
-    print_torrent_status()
-    print(f"Backup: {backup}")
-
-
-def block_torrents():
-    set_torrent_block(True)
-
-
-def allow_torrents():
-    set_torrent_block(False)
-
-
 def call(command):
     subprocess.run(command, check=False)
-
-
-def print_initial_link():
-    if CLIENT_LINK_PATH.exists():
-        print(CLIENT_LINK_PATH.read_text())
-    else:
-        print("Файл /root/xray-reality-client.txt не найден. Можно вывести ссылку через xray-client link NAME.")
 
 
 def confirm(message):
     answer = input(f"{message} [y/N]: ").strip().lower()
     return answer in ("y", "yes")
-
-
-def rollback_xray():
-    if confirm("Откатить Xray к последней сохранённой предыдущей версии?"):
-        call(["xray-update", "--rollback"])
-    else:
-        print("Откат отменён.")
-
-
-def check_config():
-    call(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-
-
-def check_timers():
-    call(["systemctl", "status", "xray-traffic-sync.timer", "xray-client-expire.timer", "xray-telegram-poller.service", "--no-pager"])
-
-
-def show_timezone():
-    call(["xray-client", "timezone"])
-
-
-def update_timezone():
-    print("MANAGER_TIMEZONE: часовой пояс для сроков доступа, лимитов трафика, отчётов и отображения времени.")
-    print("Выбери значение из списка, чтобы не ошибиться при ручном вводе.")
-    value = choose_timezone()
-    if value is None:
-        print("Изменение отменено.")
-        return
-    call(["xray-client", "set-timezone", value])
-    print("Новая настройка будет использоваться в следующих расчётах и выводе времени.")
 
 
 def execute_action(title, func):
@@ -748,7 +310,7 @@ def execute_action(title, func):
 
 def client_menu_handlers():
     return {
-        "1": ("Показать клиентов", lambda: call(["xray-client", "list"])),
+        "1": ("Показать клиентов", lambda: menu_client_actions.show_clients(call)),
         "2": ("Добавить клиента", lambda: menu_client_actions.add_client_from_menu(call)),
         "3": ("Изменить срок доступа", lambda: menu_client_actions.update_selected_client_days(call)),
         "4": ("Изменить статус оплаты", lambda: menu_client_actions.update_selected_client_payment(call)),
@@ -768,7 +330,7 @@ def client_menu_handlers():
             "Вывести ссылку клиента",
             lambda: menu_client_actions.call_client_command(call, "link", "вывода ссылки", "all"),
         ),
-        "9": ("Проверить просроченных клиентов", lambda: call(["xray-client", "expire-due"])),
+        "9": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
         "10": ("Трафик", open_traffic_tools_menu),
         "11": ("Журнал активности", open_activity_menu),
     }
@@ -788,51 +350,42 @@ def reality_menu_handlers():
 
 def cascade_menu_handlers():
     return {
-        "1": ("Добавить/заменить каскад", lambda: call(["xray-set-cascade"])),
-        "2": ("Проверить каскад", lambda: call(["xray-set-cascade", "--test"])),
-        "3": ("Отключить каскад", lambda: call(["xray-set-cascade", "--disable"])),
+        "1": ("Добавить/заменить каскад", lambda: menu_xray_actions.add_or_replace_cascade(call)),
+        "2": ("Проверить каскад", lambda: menu_xray_actions.test_cascade(call)),
+        "3": ("Отключить каскад", lambda: menu_xray_actions.disable_cascade(call)),
     }
-
-
-def recreate_warp_profile():
-    print("Будет создан новый WARP-аккаунт и новый WireGuard profile.")
-    print("Старые файлы wgcf-account.toml и wgcf-profile.conf будут заменены.")
-    if not confirm("Пересоздать WARP профиль"):
-        print("Действие отменено.")
-        return
-    call(["xray-warp", "create", "--force"])
 
 
 def warp_menu_handlers():
     return {
-        "1": ("Статус WARP", lambda: call(["xray-warp", "status"])),
-        "2": ("Создать WARP outbound", lambda: call(["xray-warp", "create"])),
-        "3": ("Пересоздать WARP профиль", recreate_warp_profile),
-        "4": ("Включить WARP для Xray", lambda: call(["xray-warp", "enable"])),
-        "5": ("Отключить WARP", lambda: call(["xray-warp", "disable"])),
-        "6": ("Проверить WARP", lambda: call(["xray-warp", "test"])),
-        "7": ("Удалить WARP из config.json", lambda: call(["xray-warp", "remove"])),
-        "8": ("Проверить, что WARP отключен", lambda: call(["xray-warp", "verify-disabled"])),
+        "1": ("Статус WARP", lambda: menu_xray_actions.warp_status(call)),
+        "2": ("Создать WARP outbound", lambda: menu_xray_actions.create_warp_outbound(call)),
+        "3": ("Пересоздать WARP профиль", lambda: menu_xray_actions.recreate_warp_profile(call, confirm)),
+        "4": ("Включить WARP для Xray", lambda: menu_xray_actions.enable_warp(call)),
+        "5": ("Отключить WARP", lambda: menu_xray_actions.disable_warp(call)),
+        "6": ("Проверить WARP", lambda: menu_xray_actions.test_warp(call)),
+        "7": ("Удалить WARP из config.json", lambda: menu_xray_actions.remove_warp(call)),
+        "8": ("Проверить, что WARP отключен", lambda: menu_xray_actions.verify_warp_disabled(call)),
     }
 
 
 def xray_settings_menu_handlers():
     return {
-        "1": ("Статус Xray", lambda: call(["systemctl", "status", "xray", "--no-pager"])),
-        "2": ("Перезапустить Xray", lambda: (call(["systemctl", "restart", "xray"]), call(["systemctl", "is-active", "xray"]))),
-        "3": ("Проверить config.json", check_config),
-        "4": ("Проверить timers", check_timers),
-        "5": ("Прогнать все тесты сервера", lambda: call(["xray-test"])),
+        "1": ("Статус Xray", lambda: menu_xray_actions.show_xray_status(call)),
+        "2": ("Перезапустить Xray", lambda: menu_xray_actions.restart_xray(call)),
+        "3": ("Проверить config.json", lambda: menu_xray_actions.check_config(call)),
+        "4": ("Проверить timers", lambda: menu_xray_actions.check_timers(call)),
+        "5": ("Прогнать все тесты сервера", lambda: menu_xray_actions.run_all_tests(call)),
         "6": ("Настройки Reality", open_reality_menu),
         "7": ("Каскад", open_cascade_menu),
         "8": ("Обновление Xray", open_update_menu),
-        "9": ("Вывести стартовую ссылку", print_initial_link),
+        "9": ("Вывести стартовую ссылку", menu_xray_actions.print_initial_link),
         "10": ("WARP", open_warp_menu),
-        "11": ("Показать доступ к торрентам", print_torrent_status),
-        "12": ("Запретить торренты", block_torrents),
-        "13": ("Разрешить торренты", allow_torrents),
-        "14": ("Показать часовой пояс", show_timezone),
-        "15": ("Изменить часовой пояс", update_timezone),
+        "11": ("Показать доступ к торрентам", menu_xray_actions.print_torrent_status),
+        "12": ("Запретить торренты", menu_xray_actions.block_torrents),
+        "13": ("Разрешить торренты", menu_xray_actions.allow_torrents),
+        "14": ("Показать часовой пояс", lambda: menu_timezone_actions.show_timezone(call)),
+        "15": ("Изменить часовой пояс", lambda: menu_timezone_actions.update_timezone(call)),
     }
 
 
@@ -840,7 +393,10 @@ def security_menu_handlers():
     return {
         "1": (
             "Проверить безопасность сервера",
-            lambda: menu_security_actions.run_security_audit(record_security_audit_run, format_manager_time),
+            lambda: menu_security_actions.run_security_audit(
+                menu_status.record_security_audit_run,
+                menu_status.format_manager_time,
+            ),
         ),
         "2": ("Показать SSH-доступ", menu_security_actions.show_ssh_access),
         "3": ("Отключить вход по паролю SSH", lambda: menu_security_actions.disable_ssh_password_login(confirm)),
@@ -850,24 +406,24 @@ def security_menu_handlers():
 
 def update_menu_handlers():
     return {
-        "1": ("Проверить доступность обновления", lambda: call(["xray-update", "--check"])),
-        "2": ("Проверить latest с текущим config.json", lambda: call(["xray-update", "--test-latest"])),
-        "3": ("Обновить Xray", lambda: call(["xray-update", "--update"])),
-        "4": ("Показать бэкапы Xray", lambda: call(["xray-update", "--backups"])),
-        "5": ("Откатить Xray к предыдущей версии", rollback_xray),
-        "6": ("Обновить geoip/geosite из Xray release", lambda: call(["xray-update", "--update-assets", "xray"])),
-        "7": ("Обновить geoip/geosite из Loyalsoldier", lambda: call(["xray-update", "--update-assets", "loyalsoldier"])),
-        "8": ("Обновить geoip.dat из v2fly", lambda: call(["xray-update", "--update-assets", "v2fly"])),
+        "1": ("Проверить доступность обновления", lambda: menu_xray_actions.check_update(call)),
+        "2": ("Проверить latest с текущим config.json", lambda: menu_xray_actions.test_latest(call)),
+        "3": ("Обновить Xray", lambda: menu_xray_actions.update_xray(call)),
+        "4": ("Показать бэкапы Xray", lambda: menu_xray_actions.show_update_backups(call)),
+        "5": ("Откатить Xray к предыдущей версии", lambda: menu_xray_actions.rollback_xray(call, confirm)),
+        "6": ("Обновить geoip/geosite из Xray release", lambda: menu_xray_actions.update_assets(call, "xray")),
+        "7": ("Обновить geoip/geosite из Loyalsoldier", lambda: menu_xray_actions.update_assets(call, "loyalsoldier")),
+        "8": ("Обновить geoip.dat из v2fly", lambda: menu_xray_actions.update_assets(call, "v2fly")),
     }
 
 
 def traffic_menu_handlers():
     return {
         "1": ("Просмотр трафика", open_traffic_menu),
-        "2": ("Показать лимиты трафика", lambda: call(["xray-client", "limit-list"])),
+        "2": ("Показать лимиты трафика", lambda: menu_client_actions.show_traffic_limits(call)),
         "3": ("Установить лимит трафика", lambda: menu_client_actions.update_selected_client_limit(call)),
         "4": ("Убрать лимит трафика", lambda: menu_client_actions.clear_selected_client_limit(call)),
-        "5": ("Проверить лимиты трафика", lambda: call(["xray-client", "enforce-limits", "--sync"])),
+        "5": ("Проверить лимиты трафика", lambda: menu_client_actions.enforce_traffic_limits(call)),
     }
 
 
@@ -887,7 +443,7 @@ def backup_menu_handlers():
             "Создать бэкап и показать команду скачивания",
             lambda: menu_backup_actions.create_backup_download_command(call),
         ),
-        "3": ("Показать бэкапы на сервере", lambda: call(["xray-backup", "list"])),
+        "3": ("Показать бэкапы на сервере", lambda: menu_backup_actions.list_backups(call)),
         "4": ("Восстановить из бэкапа на сервере", lambda: menu_backup_actions.restore_backup_from_menu(call, confirm)),
         "5": (
             "Показать команду загрузки бэкапа на сервер",
@@ -899,21 +455,21 @@ def backup_menu_handlers():
 
 def telegram_menu_handlers():
     return {
-        "1": ("Статус бота", lambda: call(["xray-telegram", "status"])),
-        "2": ("Первичная настройка", lambda: call(["xray-telegram", "setup"])),
-        "3": ("Донастроить владельца/чат", lambda: call(["xray-telegram", "owner"])),
-        "4": ("Включить уведомления", lambda: call(["xray-telegram", "enable"])),
-        "5": ("Отключить уведомления", lambda: call(["xray-telegram", "disable"])),
+        "1": ("Статус бота", lambda: menu_telegram_actions.show_status(call)),
+        "2": ("Первичная настройка", lambda: menu_telegram_actions.setup_bot(call)),
+        "3": ("Донастроить владельца/чат", lambda: menu_telegram_actions.configure_owner(call)),
+        "4": ("Включить уведомления", lambda: menu_telegram_actions.enable_notifications(call)),
+        "5": ("Отключить уведомления", lambda: menu_telegram_actions.disable_notifications(call)),
         "6": ("Изменить маршрут", lambda: menu_telegram_actions.update_route_mode(call)),
-        "7": ("Отправить тестовое сообщение", lambda: call(["xray-telegram", "test"])),
-        "8": ("Проверить GeoIP-уведомления сейчас", lambda: call(["xray-telegram", "notify-geoip"])),
-        "9": ("Показать подписки клиентов", lambda: call(["xray-telegram", "subscribers"])),
-        "10": ("Обработать сообщения пользователей", lambda: call(["xray-telegram", "poll-users"])),
-        "11": ("Проверить напоминания об оплате", lambda: call(["xray-telegram", "notify-expiry"])),
+        "7": ("Отправить тестовое сообщение", lambda: menu_telegram_actions.send_test_message(call)),
+        "8": ("Проверить GeoIP-уведомления сейчас", lambda: menu_telegram_actions.notify_geoip_now(call)),
+        "9": ("Показать подписки клиентов", lambda: menu_telegram_actions.show_subscribers(call)),
+        "10": ("Обработать сообщения пользователей", lambda: menu_telegram_actions.poll_users(call)),
+        "11": ("Проверить напоминания об оплате", lambda: menu_telegram_actions.notify_expiry(call)),
         "12": ("Настроить оплату и округление", lambda: menu_telegram_actions.update_payment_amount(call)),
         "13": ("Изменить имя бота", lambda: menu_telegram_actions.update_bot_name(call)),
         "14": ("Уведомить о работах на сервере", lambda: menu_telegram_actions.send_maintenance_notice(call, confirm)),
-        "15": ("Обновить меню команд Telegram", lambda: call(["xray-telegram", "commands"])),
+        "15": ("Обновить меню команд Telegram", lambda: menu_telegram_actions.update_commands_menu(call)),
     }
 
 
@@ -927,7 +483,7 @@ def suspicious_menu_handlers():
 
 def activity_exception_menu_handlers():
     return {
-        "1": ("Показать исключения", lambda: call(["xray-activity", "exceptions"])),
+        "1": ("Показать исключения", lambda: menu_activity_exception_actions.show_activity_exceptions(call)),
         "2": (
             "Добавить из suspicious",
             lambda: menu_activity_exception_actions.activity_exception_add_from_suspicious(
@@ -949,10 +505,10 @@ def activity_exception_menu_handlers():
 
 def activity_menu_handlers():
     return {
-        "1": ("Статус журнала активности", lambda: call(["xray-activity", "status"])),
-        "2": ("Включить парсинг activity log", lambda: call(["xray-activity", "enable"])),
-        "3": ("Отключить парсинг activity log", lambda: call(["xray-activity", "disable"])),
-        "4": ("Синхронизировать сейчас", lambda: call(["xray-activity", "sync"])),
+        "1": ("Статус журнала активности", lambda: menu_activity_actions.show_activity_status(call)),
+        "2": ("Включить парсинг activity log", lambda: menu_activity_actions.enable_activity_parser(call)),
+        "3": ("Отключить парсинг activity log", lambda: menu_activity_actions.disable_activity_parser(call)),
+        "4": ("Синхронизировать сейчас", lambda: menu_activity_actions.sync_activity_now(call)),
         "5": (
             "Отчёт по клиенту",
             lambda: menu_activity_actions.activity_client_report(menu_client_actions.choose_client, call),
@@ -962,7 +518,7 @@ def activity_menu_handlers():
             "Экспорт отчёта по клиенту",
             lambda: menu_activity_export_actions.activity_export_report(menu_client_actions.choose_client, call),
         ),
-        "8": ("Показать архивы экспорта", lambda: call(["xray-activity", "export-list"])),
+        "8": ("Показать архивы экспорта", lambda: menu_activity_export_actions.list_activity_exports(call)),
         "9": (
             "Удалить архив экспорта",
             lambda: menu_activity_export_actions.delete_activity_export_from_menu(call, confirm),
