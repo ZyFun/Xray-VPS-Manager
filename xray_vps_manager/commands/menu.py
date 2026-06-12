@@ -11,6 +11,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
+from xray_vps_manager.core.terminal import table_border, table_row
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -28,7 +30,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 09:34 UTC"
+MENU_UPDATED = "2026-06-12 09:40 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -37,7 +39,6 @@ GREEN = "\033[92m"
 RED = "\033[31m"
 GOLD = "\033[93m"
 RESET = "\033[0m"
-ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 FINGERPRINTS = [
     "chrome",
     "firefox",
@@ -108,24 +109,6 @@ def current_xray_version():
         return "unknown"
     match = re.search(r"(\d+(?:\.\d+){1,3})", result.stdout.splitlines()[0])
     return match.group(1) if match else result.stdout.splitlines()[0]
-
-
-def table_border(widths):
-    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
-
-
-def visible_len(value):
-    return len(ANSI_RE.sub("", str(value)))
-
-
-def visible_ljust(value, width):
-    text = str(value)
-    return text + " " * max(0, width - visible_len(text))
-
-
-def table_row(values, widths):
-    cells = [f" {visible_ljust(value, widths[index])} " for index, value in enumerate(values)]
-    return "|" + "|".join(cells) + "|"
 
 
 def print_menu_header():
