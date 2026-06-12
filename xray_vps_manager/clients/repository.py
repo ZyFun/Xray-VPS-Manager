@@ -14,7 +14,7 @@ from xray_vps_manager.core.paths import CLIENT_DB_PATH
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
 
 
 @dataclass(frozen=True)
@@ -46,12 +46,19 @@ def load_db(path: Path = CLIENT_DB_PATH) -> dict[str, Any]:
     return normalize_client_defaults(db)
 
 
-def save_db(db: dict[str, Any], path: Path = CLIENT_DB_PATH) -> None:
+def save_db(
+    db: dict[str, Any],
+    path: Path = CLIENT_DB_PATH,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
+    db = normalize_client_defaults(db)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
     shutil.chown(tmp, user="root", group="xray")
     os.chmod(tmp, 0o640)
     tmp.replace(path)
+    mirror_db_to_sqlite_for_write(db, db_path=db_path)
 
 
 def load_db_for_read(
@@ -88,3 +95,42 @@ def load_db_from_sqlite(connection) -> dict[str, Any]:
             "clients": sqlite_clients.list_clients(connection),
         }
     )
+
+
+def mirror_db_to_sqlite_for_write(
+    db: dict[str, Any],
+    *,
+    db_path: str | Path | None = None,
+) -> bool:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        return False
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            return False
+
+        connections = db_connections(db)
+        clients = db_clients(db)
+        with database.transaction(connection):
+            for tag, record in connections.items():
+                if isinstance(record, dict):
+                    sqlite_connections.upsert_connection(connection, str(tag), record)
+            for name, entry in clients.items():
+                if isinstance(entry, dict):
+                    sqlite_clients.upsert_client(connection, str(name), entry)
+
+            desired_clients = {str(name) for name, entry in clients.items() if isinstance(entry, dict)}
+            for name in set(sqlite_clients.list_clients(connection)) - desired_clients:
+                sqlite_clients.delete_client(connection, name)
+
+            desired_connections = {str(tag) for tag, record in connections.items() if isinstance(record, dict)}
+            for tag in set(sqlite_connections.list_connections(connection)) - desired_connections:
+                sqlite_connections.delete_connection(connection, tag)
+        return True
+    except Exception:
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
