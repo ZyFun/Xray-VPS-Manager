@@ -7,7 +7,7 @@ from xray_vps_manager.commands import menu_reality_actions
 class MenuRealityActionsReadTests(unittest.TestCase):
     def test_update_connection_db_uses_runtime_read_layer(self) -> None:
         db = {"connections": {}}
-        with mock.patch.object(menu_reality_actions, "load_db_for_read", return_value=db) as load_db_for_read, \
+        with mock.patch.object(menu_reality_actions, "load_db_sql", return_value=db) as load_db_sql, \
             mock.patch.object(menu_reality_actions, "save_db") as save_db:
             menu_reality_actions.update_connection_db(
                 "vless-reality",
@@ -17,7 +17,7 @@ class MenuRealityActionsReadTests(unittest.TestCase):
                 fingerprint="chrome",
             )
 
-        load_db_for_read.assert_called_once_with()
+        load_db_sql.assert_called_once_with()
         save_db.assert_called_once_with(db)
         self.assertEqual(
             db["connections"]["vless-reality"],

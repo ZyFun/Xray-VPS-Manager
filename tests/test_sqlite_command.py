@@ -511,7 +511,7 @@ class SQLiteCommandTests(unittest.TestCase):
     def test_runtime_scenario_issues_reports_cross_section_problems(self) -> None:
         with mock.patch.object(
             sqlite_command.client_repository,
-            "load_db_for_read_result",
+            "load_db_sql_result",
             return_value=mock.Mock(
                 db={"connections": {}, "clients": {"alice": {"connection": "missing-connection"}}},
                 source="sqlite",
@@ -530,7 +530,7 @@ class SQLiteCommandTests(unittest.TestCase):
             return_value=iter(()),
         ), mock.patch.object(
             sqlite_command.telegram_settings,
-            "load_db_for_read_result",
+            "load_db_sql_result",
             return_value=mock.Mock(db={"clientSubscriptions": {"123": {"client": "ghost"}}}, source="sqlite"),
         ):
             issues = sqlite_command.runtime_scenario_issues()

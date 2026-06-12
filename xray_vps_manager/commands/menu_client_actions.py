@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 
 from xray_vps_manager.clients.listing import client_rows as build_client_rows
-from xray_vps_manager.clients.repository import load_db_for_read
+from xray_vps_manager.clients.repository import load_db_sql
 from xray_vps_manager.commands import menu_reality_actions
 from xray_vps_manager.core.terminal import green, table_border, table_row, visible_len, yellow
 from xray_vps_manager.core.time import manager_timezone, parse_time
@@ -71,7 +71,7 @@ def format_access_until(value: str | None) -> str:
 
 def client_rows_for_selection(mode: str = "all") -> list[dict]:
     config = load_config()
-    db = load_db_for_read()
+    db = load_db_sql()
     rows = []
     connection_names = {row["tag"]: row["name"] for row in menu_reality_actions.connection_rows()}
 

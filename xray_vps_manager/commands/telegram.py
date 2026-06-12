@@ -81,11 +81,11 @@ def load_json(path, default):
 
 
 def load_db():
-    return telegram_settings.load_db_for_read(TELEGRAM_DB_PATH)
+    return telegram_settings.load_db_sql(TELEGRAM_DB_PATH)
 
 
 def load_db_readonly():
-    return telegram_settings.load_db_for_read(TELEGRAM_DB_PATH)
+    return telegram_settings.load_db_sql(TELEGRAM_DB_PATH)
 
 
 def save_db(db):
@@ -139,7 +139,7 @@ def format_event_time(value):
 
 
 def load_client_db():
-    return client_repository.load_db_for_read(CLIENT_DB_PATH)
+    return client_repository.load_db_sql(CLIENT_DB_PATH)
 
 
 def load_traffic_db():

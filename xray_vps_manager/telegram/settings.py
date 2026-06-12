@@ -130,11 +130,11 @@ def load_db(path=TELEGRAM_DB_PATH):
     return normalize_db(load_json(path, DEFAULT_DB))
 
 
-def load_db_for_read(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
-    return load_db_for_read_result(path, db_path=db_path).db
+def load_db_sql(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
+    return load_db_sql_result(path, db_path=db_path).db
 
 
-def load_db_for_read_result(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None) -> TelegramDbReadResult:
+def load_db_sql_result(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None) -> TelegramDbReadResult:
     if sqlite_reads_enabled() and database.database_file_exists(db_path):
         try:
             connection = database.open_database(db_path)
@@ -209,7 +209,7 @@ def write_json_db(db, path=TELEGRAM_DB_PATH):
 
 def save_db_sections(db, sections, path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
     if sqlite_writes_enabled() and sqlite_reads_enabled():
-        current = load_db_for_read(path, db_path=db_path)
+        current = load_db_sql(path, db_path=db_path)
     else:
         current = load_db(path)
     for section in sections:

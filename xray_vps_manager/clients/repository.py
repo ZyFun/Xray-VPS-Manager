@@ -68,15 +68,15 @@ def write_json_db(db: dict[str, Any], path: Path = CLIENT_DB_PATH) -> None:
     tmp.replace(path)
 
 
-def load_db_for_read(
+def load_db_sql(
     path: Path = CLIENT_DB_PATH,
     *,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    return load_db_for_read_result(path, db_path=db_path).db
+    return load_db_sql_result(path, db_path=db_path).db
 
 
-def load_db_for_read_result(
+def load_db_sql_result(
     path: Path = CLIENT_DB_PATH,
     *,
     db_path: str | Path | None = None,

@@ -152,14 +152,14 @@ def save_config(config):
 
 def load_db():
     try:
-        return client_repository.load_db_for_read(CLIENT_DB_PATH)
+        return client_repository.load_db_sql(CLIENT_DB_PATH)
     except ValueError as exc:
         die(str(exc))
 
 
 def load_db_readonly():
     try:
-        return client_repository.load_db_for_read_result(CLIENT_DB_PATH)
+        return client_repository.load_db_sql_result(CLIENT_DB_PATH)
     except ValueError as exc:
         die(str(exc))
 

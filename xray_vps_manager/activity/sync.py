@@ -16,7 +16,7 @@ LogFunc = Callable[[str], None]
 
 def known_clients() -> dict:
     config = repository.load_json(CONFIG_PATH, {})
-    db = client_repository.load_db_for_read(CLIENT_DB_PATH)
+    db = client_repository.load_db_sql(CLIENT_DB_PATH)
     return parser.config_clients(config, db)
 
 

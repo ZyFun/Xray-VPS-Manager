@@ -140,7 +140,7 @@ def known_clients():
                 continue
             clients[split_email(email)] = email
 
-    db = client_repository.load_db_for_read(CLIENT_DB_PATH)
+    db = client_repository.load_db_sql(CLIENT_DB_PATH)
     for name, entry in client_repository.db_clients(db).items():
         email = entry.get("client", {}).get("email") or name
         clients.setdefault(name, email)

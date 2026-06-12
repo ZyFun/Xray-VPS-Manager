@@ -121,7 +121,7 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path)
 
             with mock.patch.dict(os.environ, {}, clear=True):
-                result = telegram_settings.load_db_for_read_result(json_path, db_path=db_path)
+                result = telegram_settings.load_db_sql_result(json_path, db_path=db_path)
 
             self.assertEqual(result.source, "json")
             self.assertEqual(result.db["botName"], "JsonBot")
@@ -135,7 +135,7 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = telegram_settings.load_db_for_read_result(json_path, db_path=db_path)
+                result = telegram_settings.load_db_sql_result(json_path, db_path=db_path)
 
             self.assertEqual(result.source, "sqlite")
             self.assertTrue(result.db["enabled"])
@@ -164,7 +164,7 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
             self.make_json_db(json_path)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = telegram_settings.load_db_for_read_result(json_path, db_path=missing_db_path)
+                result = telegram_settings.load_db_sql_result(json_path, db_path=missing_db_path)
 
             self.assertEqual(result.source, "json")
             self.assertEqual(result.db["botName"], "JsonBot")
@@ -178,7 +178,7 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path, ready=False)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = telegram_settings.load_db_for_read_result(json_path, db_path=db_path)
+                result = telegram_settings.load_db_sql_result(json_path, db_path=db_path)
 
             self.assertEqual(result.source, "json")
             self.assertEqual(result.db["botName"], "JsonBot")

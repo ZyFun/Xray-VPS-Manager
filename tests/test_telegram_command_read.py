@@ -9,12 +9,12 @@ class TelegramCommandReadTests(unittest.TestCase):
         expected = {"enabled": True, "source": "sqlite"}
         with mock.patch.object(
             telegram_command.telegram_settings,
-            "load_db_for_read",
+            "load_db_sql",
             return_value=expected,
-        ) as load_db_for_read:
+        ) as load_db_sql:
             self.assertEqual(telegram_command.load_db(), expected)
 
-        load_db_for_read.assert_called_once_with(telegram_command.TELEGRAM_DB_PATH)
+        load_db_sql.assert_called_once_with(telegram_command.TELEGRAM_DB_PATH)
 
     def test_load_traffic_db_uses_runtime_read_layer(self) -> None:
         expected = {"clients": {"alice": {"incoming": 1, "outgoing": 2}}}

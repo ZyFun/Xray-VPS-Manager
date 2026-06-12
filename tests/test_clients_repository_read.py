@@ -94,7 +94,7 @@ class ClientRepositoryReadSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path)
 
             with mock.patch.dict(os.environ, {}, clear=True):
-                result = client_repository.load_db_for_read_result(json_path, db_path=db_path)
+                result = client_repository.load_db_sql_result(json_path, db_path=db_path)
 
             self.assertEqual(result.source, "json")
             self.assertIn("json_client", result.db["clients"])
@@ -108,7 +108,7 @@ class ClientRepositoryReadSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = client_repository.load_db_for_read_result(json_path, db_path=db_path)
+                result = client_repository.load_db_sql_result(json_path, db_path=db_path)
 
             self.assertEqual(result.source, "sqlite")
             self.assertIn("sqlite_client", result.db["clients"])
@@ -122,7 +122,7 @@ class ClientRepositoryReadSwitchTests(unittest.TestCase):
             self.make_json_db(json_path)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = client_repository.load_db_for_read_result(json_path, db_path=missing_db_path)
+                result = client_repository.load_db_sql_result(json_path, db_path=missing_db_path)
 
             self.assertEqual(result.source, "json")
             self.assertIn("json_client", result.db["clients"])
@@ -151,7 +151,7 @@ class ClientRepositoryReadSwitchTests(unittest.TestCase):
                 connection.close()
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = client_repository.load_db_for_read_result(json_path, db_path=db_path)
+                result = client_repository.load_db_sql_result(json_path, db_path=db_path)
 
             self.assertEqual(result.source, "json")
             self.assertIn("json_client", result.db["clients"])

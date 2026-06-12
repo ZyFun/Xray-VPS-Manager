@@ -16,7 +16,7 @@ class ActivitySyncTests(unittest.TestCase):
         }
 
         with mock.patch.object(activity_sync.repository, "load_json", return_value={}), \
-            mock.patch.object(activity_sync.client_repository, "load_db_for_read", return_value=client_db) as load_db:
+            mock.patch.object(activity_sync.client_repository, "load_db_sql", return_value=client_db) as load_db:
             clients = activity_sync.known_clients()
 
         load_db.assert_called_once_with(activity_sync.CLIENT_DB_PATH)

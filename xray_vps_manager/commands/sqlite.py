@@ -215,7 +215,7 @@ def validate_read_layers() -> tuple[list[str], dict[str, str]]:
     issues = []
     sources: dict[str, str] = {}
 
-    client_result = client_repository.load_db_for_read_result(db_path=MANAGER_DB_PATH)
+    client_result = client_repository.load_db_sql_result(db_path=MANAGER_DB_PATH)
     sources["clients"] = client_result.source
     if client_result.source != "sqlite":
         issues.append("clients read layer is not using SQLite")
@@ -225,7 +225,7 @@ def validate_read_layers() -> tuple[list[str], dict[str, str]]:
     if traffic_result.source != "sqlite":
         issues.append("traffic read layer is not using SQLite")
 
-    telegram_result = telegram_settings.load_db_for_read_result(db_path=MANAGER_DB_PATH)
+    telegram_result = telegram_settings.load_db_sql_result(db_path=MANAGER_DB_PATH)
     sources["telegram"] = telegram_result.source
     if telegram_result.source != "sqlite":
         issues.append("Telegram read layer is not using SQLite")
@@ -244,7 +244,7 @@ def runtime_scenario_issues() -> list[str]:
     clients = {}
 
     try:
-        client_result = client_repository.load_db_for_read_result(db_path=MANAGER_DB_PATH)
+        client_result = client_repository.load_db_sql_result(db_path=MANAGER_DB_PATH)
         client_db = client_result.db
         clients = client_repository.db_clients(client_db)
         connections = client_repository.db_connections(client_db)
@@ -297,7 +297,7 @@ def runtime_scenario_issues() -> list[str]:
         issues.append(f"activity runtime scenario failed: {exc}")
 
     try:
-        telegram_result = telegram_settings.load_db_for_read_result(db_path=MANAGER_DB_PATH)
+        telegram_result = telegram_settings.load_db_sql_result(db_path=MANAGER_DB_PATH)
         telegram_db = telegram_result.db
         subscriptions = telegram_db.get("clientSubscriptions", {})
         if not isinstance(subscriptions, dict):

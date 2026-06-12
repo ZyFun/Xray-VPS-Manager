@@ -29,9 +29,9 @@ class TrafficSyncTests(unittest.TestCase):
         with mock.patch.object(traffic_sync, "load_json", return_value=config), \
             mock.patch.object(
                 traffic_sync.client_repository,
-                "load_db_for_read",
+                "load_db_sql",
                 return_value=db,
-            ) as load_db_for_read:
+            ) as load_db_sql:
             self.assertEqual(
                 traffic_sync.known_clients(),
                 {
@@ -40,7 +40,7 @@ class TrafficSyncTests(unittest.TestCase):
                 },
             )
 
-        load_db_for_read.assert_called_once_with(traffic_sync.CLIENT_DB_PATH)
+        load_db_sql.assert_called_once_with(traffic_sync.CLIENT_DB_PATH)
 
     def test_sync_locked_loads_traffic_through_read_switch(self) -> None:
         email = "alice|created=2026-06-12T08:00:00Z"
