@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from xray_vps_manager.commands import menu_actions, menu_backups, menu_ui
+from xray_vps_manager.commands import menu_actions, menu_backups, menu_ui, menu_warp
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
@@ -32,7 +32,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 14:23 UTC"
+MENU_UPDATED = "2026-06-12 14:27 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -2785,16 +2785,7 @@ def recreate_warp_profile():
 
 
 def warp_menu_handlers():
-    return {
-        "1": ("Статус WARP", lambda: call(["xray-warp", "status"])),
-        "2": ("Создать WARP outbound", lambda: call(["xray-warp", "create"])),
-        "3": ("Пересоздать WARP профиль", recreate_warp_profile),
-        "4": ("Включить WARP для Xray", lambda: call(["xray-warp", "enable"])),
-        "5": ("Отключить WARP", lambda: call(["xray-warp", "disable"])),
-        "6": ("Проверить WARP", lambda: call(["xray-warp", "test"])),
-        "7": ("Удалить WARP из config.json", lambda: call(["xray-warp", "remove"])),
-        "8": ("Проверить, что WARP отключен", lambda: call(["xray-warp", "verify-disabled"])),
-    }
+    return menu_warp.handlers(call, recreate_warp_profile)
 
 
 def xray_settings_menu_handlers():
