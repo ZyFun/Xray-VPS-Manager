@@ -16,6 +16,7 @@ from xray_vps_manager.commands import (
     menu_activity_export_actions,
     menu_backup_actions,
     menu_reality_actions,
+    menu_telegram_actions,
 )
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
@@ -31,7 +32,7 @@ SSHD_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/00-xray-vps-manager.conf")
 SSHD_LEGACY_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/99-xray-vps-manager.conf")
 AUTHORIZED_KEYS_PATH = Path("/root/.ssh/authorized_keys")
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 15:47 UTC"
+MENU_UPDATED = "2026-06-12 15:58 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -1201,99 +1202,6 @@ def update_selected_client_payment():
     call(["xray-client", "set-payment", name, payment_type])
 
 
-def update_telegram_payment_rounding():
-    print("Округление суммы на платного клиента.")
-    print("1) Оставить текущую настройку.")
-    print("2) Без округления.")
-    print("3) Округлять вверх до выбранного шага. Пример: шаг 10 превратит 223.10 в 230.")
-    choice = input("Округление [1-оставить]: ").strip() or "1"
-    if choice == "1":
-        print("Округление не изменено.")
-        return
-    if choice == "2":
-        call(["xray-telegram", "payment-rounding", "none"])
-        return
-    if choice != "3":
-        print("Действие отменено: неизвестный выбор.")
-        return
-    print("Введите шаг округления. Сумма на клиента будет округляться вверх до кратного шага.")
-    print("Примеры: 10, 50, 100.")
-    step = input("Шаг округления [10]: ").strip().replace(",", ".") or "10"
-    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", step):
-        die("Payment rounding step must be a positive number.")
-    if float(step) <= 0:
-        die("Payment rounding step must be greater than zero.")
-    call(["xray-telegram", "payment-rounding", "step", step])
-
-
-def update_telegram_payment_amount():
-    call(["xray-telegram", "payment-amount"])
-    print("Введите общую сумму оплаты для всех клиентов.")
-    print("Введите только число. Пример: 500. Введите 0, чтобы очистить значение.")
-    print("Нажмите Enter, чтобы оставить текущую сумму.")
-    amount = input("Сумма оплаты: ").strip().replace(",", ".")
-    if not amount:
-        print("Сумма оплаты не изменена.")
-    elif amount == "0":
-        call(["xray-telegram", "payment-amount", "0"])
-    elif not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", amount):
-        die("Payment amount must be a number.")
-    else:
-        print("Выберите валюту:")
-        print("1) Рубли: ₽")
-        print("2) Доллары: $")
-        print("3) Евро: €")
-        choice = input("Валюта [1-рубли]: ").strip() or "1"
-        currencies = {
-            "1": "₽",
-            "2": "$",
-            "3": "€",
-        }
-        symbol = currencies.get(choice)
-        if not symbol:
-            print("Действие отменено: неизвестная валюта.")
-            return
-        call(["xray-telegram", "payment-amount", f"{amount} {symbol}"])
-    update_telegram_payment_rounding()
-
-
-def update_telegram_bot_name():
-    print("Имя бота используется в сообщениях пользователям.")
-    print("Например: Vireika. Оставь пустым, чтобы не менять.")
-    value = input("Имя бота: ").strip()
-    if not value:
-        print("Имя бота не изменено.")
-        return
-    call(["xray-telegram", "bot-name", value])
-
-
-def send_telegram_maintenance_notice():
-    print("Выбери уведомление для подписанных клиентов.")
-    call(["xray-telegram", "maintenance-notice", "templates"])
-    print("3) Своё сообщение через Telegram админ-панель")
-    choice = input("Уведомление [1]: ").strip() or "1"
-    if choice == "3":
-        print("Для своего сообщения открой Telegram-бота владельцем: /admin -> Уведомления -> Своё сообщение.")
-        return
-    notices = {
-        "1": "start",
-        "2": "done",
-        "start": "start",
-        "done": "done",
-    }
-    notice = notices.get(choice.lower())
-    if not notice:
-        print("Действие отменено: неизвестное уведомление.")
-        return
-    print()
-    print("Предпросмотр:")
-    call(["xray-telegram", "maintenance-notice", notice, "--dry-run"])
-    if not confirm("Отправить это уведомление всем подписанным клиентам?"):
-        print("Рассылка отменена.")
-        return
-    call(["xray-telegram", "maintenance-notice", notice, "--yes"])
-
-
 def print_initial_link():
     if CLIENT_LINK_PATH.exists():
         print(CLIENT_LINK_PATH.read_text())
@@ -1334,20 +1242,6 @@ def update_timezone():
         return
     call(["xray-client", "set-timezone", value])
     print("Новая настройка будет использоваться в следующих расчётах и выводе времени.")
-
-
-def update_telegram_route_mode():
-    print("Как Telegram-боту выходить в интернет?")
-    print("1) direct: напрямую с этого сервера")
-    print("2) cascade: через исходящий сервер, настроенный в каскаде")
-    print("Cascade-режим добавит локальный SOCKS inbound 127.0.0.1:10810 только для Telegram Bot API.")
-    choice = input("Маршрут [1-direct, 2-cascade]: ").strip() or "1"
-    if choice == "1":
-        call(["xray-telegram", "mode", "direct"])
-    elif choice == "2":
-        call(["xray-telegram", "mode", "cascade"])
-    else:
-        print("Действие отменено: неизвестный маршрут.")
 
 
 def sshd_binary():
@@ -1929,15 +1823,15 @@ def telegram_menu_handlers():
         "3": ("Донастроить владельца/чат", lambda: call(["xray-telegram", "owner"])),
         "4": ("Включить уведомления", lambda: call(["xray-telegram", "enable"])),
         "5": ("Отключить уведомления", lambda: call(["xray-telegram", "disable"])),
-        "6": ("Изменить маршрут", update_telegram_route_mode),
+        "6": ("Изменить маршрут", lambda: menu_telegram_actions.update_route_mode(call)),
         "7": ("Отправить тестовое сообщение", lambda: call(["xray-telegram", "test"])),
         "8": ("Проверить GeoIP-уведомления сейчас", lambda: call(["xray-telegram", "notify-geoip"])),
         "9": ("Показать подписки клиентов", lambda: call(["xray-telegram", "subscribers"])),
         "10": ("Обработать сообщения пользователей", lambda: call(["xray-telegram", "poll-users"])),
         "11": ("Проверить напоминания об оплате", lambda: call(["xray-telegram", "notify-expiry"])),
-        "12": ("Настроить оплату и округление", update_telegram_payment_amount),
-        "13": ("Изменить имя бота", update_telegram_bot_name),
-        "14": ("Уведомить о работах на сервере", send_telegram_maintenance_notice),
+        "12": ("Настроить оплату и округление", lambda: menu_telegram_actions.update_payment_amount(call)),
+        "13": ("Изменить имя бота", lambda: menu_telegram_actions.update_bot_name(call)),
+        "14": ("Уведомить о работах на сервере", lambda: menu_telegram_actions.send_maintenance_notice(call, confirm)),
         "15": ("Обновить меню команд Telegram", lambda: call(["xray-telegram", "commands"])),
     }
 
