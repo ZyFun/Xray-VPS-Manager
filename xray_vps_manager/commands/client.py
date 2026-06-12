@@ -7,7 +7,6 @@ import sys
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import connections as client_connections
@@ -26,23 +25,15 @@ from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import reports as traffic_reports
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.xray import config as xray_config
-from xray_vps_manager.xray import crypto as xray_crypto
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
-INBOUND_TAG = "vless-reality"
-DEFAULT_CONNECTION_NAME = "default"
 STATS_SERVER = "127.0.0.1:10085"
 TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 XRAY_TELEGRAM = Path("/usr/local/sbin/xray-telegram")
-DEFAULT_SERVER_ADDR = ""
-DEFAULT_SERVER_NAME = "Xray"
-BYTES_IN_GB = 1024 ** 3
-PAYMENT_TYPES = {"paid", "free"}
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
-SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 CONNECTION_NAME_RE = re.compile(r"^[^\r\n|]{1,64}$")
 FINGERPRINTS = {
     "chrome",
@@ -94,10 +85,6 @@ def local_now():
     return client_access.local_now()
 
 
-def parse_datetime(value):
-    return client_access.parse_datetime(value)
-
-
 def parse_access_days(value):
     try:
         return client_access.parse_access_days(value)
@@ -110,14 +97,6 @@ def parse_extend_days(value):
         return client_access.parse_extend_days(value)
     except ValueError as exc:
         die(str(exc))
-
-
-def expires_at_from_days(days):
-    return client_access.expires_at_from_days(days)
-
-
-def set_entry_expiry(entry, days):
-    client_access.set_entry_expiry(entry, days)
 
 
 def normalize_payment_type(value):
@@ -134,17 +113,6 @@ def payment_type_label(entry):
 def set_entry_payment_type(entry, value):
     try:
         return client_payments.set_payment_type(entry, value)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def extended_expires_at(entry, days):
-    return client_access.extended_expires_at(entry, days)
-
-
-def extend_entry_expiry(entry, days):
-    try:
-        client_access.extend_entry_expiry(entry, days)
     except ValueError as exc:
         die(str(exc))
 
@@ -173,24 +141,6 @@ def set_client_traffic_limit(entry, period, limit_bytes):
 def clear_client_traffic_limit(entry):
     try:
         return client_limits.clear_client_traffic_limit(entry, utc_now_iso)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def traffic_limit(entry):
-    return client_limits.traffic_limit(entry)
-
-
-def traffic_limit_period_key(period, now=None):
-    try:
-        return client_limits.traffic_limit_period_key(period, now)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def traffic_limit_reset_time(period, now=None):
-    try:
-        return client_limits.traffic_limit_reset_time(period, now)
     except ValueError as exc:
         die(str(exc))
 
@@ -268,13 +218,6 @@ def save_server_env_values(values):
     client_settings.save_server_env_values(values, SERVER_ENV_PATH)
 
 
-def find_inbound(config):
-    try:
-        return xray_config.find_inbound(config)
-    except ValueError as exc:
-        die(str(exc))
-
-
 def reality_inbounds(config):
     return xray_config.reality_inbounds(config)
 
@@ -283,34 +226,12 @@ def inbound_tag(inbound):
     return xray_config.inbound_tag(inbound)
 
 
-def find_inbound_by_tag(config, tag):
-    try:
-        return xray_config.find_inbound_by_tag(config, tag)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def default_connection_tag(config):
-    try:
-        return xray_config.default_connection_tag(config)
-    except ValueError as exc:
-        die(str(exc))
-
-
 def db_connections(db):
     return client_repository.db_connections(db)
 
 
 def connection_name_from_tag(tag):
     return xray_config.connection_name_from_tag(tag)
-
-
-def connection_settings_from_inbound(inbound):
-    return xray_config.connection_settings_from_inbound(inbound)
-
-
-def reality_dest(sni):
-    return xray_config.reality_dest(sni)
 
 
 def ensure_connections(config, db):
@@ -334,23 +255,9 @@ def connection_display_name(config, db, tag):
         die(str(exc))
 
 
-def connection_fingerprint(config, db, tag):
-    try:
-        return client_connections.connection_fingerprint(config, db, tag)
-    except ValueError as exc:
-        die(str(exc))
-
-
 def connection_rows(config, db):
     try:
         return client_connections.connection_rows(config, db)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def resolve_connection_identifier(config, db, value):
-    try:
-        return client_connections.resolve_connection_identifier(config, db, value)
     except ValueError as exc:
         die(str(exc))
 
@@ -367,14 +274,6 @@ def client_name(item):
     return client_models.client_name(item)
 
 
-def active_client(inbound, name):
-    return xray_config.active_client(inbound, name)
-
-
-def active_client_any(config, name):
-    return xray_config.active_client_any(config, name)
-
-
 def db_clients(db):
     return client_repository.db_clients(db)
 
@@ -382,46 +281,6 @@ def db_clients(db):
 def db_entry_from_client(item, created="", enabled=True, previous=None):
     try:
         return client_models.db_entry_from_client(item, created=created, enabled=enabled, previous=previous)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def client_from_db_entry(name, entry):
-    try:
-        return client_models.client_from_db_entry(name, entry)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def clear_disabled_state(entry):
-    client_status.clear_disabled_state(entry)
-
-
-def enable_db_client(config, db, name, entry):
-    try:
-        return client_status.enable_db_client(config, name, entry)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def remove_active_client(config, name):
-    return client_status.remove_active_client(config, name)
-
-
-def clear_traffic_limit_exceeded_state(entry):
-    client_status.clear_traffic_limit_exceeded_state(entry)
-
-
-def disabled_entry_for_policy(config, name, entry):
-    try:
-        return client_status.disabled_entry_for_policy(config, name, entry)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def reconcile_client_access_status(config, db, traffic_db, name, entry, now=None):
-    try:
-        return client_status.reconcile_client_access_status(config, db, traffic_db, name, entry, now)
     except ValueError as exc:
         die(str(exc))
 
@@ -473,34 +332,8 @@ def color_label(value, text):
     return text
 
 
-def xray_uuid():
-    return xray_crypto.xray_uuid()
-
-
-def xray_x25519_keys():
-    try:
-        return xray_crypto.xray_x25519_keys()
-    except RuntimeError as exc:
-        die(str(exc))
-
-
-def random_short_id():
-    return xray_crypto.random_short_id()
-
-
-def reality_public_key(private_key):
-    try:
-        return xray_crypto.reality_public_key(private_key)
-    except RuntimeError as exc:
-        die(str(exc))
-
-
 def server_env_values():
     return client_settings.server_env_values(SERVER_ENV_PATH)
-
-
-def server_env_value(key, default=""):
-    return client_settings.server_env_value(key, default)
 
 
 def normalize_timezone(value):
@@ -520,27 +353,6 @@ def manager_timezone():
 
 def manager_timezone_label():
     return client_settings.manager_timezone_label()
-
-
-def server_addr():
-    try:
-        return client_settings.server_addr()
-    except ValueError as exc:
-        die(str(exc))
-
-
-def server_name():
-    try:
-        return client_settings.server_name()
-    except ValueError as exc:
-        die(str(exc))
-
-
-def fingerprint():
-    try:
-        return client_settings.fingerprint()
-    except ValueError as exc:
-        die(str(exc))
 
 
 def link_for(config, client_id, name, connection_tag=None, db=None):
@@ -608,10 +420,6 @@ def load_traffic_db():
     return traffic_repository.load_traffic_db(TRAFFIC_PATH)
 
 
-def save_traffic_db(db):
-    traffic_repository.save_traffic_db(db, TRAFFIC_PATH)
-
-
 def remove_traffic_clients(names):
     return traffic_repository.remove_traffic_clients(names, TRAFFIC_PATH)
 
@@ -641,13 +449,6 @@ def traffic_entry(traffic_db, name):
     return traffic_repository.traffic_entry(traffic_db, name)
 
 
-def traffic_limit_usage(entry, period, now=None):
-    try:
-        return client_limits.traffic_limit_usage(entry, period, now)
-    except ValueError as exc:
-        die(str(exc))
-
-
 def traffic_limit_status(db_entry, traffic_db_entry, now=None):
     try:
         return client_limits.traffic_limit_status(db_entry, traffic_db_entry, now)
@@ -672,18 +473,6 @@ def print_connection_title(config, db, tag):
     sni = entry.get("sni", "")
     print()
     print(f"Connection: {name}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
-
-
-def used_ports(config):
-    return client_connections.used_ports(config)
-
-
-def next_connection_tag(config):
-    return client_connections.next_connection_tag(config)
-
-
-def make_reality_inbound(tag, port, sni, private_key, short_id):
-    return client_connections.make_reality_inbound(tag, port, sni, private_key, short_id)
 
 
 def cmd_connection_list():
@@ -726,20 +515,6 @@ def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
     print(f"REALITY_DEST: {result.dest}")
     print(f"FINGERPRINT: {result.fingerprint}")
     print(f"Backup: {backup}")
-
-
-def connection_client_names(config, db, tag):
-    try:
-        return client_connections.connection_client_names(config, db, tag)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def server_env_values_for_connection(config, db, tag):
-    try:
-        return client_connections.server_env_values_for_connection(config, db, tag)
-    except ValueError as exc:
-        die(str(exc))
 
 
 def cmd_connection_remove(identifier):
@@ -905,17 +680,6 @@ def cmd_traffic_period(name, start_value, end_value):
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {manager_timezone_label()})")
     print_plain_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end))
-
-
-def resolve_connection_for_add(config, db, connection_tag=None):
-    try:
-        return client_crud.resolve_connection_for_add(config, db, connection_tag)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def all_client_names(config, db):
-    return client_crud.all_client_names(config, db)
 
 
 def db_entry_for_existing_client(config, db, name):
@@ -1111,13 +875,6 @@ def run_access_update(name, result_factory):
     if backup:
         print(f"Backup: {backup}")
     notify_access_updated(name)
-
-
-def apply_access_update(name, update_entry):
-    run_access_update(
-        name,
-        lambda config, db, traffic_db: client_status.apply_access_update(config, db, traffic_db, name, update_entry),
-    )
 
 
 def enforce_traffic_limits(config, db, traffic_db):
