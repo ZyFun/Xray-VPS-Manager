@@ -7,6 +7,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.paths import SERVER_ENV_PATH
+from xray_vps_manager.core.server_env import read_server_env
 
 
 def utc_now() -> datetime:
@@ -34,20 +35,8 @@ def parse_time(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-def server_env_values(path: Path = SERVER_ENV_PATH) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for line in path.read_text().splitlines():
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key] = value.strip().strip('"').strip("'")
-    return values
-
-
 def manager_timezone(path: Path = SERVER_ENV_PATH):
-    value = server_env_values(path).get("MANAGER_TIMEZONE", "").strip()
+    value = read_server_env(path).get("MANAGER_TIMEZONE", "").strip()
     if value:
         try:
             return ZoneInfo(value), value
