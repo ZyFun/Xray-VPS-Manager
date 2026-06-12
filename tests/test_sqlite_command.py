@@ -454,6 +454,7 @@ class SQLiteCommandTests(unittest.TestCase):
             self.assertIn("traffic_source: sqlite", output)
             self.assertIn("telegram_source: sqlite", output)
             self.assertIn("activity_source: sqlite", output)
+            self.assertIn("runtime_scenarios: ok", output)
 
     def test_validate_cutover_fails_when_flags_are_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -477,6 +478,37 @@ class SQLiteCommandTests(unittest.TestCase):
             self.assertIn("ERROR SQLite reads flag is disabled", output)
             self.assertIn("ERROR SQLite writes flag is disabled", output)
             self.assertIn("ERROR clients read layer is not using SQLite", output)
+
+    def test_runtime_scenario_issues_reports_cross_section_problems(self) -> None:
+        with mock.patch.object(
+            sqlite_command.client_repository,
+            "load_db_for_read_result",
+            return_value=mock.Mock(
+                db={"connections": {}, "clients": {"alice": {"connection": "missing-connection"}}},
+                source="sqlite",
+            ),
+        ), mock.patch.object(
+            sqlite_command.traffic_repository,
+            "load_traffic_db_for_read_result",
+            return_value=mock.Mock(db={"clients": {"ghost": {"incoming": 1, "outgoing": 1, "history": {}}}}, source="sqlite"),
+        ), mock.patch.object(
+            sqlite_command.activity_repository,
+            "event_client_names_for_read",
+            return_value=["alice"],
+        ), mock.patch.object(
+            sqlite_command.activity_repository,
+            "iter_events_for_read",
+            return_value=iter(()),
+        ), mock.patch.object(
+            sqlite_command.telegram_settings,
+            "load_db_for_read_result",
+            return_value=mock.Mock(db={"clientSubscriptions": {"123": {"client": "ghost"}}}, source="sqlite"),
+        ):
+            issues = sqlite_command.runtime_scenario_issues()
+
+        self.assertIn("client runtime connection is missing: alice -> missing-connection", issues)
+        self.assertIn("traffic runtime client is missing from clients: ghost", issues)
+        self.assertIn("Telegram runtime subscription client is missing: 123 -> ghost", issues)
 
 
 if __name__ == "__main__":

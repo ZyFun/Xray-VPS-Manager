@@ -7,15 +7,19 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 
 from xray_vps_manager.commands import backup as backup_command
 from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.activity.time import parse_time
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.paths import MANAGER_DB_PATH, SERVER_ENV_PATH
 from xray_vps_manager.core.server_env import read_server_env, write_server_env
 from xray_vps_manager.db import database, json_import, schema
+from xray_vps_manager.telegram import payments as telegram_payments
 from xray_vps_manager.telegram import settings as telegram_settings
+from xray_vps_manager.traffic import history as traffic_history
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.db.storage import (
     SQLITE_READS_ENV,
@@ -233,6 +237,85 @@ def validate_read_layers() -> tuple[list[str], dict[str, str]]:
     return issues, sources
 
 
+def runtime_scenario_issues() -> list[str]:
+    issues = []
+    client_db = {"connections": {}, "clients": {}}
+    clients = {}
+
+    try:
+        client_result = client_repository.load_db_for_read_result(db_path=MANAGER_DB_PATH)
+        client_db = client_result.db
+        clients = client_repository.db_clients(client_db)
+        connections = client_repository.db_connections(client_db)
+        if not isinstance(clients, dict):
+            issues.append("clients runtime read returned invalid clients section")
+            clients = {}
+        if not isinstance(connections, dict):
+            issues.append("clients runtime read returned invalid connections section")
+            connections = {}
+        for name, entry in clients.items():
+            if not isinstance(entry, dict):
+                issues.append(f"client runtime record is invalid: {name}")
+                continue
+            connection_tag = str(entry.get("connection") or "").strip()
+            if connection_tag and connection_tag not in connections:
+                issues.append(f"client runtime connection is missing: {name} -> {connection_tag}")
+    except Exception as exc:
+        issues.append(f"clients runtime scenario failed: {exc}")
+        clients = {}
+
+    try:
+        traffic_result = traffic_repository.load_traffic_db_for_read_result(db_path=MANAGER_DB_PATH)
+        traffic_entries = traffic_repository.traffic_clients(traffic_result.db)
+        for name, entry in traffic_entries.items():
+            if not isinstance(entry, dict):
+                issues.append(f"traffic runtime record is invalid: {name}")
+                continue
+            if name not in clients:
+                issues.append(f"traffic runtime client is missing from clients: {name}")
+            traffic_history.all_time_total(entry)
+            traffic_history.period_day_rows(entry, date.today(), date.today(), str)
+    except Exception as exc:
+        issues.append(f"traffic runtime scenario failed: {exc}")
+
+    try:
+        activity_clients = activity_repository.event_client_names_for_read(db_path=MANAGER_DB_PATH)
+        if activity_clients is None:
+            issues.append("activity runtime clients are not readable from SQLite")
+        elif activity_clients:
+            list(
+                activity_repository.iter_events_for_read(
+                    activity_clients[0],
+                    date(1970, 1, 1),
+                    date(2100, 12, 31),
+                    parse_time,
+                    db_path=MANAGER_DB_PATH,
+                )
+            )
+    except Exception as exc:
+        issues.append(f"activity runtime scenario failed: {exc}")
+
+    try:
+        telegram_result = telegram_settings.load_db_for_read_result(db_path=MANAGER_DB_PATH)
+        telegram_db = telegram_result.db
+        subscriptions = telegram_db.get("clientSubscriptions", {})
+        if not isinstance(subscriptions, dict):
+            issues.append("Telegram runtime subscriptions section is invalid")
+        else:
+            for chat_id, subscription in subscriptions.items():
+                if not isinstance(subscription, dict):
+                    issues.append(f"Telegram runtime subscription is invalid: {chat_id}")
+                    continue
+                client_name = str(subscription.get("client") or "").strip()
+                if client_name and client_name not in clients:
+                    issues.append(f"Telegram runtime subscription client is missing: {chat_id} -> {client_name}")
+        telegram_payments.payment_amount_label(telegram_db, client_db if isinstance(client_db, dict) else {"clients": {}})
+    except Exception as exc:
+        issues.append(f"Telegram runtime scenario failed: {exc}")
+
+    return issues
+
+
 def validate_cutover() -> int:
     issues = []
     try:
@@ -248,6 +331,8 @@ def validate_cutover() -> int:
 
     read_issues, sources = validate_read_layers()
     issues.extend(read_issues)
+    runtime_issues = runtime_scenario_issues()
+    issues.extend(runtime_issues)
 
     connection = database.open_database(MANAGER_DB_PATH)
     try:
@@ -259,6 +344,7 @@ def validate_cutover() -> int:
     print_counts(counts)
     for name in sorted(sources):
         print(f"{name}_source: {sources[name]}")
+    print("runtime_scenarios: ok" if not runtime_issues else "runtime_scenarios: failed")
 
     if issues:
         print()

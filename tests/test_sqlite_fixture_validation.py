@@ -62,6 +62,7 @@ class SQLiteFixtureValidationTests(unittest.TestCase):
             self.assertIn("traffic_source: sqlite", output)
             self.assertIn("telegram_source: sqlite", output)
             self.assertIn("activity_source: sqlite", output)
+            self.assertIn("runtime_scenarios: ok", output)
             self.assertIn("OK SQLite cutover validation passed.", output)
 
 
