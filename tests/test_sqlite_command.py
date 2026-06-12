@@ -94,6 +94,8 @@ class SQLiteCommandTests(unittest.TestCase):
             root = Path(tmp_dir)
             db_path = root / "manager.db"
             env_path = root / "server.env"
+            backup_path = root / "backup.tar.gz"
+            backup_path.write_bytes(b"backup")
             write_server_env({"SERVER_ADDR": "example.com"}, env_path)
 
             def import_json_files(*, db_path, replace):
@@ -116,7 +118,7 @@ class SQLiteCommandTests(unittest.TestCase):
             ) as verify_writers_stopped, mock.patch.object(
                 sqlite_command, "start_writers"
             ) as start_writers, mock.patch.object(
-                sqlite_command.backup_command, "create_backup", return_value=root / "backup.tar.gz"
+                sqlite_command.backup_command, "create_backup", return_value=backup_path
             ) as create_backup, mock.patch.object(
                 sqlite_command.json_import, "import_json_files", side_effect=import_json_files
             ) as import_mock, mock.patch.object(
@@ -290,11 +292,54 @@ class SQLiteCommandTests(unittest.TestCase):
             create_backup.assert_not_called()
             import_json_files.assert_not_called()
 
+    def test_cutover_stops_before_import_when_backup_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            env_path = root / "server.env"
+            missing_backup = root / "missing-backup.tar.gz"
+            write_server_env({"SERVER_ADDR": "example.com"}, env_path)
+
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                sqlite_command, "SERVER_ENV_PATH", env_path
+            ), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.object(
+                sqlite_command, "stop_writers"
+            ) as stop_writers, mock.patch.object(
+                sqlite_command, "verify_writers_stopped"
+            ) as verify_writers_stopped, mock.patch.object(
+                sqlite_command, "start_writers"
+            ) as start_writers, mock.patch.object(
+                sqlite_command.backup_command, "create_backup", return_value=missing_backup
+            ) as create_backup, mock.patch.object(
+                sqlite_command.json_import, "import_json_files"
+            ) as import_json_files, redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    sqlite_command.cutover(yes=True)
+
+            self.assertEqual(caught.exception.code, 1)
+            stop_writers.assert_called_once_with()
+            verify_writers_stopped.assert_called_once_with()
+            start_writers.assert_called_once_with()
+            create_backup.assert_called_once_with(path_only=False, quiet=True, sync=False)
+            import_json_files.assert_not_called()
+
+    def test_verify_backup_file_rejects_empty_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "empty.tar.gz"
+            path.write_bytes(b"")
+
+            with self.assertRaisesRegex(RuntimeError, "backup is empty"):
+                sqlite_command.verify_backup_file(path, "Test")
+
     def test_cutover_disables_flags_and_restarts_writers_when_cutover_validation_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
             env_path = root / "server.env"
+            backup_path = root / "backup.tar.gz"
+            backup_path.write_bytes(b"backup")
             write_server_env({"SERVER_ADDR": "example.com"}, env_path)
 
             def import_json_files(*, db_path, replace):
@@ -316,7 +361,7 @@ class SQLiteCommandTests(unittest.TestCase):
             ), mock.patch.object(
                 sqlite_command, "start_writers"
             ) as start_writers, mock.patch.object(
-                sqlite_command.backup_command, "create_backup", return_value=root / "backup.tar.gz"
+                sqlite_command.backup_command, "create_backup", return_value=backup_path
             ), mock.patch.object(
                 sqlite_command.json_import, "import_json_files", side_effect=import_json_files
             ), mock.patch.object(
@@ -339,6 +384,8 @@ class SQLiteCommandTests(unittest.TestCase):
             root = Path(tmp_dir)
             db_path = root / "manager.db"
             env_path = root / "server.env"
+            backup_path = root / "backup.tar.gz"
+            backup_path.write_bytes(b"backup")
             write_server_env({"SERVER_ADDR": "example.com"}, env_path)
             connection = database.open_database(db_path)
             try:
@@ -357,7 +404,7 @@ class SQLiteCommandTests(unittest.TestCase):
             ), mock.patch.object(
                 sqlite_command, "start_writers"
             ) as start_writers, mock.patch.object(
-                sqlite_command.backup_command, "create_backup", return_value=root / "backup.tar.gz"
+                sqlite_command.backup_command, "create_backup", return_value=backup_path
             ), mock.patch.object(
                 sqlite_command.json_import,
                 "import_json_files",

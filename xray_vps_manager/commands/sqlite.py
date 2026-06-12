@@ -374,6 +374,19 @@ def verify_writers_stopped() -> None:
         raise RuntimeError("manager writer units are still active after stop: " + ", ".join(active))
 
 
+def verify_backup_file(path: Path | str | None, label: str) -> Path:
+    if not path:
+        raise RuntimeError(f"{label} backup path is empty")
+    backup_path = Path(path)
+    if not backup_path.exists():
+        raise RuntimeError(f"{label} backup was not created: {backup_path}")
+    if not backup_path.is_file():
+        raise RuntimeError(f"{label} backup is not a file: {backup_path}")
+    if backup_path.stat().st_size <= 0:
+        raise RuntimeError(f"{label} backup is empty: {backup_path}")
+    return backup_path
+
+
 def start_writers() -> None:
     for unit in WRITER_START_UNITS:
         run_systemctl(["enable", "--now", unit], allow_missing=True)
@@ -432,11 +445,13 @@ def cutover(*, yes: bool = False, run_test: bool = True) -> int:
 
         print("Creating pre-cutover backup...")
         backup_path = backup_command.create_backup(path_only=False, quiet=True, sync=False)
+        verify_backup_file(backup_path, "Pre-cutover")
         print(f"Pre-cutover backup: {backup_path}")
 
         if MANAGER_DB_PATH.exists():
             sqlite_backup = database.backup_database(MANAGER_DB_PATH, label="pre-cutover")
             if sqlite_backup:
+                verify_backup_file(sqlite_backup, "Pre-cutover SQLite")
                 print(f"Pre-cutover SQLite backup: {sqlite_backup}")
 
         print("Importing JSON state into SQLite...")
