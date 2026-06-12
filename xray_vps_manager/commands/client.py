@@ -17,6 +17,7 @@ from xray_vps_manager.clients import links as client_links
 from xray_vps_manager.clients import models as client_models
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
+from xray_vps_manager.clients import status as client_status
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import reports as traffic_reports
@@ -373,100 +374,36 @@ def client_from_db_entry(name, entry):
 
 
 def clear_disabled_state(entry):
-    entry.pop("disabledAt", None)
-    entry.pop("disabledReason", None)
-    entry.pop("expiredAt", None)
-    entry.pop("trafficLimitExceededAt", None)
-    entry.pop("trafficLimitExceededPeriod", None)
-    entry.pop("trafficLimitExceededBytes", None)
-    entry.pop("trafficLimitResetAt", None)
+    client_status.clear_disabled_state(entry)
 
 
 def enable_db_client(config, db, name, entry):
-    if active_client_any(config, name)[1] is not None:
-        return False
-
-    client = client_from_db_entry(name, entry)
-    connection_tag = entry.get("connection") or default_connection_tag(config)
-    inbound = find_inbound_by_tag(config, connection_tag)
-    clients(inbound).append(client)
-    entry["client"] = client
-    entry["connection"] = connection_tag
-    return True
+    try:
+        return client_status.enable_db_client(config, name, entry)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def remove_active_client(config, name):
-    removed_tag = ""
-    removed_item = None
-    changed = False
-    for inbound in reality_inbounds(config):
-        before = clients(inbound)
-        after = []
-        for item in before:
-            if client_name(item) == name:
-                if removed_item is None:
-                    removed_tag = inbound_tag(inbound)
-                    removed_item = item
-                changed = True
-                continue
-            after.append(item)
-        if len(after) != len(before):
-            inbound["settings"]["clients"] = after
-    return changed, removed_tag, removed_item
+    return client_status.remove_active_client(config, name)
 
 
 def clear_traffic_limit_exceeded_state(entry):
-    entry.pop("trafficLimitExceededAt", None)
-    entry.pop("trafficLimitExceededPeriod", None)
-    entry.pop("trafficLimitExceededBytes", None)
-    entry.pop("trafficLimitResetAt", None)
+    client_status.clear_traffic_limit_exceeded_state(entry)
 
 
 def disabled_entry_for_policy(config, name, entry):
-    changed, tag, item = remove_active_client(config, name)
-    if item is None:
-        disabled = dict(entry)
-        disabled["enabled"] = False
-        return disabled, changed
-
-    _, created = split_email(item.get("email", ""))
-    created = entry.get("created", created)
-    disabled = db_entry_from_client(item, created=created, enabled=False, previous=entry)
-    disabled["connection"] = entry.get("connection") or tag
-    return disabled, changed
+    try:
+        return client_status.disabled_entry_for_policy(config, name, entry)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def reconcile_client_access_status(config, db, traffic_db, name, entry, now=None):
-    now = now or local_now()
-    stamp = utc_now_iso()
-    status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
-
-    if status and status["exceeded"]:
-        disabled, changed = disabled_entry_for_policy(config, name, entry)
-        disabled["disabledAt"] = stamp
-        disabled["disabledReason"] = "traffic-limit"
-        disabled["trafficLimitExceededAt"] = stamp
-        disabled["trafficLimitExceededPeriod"] = status["periodKey"]
-        disabled["trafficLimitExceededBytes"] = status["usedBytes"]
-        disabled["trafficLimitResetAt"] = status["resetAt"]
-        disabled.pop("expiredAt", None)
-        db_clients(db)[name] = disabled
-        return disabled, changed, "disabled-traffic-limit", status
-
-    if access_expired(entry, now):
-        disabled, changed = disabled_entry_for_policy(config, name, entry)
-        disabled["disabledAt"] = stamp
-        disabled["expiredAt"] = stamp
-        disabled["disabledReason"] = "expired"
-        clear_traffic_limit_exceeded_state(disabled)
-        db_clients(db)[name] = disabled
-        return disabled, changed, "disabled-expired", None
-
-    changed = enable_db_client(config, db, name, entry)
-    entry["enabled"] = True
-    clear_disabled_state(entry)
-    db_clients(db)[name] = entry
-    return entry, changed, "enabled", None
+    try:
+        return client_status.reconcile_client_access_status(config, db, traffic_db, name, entry, now)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def validate_name(name):
