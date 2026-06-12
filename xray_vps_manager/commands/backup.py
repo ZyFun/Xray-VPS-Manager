@@ -12,6 +12,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.core.terminal import print_table
+
 BACKUP_DIR = Path("/root/xray_backups")
 CONFIG_DIR = Path("/usr/local/etc/xray")
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -209,30 +211,13 @@ def backup_rows():
     return rows
 
 
-def print_table(headers, rows):
-    if not rows:
-        print("No backups found.")
-        return
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(str(value)))
-    border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
-    print(border)
-    print("|" + "|".join(f" {headers[index].ljust(widths[index])} " for index in range(len(headers))) + "|")
-    print(border)
-    for row in rows:
-        print("|" + "|".join(f" {str(row[index]).ljust(widths[index])} " for index in range(len(headers))) + "|")
-    print(border)
-
-
 def list_backups(plain=False):
     rows = backup_rows()
     if plain:
         for path, created, size in rows:
             print(f"{path}\t{created}\t{size}")
         return
-    print_table(["PATH", "CREATED", "SIZE"], rows)
+    print_table(["PATH", "CREATED", "SIZE"], rows, empty_message="No backups found.")
 
 
 def resolve_archive(value):
