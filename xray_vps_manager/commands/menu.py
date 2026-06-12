@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from xray_vps_manager.commands import menu_actions, menu_ui
+from xray_vps_manager.commands import menu_actions, menu_backups, menu_ui
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
@@ -32,7 +32,7 @@ DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 14:17 UTC"
+MENU_UPDATED = "2026-06-12 14:23 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -2859,14 +2859,14 @@ def traffic_report_handlers(name):
 
 
 def backup_menu_handlers():
-    return {
-        "1": ("Создать бэкап на сервере", create_backup_server),
-        "2": ("Создать бэкап и показать команду скачивания", create_backup_download_command),
-        "3": ("Показать бэкапы на сервере", lambda: call(["xray-backup", "list"])),
-        "4": ("Восстановить из бэкапа на сервере", restore_backup_from_menu),
-        "5": ("Показать команду загрузки бэкапа на сервер", show_backup_upload_command),
-        "6": ("Удалить бэкап", delete_backup_from_menu),
-    }
+    return menu_backups.handlers(
+        call,
+        create_backup_server,
+        create_backup_download_command,
+        restore_backup_from_menu,
+        show_backup_upload_command,
+        delete_backup_from_menu,
+    )
 
 
 def telegram_menu_handlers():
