@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import limits as client_limits
+from xray_vps_manager.clients import listing as client_listing
 from xray_vps_manager.clients import links as client_links
 from xray_vps_manager.clients import models as client_models
 from xray_vps_manager.clients import repository as client_repository
@@ -593,43 +594,7 @@ def link_for(config, client_id, name, connection_tag=None, db=None):
 
 
 def client_rows(config, db):
-    rows = []
-    seen = set()
-    ensure_connections(config, db)
-    for inbound in reality_inbounds(config):
-        tag = inbound_tag(inbound)
-        for item in clients(inbound):
-            raw_email = item.get("email", "")
-            name, created = split_email(raw_email)
-            entry = db_clients(db).get(name, {})
-            if name in db_clients(db):
-                created = entry.get("created", created)
-            rows.append({
-                "name": name or "(no-name)",
-                "created": created or "unknown",
-                "id": item.get("id", ""),
-                "email": raw_email,
-                "status": "enabled",
-                "paymentType": payment_type_label(entry),
-                "expiresAt": entry.get("expiresAt", ""),
-                "connection": entry.get("connection") or tag,
-            })
-            seen.add(name)
-
-    for name, entry in db_clients(db).items():
-        if name in seen:
-            continue
-        rows.append({
-            "name": name,
-            "created": entry.get("created") or "unknown",
-            "id": entry.get("id", ""),
-            "email": entry.get("client", {}).get("email", name),
-            "status": "disabled" if entry.get("enabled") is False else "missing",
-            "paymentType": payment_type_label(entry),
-            "expiresAt": entry.get("expiresAt", ""),
-            "connection": entry.get("connection") or default_connection_tag(config),
-        })
-    return rows
+    return client_listing.client_rows(config, db)
 
 
 def query_user_stats():
