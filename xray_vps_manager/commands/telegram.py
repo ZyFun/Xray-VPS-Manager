@@ -16,10 +16,9 @@ from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.telegram import admin as telegram_admin
 from xray_vps_manager.telegram import api as telegram_api
-from xray_vps_manager.telegram import keyboards as telegram_keyboards
-from xray_vps_manager.telegram import messages as telegram_messages
 from xray_vps_manager.telegram import notifications as telegram_notifications
 from xray_vps_manager.telegram import payments as telegram_payments
+from xray_vps_manager.telegram import poller as telegram_poller
 from xray_vps_manager.telegram import settings as telegram_settings
 from xray_vps_manager.telegram import subscriptions as telegram_subscriptions
 
@@ -36,10 +35,6 @@ CASCADE_UPSTREAM_TAG = "cascade-upstream"
 TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
 TELEGRAM_SOCKS_HOST = "127.0.0.1"
 TELEGRAM_SOCKS_PORT = 10810
-USER_POLL_SHORT_TIMEOUT = 2
-USER_POLL_LONG_TIMEOUT = 45
-USER_POLLER_SLEEP_UNCONFIGURED = 30
-USER_POLLER_SLEEP_ERROR = 5
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 DEFAULT_SERVER_NAME = "Xray"
 DEFAULT_BOT_NAME = "Vireika"
@@ -326,15 +321,7 @@ def curl_json(db, method, payload=None, timeout=30):
 
 
 def telegram_chat_label(chat):
-    parts = []
-    if chat.get("username"):
-        parts.append("@" + str(chat["username"]))
-    full_name = " ".join(str(chat.get(key, "")).strip() for key in ("first_name", "last_name")).strip()
-    if full_name:
-        parts.append(full_name)
-    if not parts:
-        parts.append(str(chat.get("id", "")))
-    return " / ".join(parts)
+    return telegram_poller.chat_label(chat)
 
 
 def private_chats_from_updates(updates):
@@ -429,6 +416,24 @@ def admin_context():
         send_chat_message=send_chat_message,
         bot_name=bot_name,
         notification_context=notification_context(),
+    )
+
+
+def poller_context():
+    return telegram_poller.PollerContext(
+        load_db=load_db,
+        save_db_sections=save_db_sections,
+        load_client_db=load_client_db,
+        format_access_until=format_access_until,
+        run_capture=run_capture,
+        send_chat_message=send_chat_message,
+        answer_callback_query=answer_callback_query,
+        curl_json=curl_json,
+        bot_name=bot_name,
+        server_name_fragment=server_name_fragment,
+        utc_stamp=utc_stamp,
+        admin_context=admin_context(),
+        xray_client=XRAY_CLIENT,
     )
 
 
@@ -565,10 +570,6 @@ def configure_bot_commands():
     print("Telegram command menu updated.")
 
 
-def find_vless_link(text):
-    return telegram_subscriptions.find_vless_link(text)
-
-
 def format_access_until(value):
     if not value:
         return "бессрочно"
@@ -623,268 +624,12 @@ def notify_daily_summary(quiet=False, dry_run=False):
     return telegram_notifications.notify_daily_summary(notification_context(), quiet=quiet, dry_run=dry_run)
 
 
-def client_access_summary(entry):
-    return telegram_subscriptions.client_access_summary(entry, format_access_until)
-
-
-def client_menu_keyboard():
-    return telegram_keyboards.client_menu_keyboard()
-
-
-def is_owner_chat(db, chat_id):
-    return telegram_keyboards.is_owner_chat(db, chat_id)
-
-
-def client_keyboard_for_chat(db, chat_id):
-    return telegram_keyboards.client_keyboard_for_chat(db, chat_id)
-
-
-def subscription_intro_text():
-    db = load_db()
-    return telegram_messages.subscription_intro_text(db, bot_name)
-
-
-def subscribe_prompt_text():
-    return telegram_messages.subscribe_prompt_text()
-
-
-def send_client_menu(db, chat_id, text=None, parse_mode=None):
-    send_chat_message(
-        db,
-        chat_id,
-        text or subscription_intro_text(),
-        reply_markup=client_keyboard_for_chat(db, chat_id),
-        parse_mode=parse_mode,
-    )
-
-
-def send_admin_menu(db, chat_id, text=None):
-    telegram_admin.send_admin_menu(admin_context(), db, chat_id, text)
-
-
-def send_admin_notices_menu(db, chat_id, text=None):
-    telegram_admin.send_admin_notices_menu(admin_context(), db, chat_id, text)
-
-
-def subscription_status_for_chat(db, chat_id):
-    return telegram_subscriptions.subscription_status_for_chat(db, chat_id, load_client_db(), format_access_until)
-
-
-def subscription_entry_for_chat(db, chat_id):
-    return telegram_subscriptions.subscription_entry_for_chat(db, chat_id, load_client_db())
-
-
-def current_vless_link_code_for_chat(db, chat_id):
-    return telegram_subscriptions.current_vless_link_code_for_chat(
-        db,
-        chat_id,
-        load_client_db(),
-        XRAY_CLIENT,
-        run_capture,
-        server_name_fragment(),
-    )
-
-
-def unsubscribe_chat(db, chat_id):
-    return telegram_subscriptions.unsubscribe_chat(db, chat_id)
-
-
-def subscribe_chat_to_client(db, chat, text):
-    return telegram_subscriptions.subscribe_chat_to_client(
-        db,
-        chat,
-        text,
-        load_client_db(),
-        telegram_chat_label(chat),
-        utc_stamp(),
-    )
-
-
-def handle_user_message(db, update):
-    message = update.get("message") or update.get("edited_message") or {}
-    chat = message.get("chat") or {}
-    if chat.get("type") != "private" or "id" not in chat:
-        return False
-    chat_id = str(chat["id"])
-    text = str(message.get("text") or "").strip()
-    if not text:
-        send_client_menu(db, chat_id, "Отправь текстовую VLESS-ссылку или нажми кнопку ниже.")
-        return True
-    if is_owner_chat(db, chat_id) and telegram_admin.handle_custom_notice_text(admin_context(), db, chat_id, text):
-        return True
-    command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
-    if command == "/admin":
-        if is_owner_chat(db, chat_id):
-            send_admin_menu(db, chat_id)
-        else:
-            send_client_menu(db, chat_id)
-        return True
-    if command in ("/start", "/help"):
-        send_client_menu(db, chat_id)
-        return True
-    if command == "/status":
-        send_client_menu(db, chat_id, subscription_status_for_chat(db, chat_id))
-        return True
-    if command == "/link":
-        text, parse_mode = current_vless_link_code_for_chat(db, chat_id)
-        send_client_menu(db, chat_id, text, parse_mode=parse_mode)
-        return True
-    if command in ("/unsubscribe", "/stop"):
-        send_client_menu(db, chat_id, unsubscribe_chat(db, chat_id))
-        return True
-    if find_vless_link(text):
-        name, entry = subscribe_chat_to_client(db, chat, text)
-        send_client_menu(
-            db,
-            chat_id,
-            "Подписка подключена.\n\n"
-            + client_access_summary(entry)
-            + "\n\nНапоминания придут в 08:00 за 5 дней и за 1 день до окончания доступа.",
-        )
-        return True
-    send_client_menu(db, chat_id, "Я не нашёл VLESS-ссылку. Отправь свою ссылку целиком или нажми кнопку ниже.")
-    return True
-
-
-def handle_callback_query(db, update):
-    callback = update.get("callback_query") or {}
-    callback_id = callback.get("id", "")
-    message = callback.get("message") or {}
-    chat = message.get("chat") or {}
-    if chat.get("type") != "private" or "id" not in chat:
-        answer_callback_query(db, callback_id)
-        return False
-    chat_id = str(chat["id"])
-    data = str(callback.get("data") or "")
-
-    if data.startswith("admin:"):
-        if not is_owner_chat(db, chat_id):
-            answer_callback_query(db, callback_id, "Админ-панель доступна только владельцу.", show_alert=True)
-            send_client_menu(db, chat_id)
-            return True
-        answer_callback_query(db, callback_id)
-        return telegram_admin.handle_callback(admin_context(), db, chat_id, data)
-
-    if data == "client:subscribe":
-        answer_callback_query(db, callback_id)
-        send_client_menu(db, chat_id, subscribe_prompt_text())
-        return True
-    if data == "client:status":
-        answer_callback_query(db, callback_id)
-        send_client_menu(db, chat_id, subscription_status_for_chat(db, chat_id))
-        return True
-    if data == "client:link":
-        answer_callback_query(db, callback_id)
-        text, parse_mode = current_vless_link_code_for_chat(db, chat_id)
-        send_client_menu(db, chat_id, text, parse_mode=parse_mode)
-        return True
-    if data == "client:unsubscribe":
-        answer_callback_query(db, callback_id, "Готово")
-        send_client_menu(db, chat_id, unsubscribe_chat(db, chat_id))
-        return True
-    if data == "client:help":
-        answer_callback_query(db, callback_id)
-        send_client_menu(db, chat_id)
-        return True
-
-    answer_callback_query(db, callback_id, "Неизвестная кнопка")
-    send_client_menu(db, chat_id)
-    return True
-
-
-def handle_telegram_update(db, update):
-    if "callback_query" in update:
-        return handle_callback_query(db, update)
-    return handle_user_message(db, update)
-
-
-def update_private_chat_id(update):
-    message = update.get("message") or update.get("edited_message") or {}
-    chat = message.get("chat") or {}
-    if chat.get("type") == "private" and chat.get("id"):
-        return str(chat["id"])
-    callback = update.get("callback_query") or {}
-    callback_message = callback.get("message") or {}
-    callback_chat = callback_message.get("chat") or {}
-    if callback_chat.get("type") == "private" and callback_chat.get("id"):
-        return str(callback_chat["id"])
-    from_user = callback.get("from") or {}
-    if from_user.get("id"):
-        return str(from_user["id"])
-    return ""
-
-
-def user_poll_configured(db):
-    return bool(db.get("enabled") and db.get("token") and db.get("chatId"))
-
-
-def poll_user_subscriptions(quiet=False, telegram_timeout=USER_POLL_SHORT_TIMEOUT):
-    db = load_db()
-    if not db.get("enabled") or not db.get("token"):
-        if not quiet:
-            print("Telegram bot notifications are not configured or disabled.")
-        return 0
-    if not db.get("chatId"):
-        if not quiet:
-            print("Owner chat is not configured; user subscription polling skipped.")
-        return 0
-    state = db.setdefault("clientSubscriptionState", {})
-    offset = int(state.get("userUpdateOffset", 0) or 0)
-    payload = {"allowed_updates": ["message", "callback_query"], "timeout": max(0, int(telegram_timeout))}
-    if offset:
-        payload["offset"] = offset
-    try:
-        data = curl_json(db, "getUpdates", payload, timeout=max(15, int(telegram_timeout) + 10))
-    except Exception as exc:
-        if not quiet:
-            print(f"ERROR: Telegram user polling failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-
-    updates = data.get("result", [])
-    processed = 0
-    for update in updates:
-        try:
-            update_id = int(update.get("update_id", 0))
-            state["userUpdateOffset"] = max(int(state.get("userUpdateOffset", 0) or 0), update_id + 1)
-        except (TypeError, ValueError):
-            pass
-        try:
-            if handle_telegram_update(db, update):
-                processed += 1
-        except Exception as exc:
-            chat_id = update_private_chat_id(update)
-            if chat_id:
-                try:
-                    send_client_menu(db, chat_id, "Не удалось обработать действие: " + str(exc))
-                except Exception:
-                    pass
-            if not quiet:
-                print(f"ERROR: failed to process Telegram user update: {exc}", file=sys.stderr)
-    state["lastUserPoll"] = utc_stamp()
-    save_db_sections(db, ("clientSubscriptions", "clientSubscriptionState"))
-    if not quiet:
-        print(f"Processed Telegram user messages: {processed}")
-    return 0
+def poll_user_subscriptions(quiet=False, telegram_timeout=telegram_poller.USER_POLL_SHORT_TIMEOUT):
+    return telegram_poller.poll_user_subscriptions(poller_context(), quiet=quiet, telegram_timeout=telegram_timeout)
 
 
 def run_user_poller():
-    print("Telegram user poller started.", flush=True)
-    while True:
-        try:
-            db = load_db()
-            if not user_poll_configured(db):
-                print("Telegram user poller waits for enabled bot, token, and owner chat.", flush=True)
-                time.sleep(USER_POLLER_SLEEP_UNCONFIGURED)
-                continue
-            rc = poll_user_subscriptions(quiet=True, telegram_timeout=USER_POLL_LONG_TIMEOUT)
-            if rc != 0:
-                time.sleep(USER_POLLER_SLEEP_ERROR)
-        except KeyboardInterrupt:
-            raise
-        except Exception as exc:
-            print(f"ERROR: Telegram user poller failed: {exc}", file=sys.stderr, flush=True)
-            time.sleep(USER_POLLER_SLEEP_ERROR)
+    telegram_poller.run_user_poller(poller_context())
 
 
 def notify_expiry(quiet=False):
