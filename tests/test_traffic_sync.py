@@ -8,6 +8,40 @@ from xray_vps_manager.commands import traffic_sync
 
 
 class TrafficSyncTests(unittest.TestCase):
+    def test_known_clients_loads_client_db_through_read_switch(self) -> None:
+        config_email = "config_user|created=2026-06-12T08:00:00Z"
+        db_email = "db_user|created=2026-06-12T09:00:00Z"
+        config = {
+            "inbounds": [
+                {
+                    "protocol": "vless",
+                    "streamSettings": {"security": "reality"},
+                    "settings": {"clients": [{"email": config_email}]},
+                }
+            ]
+        }
+        db = {
+            "clients": {
+                "db_user": {"client": {"email": db_email}},
+            }
+        }
+
+        with mock.patch.object(traffic_sync, "load_json", return_value=config), \
+            mock.patch.object(
+                traffic_sync.client_repository,
+                "load_db_for_read",
+                return_value=db,
+            ) as load_db_for_read:
+            self.assertEqual(
+                traffic_sync.known_clients(),
+                {
+                    "config_user": config_email,
+                    "db_user": db_email,
+                },
+            )
+
+        load_db_for_read.assert_called_once_with(traffic_sync.CLIENT_DB_PATH)
+
     def test_sync_locked_loads_traffic_through_read_switch(self) -> None:
         email = "alice|created=2026-06-12T08:00:00Z"
         db = {

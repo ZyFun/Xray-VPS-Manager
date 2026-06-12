@@ -206,6 +206,19 @@ def configured(db):
     return bool(db.get("enabled") and db.get("token") and db.get("chatId"))
 
 
+def update_offset_from_updates(state, updates):
+    current = int(state.get("userUpdateOffset", 0) or 0)
+    for update in updates:
+        try:
+            update_id = int(update.get("update_id", 0))
+        except (TypeError, ValueError):
+            continue
+        next_offset = update_id + 1
+        if next_offset > current:
+            current = next_offset
+    state["userUpdateOffset"] = current
+
+
 def poll_user_subscriptions(ctx: PollerContext, quiet=False, telegram_timeout=USER_POLL_SHORT_TIMEOUT):
     db = ctx.load_db()
     if not db.get("enabled") or not db.get("token"):
@@ -230,13 +243,12 @@ def poll_user_subscriptions(ctx: PollerContext, quiet=False, telegram_timeout=US
         return 0
 
     updates = data.get("result", [])
+    update_offset_from_updates(state, updates)
+    state["lastUserPoll"] = ctx.utc_stamp()
+    ctx.save_db_sections(db, ("clientSubscriptionState",))
+
     processed = 0
     for update in updates:
-        try:
-            update_id = int(update.get("update_id", 0))
-            state["userUpdateOffset"] = max(int(state.get("userUpdateOffset", 0) or 0), update_id + 1)
-        except (TypeError, ValueError):
-            pass
         try:
             if handle_telegram_update(ctx, db, update):
                 processed += 1

@@ -138,7 +138,7 @@ def wait_for_tcp(host, port, timeout=8.0):
 def set_route_mode(mode):
     if mode not in ("direct", "cascade"):
         raise ValueError("Route mode must be direct or cascade.")
-    db = settings.load_db()
+    db = settings.load_db_for_read()
     previous_mode = db.get("routeMode", "direct")
     config = load_config()
     if mode == "cascade":
@@ -264,7 +264,7 @@ def maybe_adopt_existing_cascade_route(db):
 
 
 def configure_bot_commands():
-    db = settings.load_db()
+    db = settings.load_db_for_read()
     if not db.get("token"):
         raise ValueError("Telegram bot token is not configured.")
     commands = [
@@ -279,7 +279,7 @@ def configure_bot_commands():
 
 
 def configure_owner(send_test=True):
-    db = ask_token_if_missing(settings.load_db())
+    db = ask_token_if_missing(settings.load_db_for_read())
     db = maybe_adopt_existing_cascade_route(db)
     me = api.curl_json(db, "getMe")
     bot = me.get("result", {})
@@ -307,7 +307,7 @@ def setup():
     token = input("BOT_TOKEN: ").strip()
     if not token or ":" not in token:
         raise ValueError("BOT_TOKEN выглядит некорректно.")
-    db = settings.load_db()
+    db = settings.load_db_for_read()
     db["token"] = token
 
     print()
@@ -335,7 +335,7 @@ def setup():
 
 
 def set_enabled(value):
-    db = settings.load_db()
+    db = settings.load_db_for_read()
     db["enabled"] = bool(value)
     if value:
         initialize_geoip_offsets(db)
@@ -344,13 +344,13 @@ def set_enabled(value):
 
 
 def set_bot_name(value):
-    db = settings.load_db()
+    db = settings.load_db_for_read()
     db["botName"] = settings.normalize_display_name(value, settings.DEFAULT_BOT_NAME, "BOT_NAME")
     settings.save_db(db)
     print(f"Bot name: {db['botName']}")
 
 
 def test_message():
-    db = settings.load_db()
+    db = settings.load_db_for_read()
     api.send_message(db, "Xray VPS Manager: тестовое сообщение Telegram-бота.")
     print("Test message sent.")

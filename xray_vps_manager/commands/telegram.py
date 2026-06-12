@@ -81,7 +81,7 @@ def load_json(path, default):
 
 
 def load_db():
-    return telegram_settings.load_db(TELEGRAM_DB_PATH)
+    return telegram_settings.load_db_for_read(TELEGRAM_DB_PATH)
 
 
 def load_db_readonly():
@@ -143,7 +143,7 @@ def load_client_db():
 
 
 def load_traffic_db():
-    return traffic_repository.load_traffic_db(TRAFFIC_PATH)
+    return traffic_repository.load_traffic_db_for_read(TRAFFIC_PATH)
 
 
 def set_route_mode(mode):

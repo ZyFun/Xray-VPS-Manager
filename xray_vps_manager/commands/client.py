@@ -152,7 +152,7 @@ def save_config(config):
 
 def load_db():
     try:
-        return client_repository.load_db(CLIENT_DB_PATH)
+        return client_repository.load_db_for_read(CLIENT_DB_PATH)
     except ValueError as exc:
         die(str(exc))
 
@@ -192,8 +192,6 @@ def save_config_restart_xray_and_db(config, db):
 
 
 def normalize_access_deadlines(tz):
-    if not CLIENT_DB_PATH.exists():
-        return 0
     db = load_db()
     changed = 0
     for entry in client_repository.db_clients(db).values():
@@ -351,7 +349,7 @@ def print_payment_summary():
 
 
 def load_traffic_db():
-    return traffic_repository.load_traffic_db(TRAFFIC_PATH)
+    return traffic_repository.load_traffic_db_for_read(TRAFFIC_PATH)
 
 
 def load_traffic_db_readonly():

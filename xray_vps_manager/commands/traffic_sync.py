@@ -11,6 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import repository as traffic_repository
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -139,8 +140,8 @@ def known_clients():
                 continue
             clients[split_email(email)] = email
 
-    db = load_json(CLIENT_DB_PATH, {"clients": {}})
-    for name, entry in db.get("clients", {}).items():
+    db = client_repository.load_db_for_read(CLIENT_DB_PATH)
+    for name, entry in client_repository.db_clients(db).items():
         email = entry.get("client", {}).get("email") or name
         clients.setdefault(name, email)
 
