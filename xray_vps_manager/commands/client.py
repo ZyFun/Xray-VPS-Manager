@@ -81,10 +81,6 @@ def utc_now_iso():
     return utc_now().isoformat().replace("+00:00", "Z")
 
 
-def local_now():
-    return client_access.local_now()
-
-
 def parse_access_days(value):
     try:
         return client_access.parse_access_days(value)
@@ -104,10 +100,6 @@ def normalize_payment_type(value):
         return client_payments.normalize_payment_type(value)
     except ValueError as exc:
         die(str(exc))
-
-
-def payment_type_label(entry):
-    return client_payments.payment_type_label(entry)
 
 
 def set_entry_payment_type(entry, value):
@@ -145,14 +137,6 @@ def clear_client_traffic_limit(entry):
         die(str(exc))
 
 
-def traffic_limit_period_label(period):
-    return client_limits.traffic_limit_period_label(period)
-
-
-def format_traffic_limit(entry):
-    return client_limits.format_traffic_limit(entry)
-
-
 def prompt_access_days():
     if not sys.stdin.isatty():
         return None
@@ -162,18 +146,6 @@ def prompt_access_days():
     print("Нажми Enter или введи 0, чтобы добавить клиента бессрочно.")
     value = input("ACCESS_DAYS [бессрочно]: ").strip()
     return parse_access_days(value)
-
-
-def access_expired(entry, now=None):
-    return client_access.access_expired(entry, now)
-
-
-def format_access_until(value):
-    return client_access.format_access_until(value)
-
-
-def access_deadline_at_midnight(value, tz):
-    return client_access.access_deadline_at_midnight(value, tz)
 
 
 def load_config():
@@ -205,7 +177,7 @@ def normalize_access_deadlines(tz):
     changed = 0
     for entry in db_clients(db).values():
         expires_at = entry.get("expiresAt", "")
-        normalized = access_deadline_at_midnight(expires_at, tz)
+        normalized = client_access.access_deadline_at_midnight(expires_at, tz)
         if normalized and normalized != expires_at:
             entry["expiresAt"] = normalized
             changed += 1
@@ -436,7 +408,7 @@ def parse_date_value(value, label="DATE"):
 
 
 def parse_month_value(value=None):
-    value = value or local_now().strftime("%Y-%m")
+    value = value or client_access.local_now().strftime("%Y-%m")
     if not re.fullmatch(r"[0-9]{4}-[0-9]{2}", value):
         die("MONTH must be in YYYY-MM format.")
     year, month = (int(part, 10) for part in value.split("-", 1))
@@ -589,9 +561,9 @@ def cmd_list():
                     format_traffic(outgoing),
                     format_traffic(total),
                     traffic_updated,
-                    format_traffic_limit(db_entry),
+                    client_limits.format_traffic_limit(db_entry),
                     last_online,
-                    format_access_until(row["expiresAt"]),
+                    client_access.format_access_until(row["expiresAt"]),
                     row["created"],
                 ]
             )
@@ -637,8 +609,8 @@ def cmd_traffic_summary(month_value=None):
         db_clients(db),
         month_key,
         connection_label=lambda row: connection_display_name(config, db, row["connection"]),
-        limit_label=format_traffic_limit,
-        today=local_now().date(),
+        limit_label=client_limits.format_traffic_limit,
+        today=client_access.local_now().date(),
     )
 
     print(f"Month: {month_key}")
@@ -646,7 +618,7 @@ def cmd_traffic_summary(month_value=None):
 
 
 def cmd_traffic_day(name, day_value=None):
-    day = parse_date_value(day_value or local_now().date().isoformat())
+    day = parse_date_value(day_value or client_access.local_now().date().isoformat())
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Day: {day.isoformat()} (timezone: {manager_timezone_label()})")
@@ -654,7 +626,7 @@ def cmd_traffic_day(name, day_value=None):
 
 
 def cmd_traffic_week(name, start_value=None):
-    start = parse_date_value(start_value or (local_now().date() - timedelta(days=6)).isoformat(), "START_DATE")
+    start = parse_date_value(start_value or (client_access.local_now().date() - timedelta(days=6)).isoformat(), "START_DATE")
     end = start + timedelta(days=6)
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
@@ -664,7 +636,7 @@ def cmd_traffic_week(name, start_value=None):
 
 def cmd_traffic_month(name, month_value=None):
     month_key = parse_month_value(month_value)
-    start, end = traffic_reports.month_bounds(month_key, today=local_now().date())
+    start, end = traffic_reports.month_bounds(month_key, today=client_access.local_now().date())
     _, _, _, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Month: {month_key} (timezone: {manager_timezone_label()})")
@@ -721,9 +693,9 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
 
     print(f"Added client: {name}")
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
-    print(f"Payment type: {payment_type_label(result.entry)}")
+    print(f"Payment type: {client_payments.payment_type_label(result.entry)}")
     print(f"Created: {result.created}")
-    print(f"Access until: {format_access_until(result.entry.get('expiresAt', ''))}")
+    print(f"Access until: {client_access.format_access_until(result.entry.get('expiresAt', ''))}")
     print(f"Backup: {backup}")
     print_payment_summary()
     print(link_for(config, result.client_id, name, result.connection_tag, db))
@@ -738,7 +710,7 @@ def cmd_set_payment(name, payment_value):
     db_clients(db)[name] = entry
     save_db(db)
     print(f"Client: {name}")
-    print(f"Payment type: {payment_type_label(entry)}")
+    print(f"Payment type: {client_payments.payment_type_label(entry)}")
     print_payment_summary()
 
 
@@ -806,7 +778,7 @@ def cmd_enable(name):
         traffic_status = exc.traffic_status
         die(
             "Traffic limit is exhausted for the current "
-            f"{traffic_limit_period_label(traffic_status['period'])}. "
+            f"{client_limits.traffic_limit_period_label(traffic_status['period'])}. "
             f"Used {format_traffic(traffic_status['usedBytes'])} of {format_traffic(traffic_status['limitBytes'])}. "
             f"Can be enabled after reset: {traffic_status['resetAt']}"
         )
@@ -860,7 +832,7 @@ def run_access_update(name, result_factory):
         save_db(db)
 
     print(f"Client: {name}")
-    print(f"Access until: {format_access_until(entry.get('expiresAt', ''))}")
+    print(f"Access until: {client_access.format_access_until(entry.get('expiresAt', ''))}")
     if result.status == "enabled":
         print("Status: enabled")
     elif result.status == "disabled-expired":
@@ -919,7 +891,7 @@ def cmd_set_limit(name, period_value, limit_gb_value):
     sync_traffic()
     traffic_db = load_traffic_db()
     status = traffic_limit_status(result.entry, traffic_entry(traffic_db, name))
-    print(f"Traffic limit: {format_traffic(result.limit_bytes)}/{traffic_limit_period_label(result.period)}")
+    print(f"Traffic limit: {format_traffic(result.limit_bytes)}/{client_limits.traffic_limit_period_label(result.period)}")
     if status:
         print(f"Current usage: {format_traffic(status['usedBytes'])}")
         print(f"Remaining: {format_traffic(status['remainingBytes'])}")
@@ -1007,7 +979,7 @@ def cmd_expire_due(quiet=False):
     config = load_config()
     db = load_db()
     ensure_connections(config, db)
-    now = local_now()
+    now = client_access.local_now()
     due_names = []
     due_clients = {}
     current_by_tag = {}
@@ -1018,7 +990,7 @@ def cmd_expire_due(quiet=False):
         for item in clients(inbound):
             name = client_name(item)
             entry = db_clients(db).get(name, {})
-            if access_expired(entry, now):
+            if client_access.access_expired(entry, now):
                 due_names.append(name)
                 due_clients[name] = (tag, item)
 
@@ -1062,7 +1034,7 @@ def cmd_expire_due(quiet=False):
 
 def cmd_timezone():
     name = configured_timezone_name()
-    current = local_now()
+    current = client_access.local_now()
     print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
     print(f"Current time: {current.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
@@ -1074,7 +1046,7 @@ def cmd_set_timezone(value):
     save_server_env_values(values)
     normalized = normalize_access_deadlines(manager_timezone())
     print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
-    print(f"Current time: {local_now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"Current time: {client_access.local_now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     if normalized:
         print(f"Normalized access deadlines: {normalized}")
 
