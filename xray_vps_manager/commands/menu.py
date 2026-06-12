@@ -20,7 +20,9 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 16:40 UTC"
+MENU_UPDATED = "2026-06-12 16:50 UTC"
+
+
 def die(message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(1)
@@ -657,11 +659,8 @@ def menu():
         if choice == "0":
             return
         if choice in handlers:
-            title, handler = handlers[choice]
-            if choice == "7":
-                execute_action(title, handler)
-            else:
-                handler()
+            _title, handler = handlers[choice]
+            handler()
         else:
             print("Неизвестный пункт меню.")
 
