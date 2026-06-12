@@ -7,7 +7,7 @@ import sys
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from xray_vps_manager.activity.constants import ACCESS_LOG_PATH, CLIENT_DB_PATH, CONFIG_PATH, EXPORT_DIR, LOCK_PATH
+from xray_vps_manager.activity.constants import CONFIG_PATH, EXPORT_DIR, LOCK_PATH
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import exports as activity_exports
 from xray_vps_manager.activity import parser as activity_parser
@@ -15,6 +15,7 @@ from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import reports as activity_reports
 from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.activity import status as activity_status
+from xray_vps_manager.activity import sync as activity_sync
 from xray_vps_manager.activity import time as activity_time
 
 if hasattr(signal, "SIGPIPE"):
@@ -185,9 +186,7 @@ def reality_inbounds(config):
 
 
 def known_clients():
-    config = load_json(CONFIG_PATH, {})
-    db = load_json(CLIENT_DB_PATH, {"clients": {}})
-    return activity_parser.config_clients(config, db)
+    return activity_sync.known_clients()
 
 
 def parse_target(value):
@@ -251,82 +250,11 @@ def prune_activity(db, force=False):
 
 
 def initialize_access_offset(db):
-    state = db.setdefault("accessLog", {})
-    if ACCESS_LOG_PATH.exists():
-        stat = ACCESS_LOG_PATH.stat()
-        state.update({
-            "path": str(ACCESS_LOG_PATH),
-            "inode": stat.st_ino,
-            "offset": stat.st_size,
-            "updated": utc_stamp(),
-        })
-    else:
-        state.update({
-            "path": str(ACCESS_LOG_PATH),
-            "inode": None,
-            "offset": 0,
-            "updated": utc_stamp(),
-        })
+    activity_sync.initialize_access_offset(db)
 
 
 def sync_activity():
-    if not activity_enabled():
-        log("Activity logging disabled.")
-        return 0
-    ensure_dirs()
-    clients = known_clients()
-    if not clients:
-        log("No clients found.")
-        return 0
-    if not ACCESS_LOG_PATH.exists():
-        log(f"Access log not found: {ACCESS_LOG_PATH}")
-        return 0
-
-    try:
-        stat = ACCESS_LOG_PATH.stat()
-    except OSError as exc:
-        log(f"Cannot stat access log: {exc}")
-        return 1
-
-    db = load_activity_db()
-    state = db.setdefault("accessLog", {})
-    previous_inode = state.get("inode")
-    previous_offset = int(state.get("offset", 0) or 0)
-    offset = previous_offset if previous_inode == stat.st_ino and stat.st_size >= previous_offset else 0
-    processed = 0
-    skipped = 0
-
-    try:
-        with ACCESS_LOG_PATH.open("rb") as handle:
-            handle.seek(offset)
-            data = handle.read()
-            new_offset = handle.tell()
-    except OSError as exc:
-        log(f"Cannot read access log: {exc}")
-        return 1
-
-    for raw_line in data.decode("utf-8", errors="replace").splitlines():
-        event = parse_access_line(raw_line, clients)
-        if not event:
-            skipped += 1
-            continue
-        append_event(event)
-        update_summary(db, event)
-        processed += 1
-
-    removed = prune_activity(db)
-    state.update({
-        "path": str(ACCESS_LOG_PATH),
-        "inode": stat.st_ino,
-        "offset": new_offset,
-        "updated": utc_stamp(),
-    })
-    db["enabled"] = True
-    db["retentionDays"] = retention_days()
-    db["lastSync"] = utc_stamp()
-    save_activity_db(db)
-    log(f"Activity sync saved: {processed} events, {skipped} skipped, {removed} pruned.")
-    return 0
+    return activity_sync.sync_activity(log)
 
 
 def access_log_setting():

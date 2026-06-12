@@ -33,7 +33,12 @@ def chown_xray(path: Path) -> None:
     try:
         shutil.chown(path, user="root", group="xray")
     except LookupError:
-        shutil.chown(path, user="root")
+        try:
+            shutil.chown(path, user="root")
+        except PermissionError:
+            return
+    except PermissionError:
+        return
 
 
 def ensure_dirs() -> None:
@@ -42,7 +47,10 @@ def ensure_dirs() -> None:
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     chown_xray(ACTIVITY_DIR)
     chown_xray(CLIENT_LOG_DIR)
-    shutil.chown(EXPORT_DIR, user="root")
+    try:
+        shutil.chown(EXPORT_DIR, user="root")
+    except PermissionError:
+        pass
     os.chmod(ACTIVITY_DIR, 0o750)
     os.chmod(CLIENT_LOG_DIR, 0o750)
     os.chmod(EXPORT_DIR, 0o700)
