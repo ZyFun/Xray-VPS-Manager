@@ -16,6 +16,7 @@ from xray_vps_manager.clients import links as client_links
 from xray_vps_manager.clients import models as client_models
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
+from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import history as traffic_history
 from xray_vps_manager.traffic import repository as traffic_repository
@@ -818,50 +819,14 @@ def traffic_updated_at(row, traffic_db):
     return format_time(entry.get("updated", ""))
 
 
-def table_border(widths):
-    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
-
-
-def table_row(values, widths, color_indexes=None):
-    color_indexes = color_indexes or set()
-    cells = []
-    for index, value in enumerate(values):
-        text = str(value).ljust(widths[index])
-        if index in color_indexes:
-            text = color_label(str(value), text)
-        cells.append(f" {text} ")
-    return "|" + "|".join(cells) + "|"
-
-
 def print_client_table(rows):
     headers = ["NAME", "STATUS", "PAYMENT", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
-    color_indexes = {headers.index("STATUS"), headers.index("PAYMENT"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(str(value)))
-
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in rows:
-        print(table_row(row, widths, color_indexes=color_indexes))
-    print(border)
+    color_columns = {headers.index("STATUS"), headers.index("PAYMENT"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
+    print_table(headers, rows, empty_message=None, color_columns=color_columns, colorizer=color_label)
 
 
 def print_plain_table(headers, rows):
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(str(value)))
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in rows:
-        print(table_row(row, widths))
-    print(border)
+    print_table(headers, rows, empty_message=None)
 
 
 def print_connection_title(config, db, tag):
@@ -939,17 +904,7 @@ def cmd_connection_list():
             entry.get("created", "unknown"),
         ])
     headers = ["NAME", "TAG", "PORT", "SNI", "FINGERPRINT", "CREATED"]
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(str(value)))
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in rows:
-        print(table_row(row, widths))
-    print(border)
+    print_table(headers, rows, empty_message=None)
 
 
 def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):

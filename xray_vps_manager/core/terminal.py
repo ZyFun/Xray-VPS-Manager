@@ -36,23 +36,36 @@ def table_border(widths: list[int]) -> str:
     return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
 
 
-def table_row(values: list[object], widths: list[int]) -> str:
-    return "| " + " | ".join(visible_ljust(value, width) for value, width in zip(values, widths)) + " |"
+def table_row(values: list[object], widths: list[int], color_columns: set[int] | None = None, colorizer=None) -> str:
+    color_columns = color_columns or set()
+    cells = []
+    for index, (value, width) in enumerate(zip(values, widths)):
+        text = visible_ljust(value, width)
+        if index in color_columns and colorizer:
+            text = colorizer(str(value), text)
+        cells.append(text)
+    return "| " + " | ".join(cells) + " |"
 
 
-def table_lines(headers: list[object], rows: list[list[object]]) -> list[str]:
+def table_lines(headers: list[object], rows: list[list[object]], color_columns: set[int] | None = None, colorizer=None) -> list[str]:
     all_rows = [headers, *rows]
     widths = [max(visible_len(row[index]) for row in all_rows) for index in range(len(headers))]
     border = table_border(widths)
     lines = [border, table_row(headers, widths), border]
-    lines.extend(table_row(row, widths) for row in rows)
+    lines.extend(table_row(row, widths, color_columns=color_columns, colorizer=colorizer) for row in rows)
     lines.append(border)
     return lines
 
 
-def print_table(headers: list[object], rows: list[list[object]], empty_message: str = "No rows.") -> None:
-    if not rows:
+def print_table(
+    headers: list[object],
+    rows: list[list[object]],
+    empty_message: str | None = "No rows.",
+    color_columns: set[int] | None = None,
+    colorizer=None,
+) -> None:
+    if not rows and empty_message is not None:
         print(empty_message)
         return
-    for line in table_lines(headers, rows):
+    for line in table_lines(headers, rows, color_columns=color_columns, colorizer=colorizer):
         print(line)
