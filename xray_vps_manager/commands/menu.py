@@ -11,7 +11,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from xray_vps_manager.commands import menu_activity_exception_actions, menu_activity_export_actions, menu_backup_actions
+from xray_vps_manager.commands import (
+    menu_activity_exception_actions,
+    menu_activity_export_actions,
+    menu_backup_actions,
+    menu_reality_actions,
+)
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
@@ -25,14 +30,13 @@ SSHD_CONFIG_PATH = Path("/etc/ssh/sshd_config")
 SSHD_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/00-xray-vps-manager.conf")
 SSHD_LEGACY_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/99-xray-vps-manager.conf")
 AUTHORIZED_KEYS_PATH = Path("/root/.ssh/authorized_keys")
-INBOUND_TAG = "vless-reality"
 CASCADE_UPSTREAM_TAG = "cascade-upstream"
 WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
 XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 15:25 UTC"
+MENU_UPDATED = "2026-06-12 15:35 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -44,24 +48,11 @@ MENU_ENV_REQUIRED_KEYS = [
     "FINGERPRINT",
     "MANAGER_TIMEZONE",
 ]
-HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 GREEN = "\033[92m"
 RED = "\033[31m"
 GOLD = "\033[93m"
 RESET = "\033[0m"
-FINGERPRINTS = [
-    "chrome",
-    "firefox",
-    "safari",
-    "ios",
-    "android",
-    "edge",
-    "360",
-    "qq",
-    "random",
-    "randomized",
-]
 TIMEZONE_PRESETS = [
     ("", "Системное время сервера"),
     ("Europe/Moscow", "Москва"),
@@ -387,28 +378,6 @@ def end_action(title):
     sys.stdout.flush()
 
 
-def validate_port(value):
-    if not re.fullmatch(r"[0-9]+", value or ""):
-        die("PORT must be a number from 1 to 65535.")
-    port = int(value, 10)
-    if port < 1 or port > 65535:
-        die("PORT must be a number from 1 to 65535.")
-    return port
-
-
-def validate_host(value, label="SNI"):
-    if not value or "/" in value or ":" in value or not HOST_RE.fullmatch(value):
-        die(f"{label} must be a domain without https://, path, or port.")
-    return value
-
-
-def validate_fingerprint(value):
-    value = (value or "").strip().lower()
-    if value not in FINGERPRINTS:
-        die("FINGERPRINT must be one of: " + ", ".join(FINGERPRINTS))
-    return value
-
-
 def validate_client_name(value):
     if not CLIENT_RE.fullmatch(value or ""):
         die("Client name must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
@@ -466,168 +435,6 @@ def split_email(email):
 
 def db_clients(db):
     return db.setdefault("clients", {})
-
-
-def db_connections(db):
-    return db.setdefault("connections", {})
-
-
-def find_inbound(config):
-    for inbound in config.get("inbounds", []):
-        if inbound.get("tag") == INBOUND_TAG:
-            return inbound
-    for inbound in config.get("inbounds", []):
-        if inbound.get("protocol") == "vless" and inbound.get("streamSettings", {}).get("security") == "reality":
-            return inbound
-    die("VLESS Reality inbound not found.")
-
-
-def reality_inbounds(config):
-    return [
-        inbound
-        for inbound in config.get("inbounds", [])
-        if inbound.get("protocol") == "vless"
-        and inbound.get("streamSettings", {}).get("security") == "reality"
-    ]
-
-
-def inbound_tag(inbound):
-    return inbound.get("tag") or INBOUND_TAG
-
-
-def connection_name_from_tag(tag):
-    return "default" if tag == INBOUND_TAG else tag.replace("vless-reality-", "")
-
-
-def connection_settings_from_inbound(inbound):
-    reality = inbound.get("streamSettings", {}).get("realitySettings", {})
-    sni = (reality.get("serverNames") or [""])[0]
-    port = int(inbound.get("port", 443))
-    return {
-        "tag": inbound_tag(inbound),
-        "name": connection_name_from_tag(inbound_tag(inbound)),
-        "port": port,
-        "sni": sni,
-        "dest": reality.get("dest", reality_dest(sni)),
-    }
-
-
-def reality_dest(sni):
-    return f"{sni}:443" if sni else ""
-
-
-def connection_rows():
-    config = load_config()
-    db = load_json(CLIENT_DB_PATH, {"clients": {}, "connections": {}})
-    rows = []
-    for inbound in reality_inbounds(config):
-        settings = connection_settings_from_inbound(inbound)
-        entry = db_connections(db).get(settings["tag"], {})
-        rows.append({
-            "tag": settings["tag"],
-            "name": entry.get("name") or settings["name"],
-            "port": entry.get("port") or settings["port"],
-            "sni": entry.get("sni") or settings["sni"],
-            "fingerprint": entry.get("fingerprint") or current_fingerprint(),
-        })
-    return rows
-
-
-def print_connection_selection_table(rows):
-    headers = ("№", "NAME", "TAG", "PORT", "SNI", "FINGERPRINT")
-    values = [
-        (
-            str(index),
-            row["name"],
-            row["tag"],
-            row["port"],
-            row["sni"],
-            row["fingerprint"],
-        )
-        for index, row in enumerate(rows, start=1)
-    ]
-    values.append(("0", "Назад", "", "", "", ""))
-    widths = [
-        max(len(headers[column]), *(len(str(row[column])) for row in values))
-        for column in range(len(headers))
-    ]
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in values:
-        row = list(row)
-        row[4] = color_payment_status(row[4])
-        print(table_row(row, widths))
-    print(border)
-
-
-def choose_connection(action, auto_single=True):
-    rows = connection_rows()
-    if not rows:
-        die("No Reality connections found.")
-    if len(rows) == 1 and auto_single:
-        return rows[0]["tag"]
-    print(f"Выбери подключение для действия: {action}.")
-    print_connection_selection_table(rows)
-    while True:
-        choice = input("Подключение: ").strip()
-        if choice == "0":
-            return ""
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(rows):
-                return rows[index - 1]["tag"]
-        print("Неизвестное подключение. Выбери номер из списка или 0 для возврата.")
-
-
-def port_used_by_other_inbound(config, port, current_tag):
-    for inbound in config.get("inbounds", []):
-        if inbound.get("port") == port and inbound_tag(inbound) != current_tag:
-            return True
-    return False
-
-
-def current_settings(config, connection_tag=None):
-    if connection_tag:
-        inbound = None
-        for item in reality_inbounds(config):
-            if inbound_tag(item) == connection_tag:
-                inbound = item
-                break
-        if inbound is None:
-            die(f"Connection not found: {connection_tag}")
-    else:
-        inbound = find_inbound(config)
-    reality = inbound.get("streamSettings", {}).get("realitySettings", {})
-    server_names = reality.get("serverNames") or [""]
-    port = int(inbound.get("port", 443))
-    sni = server_names[0]
-    dest = reality.get("dest", reality_dest(sni))
-    return inbound, reality, port, sni, dest
-
-
-def save_db(db):
-    tmp = CLIENT_DB_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(CLIENT_DB_PATH)
-
-
-def update_connection_db(tag, port=None, sni=None, dest=None, fingerprint=None):
-    db = load_json(CLIENT_DB_PATH, {"clients": {}, "connections": {}})
-    connections = db_connections(db)
-    entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
-    if port is not None:
-        entry["port"] = port
-    if sni is not None:
-        entry["sni"] = sni
-    if dest is not None:
-        entry["dest"] = dest
-    if fingerprint is not None:
-        entry["fingerprint"] = fingerprint
-    save_db(db)
 
 
 def parse_time(value):
@@ -766,9 +573,9 @@ def client_rows_for_selection(mode="all"):
     rows = []
     seen = set()
 
-    connection_names = {row["tag"]: row["name"] for row in connection_rows()}
-    for inbound in reality_inbounds(config):
-        tag = inbound_tag(inbound)
+    connection_names = {row["tag"]: row["name"] for row in menu_reality_actions.connection_rows()}
+    for inbound in menu_reality_actions.reality_inbounds(config):
+        tag = menu_reality_actions.inbound_tag(inbound)
         for item in inbound.get("settings", {}).get("clients", []):
             name, created = split_email(item.get("email", ""))
             if not name:
@@ -781,14 +588,17 @@ def client_rows_for_selection(mode="all"):
                 "created": entry.get("created") or created or "unknown",
                 "expiresAt": entry.get("expiresAt", ""),
                 "connection": entry.get("connection") or tag,
-                "connectionName": connection_names.get(entry.get("connection") or tag, connection_name_from_tag(tag)),
+                "connectionName": connection_names.get(
+                    entry.get("connection") or tag,
+                    menu_reality_actions.connection_name_from_tag(tag),
+                ),
             })
             seen.add(name)
 
     for name, entry in db_clients(db).items():
         if name in seen:
             continue
-        tag = entry.get("connection") or INBOUND_TAG
+        tag = entry.get("connection") or menu_reality_actions.INBOUND_TAG
         rows.append({
             "name": name,
             "status": "disabled" if entry.get("enabled") is False else "missing",
@@ -796,7 +606,7 @@ def client_rows_for_selection(mode="all"):
             "created": entry.get("created") or "unknown",
             "expiresAt": entry.get("expiresAt", ""),
             "connection": tag,
-            "connectionName": connection_names.get(tag, connection_name_from_tag(tag)),
+            "connectionName": connection_names.get(tag, menu_reality_actions.connection_name_from_tag(tag)),
         })
 
     if mode == "enabled":
@@ -1119,22 +929,6 @@ def choose_timezone():
         print("Неизвестный часовой пояс. Выбери номер из списка, S для поиска или 0 для возврата.")
 
 
-def current_fingerprint():
-    value = (server_env().get("FINGERPRINT") or "chrome").strip().lower()
-    return value if value in FINGERPRINTS else "chrome"
-
-
-def write_server_env(port, sni, dest, fingerprint=None):
-    values = server_env()
-    values["PORT"] = str(port)
-    values["REALITY_SNI"] = sni
-    values["REALITY_DEST"] = dest
-    values["FINGERPRINT"] = validate_fingerprint(fingerprint) if fingerprint is not None else current_fingerprint()
-    if "SERVER_ADDR" not in values:
-        values["SERVER_ADDR"] = ""
-    write_server_env_values(values)
-
-
 def write_config(config):
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.{timestamp}")
@@ -1334,191 +1128,6 @@ def allow_torrents():
     set_torrent_block(False)
 
 
-def refresh_initial_link():
-    config = load_config()
-    inbound = find_inbound(config)
-    clients = inbound.get("settings", {}).get("clients", [])
-    if not clients:
-        return
-    name = clients[0].get("email", "starter").split("|created=", 1)[0]
-    result = subprocess.run(
-        ["xray-client", "link", name],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        return
-
-    _, _, port, sni, dest = current_settings(config)
-    fp = current_fingerprint()
-    link = result.stdout.strip()
-    content = (
-        f"CLIENT_URI={link}\n"
-        f"PORT={port}\n"
-        "PROTOCOL=VLESS\n"
-        "SECURITY=REALITY\n"
-        "FLOW=xtls-rprx-vision\n"
-        f"SNI={sni}\n"
-        f"DEST={dest}\n"
-        f"FINGERPRINT={fp}\n"
-    )
-    CLIENT_LINK_PATH.write_text(content)
-    os.chmod(CLIENT_LINK_PATH, 0o600)
-
-
-def prompt(default, message):
-    value = input(f"{message} [{default}]: ").strip()
-    return value or str(default)
-
-
-def show_settings():
-    call(["xray-client", "connection-list"])
-
-
-def create_connection():
-    print("Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом и SNI.")
-    name = input("Имя подключения: ").strip()
-    print("PORT: публичный TCP-порт для подключения клиентов. Он не должен совпадать с уже занятыми портами.")
-    port = str(validate_port(input("PORT: ").strip()))
-    print("REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
-    sni = validate_host(input("REALITY_SNI: ").strip(), "REALITY_SNI")
-    fp = choose_fingerprint(current_fingerprint())
-    call(["xray-client", "add-connection", name, port, sni, fp])
-
-
-def update_port():
-    config = load_config()
-    tag = choose_connection("обновления PORT")
-    if not tag:
-        print("Действие отменено.")
-        return
-    inbound, reality, current_port, sni, _ = current_settings(config, tag)
-    print()
-    print("Новый PORT: публичный TCP-порт для подключения клиентов.")
-    print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
-    port = validate_port(prompt(current_port, "PORT"))
-    if port_used_by_other_inbound(config, port, tag):
-        die(f"PORT is already used by another inbound: {port}")
-    dest = reality_dest(sni)
-    inbound["port"] = port
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
-    refresh_initial_link()
-    print(f"PORT обновлён: {port}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup}")
-
-
-def update_sni():
-    config = load_config()
-    tag = choose_connection("обновления REALITY_SNI")
-    if not tag:
-        print("Действие отменено.")
-        return
-    _, reality, port, current_sni, _ = current_settings(config, tag)
-    print()
-    print("Новый REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
-    print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
-    sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    dest = reality_dest(sni)
-    reality["serverNames"] = [sni]
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
-    refresh_initial_link()
-    print(f"REALITY_SNI обновлён: {sni}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup}")
-
-
-def update_port_and_sni():
-    config = load_config()
-    tag = choose_connection("обновления PORT и REALITY_SNI")
-    if not tag:
-        print("Действие отменено.")
-        return
-    inbound, reality, current_port, current_sni, _ = current_settings(config, tag)
-    print()
-    print("Обновление PORT и REALITY_SNI.")
-    print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
-    port = validate_port(prompt(current_port, "PORT"))
-    if port_used_by_other_inbound(config, port, tag):
-        die(f"PORT is already used by another inbound: {port}")
-    sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    dest = reality_dest(sni)
-    inbound["port"] = port
-    reality["serverNames"] = [sni]
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
-    refresh_initial_link()
-    print(f"PORT обновлён: {port}")
-    print(f"REALITY_SNI обновлён: {sni}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup}")
-
-
-def choose_fingerprint(default):
-    print()
-    print("Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.")
-    print("Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.")
-    for index, value in enumerate(FINGERPRINTS, start=1):
-        print(f"  {index}) {value}")
-    value = input(f"FINGERPRINT [{default}] (номер или значение): ").strip().lower()
-    value = value or default
-    if value.isdigit():
-        index = int(value, 10)
-        if 1 <= index <= len(FINGERPRINTS):
-            return FINGERPRINTS[index - 1]
-    return validate_fingerprint(value)
-
-
-def update_fingerprint():
-    config = load_config()
-    tag = choose_connection("обновления FINGERPRINT")
-    if not tag:
-        print("Действие отменено.")
-        return
-    _, _, port, sni, dest = current_settings(config, tag)
-    fp = choose_fingerprint(current_fingerprint())
-    update_connection_db(tag, port=port, sni=sni, dest=dest, fingerprint=fp)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest, fp)
-    refresh_initial_link()
-    print(f"FINGERPRINT обновлён: {fp}")
-    print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
-
-
-def delete_connection():
-    rows = connection_rows()
-    if len(rows) <= 1:
-        print("Нельзя удалить последнее Reality-подключение. Сначала создай другое подключение.")
-        return
-    tag = choose_connection("удаления подключения", auto_single=False)
-    if not tag:
-        print("Действие отменено.")
-        return
-    row = next((item for item in rows if item["tag"] == tag), None)
-    name = row["name"] if row else tag
-    print()
-    print(f"Будет удалено подключение: {name} ({tag})")
-    print("Все клиенты этого подключения также будут удалены вместе с их историей трафика.")
-    if not confirm("Продолжить удаление"):
-        print("Удаление отменено.")
-        return
-    call(["xray-client", "remove-connection", tag])
-    refresh_initial_link()
-
-
 def call(command):
     subprocess.run(command, check=False)
 
@@ -1585,7 +1194,7 @@ def ask_new_client_command():
         die("Client name is required.")
     parts = raw.split(maxsplit=1)
     name = validate_client_name(parts[0])
-    tag = choose_connection("добавления клиента")
+    tag = menu_reality_actions.choose_connection("добавления клиента")
     if not tag:
         return []
     payment_type = ask_payment_type()
@@ -2516,13 +2125,13 @@ def client_menu_handlers():
 
 def reality_menu_handlers():
     return {
-        "1": ("Показать подключения", show_settings),
-        "2": ("Создать подключение", create_connection),
-        "3": ("Обновить PORT", update_port),
-        "4": ("Обновить REALITY_SNI и REALITY_DEST", update_sni),
-        "5": ("Обновить PORT, REALITY_SNI и REALITY_DEST", update_port_and_sni),
-        "6": ("Обновить FINGERPRINT", update_fingerprint),
-        "7": ("Удалить подключение", delete_connection),
+        "1": ("Показать подключения", lambda: menu_reality_actions.show_settings(call)),
+        "2": ("Создать подключение", lambda: menu_reality_actions.create_connection(call)),
+        "3": ("Обновить PORT", menu_reality_actions.update_port),
+        "4": ("Обновить REALITY_SNI и REALITY_DEST", menu_reality_actions.update_sni),
+        "5": ("Обновить PORT, REALITY_SNI и REALITY_DEST", menu_reality_actions.update_port_and_sni),
+        "6": ("Обновить FINGERPRINT", menu_reality_actions.update_fingerprint),
+        "7": ("Удалить подключение", lambda: menu_reality_actions.delete_connection(call, confirm)),
     }
 
 
