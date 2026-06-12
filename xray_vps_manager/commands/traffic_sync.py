@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.traffic import repository as traffic_repository
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -34,13 +35,7 @@ def now():
 
 
 def server_env_values():
-    values = {}
-    if SERVER_ENV_PATH.exists():
-        for line in SERVER_ENV_PATH.read_text().splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value.strip().strip('"').strip("'")
-    return values
+    return read_server_env(SERVER_ENV_PATH)
 
 
 def manager_timezone():
