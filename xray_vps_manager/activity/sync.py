@@ -9,13 +9,14 @@ from xray_vps_manager.activity import repository
 from xray_vps_manager.activity import settings
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.activity.constants import ACCESS_LOG_PATH, CLIENT_DB_PATH, CONFIG_PATH
+from xray_vps_manager.clients import repository as client_repository
 
 LogFunc = Callable[[str], None]
 
 
 def known_clients() -> dict:
     config = repository.load_json(CONFIG_PATH, {})
-    db = repository.load_json(CLIENT_DB_PATH, {"clients": {}})
+    db = client_repository.load_db_for_read(CLIENT_DB_PATH)
     return parser.config_clients(config, db)
 
 

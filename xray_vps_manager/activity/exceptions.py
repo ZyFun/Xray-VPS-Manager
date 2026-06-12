@@ -70,6 +70,12 @@ def classify_exception_value(value: str, fatal: bool = True) -> tuple[str, str]:
 
 
 def load_activity_exceptions(path=ACTIVITY_EXCEPTIONS_PATH) -> dict:
+    if sqlite_writes_enabled() and sqlite_reads_enabled():
+        return load_activity_exceptions_for_read(path)
+    return load_activity_exceptions_json(path)
+
+
+def load_activity_exceptions_json(path=ACTIVITY_EXCEPTIONS_PATH) -> dict:
     db = load_json(path, {})
     return load_activity_exceptions_from_dict(db)
 
@@ -80,13 +86,20 @@ def save_activity_exceptions(
     *,
     db_path: str | Path | None = None,
 ) -> None:
+    if sqlite_writes_enabled() and sqlite_reads_enabled():
+        write_activity_exceptions_to_sqlite_for_write(db, db_path=db_path, strict=True)
+        return
+    write_activity_exceptions_json(db, path)
+    mirror_activity_exceptions_to_sqlite_for_write(db, db_path=db_path)
+
+
+def write_activity_exceptions_json(db: dict, path=ACTIVITY_EXCEPTIONS_PATH) -> None:
     ensure_dirs()
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
     chown_xray(tmp)
     os.chmod(tmp, 0o640)
     tmp.replace(path)
-    mirror_activity_exceptions_to_sqlite_for_write(db, db_path=db_path)
 
 
 def exception_items() -> list[dict]:
@@ -109,7 +122,7 @@ def load_activity_exceptions_for_read(
         finally:
             if connection is not None:
                 connection.close()
-    return load_activity_exceptions(path)
+    return load_activity_exceptions_json(path)
 
 
 def exception_items_for_read(
@@ -125,13 +138,26 @@ def mirror_activity_exceptions_to_sqlite_for_write(
     *,
     db_path: str | Path | None = None,
 ) -> bool:
+    return write_activity_exceptions_to_sqlite_for_write(db, db_path=db_path, strict=False)
+
+
+def write_activity_exceptions_to_sqlite_for_write(
+    db: dict,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> bool:
     if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite writes are enabled but manager database is missing")
         return False
 
     connection = None
     try:
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
             return False
         normalized = load_activity_exceptions_from_dict(db)
         with database.transaction(connection):
@@ -140,6 +166,8 @@ def mirror_activity_exceptions_to_sqlite_for_write(
                 sqlite_activity.upsert_exception(connection, item)
         return True
     except Exception:
+        if strict:
+            raise
         return False
     finally:
         if connection is not None:

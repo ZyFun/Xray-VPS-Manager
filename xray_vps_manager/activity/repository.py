@@ -60,7 +60,15 @@ def ensure_dirs() -> None:
     os.chmod(EXPORT_DIR, 0o700)
 
 
-def save_activity_db(db: dict) -> None:
+def save_activity_db(db: dict, *, db_path: str | Path | None = None) -> None:
+    if sqlite_writes_enabled() and sqlite_reads_enabled():
+        write_activity_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
+        return
+    write_json_activity_db(db)
+    mirror_activity_db_to_sqlite_for_write(db, db_path=db_path)
+
+
+def write_json_activity_db(db: dict) -> None:
     ensure_dirs()
     tmp = ACTIVITY_DB_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
@@ -69,7 +77,18 @@ def save_activity_db(db: dict) -> None:
     tmp.replace(ACTIVITY_DB_PATH)
 
 
-def load_activity_db(retention_days: int, enabled: bool) -> dict:
+def load_activity_db(retention_days: int, enabled: bool, *, db_path: str | Path | None = None) -> dict:
+    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+        connection = None
+        try:
+            connection = database.open_database(db_path)
+            if sqlite_read_ready(connection):
+                return load_activity_db_from_sqlite(connection, retention_days, enabled)
+        except Exception:
+            pass
+        finally:
+            if connection is not None:
+                connection.close()
     db = load_json(ACTIVITY_DB_PATH, {})
     if not isinstance(db, dict):
         db = {}
@@ -81,12 +100,31 @@ def load_activity_db(retention_days: int, enabled: bool) -> dict:
     return db
 
 
+def load_activity_db_from_sqlite(connection, retention_days: int, enabled: bool) -> dict:
+    metadata = sqlite_activity.get_source_metadata(connection)
+    summary = sqlite_activity.get_summary(connection)
+    db = {
+        "version": int(metadata.get("version") or 1),
+        "clients": summary if isinstance(summary, dict) else {},
+        "accessLog": sqlite_activity.get_access_log_state(connection),
+        "retentionDays": retention_days,
+        "enabled": enabled,
+    }
+    for key in ("lastSync", "lastPrune"):
+        if metadata.get(key):
+            db[key] = metadata[key]
+    return db
+
+
 def safe_client_file(name: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.@-]+", "_", name).strip("._")
     return CLIENT_LOG_DIR / f"{safe or 'client'}.jsonl"
 
 
 def append_event(event: dict, *, db_path: str | Path | None = None) -> None:
+    if sqlite_writes_enabled() and sqlite_reads_enabled():
+        write_event_to_sqlite_for_write(event, db_path=db_path, strict=True)
+        return
     ensure_dirs()
     path = safe_client_file(event["client"])
     with path.open("a", encoding="utf-8") as handle:
@@ -170,6 +208,8 @@ def prune_activity(
     today: date,
     now,
     force: bool = False,
+    *,
+    db_path: str | Path | None = None,
 ) -> int:
     last_prune = parse_time(db.get("lastPrune", ""))
     if not force and last_prune and now - last_prune < timedelta(hours=20):
@@ -178,7 +218,9 @@ def prune_activity(
     cutoff_dt = datetime.combine(cutoff_date, datetime.min.time(), tzinfo=timezone.utc)
     prune_db_summary(db, cutoff_date)
     removed = 0
-    if CLIENT_LOG_DIR.exists():
+    if sqlite_writes_enabled() and sqlite_reads_enabled():
+        removed += prune_sqlite_activity_for_write(cutoff_dt, db_path=db_path, strict=True)
+    elif CLIENT_LOG_DIR.exists():
         for path in CLIENT_LOG_DIR.glob("*.jsonl"):
             removed += prune_client_log(path, cutoff_dt)
     db["lastPrune"] = utc_stamp()
@@ -265,21 +307,115 @@ def mirror_event_to_sqlite_for_write(
     *,
     db_path: str | Path | None = None,
 ) -> bool:
+    return write_event_to_sqlite_for_write(event, db_path=db_path, strict=False)
+
+
+def write_event_to_sqlite_for_write(
+    event: dict,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> bool:
     if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite writes are enabled but manager database is missing")
         return False
 
     connection = None
     try:
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
             return False
         client_name = str(event.get("client") or event.get("client_name") or "").strip()
         if client_name not in sqlite_clients.list_clients(connection):
+            if strict:
+                raise RuntimeError(f"Activity event client is missing from SQLite clients: {client_name}")
             return False
         sqlite_activity.add_event(connection, event)
         return True
     except Exception:
+        if strict:
+            raise
         return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def mirror_activity_db_to_sqlite_for_write(
+    db: dict,
+    *,
+    db_path: str | Path | None = None,
+) -> bool:
+    return write_activity_db_to_sqlite_for_write(db, db_path=db_path, strict=False)
+
+
+def write_activity_db_to_sqlite_for_write(
+    db: dict,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> bool:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+        return False
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+            return False
+        clients = db.get("clients") if isinstance(db.get("clients"), dict) else {}
+        metadata = {
+            "version": db.get("version", 1),
+            "enabled": db.get("enabled"),
+            "retentionDays": db.get("retentionDays"),
+            "lastSync": db.get("lastSync"),
+            "lastPrune": db.get("lastPrune"),
+        }
+        with database.transaction(connection):
+            sqlite_activity.set_summary(connection, clients)
+            sqlite_activity.set_source_metadata(connection, metadata)
+            sqlite_activity.upsert_access_log_state(connection, db.get("accessLog"))
+        return True
+    except Exception:
+        if strict:
+            raise
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def prune_sqlite_activity_for_write(
+    cutoff_dt: datetime,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> int:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+        return 0
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+            return 0
+        cutoff = cutoff_dt.isoformat().replace("+00:00", "Z")
+        return sqlite_activity.delete_events_before(connection, cutoff)
+    except Exception:
+        if strict:
+            raise
+        return 0
     finally:
         if connection is not None:
             connection.close()
