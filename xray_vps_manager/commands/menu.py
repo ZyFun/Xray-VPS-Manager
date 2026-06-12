@@ -5,8 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
-from calendar import monthrange
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
@@ -15,21 +14,21 @@ from xray_vps_manager.commands import (
     menu_activity_exception_actions,
     menu_activity_export_actions,
     menu_backup_actions,
+    menu_client_actions,
     menu_reality_actions,
     menu_security_actions,
     menu_telegram_actions,
+    menu_traffic_actions,
 )
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
 from xray_vps_manager.core.terminal import table_border, table_row
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
-CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
-TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-12 16:09 UTC"
+MENU_UPDATED = "2026-06-12 16:25 UTC"
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
 MENU_ENV_REQUIRED_KEYS = [
@@ -41,10 +40,8 @@ MENU_ENV_REQUIRED_KEYS = [
     "FINGERPRINT",
     "MANAGER_TIMEZONE",
 ]
-CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 GREEN = "\033[92m"
 RED = "\033[31m"
-GOLD = "\033[93m"
 RESET = "\033[0m"
 TIMEZONE_PRESETS = [
     ("", "Системное время сервера"),
@@ -355,12 +352,6 @@ def end_action(title):
     sys.stdout.flush()
 
 
-def validate_client_name(value):
-    if not CLIENT_RE.fullmatch(value or ""):
-        die("Client name must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
-    return value
-
-
 def load_json(path, default):
     if not path.exists():
         return default
@@ -388,327 +379,6 @@ def green(text):
 
 def red(text):
     return color(text, RED)
-
-
-def gold(text):
-    return color(text, GOLD)
-
-
-def color_payment_status(value):
-    text = str(value or "")
-    if text == "free":
-        return f"{GREEN}{text}{RESET}"
-    if text == "paid":
-        return f"{GOLD}{text}{RESET}"
-    return text
-
-
-def split_email(email):
-    if "|created=" in email:
-        name, created = email.split("|created=", 1)
-        return name, created
-    return email, ""
-
-
-def db_clients(db):
-    return db.setdefault("clients", {})
-
-
-def parse_time(value):
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def format_access_until(value):
-    parsed = parse_time(value)
-    if parsed is None:
-        return "бессрочно"
-    return parsed.astimezone(manager_timezone()).strftime("%Y-%m-%d %H:%M")
-
-
-def local_today():
-    return datetime.now(manager_timezone()).date()
-
-
-def parse_date_value(value, label="DATE"):
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        die(f"{label} must be in YYYY-MM-DD format.")
-
-
-def parse_month_value(value):
-    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}", value or ""):
-        die("MONTH must be in YYYY-MM format.")
-    year, month = (int(part, 10) for part in value.split("-", 1))
-    if month < 1 or month > 12:
-        die("MONTH must be in YYYY-MM format.")
-    return f"{year:04d}-{month:02d}"
-
-
-def current_month_key():
-    today = local_today()
-    return f"{today.year:04d}-{today.month:02d}"
-
-
-def month_bounds(month_key):
-    year, month = (int(part, 10) for part in month_key.split("-", 1))
-    start = date(year, month, 1)
-    end = date(year, month, monthrange(year, month)[1])
-    today = local_today()
-    if start <= today <= end:
-        end = today
-    return start, end
-
-
-def iter_dates(start, end):
-    current = start
-    while current <= end:
-        yield current
-        current += timedelta(days=1)
-
-
-def format_traffic(value):
-    value = int(value or 0)
-    if value < 1024:
-        return "0.00KB"
-    units = [
-        ("KB", 1024),
-        ("MB", 1024 ** 2),
-        ("GB", 1024 ** 3),
-    ]
-    for suffix, size in units:
-        next_size = size * 1024
-        if value < next_size or suffix == "GB":
-            return f"{value / size:.2f}{suffix}"
-    return "0.00KB"
-
-
-def traffic_bucket_totals(bucket):
-    if not isinstance(bucket, dict):
-        return 0, 0
-    return int(bucket.get("incoming", 0) or 0), int(bucket.get("outgoing", 0) or 0)
-
-
-def traffic_entry(traffic_db, name):
-    return traffic_db.get("clients", {}).get(name, {})
-
-
-def history_for_entry(entry):
-    history = entry.get("history", {})
-    return history if isinstance(history, dict) else {}
-
-
-def day_total(entry, day):
-    hours = history_for_entry(entry).get(day.isoformat(), {})
-    if not isinstance(hours, dict):
-        return 0, 0
-    incoming = 0
-    outgoing = 0
-    for bucket in hours.values():
-        bucket_in, bucket_out = traffic_bucket_totals(bucket)
-        incoming += bucket_in
-        outgoing += bucket_out
-    return incoming, outgoing
-
-
-def month_total(entry, month_key):
-    start, end = month_bounds(month_key)
-    incoming = 0
-    outgoing = 0
-    for day in iter_dates(start, end):
-        day_in, day_out = day_total(entry, day)
-        incoming += day_in
-        outgoing += day_out
-    return incoming, outgoing
-
-
-def all_time_total(entry):
-    return int(entry.get("incoming", 0) or 0), int(entry.get("outgoing", 0) or 0)
-
-
-def load_traffic_db():
-    return load_json(TRAFFIC_PATH, {"clients": {}})
-
-
-def sync_traffic_quiet():
-    sync = Path("/usr/local/sbin/xray-traffic-sync")
-    if sync.exists():
-        try:
-            subprocess.run([str(sync), "--quiet"], check=False, timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
-
-
-def client_rows_for_selection(mode="all"):
-    config = load_config()
-    db = load_json(CLIENT_DB_PATH, {"clients": {}})
-    rows = []
-    seen = set()
-
-    connection_names = {row["tag"]: row["name"] for row in menu_reality_actions.connection_rows()}
-    for inbound in menu_reality_actions.reality_inbounds(config):
-        tag = menu_reality_actions.inbound_tag(inbound)
-        for item in inbound.get("settings", {}).get("clients", []):
-            name, created = split_email(item.get("email", ""))
-            if not name:
-                continue
-            entry = db_clients(db).get(name, {})
-            rows.append({
-                "name": name,
-                "status": "enabled",
-                "paymentType": entry.get("paymentType", "free"),
-                "created": entry.get("created") or created or "unknown",
-                "expiresAt": entry.get("expiresAt", ""),
-                "connection": entry.get("connection") or tag,
-                "connectionName": connection_names.get(
-                    entry.get("connection") or tag,
-                    menu_reality_actions.connection_name_from_tag(tag),
-                ),
-            })
-            seen.add(name)
-
-    for name, entry in db_clients(db).items():
-        if name in seen:
-            continue
-        tag = entry.get("connection") or menu_reality_actions.INBOUND_TAG
-        rows.append({
-            "name": name,
-            "status": "disabled" if entry.get("enabled") is False else "missing",
-            "paymentType": entry.get("paymentType", "free"),
-            "created": entry.get("created") or "unknown",
-            "expiresAt": entry.get("expiresAt", ""),
-            "connection": tag,
-            "connectionName": connection_names.get(tag, menu_reality_actions.connection_name_from_tag(tag)),
-        })
-
-    if mode == "enabled":
-        return [row for row in rows if row["status"] == "enabled"]
-    if mode == "disabled":
-        return [row for row in rows if row["status"] != "enabled"]
-    return rows
-
-
-def print_client_selection_table(rows):
-    headers = ("№", "CONNECTION", "NAME", "STATUS", "PAYMENT", "ACCESS UNTIL", "CREATED")
-    values = [
-        (
-            str(index),
-            row["connectionName"],
-            row["name"],
-            row["status"],
-            row.get("paymentType", "free"),
-            format_access_until(row.get("expiresAt", "")),
-            row["created"],
-        )
-        for index, row in enumerate(rows, start=1)
-    ]
-    values.append(("0", "Назад", "", "", "", "", ""))
-    widths = [
-        max(len(headers[column]), *(len(str(row[column])) for row in values))
-        for column in range(len(headers))
-    ]
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in values:
-        row = list(row)
-        row[4] = color_payment_status(row[4])
-        print(table_row(row, widths))
-    print(border)
-
-
-def choose_client(action, mode="all"):
-    rows = client_rows_for_selection(mode)
-    if not rows:
-        print(f"Нет клиентов для действия: {action}.")
-        return ""
-
-    print(f"Выбери клиента для действия: {action}.")
-    print_client_selection_table(rows)
-    while True:
-        choice = input("Клиент: ").strip()
-        if choice == "0":
-            return ""
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(rows):
-                return rows[index - 1]["name"]
-        print("Неизвестный клиент. Выбери номер из списка или 0 для возврата.")
-
-
-def traffic_rows_for_selection(month_key):
-    sync_traffic_quiet()
-    traffic_db = load_traffic_db()
-    rows = []
-    for row in client_rows_for_selection("all"):
-        entry = traffic_entry(traffic_db, row["name"])
-        month_in, month_out = month_total(entry, month_key)
-        all_in, all_out = all_time_total(entry)
-        rows.append({
-            "name": row["name"],
-            "status": row["status"],
-            "connectionName": row["connectionName"],
-            "monthIn": month_in,
-            "monthOut": month_out,
-            "monthTotal": month_in + month_out,
-            "allTimeTotal": all_in + all_out,
-        })
-    return rows
-
-
-def print_traffic_selection_table(rows):
-    headers = ("№", "CONNECTION", "NAME", "STATUS", "MONTH IN", "MONTH OUT", "MONTH TOTAL", "ALL TIME")
-    values = [
-        (
-            str(index),
-            row["connectionName"],
-            row["name"],
-            row["status"],
-            format_traffic(row["monthIn"]),
-            format_traffic(row["monthOut"]),
-            format_traffic(row["monthTotal"]),
-            format_traffic(row["allTimeTotal"]),
-        )
-        for index, row in enumerate(rows, start=1)
-    ]
-    values.append(("0", "Назад", "", "", "", "", "", ""))
-    widths = [
-        max(len(headers[column]), *(len(str(row[column])) for row in values))
-        for column in range(len(headers))
-    ]
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in values:
-        print(table_row(row, widths))
-    print(border)
-
-
-def choose_traffic_client():
-    month_key = current_month_key()
-    rows = traffic_rows_for_selection(month_key)
-    if not rows:
-        print("Нет клиентов для просмотра трафика.")
-        return ""
-
-    print(f"Трафик за текущий месяц: {month_key}")
-    print_traffic_selection_table(rows)
-    while True:
-        choice = input("Клиент: ").strip()
-        if choice == "0":
-            return ""
-        if re.fullmatch(r"[0-9]+", choice):
-            index = int(choice, 10)
-            if 1 <= index <= len(rows):
-                return rows[index - 1]["name"]
-        print("Неизвестный клиент. Выбери номер из списка или 0 для возврата.")
 
 
 def server_env():
@@ -1026,179 +696,6 @@ def call(command):
     subprocess.run(command, check=False)
 
 
-def prompt_date(default, label, description):
-    print(description)
-    value = input(f"{label} [{default}]: ").strip() or default
-    return parse_date_value(value, label).isoformat()
-
-
-def prompt_month(default, description):
-    print(description)
-    value = input(f"MONTH [{default}]: ").strip() or default
-    return parse_month_value(value)
-
-
-def show_traffic_day(name):
-    today = local_today().isoformat()
-    day = prompt_date(today, "DATE", "DATE: день отчёта в формате YYYY-MM-DD. Вывод будет по часам.")
-    call(["xray-client", "traffic-day", name, day])
-
-
-def show_traffic_week(name):
-    default = (local_today() - timedelta(days=6)).isoformat()
-    start = prompt_date(default, "START_DATE", "START_DATE: первый день 7-дневного периода в формате YYYY-MM-DD.")
-    call(["xray-client", "traffic-week", name, start])
-
-
-def show_traffic_month(name):
-    month = prompt_month(current_month_key(), "MONTH: месяц отчёта в формате YYYY-MM. Вывод будет по дням.")
-    call(["xray-client", "traffic-month", name, month])
-
-
-def show_traffic_period(name):
-    today = local_today().isoformat()
-    start = prompt_date(today, "START_DATE", "START_DATE: первый день периода в формате YYYY-MM-DD.")
-    end = prompt_date(today, "END_DATE", "END_DATE: последний день периода в формате YYYY-MM-DD.")
-    call(["xray-client", "traffic-period", name, start, end])
-
-
-def ask_name(action):
-    name = input(f"Имя клиента для {action}: ").strip()
-    return validate_client_name(name)
-
-
-def ask_payment_type():
-    print("Статус оплаты клиента.")
-    print("1) Бесплатный: не участвует в расчёте общей аренды и не получает напоминания об оплате.")
-    print("2) Платный: участвует в расчёте суммы на клиента и получает напоминания.")
-    choice = input("Статус оплаты [1-бесплатный]: ").strip() or "1"
-    if choice == "1":
-        return "free"
-    if choice == "2":
-        return "paid"
-    print("Действие отменено: неизвестный статус оплаты.")
-    return ""
-
-
-def ask_new_client_command():
-    print("Введите имя клиента. Можно сразу указать срок через пробел.")
-    print("Примеры: data_test2 или data_test2 30. Пустой срок или 0 означает бессрочно.")
-    raw = input("Имя клиента [и дни]: ").strip()
-    if not raw:
-        die("Client name is required.")
-    parts = raw.split(maxsplit=1)
-    name = validate_client_name(parts[0])
-    tag = menu_reality_actions.choose_connection("добавления клиента")
-    if not tag:
-        return []
-    payment_type = ask_payment_type()
-    if not payment_type:
-        return []
-    command = ["xray-client", "add", name]
-    if len(parts) == 1:
-        return command + ["--connection", tag, "--payment", payment_type]
-    return command + [parts[1].strip(), "--connection", tag, "--payment", payment_type]
-
-
-def add_client_from_menu():
-    command = ask_new_client_command()
-    if not command:
-        print("Действие отменено.")
-        return
-    call(command)
-
-
-def ask_access_days():
-    print("Количество календарных дней доступа.")
-    print("Введите 0 или нажмите Enter, чтобы сделать доступ бессрочным.")
-    value = input("ACCESS_DAYS [бессрочно]: ").strip()
-    return value or "0"
-
-
-def ask_extend_days():
-    print("Количество дней, которое нужно добавить к текущей дате окончания доступа.")
-    print("Если срок уже истёк или не был установлен, продление пойдёт от сегодняшней даты.")
-    value = input("EXTEND_DAYS: ").strip()
-    if not value:
-        die("Extend days is required.")
-    return value
-
-
-def choose_limit_period():
-    print("Период лимита трафика.")
-    print("1) День: лимит сбрасывается каждый календарный день в 00:00 по времени сервера.")
-    print("2) Месяц: лимит сбрасывается в начале следующего календарного месяца.")
-    while True:
-        value = input("Период [1-день, 2-месяц]: ").strip()
-        if value == "1":
-            return "daily"
-        if value == "2":
-            return "monthly"
-        print("Выбери 1 для дневного лимита или 2 для месячного лимита.")
-
-
-def update_selected_client_limit():
-    name = choose_client("установки лимита трафика", "all")
-    if not name:
-        print("Действие отменено.")
-        return
-    period = choose_limit_period()
-    print("LIMIT_GB: лимит общего трафика IN+OUT в гигабайтах.")
-    print("Пример: 15. Пустой ввод отменяет изменение, 0 убирает лимит.")
-    value = input("LIMIT_GB: ").strip()
-    if not value:
-        print("Действие отменено.")
-        return
-    call(["xray-client", "set-limit", name, period, value])
-
-
-def clear_selected_client_limit():
-    name = choose_client("снятия лимита трафика", "all")
-    if not name:
-        print("Действие отменено.")
-        return
-    call(["xray-client", "clear-limit", name])
-
-
-def call_client_command(command, action, mode="all"):
-    name = choose_client(action, mode)
-    if not name:
-        print("Действие отменено.")
-        return
-    call(["xray-client", command, name])
-
-
-def update_selected_client_days():
-    name = choose_client("изменения срока", "all")
-    if not name:
-        print("Действие отменено.")
-        return
-    print("Что сделать со сроком доступа?")
-    print("1) Продлить на N дней: прибавить дни к текущей дате окончания.")
-    print("2) Установить срок N дней от сегодняшней даты.")
-    print("3) Сделать доступ бессрочным.")
-    choice = input("Действие [1-продлить]: ").strip() or "1"
-    if choice == "1":
-        call(["xray-client", "extend-days", name, ask_extend_days()])
-    elif choice == "2":
-        call(["xray-client", "set-days", name, ask_access_days()])
-    elif choice == "3":
-        call(["xray-client", "set-days", name, "0"])
-    else:
-        print("Действие отменено: неизвестный выбор.")
-
-
-def update_selected_client_payment():
-    name = choose_client("изменения статуса оплаты", "all")
-    if not name:
-        print("Действие отменено.")
-        return
-    payment_type = ask_payment_type()
-    if not payment_type:
-        return
-    call(["xray-client", "set-payment", name, payment_type])
-
-
 def print_initial_link():
     if CLIENT_LINK_PATH.exists():
         print(CLIENT_LINK_PATH.read_text())
@@ -1252,13 +749,25 @@ def execute_action(title, func):
 def client_menu_handlers():
     return {
         "1": ("Показать клиентов", lambda: call(["xray-client", "list"])),
-        "2": ("Добавить клиента", add_client_from_menu),
-        "3": ("Изменить срок доступа", update_selected_client_days),
-        "4": ("Изменить статус оплаты", update_selected_client_payment),
-        "5": ("Отключить клиента", lambda: call_client_command("disable", "отключения", "enabled")),
-        "6": ("Включить клиента", lambda: call_client_command("enable", "включения", "disabled")),
-        "7": ("Удалить клиента", lambda: call_client_command("remove", "удаления", "all")),
-        "8": ("Вывести ссылку клиента", lambda: call_client_command("link", "вывода ссылки", "all")),
+        "2": ("Добавить клиента", lambda: menu_client_actions.add_client_from_menu(call)),
+        "3": ("Изменить срок доступа", lambda: menu_client_actions.update_selected_client_days(call)),
+        "4": ("Изменить статус оплаты", lambda: menu_client_actions.update_selected_client_payment(call)),
+        "5": (
+            "Отключить клиента",
+            lambda: menu_client_actions.call_client_command(call, "disable", "отключения", "enabled"),
+        ),
+        "6": (
+            "Включить клиента",
+            lambda: menu_client_actions.call_client_command(call, "enable", "включения", "disabled"),
+        ),
+        "7": (
+            "Удалить клиента",
+            lambda: menu_client_actions.call_client_command(call, "remove", "удаления", "all"),
+        ),
+        "8": (
+            "Вывести ссылку клиента",
+            lambda: menu_client_actions.call_client_command(call, "link", "вывода ссылки", "all"),
+        ),
         "9": ("Проверить просроченных клиентов", lambda: call(["xray-client", "expire-due"])),
         "10": ("Трафик", open_traffic_tools_menu),
         "11": ("Журнал активности", open_activity_menu),
@@ -1356,18 +865,18 @@ def traffic_menu_handlers():
     return {
         "1": ("Просмотр трафика", open_traffic_menu),
         "2": ("Показать лимиты трафика", lambda: call(["xray-client", "limit-list"])),
-        "3": ("Установить лимит трафика", update_selected_client_limit),
-        "4": ("Убрать лимит трафика", clear_selected_client_limit),
+        "3": ("Установить лимит трафика", lambda: menu_client_actions.update_selected_client_limit(call)),
+        "4": ("Убрать лимит трафика", lambda: menu_client_actions.clear_selected_client_limit(call)),
         "5": ("Проверить лимиты трафика", lambda: call(["xray-client", "enforce-limits", "--sync"])),
     }
 
 
 def traffic_report_handlers(name):
     return {
-        "1": ("Трафик за день по часам", lambda: show_traffic_day(name)),
-        "2": ("Трафик за неделю по дням", lambda: show_traffic_week(name)),
-        "3": ("Трафик за месяц по дням", lambda: show_traffic_month(name)),
-        "4": ("Трафик за период по дням", lambda: show_traffic_period(name)),
+        "1": ("Трафик за день по часам", lambda: menu_traffic_actions.show_traffic_day(call, name)),
+        "2": ("Трафик за неделю по дням", lambda: menu_traffic_actions.show_traffic_week(call, name)),
+        "3": ("Трафик за месяц по дням", lambda: menu_traffic_actions.show_traffic_month(call, name)),
+        "4": ("Трафик за период по дням", lambda: menu_traffic_actions.show_traffic_period(call, name)),
     }
 
 
@@ -1444,11 +953,14 @@ def activity_menu_handlers():
         "2": ("Включить парсинг activity log", lambda: call(["xray-activity", "enable"])),
         "3": ("Отключить парсинг activity log", lambda: call(["xray-activity", "disable"])),
         "4": ("Синхронизировать сейчас", lambda: call(["xray-activity", "sync"])),
-        "5": ("Отчёт по клиенту", lambda: menu_activity_actions.activity_client_report(choose_client, call)),
+        "5": (
+            "Отчёт по клиенту",
+            lambda: menu_activity_actions.activity_client_report(menu_client_actions.choose_client, call),
+        ),
         "6": ("Подозрительная активность", open_activity_suspicious_menu),
         "7": (
             "Экспорт отчёта по клиенту",
-            lambda: menu_activity_export_actions.activity_export_report(choose_client, call),
+            lambda: menu_activity_export_actions.activity_export_report(menu_client_actions.choose_client, call),
         ),
         "8": ("Показать архивы экспорта", lambda: call(["xray-activity", "export-list"])),
         "9": (
@@ -1554,7 +1066,7 @@ def open_traffic_menu():
         print()
         print_section_title("Просмотр трафика")
         print()
-        name = choose_traffic_client()
+        name = menu_traffic_actions.choose_traffic_client()
         if not name:
             return
         open_client_traffic_menu(name)
