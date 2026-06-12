@@ -13,6 +13,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.db import database as sqlite_database
+from xray_vps_manager.db import schema as sqlite_schema
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
@@ -21,6 +24,7 @@ TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 ACTIVITY_PATH = Path("/usr/local/etc/xray/activity.json")
 ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
 TELEGRAM_BOT_PATH = Path("/usr/local/etc/xray/telegram-bot.json")
+MANAGER_DB_PATH = Path("/usr/local/etc/xray/manager.db")
 ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
@@ -326,6 +330,113 @@ def check_telegram_bot_db(diag):
         raise RuntimeError("telegram-bot.json adminState must be an object")
     diag.context["telegram_bot_db"] = db
     return f"{TELEGRAM_BOT_PATH} parsed"
+
+
+def table_count(connection, table):
+    return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def table_values(connection, table, column):
+    rows = connection.execute(f"SELECT {column} FROM {table}").fetchall()
+    return {str(row[column]) for row in rows}
+
+
+def check_sqlite_database(diag):
+    if not MANAGER_DB_PATH.exists():
+        raise RuntimeError(f"not found: {MANAGER_DB_PATH}; run JSON-to-SQLite import before enabling SQLite reads/writes")
+
+    connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
+    try:
+        quick_check = sqlite_database.quick_check(connection)
+        if quick_check != "ok":
+            raise RuntimeError(f"PRAGMA quick_check returned: {quick_check}")
+
+        version = sqlite_schema.schema_version(connection)
+        if version != sqlite_schema.CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(f"schema version {version}, expected {sqlite_schema.CURRENT_SCHEMA_VERSION}")
+
+        ready = sqlite_read_ready(connection)
+        reads_enabled = sqlite_reads_enabled()
+        writes_enabled = sqlite_writes_enabled()
+        if (reads_enabled or writes_enabled) and not ready:
+            raise RuntimeError("SQLite reads/writes are enabled, but manager_metadata jsonImport.completed is not true")
+
+        counts = {
+            "connections": table_count(connection, "reality_connections"),
+            "clients": table_count(connection, "clients"),
+            "traffic": table_count(connection, "traffic_totals"),
+            "activityEvents": table_count(connection, "activity_events"),
+            "activityExceptions": table_count(connection, "activity_exceptions"),
+            "telegramSubscriptions": table_count(connection, "telegram_subscriptions"),
+        }
+        diag.context["sqlite_counts"] = counts
+        if ready:
+            issues = sqlite_alignment_issues(diag, connection)
+            if issues:
+                raise RuntimeError("; ".join(issues[:8]))
+
+        flags = f"reads={'on' if reads_enabled else 'off'}, writes={'on' if writes_enabled else 'off'}"
+        count_text = ", ".join(f"{key}={value}" for key, value in counts.items())
+        return f"{MANAGER_DB_PATH} schema={version}, quick_check=ok, importReady={'yes' if ready else 'no'}, {flags}, {count_text}"
+    finally:
+        connection.close()
+
+
+def sqlite_alignment_issues(diag, connection):
+    issues = []
+
+    client_db = diag.context.get("client_db", {})
+    json_clients = set(client_db.get("clients", {})) if isinstance(client_db.get("clients", {}), dict) else set()
+    sqlite_clients = table_values(connection, "clients", "name")
+    if json_clients and json_clients != sqlite_clients:
+        issues.append(format_set_difference("SQLite clients differ from clients.json", json_clients, sqlite_clients))
+
+    json_connections = set(client_db.get("connections", {})) if isinstance(client_db.get("connections", {}), dict) else set()
+    sqlite_connections = table_values(connection, "reality_connections", "tag")
+    if json_connections and json_connections != sqlite_connections:
+        issues.append(format_set_difference("SQLite connections differ from clients.json", json_connections, sqlite_connections))
+
+    traffic_db = diag.context.get("traffic_db", {})
+    json_traffic = set(traffic_db.get("clients", {})) if isinstance(traffic_db.get("clients", {}), dict) else set()
+    sqlite_traffic = table_values(connection, "traffic_totals", "client_name")
+    expected_traffic = json_traffic & sqlite_clients
+    if expected_traffic != sqlite_traffic:
+        issues.append(format_set_difference("SQLite traffic differs from traffic.json known clients", expected_traffic, sqlite_traffic))
+
+    activity_exceptions_db = diag.context.get("activity_exceptions_db", {})
+    json_exceptions = set()
+    if isinstance(activity_exceptions_db.get("items", []), list):
+        for item in activity_exceptions_db.get("items", []):
+            if isinstance(item, dict) and item.get("value"):
+                json_exceptions.add(str(item["value"]))
+            elif isinstance(item, str):
+                json_exceptions.add(item)
+    sqlite_exceptions = table_values(connection, "activity_exceptions", "value")
+    if json_exceptions and json_exceptions != sqlite_exceptions:
+        issues.append(format_set_difference("SQLite activity exceptions differ from activity-exceptions.json", json_exceptions, sqlite_exceptions))
+
+    telegram_db = diag.context.get("telegram_bot_db", {})
+    json_subscriptions = {
+        str(item.get("clientId") or item.get("clientUuid") or "")
+        for item in telegram_db.get("clientSubscriptions", {}).values()
+        if isinstance(item, dict) and str(item.get("clientId") or item.get("clientUuid") or "").strip()
+    } if isinstance(telegram_db.get("clientSubscriptions", {}), dict) else set()
+    sqlite_subscriptions = table_values(connection, "telegram_subscriptions", "client_uuid")
+    if json_subscriptions != sqlite_subscriptions:
+        issues.append(format_set_difference("SQLite Telegram subscriptions differ from telegram-bot.json", json_subscriptions, sqlite_subscriptions))
+
+    return [issue for issue in issues if issue]
+
+
+def format_set_difference(label, expected, actual):
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    parts = []
+    if missing:
+        parts.append("missing: " + ", ".join(missing[:8]))
+    if extra:
+        parts.append("extra: " + ", ".join(extra[:8]))
+    return f"{label} ({'; '.join(parts)})" if parts else ""
 
 
 def check_server_env(diag):
@@ -792,6 +903,7 @@ def run_diagnostics():
     diag.check("Traffic DB", lambda: check_traffic_db(diag))
     diag.check("Activity exceptions DB", lambda: check_activity_exceptions_db(diag))
     diag.check("Telegram bot DB", lambda: check_telegram_bot_db(diag))
+    diag.check("Manager SQLite DB", lambda: check_sqlite_database(diag), fatal=False)
     diag.check("server.env", lambda: check_server_env(diag))
     diag.check("Manager timezone", lambda: check_manager_timezone(diag))
     diag.check("Reality connections", lambda: check_reality_inbounds(diag))
