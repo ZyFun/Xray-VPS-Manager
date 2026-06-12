@@ -4,12 +4,13 @@ import os
 import shlex
 import signal
 import sys
-from datetime import date, datetime, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import date
 
 from xray_vps_manager.activity.constants import EXPORT_DIR, LOCK_PATH
+from xray_vps_manager.activity import client_reports as activity_client_reports
 from xray_vps_manager.activity import controls as activity_controls
 from xray_vps_manager.activity import exceptions as activity_exceptions
+from xray_vps_manager.activity import exception_reports as activity_exception_reports
 from xray_vps_manager.activity import exports as activity_exports
 from xray_vps_manager.activity import parser as activity_parser
 from xray_vps_manager.activity import repository as activity_repository
@@ -343,7 +344,7 @@ def format_size(value):
 
 
 def iter_events(name, start, end):
-    yield from activity_repository.iter_events(name, start, end, parse_time)
+    yield from activity_client_reports.iter_events(name, start, end)
 
 
 def aggregate_events(events, skip_exceptions=False, exceptions=None):
@@ -355,30 +356,11 @@ def rolling_burst(times, window_minutes):
 
 
 def report_client(name, days_value="7"):
-    days = int(days_value or "7", 10)
-    start, end = date_range_from_days(days)
-    exceptions = exception_items()
-    rows = []
-    total_events = 0
-    for day in iter_dates(start, end):
-        aggregate = aggregate_events(iter_events(name, day, day), exceptions=exceptions)
-        total_events += aggregate["events"]
-        rows.append(
-            [
-                day.isoformat(),
-                aggregate["events"],
-                len(aggregate["hosts"]),
-                top_items(aggregate["ports"]),
-                top_items(aggregate["outbounds"]),
-                top_items(aggregate["risks"]),
-                top_items(aggregate["exceptions"]),
-                top_items(aggregate["hosts"]),
-            ]
-        )
-    print(f"Activity report for client: {name}")
-    print(f"Period: {start.isoformat()} - {end.isoformat()} UTC")
-    print_table(["DATE", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "EXCEPTIONS", "TOP HOSTS"], rows)
-    print(f"Total events: {total_events}")
+    report = activity_client_reports.client_report(name, days_value)
+    print(f"Activity report for client: {report['name']}")
+    print(f"Period: {report['start'].isoformat()} - {report['end'].isoformat()} UTC")
+    print_table(["DATE", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "EXCEPTIONS", "TOP HOSTS"], report["rows"])
+    print(f"Total events: {report['totalEvents']}")
 
 
 def risk_findings(name, aggregate):
@@ -390,26 +372,12 @@ def risk_names_for_event(event):
 
 
 def suspicious(days_value="7"):
-    days = int(days_value or "7", 10)
-    start, end = date_range_from_days(days)
-    clients = known_clients()
-    exceptions = exception_items()
-    rows = []
-    for name in sorted(clients):
-        aggregate = aggregate_events(iter_events(name, start, end), skip_exceptions=True, exceptions=exceptions)
-        findings = risk_findings(name, aggregate)
-        if not findings:
-            continue
-        risk_names = ", ".join(item[0] for item in findings)
-        details = "; ".join(item[1] for item in findings[:3])
-        recommendation = findings[0][2]
-        rows.append([name, risk_names, aggregate["events"], len(aggregate["hosts"]), top_items(aggregate["ports"]), details, recommendation])
-
-    print(f"Suspicious activity report: {start.isoformat()} - {end.isoformat()} UTC")
-    if not rows:
+    report = activity_client_reports.suspicious_report(days_value)
+    print(f"Suspicious activity report: {report['start'].isoformat()} - {report['end'].isoformat()} UTC")
+    if not report["rows"]:
         print("No suspicious activity found by current rules.")
         return
-    print_table(["CLIENT", "RISKS", "EVENTS", "HOSTS", "PORTS", "DETAILS", "RECOMMENDATION"], rows)
+    print_table(["CLIENT", "RISKS", "EVENTS", "HOSTS", "PORTS", "DETAILS", "RECOMMENDATION"], report["rows"])
 
 
 def geoip_risks_for_event(event):
@@ -417,25 +385,11 @@ def geoip_risks_for_event(event):
 
 
 def activity_display_timezone():
-    configured = (server_env_values().get("MANAGER_TIMEZONE") or "").strip()
-    if configured:
-        try:
-            return ZoneInfo(configured), configured
-        except ZoneInfoNotFoundError:
-            return timezone.utc, f"UTC (invalid MANAGER_TIMEZONE: {configured})"
-    local = datetime.now().astimezone().tzinfo or timezone.utc
-    local_name = datetime.now(local).tzname()
-    label = "server local time"
-    if local_name:
-        label += f" ({local_name})"
-    return local, label
+    return activity_client_reports.activity_display_timezone()
 
 
 def format_event_time(value, tzinfo):
-    moment = parse_time(value)
-    if not moment:
-        return value or "-"
-    return moment.astimezone(tzinfo).strftime("%Y-%m-%d %H:%M:%S")
+    return activity_client_reports.format_event_time(value, tzinfo)
 
 
 def split_ip_or_domain(host):
@@ -443,87 +397,49 @@ def split_ip_or_domain(host):
 
 
 def geoip_risk_details(days_value="7"):
-    days = int(days_value or "7", 10)
-    start, end = date_range_from_days(days)
-    clients = known_clients()
-    found = False
-    display_tz, display_tz_label = activity_display_timezone()
-    exceptions = exception_items()
-    print(f"GeoIP risk details: {start.isoformat()} - {end.isoformat()} UTC")
-    print(f"Timezone: {display_tz_label}")
-    for name in sorted(clients):
-        rows = []
-        for event in iter_events(name, start, end):
-            if event_exception(event, exceptions):
-                continue
-            risks = geoip_risks_for_event(event)
-            if not risks:
-                continue
-            ip_value, domain_value = split_ip_or_domain(event.get("host", ""))
-            rows.append(
-                [
-                    format_event_time(event.get("time"), display_tz),
-                    ip_value,
-                    domain_value,
-                    event.get("port") or "-",
-                    ", ".join(risk.split(":", 1)[1] for risk in risks),
-                    event.get("outbound") or "-",
-                ]
-            )
-        if not rows:
-            continue
-        found = True
+    report = activity_client_reports.geoip_risk_details(days_value)
+    print(f"GeoIP risk details: {report['start'].isoformat()} - {report['end'].isoformat()} UTC")
+    print(f"Timezone: {report['timezoneLabel']}")
+    for client in report["clients"]:
         print()
-        print(f"Client: {name}")
-        print_table(["TIME", "IP", "DOMAIN", "PORT", "REGION", "OUTBOUND"], rows)
-    if not found:
+        print(f"Client: {client['name']}")
+        print_table(["TIME", "IP", "DOMAIN", "PORT", "REGION", "OUTBOUND"], client["rows"])
+    if not report["clients"]:
         print("No GeoIP risk events found by current rules.")
 
 
 def add_exception(value, source="manual"):
-    normalized, kind = classify_exception_value(value)
-    source = activity_exceptions.normalize_source(source)
-    db = load_activity_exceptions()
-    for item in db.get("items", []):
-        if item.get("value") == normalized:
-            print(f"Exception already exists: {normalized}")
-            return
-    db.setdefault("items", []).append({
-        "value": normalized,
-        "kind": kind,
-        "createdAt": utc_stamp(),
-        "source": source,
-    })
-    save_activity_exceptions(db)
-    print(f"Added activity exception: {normalized}")
-    print(f"Kind: {kind}")
+    try:
+        result = activity_exception_reports.add_exception(value, source)
+    except ValueError as exc:
+        die(str(exc))
+    if not result["added"]:
+        print(f"Exception already exists: {result['value']}")
+        return
+    print(f"Added activity exception: {result['value']}")
+    print(f"Kind: {result['kind']}")
 
 
 def delete_exception(value):
-    normalized, _kind = classify_exception_value(value)
-    db = load_activity_exceptions()
-    before = len(db.get("items", []))
-    db["items"] = [item for item in db.get("items", []) if item.get("value") != normalized]
-    if len(db["items"]) == before:
+    try:
+        normalized = activity_exception_reports.delete_exception(value)
+    except ValueError as exc:
+        die(str(exc))
+    except KeyError as exc:
+        normalized = exc.args[0]
         die(f"Activity exception not found: {normalized}")
-    save_activity_exceptions(db)
     print(f"Deleted activity exception: {normalized}")
 
 
 def delete_all_exceptions(confirmed=False):
     if not confirmed:
         die("Refusing to delete all activity exceptions without --yes.")
-    db = load_activity_exceptions()
-    count = len(db.get("items", []))
-    db["items"] = []
-    save_activity_exceptions(db)
+    count = activity_exception_reports.delete_all_exceptions()
     print(f"Deleted activity exceptions: {count}")
 
 
 def list_exceptions(plain=False):
-    db = load_activity_exceptions()
-    save_activity_exceptions(db)
-    rows = sorted(db.get("items", []), key=lambda item: item.get("value", ""))
+    rows = activity_exception_reports.list_exception_rows()
     if plain:
         for item in rows:
             print("\t".join([
@@ -543,49 +459,7 @@ def list_exceptions(plain=False):
 
 
 def exception_candidate_rows(days_value="7"):
-    days = int(days_value or "7", 10)
-    start, end = date_range_from_days(days)
-    clients = known_clients()
-    exceptions = exception_items()
-    candidates = {}
-    for name in sorted(clients):
-        for event in iter_events(name, start, end):
-            if event_exception(event, exceptions):
-                continue
-            risks = risk_names_for_event(event)
-            if not risks:
-                continue
-            host = event.get("host") or ""
-            if not host:
-                continue
-            try:
-                value, kind = classify_exception_value(host, fatal=False)
-            except ValueError:
-                continue
-            row = candidates.setdefault(
-                value,
-                {
-                    "value": value,
-                    "kind": kind,
-                    "events": 0,
-                    "clients": {},
-                    "risks": {},
-                    "ports": {},
-                    "lastSeen": "",
-                    "sampleTarget": event.get("target") or host,
-                },
-            )
-            row["events"] += 1
-            row["clients"][name] = row["clients"].get(name, 0) + 1
-            for risk in risks:
-                row["risks"][risk] = row["risks"].get(risk, 0) + 1
-            if event.get("port"):
-                port = str(event.get("port"))
-                row["ports"][port] = row["ports"].get(port, 0) + 1
-            if event.get("time", "") > row["lastSeen"]:
-                row["lastSeen"] = event.get("time", "")
-                row["sampleTarget"] = event.get("target") or host
-    return sorted(candidates.values(), key=lambda row: (row["events"], row["value"]), reverse=True)
+    return activity_exception_reports.exception_candidate_rows(days_value)
 
 
 def print_exception_candidates(days_value="7", plain=False):
