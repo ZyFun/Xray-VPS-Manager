@@ -7,7 +7,8 @@ import sys
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from xray_vps_manager.activity.constants import CONFIG_PATH, EXPORT_DIR, LOCK_PATH
+from xray_vps_manager.activity.constants import EXPORT_DIR, LOCK_PATH
+from xray_vps_manager.activity import controls as activity_controls
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import exports as activity_exports
 from xray_vps_manager.activity import parser as activity_parser
@@ -128,7 +129,7 @@ def save_activity_db(db):
 
 
 def load_activity_db():
-    return activity_repository.load_activity_db(retention_days(), activity_enabled())
+    return activity_controls.load_activity_db()
 
 
 def normalize_exception_value(value, fatal=True):
@@ -246,7 +247,7 @@ def prune_client_log(path, cutoff_dt):
 
 
 def prune_activity(db, force=False):
-    return activity_repository.prune_activity(db, retention_days(), today_utc_date(), utc_now(), force=force)
+    return activity_controls.prune_activity(db, force=force)
 
 
 def initialize_access_offset(db):
@@ -258,30 +259,22 @@ def sync_activity():
 
 
 def access_log_setting():
-    config = load_json(CONFIG_PATH, {})
-    return config.get("log", {}).get("access", "")
+    return activity_controls.access_log_setting()
 
 
 def access_log_available_for_parsing():
-    setting = access_log_setting()
-    return setting and setting != "none"
+    return activity_controls.access_log_available_for_parsing()
 
 
 def set_enabled(value):
-    env = with_activity_defaults(server_env_values())
-    env["ACTIVITY_LOGGING_ENABLED"] = "true" if value else "false"
-    write_server_env(env)
+    activity_controls.set_enabled(value)
 
 
 def set_retention_days(value):
-    days = parse_retention_days(value)
-    env = with_activity_defaults(server_env_values())
-    env["ACTIVITY_RETENTION_DAYS"] = str(days)
-    write_server_env(env)
-    db = load_activity_db()
-    db["retentionDays"] = days
-    removed = prune_activity(db, force=True)
-    save_activity_db(db)
+    try:
+        days, removed = activity_controls.set_retention_days(value)
+    except ValueError as exc:
+        die(str(exc))
     print(f"Activity retention set to {days} days.")
     print(f"Pruned old activity events: {removed}")
 
@@ -295,49 +288,25 @@ def parse_limit_value(label, value, minimum, maximum):
 
 def set_risk_limits(burst_events, burst_window_minutes, unique_hosts, unique_ports):
     try:
-        values = activity_settings.risk_limit_env_values(burst_events, burst_window_minutes, unique_hosts, unique_ports)
+        activity_controls.set_risk_limits(burst_events, burst_window_minutes, unique_hosts, unique_ports)
     except ValueError as exc:
         die(str(exc))
-    env = with_activity_defaults(server_env_values())
-    for key, value in values.items():
-        env[key] = str(value)
-    write_server_env(env)
     print("Activity suspicious limits updated.")
     print_risk_limits()
 
 
 def print_risk_limits():
-    limits = risk_limits()
-    rows = [
-        ["Burst events", limits["burstEvents"]],
-        ["Burst window", f"{limits['burstWindowMinutes']} minutes"],
-        ["Unique hosts", limits["uniqueHosts"]],
-        ["Unique ports", limits["uniquePorts"]],
-    ]
-    print_table(["LIMIT", "VALUE"], rows)
+    print_table(["LIMIT", "VALUE"], activity_controls.risk_limit_rows())
 
 
 def enable_activity():
-    ensure_dirs()
-    set_enabled(True)
-    db = load_activity_db()
-    db["enabled"] = True
-    db["retentionDays"] = retention_days()
-    initialize_access_offset(db)
-    save_activity_db(db)
-    print("Activity log parsing enabled.")
-    print("Collection starts from the current access.log position; older access log lines are not imported.")
-    if not access_log_available_for_parsing():
-        print("WARN: Xray access log is not configured. Parser is enabled, but no events will be collected until access log exists.")
+    for message in activity_controls.enable_activity():
+        print(message)
 
 
 def disable_activity():
-    set_enabled(False)
-    db = load_activity_db()
-    db["enabled"] = False
-    save_activity_db(db)
-    print("Activity log parsing disabled.")
-    print("Xray access log config was not changed. Existing activity logs were kept.")
+    for message in activity_controls.disable_activity():
+        print(message)
 
 
 def top_items(counter, limit=3):
