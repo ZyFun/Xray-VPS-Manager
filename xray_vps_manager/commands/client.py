@@ -1172,7 +1172,10 @@ def cmd_set_days(name, days_value):
 
 def cmd_extend_days(name, days_value):
     days = parse_extend_days(days_value)
-    apply_access_update(name, lambda entry: extend_entry_expiry(entry, days))
+    run_access_update(
+        name,
+        lambda config, db, traffic_db: client_status.extend_access_days(config, db, traffic_db, name, days),
+    )
 
 
 def cmd_set_limit(name, period_value, limit_gb_value):
