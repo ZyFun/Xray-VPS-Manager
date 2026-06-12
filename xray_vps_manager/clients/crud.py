@@ -24,6 +24,13 @@ class AddClientResult:
     entry: dict[str, Any]
 
 
+@dataclass
+class RemoveClientResult:
+    name: str
+    found_active: bool
+    found_in_db: bool
+
+
 def resolve_connection_for_add(config: dict[str, Any], db: dict[str, Any], connection_tag: str | None = None) -> str:
     connections.ensure_connections(config, db)
     connection_tags = list(db_connections(db))
@@ -86,3 +93,21 @@ def add_client(
         connection_tag=selected_tag,
         entry=entry,
     )
+
+
+def remove_client(config: dict[str, Any], db: dict[str, Any], name: str) -> RemoveClientResult:
+    connections.ensure_connections(config, db)
+    found_active = False
+    for inbound in reality_inbounds(config):
+        before = clients(inbound)
+        after = [item for item in before if client_name(item) != name]
+        if len(after) != len(before):
+            found_active = True
+            inbound["settings"]["clients"] = after
+
+    found_in_db = name in db_clients(db)
+    if not found_active and not found_in_db:
+        raise ValueError(f"Client not found: {name}")
+    db_clients(db).pop(name, None)
+
+    return RemoveClientResult(name=name, found_active=found_active, found_in_db=found_in_db)

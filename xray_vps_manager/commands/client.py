@@ -1032,18 +1032,10 @@ def cmd_remove(name):
     validate_name(name)
     config = load_config()
     db = load_db()
-    ensure_connections(config, db)
-    found_active = False
-    for inbound in reality_inbounds(config):
-        before = clients(inbound)
-        after = [item for item in before if client_name(item) != name]
-        if len(after) != len(before):
-            found_active = True
-            inbound["settings"]["clients"] = after
-    found_in_db = name in db_clients(db)
-    if not found_active and not found_in_db:
-        die(f"Client not found: {name}")
-    db_clients(db).pop(name, None)
+    try:
+        result = client_crud.remove_client(config, db, name)
+    except ValueError as exc:
+        die(str(exc))
 
     backup = save_config(config)
     try:
@@ -1057,8 +1049,8 @@ def cmd_remove(name):
         run(["systemctl", "restart", "xray"])
         die(f"New config failed. Restored backup: {backup}")
 
-    print(f"Removed client: {name}")
-    if remove_traffic_clients([name]):
+    print(f"Removed client: {result.name}")
+    if remove_traffic_clients([result.name]):
         print("Removed traffic history.")
     print(f"Backup: {backup}")
 
