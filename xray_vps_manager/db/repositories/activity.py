@@ -104,6 +104,32 @@ def iter_events(
         yield _event_from_row(connection, row)
 
 
+def list_event_clients(
+    connection: sqlite3.Connection,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[str]:
+    clauses = ["client_name != ''"]
+    params: list[Any] = []
+    if start:
+        clauses.append("event_time >= ?")
+        params.append(start)
+    if end:
+        clauses.append("event_time < ?")
+        params.append(end)
+    rows = connection.execute(
+        f"""
+        SELECT DISTINCT client_name
+        FROM activity_events
+        WHERE {" AND ".join(clauses)}
+        ORDER BY client_name
+        """,
+        params,
+    ).fetchall()
+    return [row["client_name"] for row in rows]
+
+
 def upsert_exception(connection: sqlite3.Connection, item: dict[str, Any]) -> None:
     with database.transaction(connection):
         connection.execute(

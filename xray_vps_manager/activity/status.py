@@ -26,7 +26,7 @@ def status_rows() -> tuple[list[list[object]], list[str]]:
     config = repository.load_json(CONFIG_PATH, {})
     access = config.get("log", {}).get("access", "")
     client_file_count, client_log_size = client_log_stats()
-    exceptions = activity_exceptions.exception_items()
+    exceptions = activity_exceptions.exception_items_for_read()
     limits = settings.risk_limits()
     geoip_code = settings.xray_geoip_warning_code()
     geoip_path = activity_parser.geoip_path()

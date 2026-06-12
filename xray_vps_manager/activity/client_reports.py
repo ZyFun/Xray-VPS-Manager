@@ -14,13 +14,20 @@ from xray_vps_manager.activity import time as activity_time
 
 
 def iter_events(name, start, end):
-    yield from activity_repository.iter_events(name, start, end, activity_time.parse_time)
+    yield from activity_repository.iter_events_for_read(name, start, end, activity_time.parse_time)
+
+
+def known_clients_for_reports(start=None, end=None):
+    sqlite_clients = activity_repository.event_client_names_for_read(start, end)
+    if sqlite_clients is not None:
+        return {name: {} for name in sqlite_clients}
+    return activity_sync.known_clients()
 
 
 def client_report(name: str, days_value: str = "7") -> dict:
     days = int(days_value or "7", 10)
     start, end = activity_time.date_range_from_days(days)
-    exceptions = activity_exceptions.exception_items()
+    exceptions = activity_exceptions.exception_items_for_read()
     rows = []
     total_events = 0
     for day in activity_time.iter_dates(start, end):
@@ -50,8 +57,8 @@ def client_report(name: str, days_value: str = "7") -> dict:
 def suspicious_report(days_value: str = "7") -> dict:
     days = int(days_value or "7", 10)
     start, end = activity_time.date_range_from_days(days)
-    clients = activity_sync.known_clients()
-    exceptions = activity_exceptions.exception_items()
+    clients = known_clients_for_reports(start, end)
+    exceptions = activity_exceptions.exception_items_for_read()
     rows = []
     for name in sorted(clients):
         aggregate = activity_reports.aggregate_events(
@@ -108,9 +115,9 @@ def format_event_time(value, tzinfo):
 def geoip_risk_details(days_value: str = "7") -> dict:
     days = int(days_value or "7", 10)
     start, end = activity_time.date_range_from_days(days)
-    clients = activity_sync.known_clients()
+    clients = known_clients_for_reports(start, end)
     display_tz, display_tz_label = activity_display_timezone()
-    exceptions = activity_exceptions.exception_items()
+    exceptions = activity_exceptions.exception_items_for_read()
     client_rows = []
     for name in sorted(clients):
         rows = []

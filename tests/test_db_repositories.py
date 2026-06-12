@@ -126,6 +126,7 @@ class SQLiteRepositoryTests(unittest.TestCase):
 
         self.assertEqual(events[0]["id"], event_id)
         self.assertEqual(events[0]["risks"], ["xray-geoip:RU"])
+        self.assertEqual(activity.list_event_clients(self.connection), ["alice"])
         self.assertEqual(
             activity.list_exceptions(self.connection),
             [{"value": "*.example.com", "kind": "mask", "source": "manual", "createdAt": "2026-06-12T08:05:00Z"}],

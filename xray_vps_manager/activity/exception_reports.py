@@ -10,7 +10,7 @@ from xray_vps_manager.activity import time as activity_time
 
 
 def iter_events(name, start, end):
-    yield from activity_repository.iter_events(name, start, end, activity_time.parse_time)
+    yield from activity_repository.iter_events_for_read(name, start, end, activity_time.parse_time)
 
 
 def add_exception(value: str, source: str = "manual") -> dict:
@@ -52,16 +52,15 @@ def delete_all_exceptions() -> int:
 
 
 def list_exception_rows() -> list[dict]:
-    db = activity_exceptions.load_activity_exceptions()
-    activity_exceptions.save_activity_exceptions(db)
+    db = activity_exceptions.load_activity_exceptions_for_read()
     return sorted(db.get("items", []), key=lambda item: item.get("value", ""))
 
 
 def exception_candidate_rows(days_value: str = "7") -> list[dict]:
     days = int(days_value or "7", 10)
     start, end = activity_time.date_range_from_days(days)
-    clients = activity_sync.known_clients()
-    exceptions = activity_exceptions.exception_items()
+    clients = activity_client_names_for_reports(start, end)
+    exceptions = activity_exceptions.exception_items_for_read()
     candidates = {}
     for name in sorted(clients):
         for event in iter_events(name, start, end):
@@ -101,3 +100,10 @@ def exception_candidate_rows(days_value: str = "7") -> list[dict]:
                 row["lastSeen"] = event.get("time", "")
                 row["sampleTarget"] = event.get("target") or host
     return sorted(candidates.values(), key=lambda row: (row["events"], row["value"]), reverse=True)
+
+
+def activity_client_names_for_reports(start=None, end=None):
+    sqlite_clients = activity_repository.event_client_names_for_read(start, end)
+    if sqlite_clients is not None:
+        return {name: {} for name in sqlite_clients}
+    return activity_sync.known_clients()

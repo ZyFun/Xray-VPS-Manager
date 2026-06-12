@@ -18,6 +18,9 @@ from xray_vps_manager.activity.constants import (
 )
 from xray_vps_manager.activity.parser import parse_json_line
 from xray_vps_manager.activity.time import parse_time, utc_stamp
+from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import activity as sqlite_activity
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled
 
 
 def load_json(path: Path, default):
@@ -193,3 +196,63 @@ def iter_events(name: str, start: date, end: date, time_parser: Callable[[str | 
         event_time = time_parser(event.get("time"))
         if event_time and start_dt <= event_time < end_dt:
             yield event
+
+
+def sqlite_date_bounds(start: date, end: date) -> tuple[str, str]:
+    start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    return start_dt.isoformat().replace("+00:00", "Z"), end_dt.isoformat().replace("+00:00", "Z")
+
+
+def iter_events_for_read(
+    name: str,
+    start: date,
+    end: date,
+    time_parser: Callable[[str | None], datetime | None],
+    *,
+    db_path: str | Path | None = None,
+) -> Iterable[dict]:
+    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+        connection = None
+        try:
+            connection = database.open_database(db_path)
+            if sqlite_read_ready(connection):
+                start_key, end_key = sqlite_date_bounds(start, end)
+                yield from sqlite_activity.iter_events(
+                    connection,
+                    client_name=name,
+                    start=start_key,
+                    end=end_key,
+                )
+                return
+        except Exception:
+            pass
+        finally:
+            if connection is not None:
+                connection.close()
+    yield from iter_events(name, start, end, time_parser)
+
+
+def event_client_names_for_read(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    db_path: str | Path | None = None,
+) -> list[str] | None:
+    if not sqlite_reads_enabled() or not database.database_file_exists(db_path):
+        return None
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            return None
+        start_key = None
+        end_key = None
+        if start is not None and end is not None:
+            start_key, end_key = sqlite_date_bounds(start, end)
+        return sqlite_activity.list_event_clients(connection, start=start_key, end=end_key)
+    except Exception:
+        return None
+    finally:
+        if connection is not None:
+            connection.close()

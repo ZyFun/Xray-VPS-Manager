@@ -29,7 +29,7 @@ def format_size(value: int) -> str:
 
 
 def aggregate_events(events, skip_exceptions: bool = False, exceptions: list[dict] | None = None) -> dict:
-    exceptions = exceptions if exceptions is not None else activity_exceptions.exception_items()
+    exceptions = exceptions if exceptions is not None else activity_exceptions.exception_items_for_read()
     result = {
         "events": 0,
         "hosts": {},

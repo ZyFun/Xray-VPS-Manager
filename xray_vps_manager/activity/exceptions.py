@@ -7,12 +7,16 @@ import ipaddress
 import json
 import os
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 
 from xray_vps_manager.activity.constants import ACTIVITY_EXCEPTIONS_PATH, EXCEPTION_VALUE_RE
 from xray_vps_manager.activity.parser import parse_target
 from xray_vps_manager.activity.repository import chown_xray, ensure_dirs, load_json
 from xray_vps_manager.activity.time import utc_stamp
+from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import activity as sqlite_activity
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled
 
 
 def normalize_exception_value(value: str, fatal: bool = True) -> str:
@@ -65,8 +69,8 @@ def classify_exception_value(value: str, fatal: bool = True) -> tuple[str, str]:
     return normalized, "domain"
 
 
-def load_activity_exceptions() -> dict:
-    db = load_json(ACTIVITY_EXCEPTIONS_PATH, {})
+def load_activity_exceptions(path=ACTIVITY_EXCEPTIONS_PATH) -> dict:
+    db = load_json(path, {})
     if not isinstance(db, dict):
         db = {}
     items = []
@@ -103,6 +107,33 @@ def save_activity_exceptions(db: dict) -> None:
 
 def exception_items() -> list[dict]:
     return load_activity_exceptions().get("items", [])
+
+
+def load_activity_exceptions_for_read(
+    path=ACTIVITY_EXCEPTIONS_PATH,
+    *,
+    db_path: str | Path | None = None,
+) -> dict:
+    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+        connection = None
+        try:
+            connection = database.open_database(db_path)
+            if sqlite_read_ready(connection):
+                return {"version": 1, "items": sqlite_activity.list_exceptions(connection)}
+        except Exception:
+            pass
+        finally:
+            if connection is not None:
+                connection.close()
+    return load_activity_exceptions(path)
+
+
+def exception_items_for_read(
+    path=ACTIVITY_EXCEPTIONS_PATH,
+    *,
+    db_path: str | Path | None = None,
+) -> list[dict]:
+    return load_activity_exceptions_for_read(path, db_path=db_path).get("items", [])
 
 
 def host_for_exception_match(host: str) -> str:
@@ -145,4 +176,3 @@ def event_exception(event: dict, exceptions: list[dict] | None = None) -> dict |
 
 def normalize_source(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.@:-]+", "_", str(value or "manual")).strip("_") or "manual"
-
