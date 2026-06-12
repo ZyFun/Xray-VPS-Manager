@@ -118,6 +118,8 @@ class SQLiteCommandTests(unittest.TestCase):
             ) as verify_writers_stopped, mock.patch.object(
                 sqlite_command, "start_writers"
             ) as start_writers, mock.patch.object(
+                sqlite_command, "verify_writers_started"
+            ) as verify_writers_started, mock.patch.object(
                 sqlite_command.backup_command, "create_backup", return_value=backup_path
             ) as create_backup, mock.patch.object(
                 sqlite_command.json_import, "import_json_files", side_effect=import_json_files
@@ -130,6 +132,7 @@ class SQLiteCommandTests(unittest.TestCase):
             stop_writers.assert_called_once_with()
             verify_writers_stopped.assert_called_once_with()
             start_writers.assert_called_once_with()
+            verify_writers_started.assert_called_once_with()
             create_backup.assert_called_once_with(path_only=False, quiet=True, sync=False)
             import_mock.assert_called_once_with(db_path=db_path, replace=True)
             run_xray_test.assert_called_once_with()
@@ -259,6 +262,30 @@ class SQLiteCommandTests(unittest.TestCase):
         with mock.patch.object(sqlite_command.subprocess, "run", side_effect=run):
             with self.assertRaisesRegex(RuntimeError, "xray-telegram-poller.service=active"):
                 sqlite_command.verify_writers_stopped()
+
+    def test_verify_writers_started_accepts_active_and_missing_units(self) -> None:
+        def run(command, **_kwargs):
+            unit = command[-1]
+            if unit == "xray-client-expire.timer":
+                return subprocess.CompletedProcess(command, 4, stdout="", stderr="Unit xray-client-expire.timer not found.")
+            return subprocess.CompletedProcess(command, 0, stdout="active\n", stderr="")
+
+        stdout = StringIO()
+        with mock.patch.object(sqlite_command.subprocess, "run", side_effect=run), redirect_stdout(stdout):
+            sqlite_command.verify_writers_started()
+
+        self.assertIn("WARNING systemd unit skipped: is-active xray-client-expire.timer", stdout.getvalue())
+
+    def test_verify_writers_started_fails_when_unit_is_inactive(self) -> None:
+        def run(command, **_kwargs):
+            unit = command[-1]
+            if unit == "xray-traffic-sync.timer":
+                return subprocess.CompletedProcess(command, 3, stdout="inactive\n", stderr="")
+            return subprocess.CompletedProcess(command, 0, stdout="active\n", stderr="")
+
+        with mock.patch.object(sqlite_command.subprocess, "run", side_effect=run):
+            with self.assertRaisesRegex(RuntimeError, "xray-traffic-sync.timer=inactive"):
+                sqlite_command.verify_writers_started()
 
     def test_cutover_stops_before_backup_when_writer_verification_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -404,6 +431,8 @@ class SQLiteCommandTests(unittest.TestCase):
             ), mock.patch.object(
                 sqlite_command, "start_writers"
             ) as start_writers, mock.patch.object(
+                sqlite_command, "verify_writers_started"
+            ), mock.patch.object(
                 sqlite_command.backup_command, "create_backup", return_value=backup_path
             ), mock.patch.object(
                 sqlite_command.json_import,

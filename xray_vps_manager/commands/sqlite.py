@@ -60,6 +60,7 @@ SYSTEMD_MISSING_UNIT_MARKERS = (
     "does not exist",
 )
 RUNNING_WRITER_STATES = {"active", "activating", "reloading", "deactivating"}
+STARTED_WRITER_STATES = {"active", "activating", "reloading"}
 XRAY_TEST = Path("/usr/local/sbin/xray-test")
 
 
@@ -478,6 +479,18 @@ def start_writers() -> None:
         run_systemctl(["enable", "--now", unit], allow_missing=True)
 
 
+def verify_writers_started() -> None:
+    inactive = []
+    for unit in WRITER_START_UNITS:
+        state = writer_unit_state(unit)
+        if state is None:
+            continue
+        if state not in STARTED_WRITER_STATES:
+            inactive.append(f"{unit}={state}")
+    if inactive:
+        raise RuntimeError("manager writer units did not start: " + ", ".join(inactive))
+
+
 def write_sqlite_flags(reads: bool, writes: bool) -> None:
     values = read_server_env(SERVER_ENV_PATH)
     values[SQLITE_READS_SERVER_ENV] = "true" if reads else "false"
@@ -558,6 +571,8 @@ def cutover(*, yes: bool = False, run_test: bool = True) -> int:
 
         print("Starting manager writer services...")
         start_writers()
+        print("Verifying manager writer services are started...")
+        verify_writers_started()
         writers_stopped = False
 
         if run_test:
