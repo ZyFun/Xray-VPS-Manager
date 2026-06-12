@@ -3,13 +3,14 @@ import fcntl
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from xray_vps_manager.traffic import repository as traffic_repository
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
@@ -100,14 +101,7 @@ def load_json(path, default):
 
 
 def save_traffic(db):
-    tmp = TRAFFIC_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    try:
-        shutil.chown(tmp, user="root", group="xray")
-    except LookupError:
-        shutil.chown(tmp, user="root")
-    os.chmod(tmp, 0o640)
-    tmp.replace(TRAFFIC_PATH)
+    traffic_repository.save_traffic_db(db, TRAFFIC_PATH)
 
 
 def split_email(email):
@@ -215,19 +209,7 @@ def set_last_online(entry, stamp, source):
 
 
 def ensure_entry(entries, name, email):
-    entry = entries.setdefault(
-        name,
-        {
-            "email": email,
-            "incoming": 0,
-            "outgoing": 0,
-            "last": {},
-            "history": {},
-        },
-    )
-    entry["email"] = email
-    entry.setdefault("history", {})
-    return entry
+    return traffic_repository.ensure_entry(entries, name, email)
 
 
 def add_history_delta(entry, bucket_time, incoming, outgoing):
@@ -319,7 +301,7 @@ def sync_locked():
 
     stamp = now()
     bucket_time = local_bucket_time()
-    db = load_json(TRAFFIC_PATH, {"version": 2, "clients": {}})
+    db = traffic_repository.load_traffic_db(TRAFFIC_PATH)
     db["version"] = 2
     db["historyRetentionMonths"] = HISTORY_RETENTION_MONTHS
     entries = db.setdefault("clients", {})

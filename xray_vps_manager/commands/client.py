@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-from calendar import monthrange
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -18,6 +16,9 @@ from xray_vps_manager.clients import links as client_links
 from xray_vps_manager.clients import models as client_models
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
+from xray_vps_manager.traffic import formatting as traffic_formatting
+from xray_vps_manager.traffic import history as traffic_history
+from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.xray import config as xray_config
 from xray_vps_manager.xray import crypto as xray_crypto
 
@@ -681,33 +682,15 @@ def print_payment_summary():
 
 
 def load_traffic_db():
-    if not TRAFFIC_PATH.exists():
-        return {"clients": {}}
-    try:
-        return json.loads(TRAFFIC_PATH.read_text())
-    except json.JSONDecodeError:
-        return {"clients": {}}
+    return traffic_repository.load_traffic_db(TRAFFIC_PATH)
 
 
 def save_traffic_db(db):
-    tmp = TRAFFIC_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(TRAFFIC_PATH)
+    traffic_repository.save_traffic_db(db, TRAFFIC_PATH)
 
 
 def remove_traffic_clients(names):
-    traffic_db = load_traffic_db()
-    clients_map = traffic_db.setdefault("clients", {})
-    changed = False
-    for name in names:
-        if name in clients_map:
-            clients_map.pop(name, None)
-            changed = True
-    if changed:
-        save_traffic_db(traffic_db)
-    return changed
+    return traffic_repository.remove_traffic_clients(names, TRAFFIC_PATH)
 
 
 def runtime_traffic_for(stats, email):
@@ -726,19 +709,7 @@ def traffic_for(traffic_db, stats, row):
 
 
 def format_traffic(value):
-    if value is None:
-        return "n/a"
-    if value < 1024:
-        return "0.00KB"
-    units = [
-        ("KB", 1024),
-        ("MB", 1024 ** 2),
-        ("GB", 1024 ** 3),
-    ]
-    for suffix, size in units:
-        next_size = size * 1024
-        if value < next_size or suffix == "GB":
-            return f"{value / size:.2f}{suffix}"
+    return traffic_formatting.format_traffic(value, none_label="n/a")
 
 
 def parse_date_value(value, label="DATE"):
@@ -759,88 +730,39 @@ def parse_month_value(value=None):
 
 
 def month_bounds(month_key):
-    year, month = (int(part, 10) for part in month_key.split("-", 1))
-    start = date(year, month, 1)
-    end = date(year, month, monthrange(year, month)[1])
-    today = local_now().date()
-    if start <= today <= end:
-        end = today
-    return start, end
+    return traffic_history.month_bounds(month_key, today=local_now().date())
 
 
 def iter_dates(start, end):
-    current = start
-    while current <= end:
-        yield current
-        current += timedelta(days=1)
+    return traffic_history.iter_dates(start, end)
 
 
 def traffic_bucket_totals(bucket):
-    if not isinstance(bucket, dict):
-        return 0, 0
-    return int(bucket.get("incoming", 0) or 0), int(bucket.get("outgoing", 0) or 0)
+    return traffic_history.traffic_bucket_totals(bucket)
 
 
 def traffic_entry(traffic_db, name):
-    return traffic_db.get("clients", {}).get(name, {})
+    return traffic_repository.traffic_entry(traffic_db, name)
 
 
 def history_for_entry(entry):
-    history = entry.get("history", {})
-    return history if isinstance(history, dict) else {}
+    return traffic_history.history_for_entry(entry)
 
 
 def day_hour_totals(entry, day):
-    hours = history_for_entry(entry).get(day.isoformat(), {})
-    if not isinstance(hours, dict):
-        hours = {}
-    rows = []
-    total_in = 0
-    total_out = 0
-    for hour in range(24):
-        incoming, outgoing = traffic_bucket_totals(hours.get(f"{hour:02d}", {}))
-        total_in += incoming
-        total_out += outgoing
-        rows.append([f"{hour:02d}:00", format_traffic(incoming), format_traffic(outgoing), format_traffic(incoming + outgoing)])
-    rows.append(["TOTAL", format_traffic(total_in), format_traffic(total_out), format_traffic(total_in + total_out)])
-    return rows
+    return traffic_history.day_hour_totals(entry, day, format_traffic)
 
 
 def day_total(entry, day):
-    hours = history_for_entry(entry).get(day.isoformat(), {})
-    if not isinstance(hours, dict):
-        return 0, 0
-    incoming = 0
-    outgoing = 0
-    for bucket in hours.values():
-        bucket_in, bucket_out = traffic_bucket_totals(bucket)
-        incoming += bucket_in
-        outgoing += bucket_out
-    return incoming, outgoing
+    return traffic_history.day_total(entry, day)
 
 
 def period_day_rows(entry, start, end):
-    rows = []
-    total_in = 0
-    total_out = 0
-    for day in iter_dates(start, end):
-        incoming, outgoing = day_total(entry, day)
-        total_in += incoming
-        total_out += outgoing
-        rows.append([day.isoformat(), format_traffic(incoming), format_traffic(outgoing), format_traffic(incoming + outgoing)])
-    rows.append(["TOTAL", format_traffic(total_in), format_traffic(total_out), format_traffic(total_in + total_out)])
-    return rows
+    return traffic_history.period_day_rows(entry, start, end, format_traffic)
 
 
 def month_total(entry, month_key):
-    start, end = month_bounds(month_key)
-    incoming = 0
-    outgoing = 0
-    for day in iter_dates(start, end):
-        day_in, day_out = day_total(entry, day)
-        incoming += day_in
-        outgoing += day_out
-    return incoming, outgoing
+    return traffic_history.month_total(entry, month_key, today=local_now().date())
 
 
 def traffic_limit_usage(entry, period, now=None):
@@ -858,7 +780,7 @@ def traffic_limit_status(db_entry, traffic_db_entry, now=None):
 
 
 def all_time_total(entry):
-    return int(entry.get("incoming", 0) or 0), int(entry.get("outgoing", 0) or 0)
+    return traffic_history.all_time_total(entry)
 
 
 def parse_time(value):

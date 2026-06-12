@@ -18,6 +18,9 @@ from pathlib import Path
 from urllib.parse import parse_qsl, quote, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.traffic import formatting as traffic_formatting
+from xray_vps_manager.traffic import history as traffic_history
+from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.telegram import api as telegram_api
 from xray_vps_manager.telegram import keyboards as telegram_keyboards
 from xray_vps_manager.telegram import messages as telegram_messages
@@ -195,7 +198,7 @@ def load_client_db():
 
 
 def load_traffic_db():
-    return load_json(TRAFFIC_PATH, {"clients": {}})
+    return traffic_repository.load_traffic_db(TRAFFIC_PATH)
 
 
 def client_db_clients(db):
@@ -784,41 +787,15 @@ def show_payment_amount():
 
 
 def format_traffic(value):
-    value = int(value or 0)
-    if value < 1024:
-        return "0.00KB"
-    units = [
-        ("KB", 1024),
-        ("MB", 1024 ** 2),
-        ("GB", 1024 ** 3),
-    ]
-    for suffix, size in units:
-        next_size = size * 1024
-        if value < next_size or suffix == "GB":
-            return f"{value / size:.2f}{suffix}"
-    return "0.00KB"
+    return traffic_formatting.format_traffic(value, none_label="0.00KB")
 
 
 def traffic_bucket_totals(bucket):
-    if not isinstance(bucket, dict):
-        return 0, 0
-    return int(bucket.get("incoming", 0) or 0), int(bucket.get("outgoing", 0) or 0)
+    return traffic_history.traffic_bucket_totals(bucket)
 
 
 def traffic_day_total(entry, day_key):
-    history = entry.get("history", {})
-    if not isinstance(history, dict):
-        return 0, 0
-    hours = history.get(day_key, {})
-    if not isinstance(hours, dict):
-        return 0, 0
-    incoming = 0
-    outgoing = 0
-    for bucket in hours.values():
-        bucket_in, bucket_out = traffic_bucket_totals(bucket)
-        incoming += bucket_in
-        outgoing += bucket_out
-    return incoming, outgoing
+    return traffic_history.traffic_day_total(entry, day_key)
 
 
 def systemd_state(unit):
