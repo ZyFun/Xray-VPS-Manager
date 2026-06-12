@@ -21,6 +21,7 @@ class Migration:
     version: int
     name: str
     statements: tuple[str, ...]
+    requires_backup: bool = False
 
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -263,17 +264,22 @@ def schema_version(connection: sqlite3.Connection) -> int:
     return int(row[0] if row else 0)
 
 
-def ensure_schema(connection: sqlite3.Connection) -> None:
-    configure_connection(connection)
+def pending_migrations(connection: sqlite3.Connection) -> tuple[Migration, ...]:
     current = schema_version(connection)
     if current > CURRENT_SCHEMA_VERSION:
         raise RuntimeError(
             f"SQLite schema version {current} is newer than supported version {CURRENT_SCHEMA_VERSION}."
         )
+    return tuple(migration for migration in MIGRATIONS if migration.version > current)
 
-    for migration in MIGRATIONS:
-        if migration.version <= current:
-            continue
+
+def pending_migrations_require_backup(migrations: tuple[Migration, ...]) -> bool:
+    return any(migration.requires_backup for migration in migrations)
+
+
+def ensure_schema(connection: sqlite3.Connection) -> None:
+    configure_connection(connection)
+    for migration in pending_migrations(connection):
         with connection:
             for statement in migration.statements:
                 connection.execute(statement)
