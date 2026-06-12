@@ -16,7 +16,7 @@ from xray_vps_manager.activity.repository import chown_xray, ensure_dirs, load_j
 from xray_vps_manager.activity.time import utc_stamp
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
 
 
 def normalize_exception_value(value: str, fatal: bool = True) -> str:
@@ -71,38 +71,22 @@ def classify_exception_value(value: str, fatal: bool = True) -> tuple[str, str]:
 
 def load_activity_exceptions(path=ACTIVITY_EXCEPTIONS_PATH) -> dict:
     db = load_json(path, {})
-    if not isinstance(db, dict):
-        db = {}
-    items = []
-    seen = set()
-    for item in db.get("items", []):
-        if isinstance(item, str):
-            item = {"value": item, "source": "legacy"}
-        if not isinstance(item, dict):
-            continue
-        try:
-            value, kind = classify_exception_value(item.get("value", ""), fatal=False)
-        except ValueError:
-            continue
-        if value in seen:
-            continue
-        seen.add(value)
-        items.append({
-            "value": value,
-            "kind": kind,
-            "createdAt": item.get("createdAt") or utc_stamp(),
-            "source": item.get("source") or "manual",
-        })
-    return {"version": 1, "items": items}
+    return load_activity_exceptions_from_dict(db)
 
 
-def save_activity_exceptions(db: dict) -> None:
+def save_activity_exceptions(
+    db: dict,
+    path=ACTIVITY_EXCEPTIONS_PATH,
+    *,
+    db_path: str | Path | None = None,
+) -> None:
     ensure_dirs()
-    tmp = ACTIVITY_EXCEPTIONS_PATH.with_suffix(".json.tmp")
+    tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
     chown_xray(tmp)
     os.chmod(tmp, 0o640)
-    tmp.replace(ACTIVITY_EXCEPTIONS_PATH)
+    tmp.replace(path)
+    mirror_activity_exceptions_to_sqlite_for_write(db, db_path=db_path)
 
 
 def exception_items() -> list[dict]:
@@ -134,6 +118,58 @@ def exception_items_for_read(
     db_path: str | Path | None = None,
 ) -> list[dict]:
     return load_activity_exceptions_for_read(path, db_path=db_path).get("items", [])
+
+
+def mirror_activity_exceptions_to_sqlite_for_write(
+    db: dict,
+    *,
+    db_path: str | Path | None = None,
+) -> bool:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        return False
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            return False
+        normalized = load_activity_exceptions_from_dict(db)
+        with database.transaction(connection):
+            sqlite_activity.clear_exceptions(connection)
+            for item in normalized.get("items", []):
+                sqlite_activity.upsert_exception(connection, item)
+        return True
+    except Exception:
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def load_activity_exceptions_from_dict(db: dict) -> dict:
+    if not isinstance(db, dict):
+        db = {}
+    items = []
+    seen = set()
+    for item in db.get("items", []):
+        if isinstance(item, str):
+            item = {"value": item, "source": "legacy"}
+        if not isinstance(item, dict):
+            continue
+        try:
+            value, kind = classify_exception_value(item.get("value", ""), fatal=False)
+        except ValueError:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        items.append({
+            "value": value,
+            "kind": kind,
+            "createdAt": item.get("createdAt") or utc_stamp(),
+            "source": item.get("source") or "manual",
+        })
+    return {"version": 1, "items": items}
 
 
 def host_for_exception_match(host: str) -> str:

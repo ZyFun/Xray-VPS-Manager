@@ -20,7 +20,8 @@ from xray_vps_manager.activity.parser import parse_json_line
 from xray_vps_manager.activity.time import parse_time, utc_stamp
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled
+from xray_vps_manager.db.repositories import clients as sqlite_clients
+from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
 
 
 def load_json(path: Path, default):
@@ -85,13 +86,14 @@ def safe_client_file(name: str) -> Path:
     return CLIENT_LOG_DIR / f"{safe or 'client'}.jsonl"
 
 
-def append_event(event: dict) -> None:
+def append_event(event: dict, *, db_path: str | Path | None = None) -> None:
     ensure_dirs()
     path = safe_client_file(event["client"])
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
     chown_xray(path)
     os.chmod(path, 0o640)
+    mirror_event_to_sqlite_for_write(event, db_path=db_path)
 
 
 def update_summary(db: dict, event: dict) -> None:
@@ -253,6 +255,31 @@ def event_client_names_for_read(
         return sqlite_activity.list_event_clients(connection, start=start_key, end=end_key)
     except Exception:
         return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def mirror_event_to_sqlite_for_write(
+    event: dict,
+    *,
+    db_path: str | Path | None = None,
+) -> bool:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        return False
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            return False
+        client_name = str(event.get("client") or event.get("client_name") or "").strip()
+        if client_name not in sqlite_clients.list_clients(connection):
+            return False
+        sqlite_activity.add_event(connection, event)
+        return True
+    except Exception:
+        return False
     finally:
         if connection is not None:
             connection.close()
