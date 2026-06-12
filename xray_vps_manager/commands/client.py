@@ -832,28 +832,17 @@ def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
 
 
 def connection_client_names(config, db, tag):
-    names = set()
-    inbound = find_inbound_by_tag(config, tag)
-    for item in clients(inbound):
-        name = client_name(item)
-        if name:
-            names.add(name)
-    for name, entry in db_clients(db).items():
-        if entry.get("connection") == tag:
-            names.add(name)
-    return sorted(names)
+    try:
+        return client_connections.connection_client_names(config, db, tag)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def server_env_values_for_connection(config, db, tag):
-    inbound = find_inbound_by_tag(config, tag)
-    settings = connection_settings_from_inbound(inbound)
-    values = server_env_values()
-    values.setdefault("SERVER_ADDR", "")
-    values["PORT"] = str(settings["port"])
-    values["REALITY_SNI"] = settings["sni"]
-    values["REALITY_DEST"] = settings["dest"]
-    values["FINGERPRINT"] = connection_fingerprint(config, db, tag)
-    return values
+    try:
+        return client_connections.server_env_values_for_connection(config, db, tag)
+    except ValueError as exc:
+        die(str(exc))
 
 
 def cmd_connection_remove(identifier):

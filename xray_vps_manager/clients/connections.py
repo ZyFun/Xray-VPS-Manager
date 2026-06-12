@@ -8,9 +8,11 @@ from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray.config import (
+    clients,
     connection_name_from_tag,
     connection_settings_from_inbound,
     default_connection_tag,
+    find_inbound_by_tag,
     inbound_tag,
     reality_inbounds,
 )
@@ -86,6 +88,31 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
             ]
         )
     return rows
+
+
+def connection_client_names(config: dict[str, Any], db: dict[str, Any], tag: str) -> list[str]:
+    names = set()
+    inbound = find_inbound_by_tag(config, tag)
+    for item in clients(inbound):
+        name = client_name(item)
+        if name:
+            names.add(name)
+    for name, entry in db_clients(db).items():
+        if entry.get("connection") == tag:
+            names.add(name)
+    return sorted(names)
+
+
+def server_env_values_for_connection(config: dict[str, Any], db: dict[str, Any], tag: str) -> dict[str, str]:
+    inbound = find_inbound_by_tag(config, tag)
+    settings = connection_settings_from_inbound(inbound)
+    values = server_env_values()
+    values.setdefault("SERVER_ADDR", "")
+    values["PORT"] = str(settings["port"])
+    values["REALITY_SNI"] = settings["sni"]
+    values["REALITY_DEST"] = settings["dest"]
+    values["FINGERPRINT"] = connection_fingerprint(config, db, tag)
+    return values
 
 
 def resolve_connection_identifier(config: dict[str, Any], db: dict[str, Any], value: str) -> str:
