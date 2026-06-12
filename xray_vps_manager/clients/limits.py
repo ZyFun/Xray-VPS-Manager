@@ -8,6 +8,8 @@ from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from xray_vps_manager.clients.access import local_now
+from xray_vps_manager.traffic.formatting import format_traffic
+from xray_vps_manager.traffic.repository import traffic_entry
 
 BYTES_IN_GB = 1024 ** 3
 
@@ -104,6 +106,13 @@ def traffic_limit_period_label(period: str) -> str:
     return "day" if period == "daily" else "month"
 
 
+def format_traffic_limit(entry: dict[str, Any]) -> str:
+    limit = traffic_limit(entry)
+    if limit is None:
+        return "без лимита"
+    return f"{format_traffic(limit['bytes'])}/{traffic_limit_period_label(limit['period'])}"
+
+
 def traffic_bucket_totals(bucket: dict[str, Any]) -> tuple[int, int]:
     if not isinstance(bucket, dict):
         return 0, 0
@@ -187,3 +196,33 @@ def traffic_limit_status(
         "resetAt": traffic_limit_reset_time(limit["period"], now),
         "exceeded": used >= limit["bytes"],
     }
+
+
+def traffic_limit_row(
+    row: dict[str, Any],
+    client_entries: dict[str, Any],
+    traffic_db: dict[str, Any],
+    connection_label: str,
+) -> list[str]:
+    db_entry = client_entries.get(row["name"], {})
+    traffic_db_entry = traffic_entry(traffic_db, row["name"])
+    status = traffic_limit_status(db_entry, traffic_db_entry)
+    if status is None:
+        return [
+            row["name"],
+            row["status"],
+            connection_label,
+            "без лимита",
+            "-",
+            "-",
+            "-",
+        ]
+    return [
+        row["name"],
+        row["status"],
+        connection_label,
+        format_traffic_limit(db_entry),
+        format_traffic(status["usedBytes"]),
+        format_traffic(status["remainingBytes"]),
+        status["resetAt"],
+    ]

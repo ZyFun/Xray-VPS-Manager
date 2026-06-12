@@ -192,10 +192,7 @@ def traffic_limit_period_label(period):
 
 
 def format_traffic_limit(entry):
-    limit = traffic_limit(entry)
-    if limit is None:
-        return "без лимита"
-    return f"{format_traffic(limit['bytes'])}/{traffic_limit_period_label(limit['period'])}"
+    return client_limits.format_traffic_limit(entry)
 
 
 def prompt_access_days():
@@ -1379,28 +1376,12 @@ def cmd_clear_limit(name):
 
 
 def traffic_limit_row(config, db, traffic_db, row):
-    db_entry = db_clients(db).get(row["name"], {})
-    traffic_db_entry = traffic_entry(traffic_db, row["name"])
-    status = traffic_limit_status(db_entry, traffic_db_entry)
-    if status is None:
-        return [
-            row["name"],
-            row["status"],
-            connection_display_name(config, db, row["connection"]),
-            "без лимита",
-            "-",
-            "-",
-            "-",
-        ]
-    return [
-        row["name"],
-        row["status"],
+    return client_limits.traffic_limit_row(
+        row,
+        db_clients(db),
+        traffic_db,
         connection_display_name(config, db, row["connection"]),
-        format_traffic_limit(db_entry),
-        format_traffic(status["usedBytes"]),
-        format_traffic(status["remainingBytes"]),
-        status["resetAt"],
-    ]
+    )
 
 
 def cmd_limit_list():
