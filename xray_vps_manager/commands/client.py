@@ -170,6 +170,29 @@ def save_db(db):
     client_repository.save_db(db, CLIENT_DB_PATH)
 
 
+def restart_xray_with_config_test():
+    run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+    run(["systemctl", "restart", "xray"])
+
+
+def restore_config_backup(backup):
+    shutil.copy2(backup, CONFIG_PATH)
+    shutil.chown(CONFIG_PATH, user="root", group="xray")
+    os.chmod(CONFIG_PATH, 0o640)
+    run(["systemctl", "restart", "xray"])
+
+
+def save_config_restart_xray_and_db(config, db):
+    backup = save_config(config)
+    try:
+        restart_xray_with_config_test()
+        save_db(db)
+    except subprocess.CalledProcessError:
+        restore_config_backup(backup)
+        die(f"New config failed. Restored backup: {backup}")
+    return backup
+
+
 def normalize_access_deadlines(tz):
     if not CLIENT_DB_PATH.exists():
         return 0
@@ -416,17 +439,7 @@ def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
     except (ValueError, RuntimeError) as exc:
         die(str(exc))
 
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-        save_db(db)
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+    backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Added connection: {result.name}")
     print(f"Tag: {result.tag}")
@@ -445,20 +458,10 @@ def cmd_connection_remove(identifier):
     except ValueError as exc:
         die(str(exc))
 
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-        save_db(db)
-        if result.env_update is not None:
-            save_server_env_values(result.env_update)
-        traffic_removed = remove_traffic_clients(result.removed_client_names)
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+    backup = save_config_restart_xray_and_db(config, db)
+    if result.env_update is not None:
+        save_server_env_values(result.env_update)
+    traffic_removed = remove_traffic_clients(result.removed_client_names)
 
     print(f"Removed connection: {result.display_name}")
     print(f"Tag: {result.tag}")
@@ -627,17 +630,7 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
     except ValueError as exc:
         die(str(exc))
 
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-        save_db(db)
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+    backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Added client: {name}")
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
@@ -671,17 +664,7 @@ def cmd_remove(name):
     except ValueError as exc:
         die(str(exc))
 
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-        save_db(db)
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+    backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Removed client: {result.name}")
     if remove_traffic_clients([result.name]):
@@ -698,17 +681,7 @@ def cmd_disable(name):
     except ValueError as exc:
         die(str(exc))
 
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-        save_db(db)
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+    backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Disabled client: {result.name}")
     print(f"Backup: {backup}")
@@ -733,17 +706,7 @@ def cmd_enable(name):
     except ValueError as exc:
         die(str(exc))
 
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-        save_db(db)
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+    backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Enabled client: {result.name}")
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
@@ -765,17 +728,7 @@ def run_access_update(name, result_factory):
 
     backup = None
     if result.config_changed:
-        backup = save_config(config)
-        try:
-            run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-            run(["systemctl", "restart", "xray"])
-            save_db(db)
-        except subprocess.CalledProcessError:
-            shutil.copy2(backup, CONFIG_PATH)
-            shutil.chown(CONFIG_PATH, user="root", group="xray")
-            os.chmod(CONFIG_PATH, 0o640)
-            run(["systemctl", "restart", "xray"])
-            die(f"New config failed. Restored backup: {backup}")
+        backup = save_config_restart_xray_and_db(config, db)
     else:
         save_db(db)
 
@@ -903,17 +856,7 @@ def cmd_enforce_limits(quiet=False, sync_first=False):
             print("No traffic limits exceeded or reset.")
         return
 
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-        save_db(db)
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+    backup = save_config_restart_xray_and_db(config, db)
 
     if not quiet:
         if result.reactivated_names:
@@ -963,17 +906,7 @@ def cmd_expire_due(quiet=False):
             item for item in xray_config.clients(inbound) if client_models.client_name(item) not in due_set
         ]
 
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-        save_db(db)
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+    backup = save_config_restart_xray_and_db(config, db)
 
     if not quiet:
         print("Disabled expired clients: " + ", ".join(due_names))
