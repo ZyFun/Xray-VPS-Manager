@@ -16,6 +16,7 @@ from xray_vps_manager.activity import reports as activity_reports
 from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.activity import status as activity_status
 from xray_vps_manager.activity import sync as activity_sync
+from xray_vps_manager.core.terminal import print_table
 
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -77,31 +78,6 @@ def enable_activity():
 def disable_activity():
     for message in activity_controls.disable_activity():
         print(message)
-
-
-def table_border(widths):
-    return "+" + "+".join("-" * (width + 2) for width in widths) + "+"
-
-
-def table_row(values, widths):
-    return "|" + "|".join(f" {str(values[index]).ljust(widths[index])} " for index in range(len(widths))) + "|"
-
-
-def print_table(headers, rows):
-    if not rows:
-        print("No rows.")
-        return
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(str(value)))
-    border = table_border(widths)
-    print(border)
-    print(table_row(headers, widths))
-    print(border)
-    for row in rows:
-        print(table_row(row, widths))
-    print(border)
 
 
 def report_client(name, days_value="7"):

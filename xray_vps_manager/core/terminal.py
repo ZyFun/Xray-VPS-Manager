@@ -50,9 +50,9 @@ def table_lines(headers: list[object], rows: list[list[object]]) -> list[str]:
     return lines
 
 
-def print_table(headers: list[object], rows: list[list[object]]) -> None:
+def print_table(headers: list[object], rows: list[list[object]], empty_message: str = "No rows.") -> None:
     if not rows:
-        print("(empty)")
+        print(empty_message)
         return
     for line in table_lines(headers, rows):
         print(line)
