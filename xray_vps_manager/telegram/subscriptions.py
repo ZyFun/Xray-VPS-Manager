@@ -229,7 +229,7 @@ def current_vless_link_code_for_chat(db, chat_id, client_db, xray_client, run_ca
 def unsubscribe_chat(db, chat_id):
     removed = db.setdefault("clientSubscriptions", {}).pop(str(chat_id), None)
     if removed:
-        return "Подписка на напоминания отключена."
+        return "Подписка на бота отключена."
     return "Активной подписки нет."
 
 

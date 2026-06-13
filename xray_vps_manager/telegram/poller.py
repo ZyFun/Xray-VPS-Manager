@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from xray_vps_manager.telegram import admin, keyboards, messages, subscriptions, traffic
+from xray_vps_manager.telegram import admin, bot_commands, keyboards, messages, subscriptions, traffic
 
 USER_POLL_SHORT_TIMEOUT = 2
 USER_POLL_LONG_TIMEOUT = 45
@@ -130,6 +130,20 @@ def subscribe_chat_to_client(ctx: PollerContext, db, chat, text):
     )
 
 
+def try_set_subscribed_commands(ctx: PollerContext, db, chat_id):
+    try:
+        bot_commands.set_subscribed_chat_commands(db, chat_id, curl_json=ctx.curl_json)
+    except Exception as exc:
+        print(f"WARN: failed to update Telegram command menu for {chat_id}: {exc}", file=sys.stderr)
+
+
+def try_delete_chat_commands(ctx: PollerContext, db, chat_id):
+    try:
+        bot_commands.delete_chat_commands(db, chat_id, curl_json=ctx.curl_json)
+    except Exception as exc:
+        print(f"WARN: failed to reset Telegram command menu for {chat_id}: {exc}", file=sys.stderr)
+
+
 def handle_user_message(ctx: PollerContext, db, update):
     message = update.get("message") or update.get("edited_message") or {}
     chat = message.get("chat") or {}
@@ -166,10 +180,13 @@ def handle_user_message(ctx: PollerContext, db, update):
         send_client_traffic_menu(ctx, db, chat_id)
         return True
     if command in ("/unsubscribe", "/stop"):
-        send_client_menu(ctx, db, chat_id, subscriptions.unsubscribe_chat(db, chat_id))
+        text = subscriptions.unsubscribe_chat(db, chat_id)
+        try_delete_chat_commands(ctx, db, chat_id)
+        send_client_menu(ctx, db, chat_id, text)
         return True
     if subscriptions.find_vless_link(text):
         _name, entry = subscribe_chat_to_client(ctx, db, chat, text)
+        try_set_subscribed_commands(ctx, db, chat_id)
         send_client_menu(
             ctx,
             db,
@@ -230,7 +247,9 @@ def handle_callback_query(ctx: PollerContext, db, update):
         return True
     if data == "client:unsubscribe":
         ctx.answer_callback_query(db, callback_id, "Готово")
-        send_client_menu(ctx, db, chat_id, subscriptions.unsubscribe_chat(db, chat_id))
+        text = subscriptions.unsubscribe_chat(db, chat_id)
+        try_delete_chat_commands(ctx, db, chat_id)
+        send_client_menu(ctx, db, chat_id, text)
         return True
     if data == "client:menu":
         ctx.answer_callback_query(db, callback_id)

@@ -18,6 +18,11 @@ class TelegramPollerTests(unittest.TestCase):
         def send_chat_message(_db, chat_id, text, reply_markup=None, parse_mode=None):
             events.append(("send", str(chat_id), text))
 
+        def curl_json(_db, method, payload=None, timeout=30):
+            if method != "getUpdates":
+                events.append(("api", method, payload))
+            return {"ok": True, "result": updates}
+
         admin_context = admin.AdminContext(
             load_client_db=lambda: client_db,
             save_db_sections=save_db_sections,
@@ -37,7 +42,7 @@ class TelegramPollerTests(unittest.TestCase):
             run_capture=lambda *args, **kwargs: None,
             send_chat_message=send_chat_message,
             answer_callback_query=lambda *args, **kwargs: events.append(("answer",)),
-            curl_json=lambda _db, method, payload=None, timeout=30: {"ok": True, "result": updates},
+            curl_json=curl_json,
             bot_name=lambda current_db=None: "Vireika",
             server_name_fragment=lambda: "Xray",
             utc_stamp=lambda: "2026-06-12T22:00:00Z",
@@ -173,6 +178,61 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertIn("Уведомления уже подключены.", sent[2])
         self.assertIn("Статус: включён", sent[2])
         self.assertNotIn("Отправь сюда свою VLESS", sent[2])
+
+    def test_vless_subscription_sets_subscribed_command_menu(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 45, "expiryReminders": {}},
+            "clientSubscriptions": {},
+        }
+        client_uuid = "00000000-0000-0000-0000-000000000001"
+        link = (
+            f"vless://{client_uuid}@vpn.example:443?"
+            "security=reality&encryption=none&pbk=public-key&fp=chrome&type=tcp"
+            "&flow=xtls-rprx-vision&sni=example.com&sid=abcd"
+        )
+        updates = [
+            {
+                "update_id": 46,
+                "message": {
+                    "text": link,
+                    "chat": {"id": "222", "type": "private", "username": "client"},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={
+                "connections": {
+                    "vless-reality": {
+                        "port": 443,
+                        "publicKey": "public-key",
+                        "sni": "example.com",
+                        "shortId": "abcd",
+                        "fingerprint": "chrome",
+                    }
+                },
+                "clients": {
+                    "alice": {
+                        "id": client_uuid,
+                        "connection": "vless-reality",
+                        "client": {"id": client_uuid, "flow": "xtls-rprx-vision"},
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        api_calls = [event for event in events if event[0] == "api"]
+        self.assertEqual(api_calls[0][1], "setMyCommands")
+        self.assertEqual(api_calls[0][2]["scope"], {"type": "chat", "chat_id": "222"})
+        self.assertIn({"command": "unsubscribe", "description": "Отписаться от бота"}, api_calls[0][2]["commands"])
 
     def test_plain_text_from_subscribed_client_shows_status(self) -> None:
         db = {
@@ -314,6 +374,41 @@ class TelegramPollerTests(unittest.TestCase):
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Текущая подписка:", sent[2])
         self.assertNotIn("Vireika: помощь", sent[2])
+
+    def test_unsubscribe_callback_resets_chat_command_menu(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 90, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 95,
+                "callback_query": {
+                    "id": "callback-unsubscribe",
+                    "data": "client:unsubscribe",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(db, updates, events)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        api_calls = [event for event in events if event[0] == "api"]
+        self.assertEqual(api_calls[0][1], "deleteMyCommands")
+        self.assertEqual(api_calls[0][2], {"scope": {"type": "chat", "chat_id": "222"}})
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Подписка на бота отключена.", sent[2])
 
     def test_traffic_callback_sends_report_for_subscribed_client(self) -> None:
         db = {

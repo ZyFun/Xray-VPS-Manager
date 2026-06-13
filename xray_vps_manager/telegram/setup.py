@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from xray_vps_manager.core.paths import CLIENT_LOG_DIR, CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.process import run_capture
-from xray_vps_manager.telegram import api, poller, settings
+from xray_vps_manager.telegram import api, bot_commands, poller, settings
 
 CASCADE_UPSTREAM_TAG = "cascade-upstream"
 TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
@@ -267,16 +267,10 @@ def configure_bot_commands():
     db = settings.load_db_sql()
     if not db.get("token"):
         raise ValueError("Telegram bot token is not configured.")
-    commands = [
-        {"command": "start", "description": "Открыть меню"},
-        {"command": "status", "description": "Показать подписку"},
-        {"command": "link", "description": "Получить VLESS-ссылку"},
-        {"command": "traffic", "description": "Показать статистику трафика"},
-        {"command": "unsubscribe", "description": "Отключить напоминания"},
-        {"command": "help", "description": "Помощь"},
-    ]
-    api.curl_json(db, "setMyCommands", {"commands": commands}, timeout=30)
-    print("Telegram command menu updated.")
+    updated, failures = bot_commands.sync_all_command_menus(db)
+    print(f"Telegram command menu updated. Subscriber chats: {updated}.")
+    for failure in failures:
+        print("WARN: failed to update Telegram command menu for " + failure)
 
 
 def configure_owner(send_test=True):
