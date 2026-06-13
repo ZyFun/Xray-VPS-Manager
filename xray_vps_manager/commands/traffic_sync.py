@@ -11,13 +11,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.core.paths import MANAGER_DB_PATH
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import repository as traffic_repository
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
-CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
-TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 LOCK_PATH = Path("/usr/local/etc/xray/traffic.lock")
 ACCESS_LOG_PATH = Path("/var/log/xray/access.log")
 INBOUND_TAG = "vless-reality"
@@ -97,7 +96,7 @@ def load_json(path, default):
 
 
 def save_traffic(db):
-    traffic_repository.save_traffic_db(db, TRAFFIC_PATH)
+    traffic_repository.save_traffic_db(db)
 
 
 def split_email(email):
@@ -140,7 +139,7 @@ def known_clients():
                 continue
             clients[split_email(email)] = email
 
-    db = client_repository.load_db_sql(CLIENT_DB_PATH)
+    db = client_repository.load_db_sql()
     for name, entry in client_repository.db_clients(db).items():
         email = entry.get("client", {}).get("email") or name
         clients.setdefault(name, email)
@@ -297,7 +296,7 @@ def sync_locked():
 
     stamp = now()
     bucket_time = local_bucket_time()
-    db = traffic_repository.load_traffic_db_for_read(TRAFFIC_PATH)
+    db = traffic_repository.load_traffic_db_for_read()
     db["version"] = 2
     db["historyRetentionMonths"] = HISTORY_RETENTION_MONTHS
     entries = db.setdefault("clients", {})
@@ -326,7 +325,7 @@ def sync_locked():
     prune_history(db, bucket_time)
     db["updated"] = stamp
     save_traffic(db)
-    log(f"Traffic stats saved: {TRAFFIC_PATH}")
+    log(f"Traffic stats saved: {MANAGER_DB_PATH}")
     return 0
 
 

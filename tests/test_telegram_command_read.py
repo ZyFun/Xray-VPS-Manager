@@ -14,7 +14,7 @@ class TelegramCommandReadTests(unittest.TestCase):
         ) as load_db_sql:
             self.assertEqual(telegram_command.load_db(), expected)
 
-        load_db_sql.assert_called_once_with(telegram_command.TELEGRAM_DB_PATH)
+        load_db_sql.assert_called_once_with()
 
     def test_load_traffic_db_uses_runtime_read_layer(self) -> None:
         expected = {"clients": {"alice": {"incoming": 1, "outgoing": 2}}}
@@ -25,7 +25,7 @@ class TelegramCommandReadTests(unittest.TestCase):
         ) as load_traffic_for_read:
             self.assertEqual(telegram_command.load_traffic_db(), expected)
 
-        load_traffic_for_read.assert_called_once_with(telegram_command.TRAFFIC_PATH)
+        load_traffic_for_read.assert_called_once_with()
 
 
 if __name__ == "__main__":

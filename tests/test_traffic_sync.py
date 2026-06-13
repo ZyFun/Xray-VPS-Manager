@@ -40,7 +40,7 @@ class TrafficSyncTests(unittest.TestCase):
                 },
             )
 
-        load_db_sql.assert_called_once_with(traffic_sync.CLIENT_DB_PATH)
+        load_db_sql.assert_called_once_with()
 
     def test_sync_locked_loads_traffic_through_read_switch(self) -> None:
         email = "alice|created=2026-06-12T08:00:00Z"
@@ -85,7 +85,7 @@ class TrafficSyncTests(unittest.TestCase):
                 result = traffic_sync.sync_locked()
 
         self.assertEqual(result, 0)
-        load_for_read.assert_called_once_with(traffic_sync.TRAFFIC_PATH)
+        load_for_read.assert_called_once_with()
         saved = save_traffic.call_args.args[0]
         entry = saved["clients"]["alice"]
         self.assertEqual(entry["incoming"], 105)

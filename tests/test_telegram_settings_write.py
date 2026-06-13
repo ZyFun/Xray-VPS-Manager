@@ -1,9 +1,6 @@
 from pathlib import Path
-import json
-import os
 import tempfile
 import unittest
-from unittest import mock
 
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
@@ -58,7 +55,7 @@ def telegram_db() -> dict:
     }
 
 
-class TelegramSettingsWriteSwitchTests(unittest.TestCase):
+class TelegramSettingsWriteTests(unittest.TestCase):
     def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
         connection = database.open_database(path)
         try:
@@ -111,54 +108,13 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def read_json_file(self, path: Path) -> dict:
-        return json.loads(path.read_text())
-
-    def write_json_file(self, path: Path, db: dict) -> None:
-        path.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-
-    def save_with_mocked_permissions(self, db: dict, json_path: Path, db_path: Path) -> None:
-        with mock.patch.object(telegram_settings, "chown_xray"), mock.patch.object(telegram_settings.os, "chmod"):
-            telegram_settings.save_db(db, json_path, db_path=db_path)
-
-    def save_sections_with_mocked_permissions(
-        self,
-        db: dict,
-        sections: list[str],
-        json_path: Path,
-        db_path: Path,
-    ) -> None:
-        with mock.patch.object(telegram_settings, "chown_xray"), mock.patch.object(telegram_settings.os, "chmod"):
-            telegram_settings.save_db_sections(db, sections, json_path, db_path=db_path)
-
-    def test_save_writes_json_only_when_sqlite_write_flag_is_not_enabled(self) -> None:
+    def test_save_writes_telegram_settings_to_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            db_path = root / "manager.db"
+            db_path = Path(tmp_dir) / "manager.db"
+            json_path = Path(tmp_dir) / "telegram-bot.json"
             self.make_sqlite_db(db_path)
 
-            with mock.patch.dict(os.environ, {}, clear=True):
-                self.save_with_mocked_permissions(telegram_db(), json_path, db_path)
-
-            self.assertEqual(self.read_json_file(json_path)["botName"], "JsonBot")
-            connection = database.open_database(db_path)
-            try:
-                self.assertEqual(sqlite_telegram.get_setting(connection, "botName"), "OldBot")
-                self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTotalAmount"), "1")
-                self.assertEqual(len(sqlite_telegram.list_subscriptions(connection)), 1)
-            finally:
-                connection.close()
-
-    def test_save_writes_telegram_settings_to_sqlite_when_write_flag_is_enabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            db_path = root / "manager.db"
-            self.make_sqlite_db(db_path)
-
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True):
-                self.save_with_mocked_permissions(telegram_db(), json_path, db_path)
+            telegram_settings.save_db(telegram_db(), json_path, db_path=db_path)
 
             connection = database.open_database(db_path)
             try:
@@ -181,73 +137,26 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
             self.assertFalse(by_chat["222"]["enabled"])
             self.assertFalse(json_path.exists())
 
-    def test_save_uses_sqlite_as_primary_when_read_and_write_flags_are_enabled(self) -> None:
+    def test_save_fails_when_sqlite_database_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            db_path = root / "manager.db"
-            self.make_sqlite_db(db_path)
-            self.write_json_file(json_path, {"botName": "RollbackBot", "clientSubscriptions": {}})
+            db_path = Path(tmp_dir) / "missing.db"
+            json_path = Path(tmp_dir) / "telegram-bot.json"
 
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                self.save_with_mocked_permissions(telegram_db(), json_path, db_path)
-
-            connection = database.open_database(db_path)
-            try:
-                self.assertEqual(sqlite_telegram.get_setting(connection, "botName"), "JsonBot")
-                self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTotalAmount"), "500")
-                subscriptions = sqlite_telegram.list_subscriptions(connection)
-            finally:
-                connection.close()
-            self.assertEqual({item["chatId"] for item in subscriptions}, {"111", "222"})
-            self.assertEqual(self.read_json_file(json_path)["botName"], "RollbackBot")
-
-    def test_save_fails_when_sqlite_write_database_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            missing_db_path = root / "missing.db"
-
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True):
-                with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
-                    self.save_with_mocked_permissions(telegram_db(), json_path, missing_db_path)
+            with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
+                telegram_settings.save_db(telegram_db(), json_path, db_path=db_path)
 
             self.assertFalse(json_path.exists())
-            self.assertFalse(missing_db_path.exists())
+            self.assertFalse(db_path.exists())
 
-    def test_save_fails_when_sqlite_primary_database_is_missing(self) -> None:
+    def test_save_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            missing_db_path = root / "missing.db"
-
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
-                    self.save_with_mocked_permissions(telegram_db(), json_path, missing_db_path)
-
-            self.assertFalse(json_path.exists())
-            self.assertFalse(missing_db_path.exists())
-
-    def test_save_fails_when_sqlite_write_import_is_not_marked_ready(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            db_path = root / "manager.db"
+            db_path = Path(tmp_dir) / "manager.db"
+            json_path = Path(tmp_dir) / "telegram-bot.json"
             self.make_sqlite_db(db_path, ready=False)
 
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True):
-                with self.assertRaisesRegex(RuntimeError, "JSON import is not marked ready"):
-                    self.save_with_mocked_permissions(telegram_db(), json_path, db_path)
+            with self.assertRaisesRegex(RuntimeError, "database is not marked ready"):
+                telegram_settings.save_db(telegram_db(), json_path, db_path=db_path)
 
-            self.assertFalse(json_path.exists())
             connection = database.open_database(db_path)
             try:
                 self.assertEqual(sqlite_telegram.get_setting(connection, "botName"), "OldBot")
@@ -255,57 +164,15 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
                 self.assertEqual(len(sqlite_telegram.list_subscriptions(connection)), 1)
             finally:
                 connection.close()
-
-    def test_save_fails_when_sqlite_primary_import_is_not_marked_ready(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            db_path = root / "manager.db"
-            self.make_sqlite_db(db_path, ready=False)
-
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "JSON import is not marked ready"):
-                    self.save_with_mocked_permissions(telegram_db(), json_path, db_path)
-
             self.assertFalse(json_path.exists())
-            connection = database.open_database(db_path)
-            try:
-                self.assertEqual(sqlite_telegram.get_setting(connection, "botName"), "OldBot")
-                self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTotalAmount"), "1")
-                self.assertEqual(len(sqlite_telegram.list_subscriptions(connection)), 1)
-            finally:
-                connection.close()
 
-    def test_save_sections_uses_sqlite_read_source_when_primary_flags_are_enabled(self) -> None:
+    def test_save_sections_updates_only_requested_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            db_path = root / "manager.db"
+            db_path = Path(tmp_dir) / "manager.db"
+            json_path = Path(tmp_dir) / "telegram-bot.json"
             self.make_sqlite_db(db_path)
-            self.write_json_file(
-                json_path,
-                {
-                    "botName": "RollbackBot",
-                    "enabled": False,
-                    "clientSubscriptions": {},
-                },
-            )
 
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                self.save_sections_with_mocked_permissions(
-                    {"enabled": True},
-                    ["enabled"],
-                    json_path,
-                    db_path,
-                )
+            telegram_settings.save_db_sections({"enabled": True}, ["enabled"], json_path, db_path=db_path)
 
             connection = database.open_database(db_path)
             try:
@@ -315,13 +182,12 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
                 self.assertEqual(len(sqlite_telegram.list_subscriptions(connection)), 1)
             finally:
                 connection.close()
-            self.assertEqual(self.read_json_file(json_path)["botName"], "RollbackBot")
+            self.assertFalse(json_path.exists())
 
     def test_save_state_section_preserves_existing_expiry_reminders_in_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            db_path = root / "manager.db"
+            db_path = Path(tmp_dir) / "manager.db"
+            json_path = Path(tmp_dir) / "telegram-bot.json"
             self.make_sqlite_db(db_path)
             connection = database.open_database(db_path)
             try:
@@ -337,25 +203,19 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            stale_poller_state = {
-                "clientSubscriptionState": {
-                    "userUpdateOffset": 90,
-                    "expiryReminders": {},
-                    "lastUserPoll": "2026-06-13T07:01:00Z",
-                    "lastExpiryReminderCheck": "2026-06-12T22:00:00Z",
-                }
-            }
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                self.save_sections_with_mocked_permissions(
-                    stale_poller_state,
-                    ["clientSubscriptionState"],
-                    json_path,
-                    db_path,
-                )
+            telegram_settings.save_db_sections(
+                {
+                    "clientSubscriptionState": {
+                        "userUpdateOffset": 90,
+                        "expiryReminders": {},
+                        "lastUserPoll": "2026-06-13T07:01:00Z",
+                        "lastExpiryReminderCheck": "2026-06-12T22:00:00Z",
+                    }
+                },
+                ["clientSubscriptionState"],
+                json_path,
+                db_path=db_path,
+            )
 
             connection = database.open_database(db_path)
             try:
@@ -370,25 +230,19 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
 
     def test_save_state_section_does_not_rewrite_sqlite_subscriptions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "telegram-bot.json"
-            db_path = root / "manager.db"
+            db_path = Path(tmp_dir) / "manager.db"
+            json_path = Path(tmp_dir) / "telegram-bot.json"
             self.make_sqlite_db(db_path)
 
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                self.save_sections_with_mocked_permissions(
-                    {
-                        "clientSubscriptions": {},
-                        "clientSubscriptionState": {"userUpdateOffset": 11, "expiryReminders": {}},
-                    },
-                    ["clientSubscriptionState"],
-                    json_path,
-                    db_path,
-                )
+            telegram_settings.save_db_sections(
+                {
+                    "clientSubscriptions": {},
+                    "clientSubscriptionState": {"userUpdateOffset": 11, "expiryReminders": {}},
+                },
+                ["clientSubscriptionState"],
+                json_path,
+                db_path=db_path,
+            )
 
             connection = database.open_database(db_path)
             try:
@@ -397,6 +251,7 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(len(subscriptions), 1)
             self.assertEqual(subscriptions[0]["chatId"], "999")
+            self.assertFalse(json_path.exists())
 
 
 if __name__ == "__main__":

@@ -69,7 +69,7 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def make_context(self, db: dict, messages: list[str], client_log_dir: Path, manager_db_path: Path):
+    def make_context(self, db: dict, messages: list[str], manager_db_path: Path):
         def save_sections(updated_db, sections):
             db.update(updated_db)
             self.assertEqual(sections, ("geoipState",))
@@ -89,7 +89,6 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
             send_chat_message=lambda *args, **kwargs: None,
             send_message=lambda _db, text, parse_mode=None: messages.append(text),
             bot_name=lambda _db=None: "Bot",
-            client_log_dir=client_log_dir,
             manager_db_path=manager_db_path,
         )
 
@@ -97,8 +96,6 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
-            client_log_dir = root / "activity" / "clients"
-            client_log_dir.mkdir(parents=True)
             self.make_sqlite_db(db_path)
             telegram_db = {
                 "enabled": True,
@@ -110,9 +107,9 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
                 },
             }
             sent_messages: list[str] = []
-            ctx = self.make_context(telegram_db, sent_messages, client_log_dir, db_path)
+            ctx = self.make_context(telegram_db, sent_messages, db_path)
 
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
+            with mock.patch.dict(os.environ, {}, clear=True):
                 result = notifications.notify_geoip(ctx)
 
             self.assertEqual(result, 0)
@@ -126,14 +123,12 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
-            client_log_dir = root / "activity" / "clients"
-            client_log_dir.mkdir(parents=True)
             self.make_sqlite_db(db_path)
             telegram_db = {"enabled": True, "token": "token", "chatId": "1", "geoipState": {"sentIds": []}}
             sent_messages: list[str] = []
-            ctx = self.make_context(telegram_db, sent_messages, client_log_dir, db_path)
+            ctx = self.make_context(telegram_db, sent_messages, db_path)
 
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
+            with mock.patch.dict(os.environ, {}, clear=True):
                 result = notifications.notify_geoip(ctx)
 
             self.assertEqual(result, 0)

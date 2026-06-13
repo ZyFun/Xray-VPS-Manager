@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from xray_vps_manager.activity.constants import (
     ACCESS_RE,
     ADMIN_PORTS,
@@ -231,12 +229,4 @@ def config_clients(config: dict, client_db: dict) -> dict:
             },
         )
     return clients
-
-
-def parse_json_line(line: str) -> dict | None:
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    return event if isinstance(event, dict) else None
 

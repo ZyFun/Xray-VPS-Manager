@@ -19,30 +19,17 @@ from xray_vps_manager.db import database as sqlite_database
 BACKUP_DIR = Path("/root/xray_backups")
 CONFIG_DIR = Path("/usr/local/etc/xray")
 CONFIG_PATH = CONFIG_DIR / "config.json"
-CLIENT_DB_PATH = CONFIG_DIR / "clients.json"
 SERVER_ENV_PATH = CONFIG_DIR / "server.env"
-TRAFFIC_PATH = CONFIG_DIR / "traffic.json"
-ACTIVITY_PATH = CONFIG_DIR / "activity.json"
-ACTIVITY_EXCEPTIONS_PATH = CONFIG_DIR / "activity-exceptions.json"
-TELEGRAM_BOT_PATH = CONFIG_DIR / "telegram-bot.json"
 MANAGER_DB_PATH = CONFIG_DIR / "manager.db"
-ACTIVITY_DIR = CONFIG_DIR / "activity"
 SERVER_ENV_ARCNAME = "usr/local/etc/xray/server.env"
 HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN")
 
 BACKUP_FILES = [
     ("usr/local/etc/xray/config.json", CONFIG_PATH, True),
-    ("usr/local/etc/xray/clients.json", CLIENT_DB_PATH, False),
     (SERVER_ENV_ARCNAME, SERVER_ENV_PATH, True),
-    ("usr/local/etc/xray/traffic.json", TRAFFIC_PATH, False),
-    ("usr/local/etc/xray/activity.json", ACTIVITY_PATH, False),
-    ("usr/local/etc/xray/activity-exceptions.json", ACTIVITY_EXCEPTIONS_PATH, False),
-    ("usr/local/etc/xray/telegram-bot.json", TELEGRAM_BOT_PATH, False),
-    ("usr/local/etc/xray/manager.db", MANAGER_DB_PATH, False),
+    ("usr/local/etc/xray/manager.db", MANAGER_DB_PATH, True),
 ]
-BACKUP_DIRS = [
-    ("usr/local/etc/xray/activity", ACTIVITY_DIR, False),
-]
+BACKUP_DIRS = []
 
 
 def die(message):
@@ -155,8 +142,8 @@ def create_backup(path_only=False, quiet=False, sync=True):
     if sync:
         sync_traffic()
 
-    if not MANAGER_DB_PATH.exists() and not CLIENT_DB_PATH.exists():
-        die(f"Neither {MANAGER_DB_PATH} nor legacy {CLIENT_DB_PATH} exists; refusing to create an incomplete backup.")
+    if not MANAGER_DB_PATH.exists():
+        die(f"{MANAGER_DB_PATH} does not exist; refusing to create an incomplete backup.")
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(BACKUP_DIR, 0o700)
@@ -214,7 +201,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
     elif not quiet:
         print(f"Backup created: {archive}")
         print(f"Size: {format_size(archive.stat().st_size)}")
-        print("Contains: config.json, portable server.env, manager.db, and any available legacy JSON/JSONL rollback files.")
+        print("Contains: config.json, portable server.env, and manager.db.")
         print("Host-specific server.env values such as SERVER_ADDR are not stored; restore keeps the current server values.")
         print("Keep this file private: it contains Reality private keys and client data.")
     return archive

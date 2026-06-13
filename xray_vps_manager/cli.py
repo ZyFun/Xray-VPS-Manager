@@ -21,7 +21,7 @@ def usage() -> None:
     print()
     print(f"Commands: {commands}")
     print()
-    print("Legacy command names remain available: xray-menu, xray-client, xray-telegram, ...")
+    print("Compatibility command names remain available: xray-menu, xray-client, xray-telegram, ...")
 
 
 def main() -> None:

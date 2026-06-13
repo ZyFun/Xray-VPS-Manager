@@ -1,4 +1,4 @@
-"""Traffic JSON storage helpers."""
+"""Traffic storage helpers backed by SQLite."""
 
 from __future__ import annotations
 
@@ -6,16 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from xray_vps_manager.core.json_store import load_json, save_json
-from xray_vps_manager.core.paths import TRAFFIC_PATH
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
     sqlite_read_ready,
-    sqlite_reads_enabled,
-    sqlite_writes_enabled,
 )
 
 
@@ -29,13 +25,12 @@ def default_db() -> dict[str, Any]:
     return {"clients": {}}
 
 
-def load_traffic_db(path: Path = TRAFFIC_PATH) -> dict[str, Any]:
-    db = load_json(path, default_db())
-    return db if isinstance(db, dict) else default_db()
+def load_traffic_db(path: Path | None = None) -> dict[str, Any]:
+    return load_traffic_db_for_read(path)
 
 
 def load_traffic_db_for_read(
-    path: Path = TRAFFIC_PATH,
+    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -43,27 +38,25 @@ def load_traffic_db_for_read(
 
 
 def load_traffic_db_for_read_result(
-    path: Path = TRAFFIC_PATH,
+    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> TrafficDbReadResult:
-    if sqlite_reads_enabled():
-        if not database.database_file_exists(db_path):
-            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
-        connection = None
-        try:
-            connection = database.open_database(db_path)
-            if not sqlite_read_ready(connection):
-                raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
-            return TrafficDbReadResult(load_traffic_db_from_sqlite(connection), "sqlite")
-        except SQLiteReadUnavailable:
-            raise
-        except Exception as exc:
-            raise SQLiteReadUnavailable(f"SQLite reads are enabled but traffic cannot be read: {exc}") from exc
-        finally:
-            if connection is not None:
-                connection.close()
-    return TrafficDbReadResult(load_traffic_db(path), "json")
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return TrafficDbReadResult(load_traffic_db_from_sqlite(connection), "sqlite")
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite traffic cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def load_traffic_db_from_sqlite(connection) -> dict[str, Any]:
@@ -76,14 +69,11 @@ def load_traffic_db_from_sqlite(connection) -> dict[str, Any]:
 
 def save_traffic_db(
     db: dict[str, Any],
-    path: Path = TRAFFIC_PATH,
+    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> None:
-    if sqlite_writes_enabled():
-        write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
-        return
-    save_json(path, db, mode=0o640, group_xray=True)
+    write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
 def traffic_clients(db: dict | None) -> dict:
@@ -116,23 +106,11 @@ def ensure_entry(entries: dict, name: str, email: str) -> dict:
 
 def remove_traffic_clients(
     names: list[str] | tuple[str, ...] | set[str],
-    path: Path = TRAFFIC_PATH,
+    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> bool:
-    if sqlite_writes_enabled():
-        return remove_traffic_clients_from_sqlite_for_write(names, db_path=db_path, strict=True)
-
-    db = load_traffic_db(path)
-    clients = db.setdefault("clients", {})
-    changed = False
-    for name in names:
-        if name in clients:
-            clients.pop(name, None)
-            changed = True
-    if changed:
-        save_traffic_db(db, path)
-    return changed
+    return remove_traffic_clients_from_sqlite_for_write(names, db_path=db_path, strict=True)
 
 
 def write_traffic_db_to_sqlite_for_write(
@@ -141,9 +119,9 @@ def write_traffic_db_to_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+    if not database.database_file_exists(db_path):
         if strict:
-            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+            raise RuntimeError("SQLite manager database is missing")
         return False
 
     connection = None
@@ -151,7 +129,7 @@ def write_traffic_db_to_sqlite_for_write(
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
             if strict:
-                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+                raise RuntimeError("SQLite database is not marked ready")
             return False
 
         entries = traffic_clients(db)
@@ -184,9 +162,9 @@ def remove_traffic_clients_from_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+    if not database.database_file_exists(db_path):
         if strict:
-            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+            raise RuntimeError("SQLite manager database is missing")
         return False
 
     connection = None
@@ -194,7 +172,7 @@ def remove_traffic_clients_from_sqlite_for_write(
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
             if strict:
-                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+                raise RuntimeError("SQLite database is not marked ready")
             return False
         return sqlite_traffic.remove_traffic_clients(connection, names)
     except Exception:

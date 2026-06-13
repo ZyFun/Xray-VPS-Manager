@@ -1,22 +1,15 @@
-"""Activity JSON and JSONL storage helpers."""
+"""Activity storage helpers backed by SQLite."""
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-from xray_vps_manager.activity.constants import (
-    ACTIVITY_DB_PATH,
-    ACTIVITY_DIR,
-    CLIENT_LOG_DIR,
-    EXPORT_DIR,
-)
-from xray_vps_manager.activity.parser import parse_json_line
+from xray_vps_manager.activity.constants import EXPORT_DIR
 from xray_vps_manager.activity.time import parse_time, utc_stamp
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
@@ -24,8 +17,6 @@ from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
     sqlite_read_ready,
-    sqlite_reads_enabled,
-    sqlite_writes_enabled,
 )
 
 
@@ -51,62 +42,34 @@ def chown_xray(path: Path) -> None:
 
 
 def ensure_dirs() -> None:
-    ACTIVITY_DIR.mkdir(parents=True, exist_ok=True)
-    CLIENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    chown_xray(ACTIVITY_DIR)
-    chown_xray(CLIENT_LOG_DIR)
     try:
         shutil.chown(EXPORT_DIR, user="root")
     except PermissionError:
         pass
-    os.chmod(ACTIVITY_DIR, 0o750)
-    os.chmod(CLIENT_LOG_DIR, 0o750)
     os.chmod(EXPORT_DIR, 0o700)
 
 
 def save_activity_db(db: dict, *, db_path: str | Path | None = None) -> None:
-    if sqlite_writes_enabled():
-        write_activity_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
-        return
-    write_json_activity_db(db)
-
-
-def write_json_activity_db(db: dict) -> None:
-    ensure_dirs()
-    tmp = ACTIVITY_DB_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    chown_xray(tmp)
-    os.chmod(tmp, 0o640)
-    tmp.replace(ACTIVITY_DB_PATH)
+    write_activity_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
 def load_activity_db(retention_days: int, enabled: bool, *, db_path: str | Path | None = None) -> dict:
-    if sqlite_reads_enabled():
-        if not database.database_file_exists(db_path):
-            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
-        connection = None
-        try:
-            connection = database.open_database(db_path)
-            if sqlite_read_ready(connection):
-                return load_activity_db_from_sqlite(connection, retention_days, enabled)
-            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
-        except SQLiteReadUnavailable:
-            raise
-        except Exception as exc:
-            raise SQLiteReadUnavailable(f"SQLite reads are enabled but activity state cannot be read: {exc}") from exc
-        finally:
-            if connection is not None:
-                connection.close()
-    db = load_json(ACTIVITY_DB_PATH, {})
-    if not isinstance(db, dict):
-        db = {}
-    db.setdefault("version", 1)
-    db.setdefault("clients", {})
-    db.setdefault("accessLog", {})
-    db["retentionDays"] = retention_days
-    db["enabled"] = enabled
-    return db
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if sqlite_read_ready(connection):
+            return load_activity_db_from_sqlite(connection, retention_days, enabled)
+        raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite activity state cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def load_activity_db_from_sqlite(connection, retention_days: int, enabled: bool) -> dict:
@@ -125,21 +88,8 @@ def load_activity_db_from_sqlite(connection, retention_days: int, enabled: bool)
     return db
 
 
-def safe_client_file(name: str) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9_.@-]+", "_", name).strip("._")
-    return CLIENT_LOG_DIR / f"{safe or 'client'}.jsonl"
-
-
 def append_event(event: dict, *, db_path: str | Path | None = None) -> None:
-    if sqlite_writes_enabled():
-        write_event_to_sqlite_for_write(event, db_path=db_path, strict=True)
-        return
-    ensure_dirs()
-    path = safe_client_file(event["client"])
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-    chown_xray(path)
-    os.chmod(path, 0o640)
+    write_event_to_sqlite_for_write(event, db_path=db_path, strict=True)
 
 
 def update_summary(db: dict, event: dict) -> None:
@@ -187,29 +137,6 @@ def prune_db_summary(db: dict, cutoff: date) -> None:
                 del days[key]
 
 
-def prune_client_log(path: Path, cutoff_dt: datetime) -> int:
-    if not path.exists():
-        return 0
-    kept = []
-    removed = 0
-    for line in path.read_text(errors="replace").splitlines():
-        event = parse_json_line(line)
-        if event is None:
-            removed += 1
-            continue
-        event_time = parse_time(event.get("time"))
-        if event_time and event_time >= cutoff_dt:
-            kept.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
-        else:
-            removed += 1
-    tmp = path.with_suffix(".jsonl.tmp")
-    tmp.write_text("\n".join(kept) + ("\n" if kept else ""))
-    chown_xray(tmp)
-    os.chmod(tmp, 0o640)
-    tmp.replace(path)
-    return removed
-
-
 def prune_activity(
     db: dict,
     retention_days: int,
@@ -225,29 +152,9 @@ def prune_activity(
     cutoff_date = today - timedelta(days=retention_days - 1)
     cutoff_dt = datetime.combine(cutoff_date, datetime.min.time(), tzinfo=timezone.utc)
     prune_db_summary(db, cutoff_date)
-    removed = 0
-    if sqlite_writes_enabled():
-        removed += prune_sqlite_activity_for_write(cutoff_dt, db_path=db_path, strict=True)
-    elif CLIENT_LOG_DIR.exists():
-        for path in CLIENT_LOG_DIR.glob("*.jsonl"):
-            removed += prune_client_log(path, cutoff_dt)
+    removed = prune_sqlite_activity_for_write(cutoff_dt, db_path=db_path, strict=True)
     db["lastPrune"] = utc_stamp()
     return removed
-
-
-def iter_events(name: str, start: date, end: date, time_parser: Callable[[str | None], datetime | None]) -> Iterable[dict]:
-    path = safe_client_file(name)
-    if not path.exists():
-        return
-    start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
-    end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
-    for line in path.read_text(errors="replace").splitlines():
-        event = parse_json_line(line)
-        if event is None:
-            continue
-        event_time = time_parser(event.get("time"))
-        if event_time and start_dt <= event_time < end_dt:
-            yield event
 
 
 def sqlite_date_bounds(start: date, end: date) -> tuple[str, str]:
@@ -264,30 +171,27 @@ def iter_events_for_read(
     *,
     db_path: str | Path | None = None,
 ) -> Iterable[dict]:
-    if sqlite_reads_enabled():
-        if not database.database_file_exists(db_path):
-            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
-        connection = None
-        try:
-            connection = database.open_database(db_path)
-            if sqlite_read_ready(connection):
-                start_key, end_key = sqlite_date_bounds(start, end)
-                yield from sqlite_activity.iter_events(
-                    connection,
-                    client_name=name,
-                    start=start_key,
-                    end=end_key,
-                )
-                return
-            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
-        except SQLiteReadUnavailable:
-            raise
-        except Exception as exc:
-            raise SQLiteReadUnavailable(f"SQLite reads are enabled but activity events cannot be read: {exc}") from exc
-        finally:
-            if connection is not None:
-                connection.close()
-    yield from iter_events(name, start, end, time_parser)
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        start_key, end_key = sqlite_date_bounds(start, end)
+        yield from sqlite_activity.iter_events(
+            connection,
+            client_name=name,
+            start=start_key,
+            end=end_key,
+        )
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite activity events cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def event_client_names_for_read(
@@ -295,16 +199,14 @@ def event_client_names_for_read(
     end: date | None = None,
     *,
     db_path: str | Path | None = None,
-) -> list[str] | None:
-    if not sqlite_reads_enabled():
-        return None
+) -> list[str]:
     if not database.database_file_exists(db_path):
-        raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
     connection = None
     try:
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
-            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
         start_key = None
         end_key = None
         if start is not None and end is not None:
@@ -313,7 +215,7 @@ def event_client_names_for_read(
     except SQLiteReadUnavailable:
         raise
     except Exception as exc:
-        raise SQLiteReadUnavailable(f"SQLite reads are enabled but activity clients cannot be read: {exc}") from exc
+        raise SQLiteReadUnavailable(f"SQLite activity clients cannot be read: {exc}") from exc
     finally:
         if connection is not None:
             connection.close()
@@ -325,16 +227,14 @@ def geoip_events_after_for_read(
     after_time: str | None = None,
     limit: int = 1000,
     db_path: str | Path | None = None,
-) -> tuple[list[dict], int] | None:
-    if not sqlite_reads_enabled():
-        return None
+) -> tuple[list[dict], int]:
     if not database.database_file_exists(db_path):
-        raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
     connection = None
     try:
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
-            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
         if after_id <= 0 and not after_time:
             return [], sqlite_activity.max_event_id(connection)
         events = list(
@@ -351,7 +251,7 @@ def geoip_events_after_for_read(
     except SQLiteReadUnavailable:
         raise
     except Exception as exc:
-        raise SQLiteReadUnavailable(f"SQLite reads are enabled but GeoIP activity events cannot be read: {exc}") from exc
+        raise SQLiteReadUnavailable(f"SQLite GeoIP activity events cannot be read: {exc}") from exc
     finally:
         if connection is not None:
             connection.close()
@@ -363,9 +263,9 @@ def write_event_to_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+    if not database.database_file_exists(db_path):
         if strict:
-            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+            raise RuntimeError("SQLite manager database is missing")
         return False
 
     connection = None
@@ -373,7 +273,7 @@ def write_event_to_sqlite_for_write(
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
             if strict:
-                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+                raise RuntimeError("SQLite database is not marked ready")
             return False
         client_name = str(event.get("client") or event.get("client_name") or "").strip()
         if client_name not in sqlite_clients.list_clients(connection):
@@ -397,9 +297,9 @@ def write_activity_db_to_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+    if not database.database_file_exists(db_path):
         if strict:
-            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+            raise RuntimeError("SQLite manager database is missing")
         return False
 
     connection = None
@@ -407,7 +307,7 @@ def write_activity_db_to_sqlite_for_write(
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
             if strict:
-                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+                raise RuntimeError("SQLite database is not marked ready")
             return False
         clients = db.get("clients") if isinstance(db.get("clients"), dict) else {}
         metadata = {
@@ -437,9 +337,9 @@ def prune_sqlite_activity_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> int:
-    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+    if not database.database_file_exists(db_path):
         if strict:
-            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+            raise RuntimeError("SQLite manager database is missing")
         return 0
 
     connection = None
@@ -447,7 +347,7 @@ def prune_sqlite_activity_for_write(
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
             if strict:
-                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+                raise RuntimeError("SQLite database is not marked ready")
             return 0
         cutoff = cutoff_dt.isoformat().replace("+00:00", "Z")
         return sqlite_activity.delete_events_before(connection, cutoff)

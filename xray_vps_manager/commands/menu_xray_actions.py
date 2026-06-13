@@ -212,19 +212,6 @@ def sqlite_status(call: CommandRunner) -> None:
     call(["xray-vps-manager", "sqlite", "status"])
 
 
-def sqlite_validate_cutover(call: CommandRunner) -> None:
-    call(["xray-vps-manager", "sqlite", "validate-cutover"])
-
-
-def sqlite_cleanup_legacy(call: CommandRunner, confirm: ConfirmCallback) -> None:
-    print("Будет выполнена проверка SQLite, создан свежий бэкап и удалены legacy JSON/JSONL-файлы.")
-    print("Безопасный dry-run можно выполнить командой: xray-vps-manager sqlite cleanup-legacy")
-    if confirm("Удалить legacy JSON/JSONL после бэкапа"):
-        call(["xray-vps-manager", "sqlite", "cleanup-legacy", "--yes"])
-    else:
-        print("Очистка legacy SQLite отменена.")
-
-
 def warp_status(call: CommandRunner) -> None:
     call(["xray-warp", "status"])
 

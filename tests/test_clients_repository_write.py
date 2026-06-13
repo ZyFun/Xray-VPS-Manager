@@ -1,40 +1,36 @@
 from pathlib import Path
-import json
-import os
 import tempfile
 import unittest
-from unittest import mock
 
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import settings as sqlite_settings
-from xray_vps_manager.db.storage import sqlite_writes_enabled
 
 
 def client_db() -> dict:
     return {
         "connections": {
-            "json-connection": {
-                "tag": "json-connection",
-                "name": "json",
+            "vless-reality": {
+                "tag": "vless-reality",
+                "name": "main",
                 "created": "2026-06-12T08:00:00Z",
                 "port": 443,
-                "sni": "json.example.com",
-                "dest": "json.example.com:443",
+                "sni": "example.com",
+                "dest": "example.com:443",
                 "fingerprint": "chrome",
             }
         },
         "clients": {
-            "json_client": {
+            "alice": {
                 "id": "00000000-0000-0000-0000-000000000001",
                 "created": "2026-06-12T08:01:00Z",
                 "enabled": True,
-                "connection": "json-connection",
+                "connection": "vless-reality",
                 "client": {
                     "id": "00000000-0000-0000-0000-000000000001",
-                    "email": "json_client|created=2026-06-12T08:01:00Z",
+                    "email": "alice|created=2026-06-12T08:01:00Z",
                 },
                 "paymentType": "paid",
             }
@@ -42,7 +38,7 @@ def client_db() -> dict:
     }
 
 
-class ClientRepositoryWriteSwitchTests(unittest.TestCase):
+class ClientRepositoryWriteTests(unittest.TestCase):
     def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
         connection = database.open_database(path)
         try:
@@ -78,47 +74,13 @@ class ClientRepositoryWriteSwitchTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def read_json_file(self, path: Path) -> dict:
-        return json.loads(path.read_text())
-
-    def write_json_file(self, path: Path, db: dict) -> None:
-        path.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-
-    def save_with_mocked_permissions(self, db: dict, json_path: Path, db_path: Path) -> None:
-        with mock.patch.object(client_repository.shutil, "chown"), mock.patch.object(client_repository.os, "chmod"):
-            client_repository.save_db(db, json_path, db_path=db_path)
-
-    def test_sqlite_writes_are_disabled_by_default(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(sqlite_writes_enabled())
-
-    def test_save_writes_json_only_when_sqlite_write_flag_is_not_enabled(self) -> None:
+    def test_save_writes_clients_and_connections_to_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "clients.json"
-            db_path = root / "manager.db"
+            db_path = Path(tmp_dir) / "manager.db"
+            json_path = Path(tmp_dir) / "clients.json"
             self.make_sqlite_db(db_path)
 
-            with mock.patch.dict(os.environ, {}, clear=True):
-                self.save_with_mocked_permissions(client_db(), json_path, db_path)
-
-            self.assertIn("json_client", self.read_json_file(json_path)["clients"])
-            connection = database.open_database(db_path)
-            try:
-                self.assertIn("old_client", sqlite_clients.list_clients(connection))
-                self.assertNotIn("json_client", sqlite_clients.list_clients(connection))
-            finally:
-                connection.close()
-
-    def test_save_writes_clients_and_connections_to_sqlite_when_write_flag_is_enabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "clients.json"
-            db_path = root / "manager.db"
-            self.make_sqlite_db(db_path)
-
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True):
-                self.save_with_mocked_permissions(client_db(), json_path, db_path)
+            client_repository.save_db(client_db(), json_path, db_path=db_path)
 
             connection = database.open_database(db_path)
             try:
@@ -126,95 +88,32 @@ class ClientRepositoryWriteSwitchTests(unittest.TestCase):
                 connections = sqlite_connections.list_connections(connection)
             finally:
                 connection.close()
-            self.assertEqual(set(clients), {"json_client"})
-            self.assertEqual(set(connections), {"json-connection"})
-            self.assertEqual(clients["json_client"]["paymentType"], "paid")
-            self.assertEqual(connections["json-connection"]["fingerprint"], "chrome")
+            self.assertEqual(set(clients), {"alice"})
+            self.assertEqual(set(connections), {"vless-reality"})
+            self.assertEqual(clients["alice"]["paymentType"], "paid")
+            self.assertEqual(connections["vless-reality"]["fingerprint"], "chrome")
             self.assertFalse(json_path.exists())
 
-    def test_save_uses_sqlite_as_primary_when_read_and_write_flags_are_enabled(self) -> None:
+    def test_save_fails_when_sqlite_database_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "clients.json"
-            db_path = root / "manager.db"
-            self.make_sqlite_db(db_path)
-            self.write_json_file(
-                json_path,
-                {
-                    "connections": {},
-                    "clients": {
-                        "rollback_client": {
-                            "id": "00000000-0000-0000-0000-000000000099",
-                            "created": "2026-06-12T06:00:00Z",
-                            "enabled": True,
-                            "client": {
-                                "id": "00000000-0000-0000-0000-000000000099",
-                                "email": "rollback_client",
-                            },
-                        }
-                    },
-                },
-            )
+            db_path = Path(tmp_dir) / "missing.db"
+            json_path = Path(tmp_dir) / "clients.json"
 
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                self.save_with_mocked_permissions(client_db(), json_path, db_path)
-
-            connection = database.open_database(db_path)
-            try:
-                clients = sqlite_clients.list_clients(connection)
-                connections = sqlite_connections.list_connections(connection)
-            finally:
-                connection.close()
-            self.assertEqual(set(clients), {"json_client"})
-            self.assertEqual(set(connections), {"json-connection"})
-            self.assertEqual(set(self.read_json_file(json_path)["clients"]), {"rollback_client"})
-
-    def test_save_fails_when_sqlite_write_database_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "clients.json"
-            missing_db_path = root / "missing.db"
-
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True):
-                with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
-                    self.save_with_mocked_permissions(client_db(), json_path, missing_db_path)
+            with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
+                client_repository.save_db(client_db(), json_path, db_path=db_path)
 
             self.assertFalse(json_path.exists())
-            self.assertFalse(missing_db_path.exists())
+            self.assertFalse(db_path.exists())
 
-    def test_save_fails_when_sqlite_primary_database_is_missing(self) -> None:
+    def test_save_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "clients.json"
-            missing_db_path = root / "missing.db"
-
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
-                    self.save_with_mocked_permissions(client_db(), json_path, missing_db_path)
-
-            self.assertFalse(json_path.exists())
-            self.assertFalse(missing_db_path.exists())
-
-    def test_save_fails_when_sqlite_write_import_is_not_marked_ready(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "clients.json"
-            db_path = root / "manager.db"
+            db_path = Path(tmp_dir) / "manager.db"
+            json_path = Path(tmp_dir) / "clients.json"
             self.make_sqlite_db(db_path, ready=False)
 
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True):
-                with self.assertRaisesRegex(RuntimeError, "JSON import is not marked ready"):
-                    self.save_with_mocked_permissions(client_db(), json_path, db_path)
+            with self.assertRaisesRegex(RuntimeError, "database is not marked ready"):
+                client_repository.save_db(client_db(), json_path, db_path=db_path)
 
-            self.assertFalse(json_path.exists())
             connection = database.open_database(db_path)
             try:
                 clients = sqlite_clients.list_clients(connection)
@@ -223,31 +122,7 @@ class ClientRepositoryWriteSwitchTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(set(clients), {"old_client"})
             self.assertEqual(set(connections), {"old-connection"})
-
-    def test_save_fails_when_sqlite_primary_import_is_not_marked_ready(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            json_path = root / "clients.json"
-            db_path = root / "manager.db"
-            self.make_sqlite_db(db_path, ready=False)
-
-            with mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "JSON import is not marked ready"):
-                    self.save_with_mocked_permissions(client_db(), json_path, db_path)
-
             self.assertFalse(json_path.exists())
-            connection = database.open_database(db_path)
-            try:
-                clients = sqlite_clients.list_clients(connection)
-                connections = sqlite_connections.list_connections(connection)
-            finally:
-                connection.close()
-            self.assertEqual(set(clients), {"old_client"})
-            self.assertEqual(set(connections), {"old-connection"})
 
 
 if __name__ == "__main__":

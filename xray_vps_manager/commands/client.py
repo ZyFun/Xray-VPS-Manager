@@ -27,9 +27,7 @@ from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.xray import config as xray_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
-CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
-TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
 STATS_SERVER = "127.0.0.1:10085"
 TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 XRAY_TELEGRAM = Path("/usr/local/sbin/xray-telegram")
@@ -153,20 +151,20 @@ def save_config(config):
 
 def load_db():
     try:
-        return client_repository.load_db_sql(CLIENT_DB_PATH)
+        return client_repository.load_db_sql()
     except ValueError as exc:
         die(str(exc))
 
 
 def load_db_readonly():
     try:
-        return client_repository.load_db_sql_result(CLIENT_DB_PATH)
+        return client_repository.load_db_sql_result()
     except ValueError as exc:
         die(str(exc))
 
 
 def save_db(db):
-    client_repository.save_db(db, CLIENT_DB_PATH)
+    client_repository.save_db(db)
 
 
 def restart_xray_with_config_test():
@@ -350,15 +348,15 @@ def print_payment_summary():
 
 
 def load_traffic_db():
-    return traffic_repository.load_traffic_db_for_read(TRAFFIC_PATH)
+    return traffic_repository.load_traffic_db_for_read()
 
 
 def load_traffic_db_readonly():
-    return traffic_repository.load_traffic_db_for_read(TRAFFIC_PATH)
+    return traffic_repository.load_traffic_db_for_read()
 
 
 def remove_traffic_clients(names):
-    return traffic_repository.remove_traffic_clients(names, TRAFFIC_PATH)
+    return traffic_repository.remove_traffic_clients(names)
 
 
 def format_traffic(value):

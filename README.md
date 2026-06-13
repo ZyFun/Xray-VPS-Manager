@@ -73,7 +73,7 @@ bash install.sh
 Используется последняя стабильная версия. Если доступен digest-файл, установщик проверяет SHA256.
 Если архив не скачался после нескольких попыток, интерактивная установка покажет, сколько retry осталось, а затем предложит повторить попытку, ввести свой URL или использовать локальный zip-архив Xray.
 После копирования папки установщик очищает служебные `._*` файлы, которые могут появиться при переносе проекта с некоторых desktop-систем.
-Новая установка сразу создаёт `/usr/local/etc/xray/manager.db` и включает SQLite-чтение/запись. Старые `clients.json`, `traffic.json`, `activity.json`, `activity-exceptions.json`, `telegram-bot.json` и прежняя `manager.db`, если они были на сервере, переименовываются в `.bak.<timestamp>` и не используются как runtime-база.
+Новая установка сразу создаёт `/usr/local/etc/xray/manager.db`. Если на сервере уже была прежняя `manager.db`, установщик сохраняет её как `.bak.<timestamp>` и создаёт новую базу.
 
 Перед установкой Xray можно изменить базовые параметры:
 
@@ -282,8 +282,6 @@ xray-menu
 7 Обновить geoip/geosite из Loyalsoldier
 8 Обновить geoip.dat из v2fly
 9 SQLite: статус базы
-10 SQLite: проверить cutover
-11 SQLite: удалить legacy JSON/JSONL
 
 Клиенты -> Трафик -> Просмотр трафика:
 1 За день по часам
@@ -562,7 +560,7 @@ xray-activity disable
 xray-activity status
 ```
 
-В статусе строка `Manager DB` показывает текущую SQLite-базу менеджера и её размер. Старые JSON/JSONL-файлы журнала активности отображаются как `Legacy activity DB` и `Legacy client logs`.
+В статусе строка `Manager DB` показывает текущую SQLite-базу менеджера и её размер.
 
 Синхронизация выполняется раз в минуту тем же `xray-traffic-sync.timer`, а вручную её можно запустить так:
 
@@ -599,7 +597,7 @@ xray-activity geoip-risks 7
 
 `xray-activity geoip-risks` выводит отдельную таблицу для каждого клиента, у которого были события `xray-geoip:CODE`: время события в выбранном часовом поясе менеджера, IP или домен, порт, регион и outbound. То же доступно через меню `Клиенты` -> `Журнал активности` -> `Подозрительная активность` -> `GeoIP-риски подробно`.
 
-Исключения suspicious позволяют скрыть известные безопасные домены, IP или сети из отчётов suspicious и подробных GeoIP-рисков. При включённом SQLite события читаются из `manager.db`; старые JSONL-файлы остаются только legacy/rollback-данными. В клиентском отчёте совпадения с исключениями считаются в колонке `EXCEPTIONS`.
+Исключения suspicious позволяют скрыть известные безопасные домены, IP или сети из отчётов suspicious и подробных GeoIP-рисков. События и исключения читаются из `manager.db`. В клиентском отчёте совпадения с исключениями считаются в колонке `EXCEPTIONS`.
 
 Показать исключения:
 
@@ -699,7 +697,7 @@ xray-activity export-delete-all --yes
 xray-activity download-command /root/xray_activity_exports/ИМЯ_АРХИВА.tar.gz root@SERVER_HOST ACTIVITY_EXPORT_DESTINATION
 ```
 
-При включённом SQLite детальные события журнала активности хранятся в `/usr/local/etc/xray/manager.db`. Старые персональные JSONL-журналы клиентов в `/usr/local/etc/xray/activity/clients` и сводная база `/usr/local/etc/xray/activity.json` остаются legacy/rollback-данными до финальной очистки. Срок хранения детальных событий по умолчанию 365 дней, после чего старые записи удаляются автоматически. Накопительная статистика трафика также читается из SQLite, если включены SQLite-флаги.
+Детальные события журнала активности хранятся в `/usr/local/etc/xray/manager.db`. Срок хранения детальных событий по умолчанию 365 дней, после чего старые записи удаляются автоматически. Накопительная статистика трафика также хранится в `manager.db`.
 
 Показать текущий срок хранения:
 
@@ -1222,9 +1220,8 @@ xray-update --rollback ИМЯ_БЭКАПА
 xray-test
 ```
 
-`xray-test` проверяет Xray, config.json, все Reality-подключения и локальные порты, Stats API, SQLite-базу менеджера, доступные legacy JSON-файлы, `server.env`, таймзону, helper-скрипты, timers, сервис сбора трафика, torrent-правило и каскадную конфигурацию.
+`xray-test` проверяет Xray, config.json, все Reality-подключения и локальные порты, Stats API, SQLite-базу менеджера, `server.env`, таймзону, helper-скрипты, timers, сервис сбора трафика, torrent-правило и каскадную конфигурацию.
 При проверке установленного Python-пакета служебные `._*` файлы не считаются исходниками менеджера.
-На старых legacy-установках, если в `traffic.json` найдены строки статистики по клиентам, которых уже нет в `clients.json`, интерактивный запуск предложит удалить эти устаревшие строки в конце проверки.
 Глубокий сетевой тест каскада остаётся отдельной командой `xray-set-cascade --test`, потому что он временно меняет конфиг и перезапускает Xray.
 
 Посмотреть статус Xray:
@@ -1275,12 +1272,6 @@ systemctl status xray-client-expire.timer --no-pager
 /usr/local/etc/xray/config.json          основной конфиг Xray
 /usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, Telegram и настроек оплаты
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
-/usr/local/etc/xray/clients.json         legacy/rollback база клиентов, если осталась после старой установки
-/usr/local/etc/xray/traffic.json         legacy/rollback статистика, если осталась после старой установки
-/usr/local/etc/xray/activity.json        legacy/rollback сводка активности, если осталась после старой установки
-/usr/local/etc/xray/activity-exceptions.json legacy/rollback исключения suspicious, если остались после старой установки
-/usr/local/etc/xray/telegram-bot.json    legacy/rollback настройки Telegram-бота, если остались после старой установки
-/usr/local/etc/xray/activity             legacy/rollback JSONL-журналы активности клиентов, если остались после старой установки
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /usr/local/sbin/xray-client              управление клиентами
 /usr/local/sbin/xray-menu                интерактивное меню
@@ -1339,15 +1330,7 @@ xray-backup create
 /usr/local/etc/xray/config.json
 /usr/local/etc/xray/server.env
 /usr/local/etc/xray/manager.db
-/usr/local/etc/xray/clients.json
-/usr/local/etc/xray/traffic.json
-/usr/local/etc/xray/activity.json
-/usr/local/etc/xray/activity-exceptions.json
-/usr/local/etc/xray/telegram-bot.json
-/usr/local/etc/xray/activity
 ```
-
-Для новых SQLite-first установок обязательная база данных - `manager.db`. Остальные JSON/JSONL-файлы добавляются в архив только если они ещё существуют как legacy/rollback-данные.
 
 Архивы хранятся на сервере в `/root/xray_backups`.
 Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
@@ -1405,56 +1388,18 @@ SQLite-база менеджера хранится в:
 /usr/local/etc/xray/manager.db
 ```
 
-`install.sh` создаёт эту базу сразу и включает SQLite-чтение/запись в `server.env`. Legacy JSON/JSONL-файлы больше не являются runtime-базой и нужны только как временные rollback-данные до cleanup.
+`install.sh` создаёт эту базу сразу. Клиенты, Reality-подключения, трафик, журнал активности, исключения suspicious, Telegram-настройки, подписки и настройки оплаты хранятся в `manager.db`.
 
-Проверить состояние базы и флаги чтения/записи:
+Проверить состояние базы:
 
 ```bash
 xray-vps-manager sqlite status
 ```
 
-Флаги SQLite:
-
-```bash
-xray-vps-manager sqlite enable-reads
-xray-vps-manager sqlite enable-writes
-xray-vps-manager sqlite disable-reads
-xray-vps-manager sqlite disable-writes
-```
-
-`enable` включает оба флага, `disable` отключает оба:
-
-```bash
-xray-vps-manager sqlite enable
-xray-vps-manager sqlite disable
-```
-
-Если включён флаг записи SQLite, изменения клиентов, Reality-подключений, трафика, Telegram-настроек, подписок и журнала активности пишутся в SQLite как основной источник. Менеджер не делает тихий fallback на старый JSON при включённых SQLite-флагах: если `manager.db` отсутствует, не готова или повреждена, команда завершится явной ошибкой.
-
-Проверить, что база готова, оба SQLite-флага включены, read-layer клиентов, трафика, Telegram и журнала активности использует SQLite, runtime-сценарии чтения данных проходят, а в основных связях нет осиротевших строк:
-
-```bash
-xray-vps-manager sqlite validate-cutover
-```
-
-После проверки можно посмотреть legacy JSON/JSONL-файлы, которые больше не используются как runtime-база:
-
-```bash
-xray-vps-manager sqlite cleanup-legacy
-```
-
-Без `--yes` команда ничего не удаляет. Для удаления она сначала проверит текущий SQLite cutover, создаст свежий backup и только после этого удалит найденные `clients.json`, `traffic.json`, `activity.json`, `activity-exceptions.json`, `telegram-bot.json` и старые `activity/clients/*.jsonl`:
-
-```bash
-xray-vps-manager sqlite cleanup-legacy --yes
-```
-
-Эти действия также доступны через меню `Настройки Xray` -> `Обновление Xray`:
+Эта команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check`, готовность SQLite и количество строк в основных таблицах. То же доступно через меню `Настройки Xray` -> `Обновление Xray`:
 
 ```text
 SQLite: статус базы
-SQLite: проверить cutover
-SQLite: удалить legacy JSON/JSONL
 ```
 
 ## Бэкапы

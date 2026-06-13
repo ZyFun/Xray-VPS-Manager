@@ -3,22 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
-import os
-import shutil
 from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.clients.payments import normalize_payment_type
-from xray_vps_manager.core.paths import CLIENT_DB_PATH
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
     sqlite_read_ready,
-    sqlite_reads_enabled,
-    sqlite_writes_enabled,
 )
 
 
@@ -43,37 +37,22 @@ def normalize_client_defaults(db: dict[str, Any]) -> dict[str, Any]:
     return db
 
 
-def load_db(path: Path = CLIENT_DB_PATH) -> dict[str, Any]:
-    if path.exists():
-        db = json.loads(path.read_text())
-    else:
-        db = {"clients": {}}
-    return normalize_client_defaults(db)
+def load_db(path: Path | None = None, *, db_path: str | Path | None = None) -> dict[str, Any]:
+    return load_db_sql(path, db_path=db_path)
 
 
 def save_db(
     db: dict[str, Any],
-    path: Path = CLIENT_DB_PATH,
+    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> None:
     db = normalize_client_defaults(db)
-    if sqlite_writes_enabled():
-        write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
-        return
-    write_json_db(db, path)
-
-
-def write_json_db(db: dict[str, Any], path: Path = CLIENT_DB_PATH) -> None:
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(path)
+    write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
 def load_db_sql(
-    path: Path = CLIENT_DB_PATH,
+    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -81,27 +60,25 @@ def load_db_sql(
 
 
 def load_db_sql_result(
-    path: Path = CLIENT_DB_PATH,
+    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> ClientDbReadResult:
-    if sqlite_reads_enabled():
-        if not database.database_file_exists(db_path):
-            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
-        connection = None
-        try:
-            connection = database.open_database(db_path)
-            if not sqlite_read_ready(connection):
-                raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
-            return ClientDbReadResult(load_db_from_sqlite(connection), "sqlite")
-        except SQLiteReadUnavailable:
-            raise
-        except Exception as exc:
-            raise SQLiteReadUnavailable(f"SQLite reads are enabled but clients cannot be read: {exc}") from exc
-        finally:
-            if connection is not None:
-                connection.close()
-    return ClientDbReadResult(load_db(path), "json")
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return ClientDbReadResult(load_db_from_sqlite(connection), "sqlite")
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite clients cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def load_db_from_sqlite(connection) -> dict[str, Any]:
@@ -119,9 +96,9 @@ def write_db_to_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+    if not database.database_file_exists(db_path):
         if strict:
-            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+            raise RuntimeError("SQLite manager database is missing")
         return False
 
     connection = None
@@ -129,7 +106,7 @@ def write_db_to_sqlite_for_write(
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
             if strict:
-                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+                raise RuntimeError("SQLite database is not marked ready")
             return False
 
         connections = db_connections(db)

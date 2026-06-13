@@ -6,14 +6,7 @@ from pathlib import Path
 
 CONFIG_DIR = Path("/usr/local/etc/xray")
 CONFIG_PATH = CONFIG_DIR / "config.json"
-CLIENT_DB_PATH = CONFIG_DIR / "clients.json"
 SERVER_ENV_PATH = CONFIG_DIR / "server.env"
-TRAFFIC_PATH = CONFIG_DIR / "traffic.json"
-ACTIVITY_PATH = CONFIG_DIR / "activity.json"
-ACTIVITY_EXCEPTIONS_PATH = CONFIG_DIR / "activity-exceptions.json"
-TELEGRAM_DB_PATH = CONFIG_DIR / "telegram-bot.json"
-ACTIVITY_DIR = CONFIG_DIR / "activity"
-CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
 
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")

@@ -20,12 +20,8 @@ from xray_vps_manager.telegram import setup as telegram_setup
 from xray_vps_manager.telegram import settings as telegram_settings
 from xray_vps_manager.telegram import subscriptions as telegram_subscriptions
 
-CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
-TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
-TELEGRAM_DB_PATH = Path("/usr/local/etc/xray/telegram-bot.json")
-ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
-CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
+MANAGER_DB_PATH = Path("/usr/local/etc/xray/manager.db")
 XRAY_CLIENT = Path("/usr/local/sbin/xray-client")
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 DEFAULT_SERVER_NAME = "Xray"
@@ -76,24 +72,20 @@ def parse_time(value):
     return parsed.astimezone(timezone.utc)
 
 
-def load_json(path, default):
-    return telegram_settings.load_json(path, default)
-
-
 def load_db():
-    return telegram_settings.load_db_sql(TELEGRAM_DB_PATH)
+    return telegram_settings.load_db_sql()
 
 
 def load_db_readonly():
-    return telegram_settings.load_db_sql(TELEGRAM_DB_PATH)
+    return telegram_settings.load_db_sql()
 
 
 def save_db(db):
-    telegram_settings.save_db(db, TELEGRAM_DB_PATH)
+    telegram_settings.save_db(db)
 
 
 def save_db_sections(db, sections):
-    telegram_settings.save_db_sections(db, sections, TELEGRAM_DB_PATH)
+    telegram_settings.save_db_sections(db, sections)
 
 
 def mask_token(token):
@@ -139,11 +131,11 @@ def format_event_time(value):
 
 
 def load_client_db():
-    return client_repository.load_db_sql(CLIENT_DB_PATH)
+    return client_repository.load_db_sql()
 
 
 def load_traffic_db():
-    return traffic_repository.load_traffic_db_for_read(TRAFFIC_PATH)
+    return traffic_repository.load_traffic_db_for_read()
 
 
 def set_route_mode(mode):
@@ -184,7 +176,6 @@ def notification_context():
         send_chat_message=send_chat_message,
         send_message=send_message,
         bot_name=bot_name,
-        client_log_dir=CLIENT_LOG_DIR,
     )
 
 
@@ -390,7 +381,7 @@ def status():
         ("Payment rounding", telegram_payments.payment_rounding_label(db)),
         ("Payment details", telegram_payments.payment_transfer_label(db)),
         ("Client subscriptions", str(len(subscriptions))),
-        ("Config", str(TELEGRAM_DB_PATH)),
+        ("Manager DB", str(MANAGER_DB_PATH)),
         ("Last GeoIP notification", db.get("geoipState", {}).get("lastGeoipNotification") or db.get("lastGeoipNotification") or "never"),
         ("Last user poll", subscription_state.get("lastUserPoll") or "never"),
         ("Last expiry reminder", subscription_state.get("lastExpiryReminder") or "never"),

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.activity import exceptions as activity_exceptions
@@ -41,7 +39,6 @@ class NotificationContext:
     send_chat_message: Callable[..., Any]
     send_message: Callable[..., Any]
     bot_name: Callable[[dict | None], str]
-    client_log_dir: Path
     manager_db_path: Path | None = None
 
 
@@ -435,52 +432,15 @@ def iter_new_sqlite_events(ctx: NotificationContext, db, state):
         after_time=after_time,
         db_path=ctx.manager_db_path,
     )
-    if result is None:
-        return None
     events, last_id = result
     state["sqliteLastEventId"] = int(last_id or after_id or 0)
     state["updated"] = ctx.utc_stamp()
     return events
 
 
-def iter_new_jsonl_events(ctx: NotificationContext, state):
-    files = state.setdefault("files", {})
-    if not ctx.client_log_dir.exists():
-        return []
-    events = []
-    for path in sorted(ctx.client_log_dir.glob("*.jsonl")):
-        key = str(path)
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        item = files.get(key, {})
-        offset = int(item.get("offset", 0) or 0)
-        if item.get("inode") != stat.st_ino or stat.st_size < offset:
-            offset = 0
-        try:
-            with path.open("rb") as handle:
-                handle.seek(offset)
-                data = handle.read()
-                files[key] = {"inode": stat.st_ino, "offset": handle.tell()}
-        except OSError:
-            continue
-        for line in data.decode("utf-8", errors="replace").splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            events.append(event)
-    state["updated"] = ctx.utc_stamp()
-    return events
-
-
 def iter_new_events(ctx: NotificationContext, db):
     state = db.setdefault("geoipState", {})
-    sqlite_events = iter_new_sqlite_events(ctx, db, state)
-    if sqlite_events is not None:
-        return sqlite_events
-    return iter_new_jsonl_events(ctx, state)
+    return iter_new_sqlite_events(ctx, db, state)
 
 
 def build_geoip_message(ctx: NotificationContext, events):
@@ -540,7 +500,7 @@ def notify_geoip(ctx: NotificationContext, quiet=False):
     state = db.setdefault("geoipState", {})
     sent_ids = list(state.get("sentIds", []))[-500:]
     sent_set = set(sent_ids)
-    exceptions = activity_exceptions.exception_items()
+    exceptions = activity_exceptions.exception_items(db_path=ctx.manager_db_path)
     candidates = []
     for event in iter_new_events(ctx, db):
         if not geoip_regions(event):

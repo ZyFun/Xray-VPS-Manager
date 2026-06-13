@@ -20,7 +20,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-13 10:55 UTC"
+MENU_UPDATED = "2026-06-13 11:58 UTC"
 
 
 def die(message):
@@ -167,8 +167,6 @@ def update_menu_actions():
         ("7", "Обновить geoip/geosite из Loyalsoldier"),
         ("8", "Обновить geoip.dat из v2fly"),
         ("9", "SQLite: статус базы"),
-        ("10", "SQLite: проверить cutover"),
-        ("11", "SQLite: удалить legacy JSON/JSONL"),
         ("0", "Назад"),
     ]
 
@@ -421,8 +419,6 @@ def update_menu_handlers():
         "7": ("Обновить geoip/geosite из Loyalsoldier", lambda: menu_xray_actions.update_assets(call, "loyalsoldier")),
         "8": ("Обновить geoip.dat из v2fly", lambda: menu_xray_actions.update_assets(call, "v2fly")),
         "9": ("SQLite: статус базы", lambda: menu_xray_actions.sqlite_status(call)),
-        "10": ("SQLite: проверить cutover", lambda: menu_xray_actions.sqlite_validate_cutover(call)),
-        "11": ("SQLite: удалить legacy JSON/JSONL", lambda: menu_xray_actions.sqlite_cleanup_legacy(call, confirm)),
     }
 
 

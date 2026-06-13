@@ -1,1 +1,1 @@
-"""Command modules for legacy-compatible entrypoints."""
+"""Command modules for compatibility entrypoints."""

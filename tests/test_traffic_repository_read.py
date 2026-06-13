@@ -1,9 +1,6 @@
 from pathlib import Path
-import json
-import os
 import tempfile
 import unittest
-from unittest import mock
 
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
@@ -14,27 +11,7 @@ from xray_vps_manager.db.storage import SQLiteReadUnavailable
 from xray_vps_manager.traffic import repository as traffic_repository
 
 
-def write_json(path: Path, value: dict) -> None:
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-
-
-class TrafficRepositoryReadSwitchTests(unittest.TestCase):
-    def make_json_db(self, path: Path) -> None:
-        write_json(
-            path,
-            {
-                "clients": {
-                    "json_client": {
-                        "email": "json_client|created=2026-06-12T08:00:00Z",
-                        "incoming": 100,
-                        "outgoing": 200,
-                        "last": {"uplink": 100, "downlink": 200},
-                        "history": {"2026-06-12": {"08": {"incoming": 100, "outgoing": 200}}},
-                    }
-                }
-            },
-        )
-
+class TrafficRepositoryReadTests(unittest.TestCase):
     def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
         connection = database.open_database(path)
         try:
@@ -88,60 +65,35 @@ class TrafficRepositoryReadSwitchTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_read_uses_json_when_sqlite_flag_is_not_enabled(self) -> None:
+    def test_read_uses_sqlite_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            json_path = Path(tmp_dir) / "traffic.json"
             db_path = Path(tmp_dir) / "manager.db"
-            self.make_json_db(json_path)
             self.make_sqlite_db(db_path)
 
-            with mock.patch.dict(os.environ, {}, clear=True):
-                result = traffic_repository.load_traffic_db_for_read_result(json_path, db_path=db_path)
-
-            self.assertEqual(result.source, "json")
-            self.assertIn("json_client", result.db["clients"])
-            self.assertNotIn("sqlite_client", result.db["clients"])
-
-    def test_read_uses_sqlite_when_flag_is_enabled_and_database_is_ready(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            json_path = Path(tmp_dir) / "traffic.json"
-            db_path = Path(tmp_dir) / "manager.db"
-            self.make_json_db(json_path)
-            self.make_sqlite_db(db_path)
-
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = traffic_repository.load_traffic_db_for_read_result(json_path, db_path=db_path)
+            result = traffic_repository.load_traffic_db_for_read_result(db_path=db_path)
 
             self.assertEqual(result.source, "sqlite")
-            self.assertIn("sqlite_client", result.db["clients"])
-            self.assertNotIn("json_client", result.db["clients"])
             entry = result.db["clients"]["sqlite_client"]
             self.assertEqual(entry["incoming"], 300)
             self.assertEqual(entry["history"]["2026-06-12"]["09"], {"incoming": 300, "outgoing": 400})
             self.assertEqual(result.db["accessLog"]["offset"], 900)
 
-    def test_read_fails_when_sqlite_database_is_missing_and_sqlite_reads_are_enabled(self) -> None:
+    def test_read_fails_when_sqlite_database_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            json_path = Path(tmp_dir) / "traffic.json"
             missing_db_path = Path(tmp_dir) / "missing.db"
-            self.make_json_db(json_path)
 
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
-                    traffic_repository.load_traffic_db_for_read_result(json_path, db_path=missing_db_path)
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
+                traffic_repository.load_traffic_db_for_read_result(db_path=missing_db_path)
 
             self.assertFalse(missing_db_path.exists())
 
-    def test_read_fails_when_sqlite_import_is_not_marked_ready(self) -> None:
+    def test_read_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            json_path = Path(tmp_dir) / "traffic.json"
             db_path = Path(tmp_dir) / "manager.db"
-            self.make_json_db(json_path)
             self.make_sqlite_db(db_path, ready=False)
 
-            with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                with self.assertRaisesRegex(SQLiteReadUnavailable, "JSON import is not marked ready"):
-                    traffic_repository.load_traffic_db_for_read_result(json_path, db_path=db_path)
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
+                traffic_repository.load_traffic_db_for_read_result(db_path=db_path)
 
 
 if __name__ == "__main__":

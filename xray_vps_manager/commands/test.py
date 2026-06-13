@@ -2,7 +2,6 @@
 import json
 import os
 import re
-import shutil
 import socket
 import stat
 import subprocess
@@ -20,17 +19,11 @@ from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
+from xray_vps_manager.db.storage import sqlite_read_ready
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
-CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
-TRAFFIC_PATH = Path("/usr/local/etc/xray/traffic.json")
-ACTIVITY_PATH = Path("/usr/local/etc/xray/activity.json")
-ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
-TELEGRAM_BOT_PATH = Path("/usr/local/etc/xray/telegram-bot.json")
 MANAGER_DB_PATH = Path("/usr/local/etc/xray/manager.db")
-ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
 STATS_SERVER = "127.0.0.1:10085"
@@ -200,17 +193,6 @@ class Diagnostics:
         return 0
 
 
-def save_traffic_db(db):
-    tmp = TRAFFIC_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    try:
-        shutil.chown(tmp, user="root", group="xray")
-    except LookupError:
-        shutil.chown(tmp, user="root")
-    os.chmod(tmp, 0o640)
-    tmp.replace(TRAFFIC_PATH)
-
-
 def check_root():
     if os.geteuid() != 0:
         raise RuntimeError("run xray-test as root")
@@ -282,111 +264,76 @@ def check_config_json(diag):
 
 
 def check_client_db(diag):
-    if not CLIENT_DB_PATH.exists() and sqlite_reads_enabled():
-        connection = sqlite_ready_connection()
-        try:
-            db = {
-                "connections": sqlite_connections.list_connections(connection),
-                "clients": sqlite_clients.list_clients(connection),
-            }
-        finally:
-            connection.close()
-        diag.context["client_db"] = db
-        diag.context["client_db_source"] = "SQLite"
-        return f"{MANAGER_DB_PATH} clients loaded from SQLite"
-
-    db = load_json(CLIENT_DB_PATH)
-    if not isinstance(db.get("clients", {}), dict):
-        raise RuntimeError("clients.json must contain object field: clients")
+    connection = sqlite_ready_connection()
+    try:
+        db = {
+            "connections": sqlite_connections.list_connections(connection),
+            "clients": sqlite_clients.list_clients(connection),
+        }
+    finally:
+        connection.close()
     diag.context["client_db"] = db
-    diag.context["client_db_source"] = "clients.json"
-    return f"{CLIENT_DB_PATH} parsed"
+    diag.context["client_db_source"] = "SQLite"
+    return f"{MANAGER_DB_PATH} clients loaded from SQLite"
 
 
 def check_traffic_db(diag):
-    if not TRAFFIC_PATH.exists():
-        if sqlite_reads_enabled():
-            connection = sqlite_ready_connection()
-            try:
-                diag.context["traffic_db"] = {"clients": sqlite_traffic.list_traffic_entries(connection)}
-            finally:
-                connection.close()
-            diag.context["traffic_db_source"] = "SQLite"
-            return f"{MANAGER_DB_PATH} traffic loaded from SQLite"
-        diag.context["traffic_db"] = {"clients": {}}
-        diag.context["traffic_db_source"] = "traffic.json"
-        return f"{TRAFFIC_PATH} not created yet"
-    db = load_json(TRAFFIC_PATH)
-    if not isinstance(db.get("clients", {}), dict):
-        raise RuntimeError("traffic.json must contain object field: clients")
-    diag.context["traffic_db"] = db
-    diag.context["traffic_db_source"] = "traffic.json"
-    return f"{TRAFFIC_PATH} parsed"
+    connection = sqlite_ready_connection()
+    try:
+        diag.context["traffic_db"] = {"clients": sqlite_traffic.list_traffic_entries(connection)}
+    finally:
+        connection.close()
+    diag.context["traffic_db_source"] = "SQLite"
+    return f"{MANAGER_DB_PATH} traffic loaded from SQLite"
 
 
 def check_activity_exceptions_db(diag):
-    if not ACTIVITY_EXCEPTIONS_PATH.exists():
-        if sqlite_reads_enabled():
-            connection = sqlite_ready_connection()
-            try:
-                diag.context["activity_exceptions_db"] = {"items": sqlite_activity.list_exceptions(connection)}
-            finally:
-                connection.close()
-            return f"{MANAGER_DB_PATH} activity exceptions loaded from SQLite"
-        diag.context["activity_exceptions_db"] = {"items": []}
-        return f"{ACTIVITY_EXCEPTIONS_PATH} not created yet"
-    db = load_json(ACTIVITY_EXCEPTIONS_PATH)
-    if not isinstance(db.get("items", []), list):
-        raise RuntimeError("activity-exceptions.json must contain array field: items")
-    diag.context["activity_exceptions_db"] = db
-    return f"{ACTIVITY_EXCEPTIONS_PATH} parsed"
+    connection = sqlite_ready_connection()
+    try:
+        diag.context["activity_exceptions_db"] = {"items": sqlite_activity.list_exceptions(connection)}
+    finally:
+        connection.close()
+    return f"{MANAGER_DB_PATH} activity exceptions loaded from SQLite"
 
 
 def check_telegram_bot_db(diag):
-    if not TELEGRAM_BOT_PATH.exists():
-        if sqlite_reads_enabled():
-            connection = sqlite_ready_connection()
-            try:
-                db = sqlite_telegram_settings_db(connection)
-            finally:
-                connection.close()
-            diag.context["telegram_bot_db"] = db
-            return f"{MANAGER_DB_PATH} Telegram settings loaded from SQLite"
-        diag.context["telegram_bot_db"] = {}
-        return f"{TELEGRAM_BOT_PATH} not created yet"
-    db = load_json(TELEGRAM_BOT_PATH)
+    connection = sqlite_ready_connection()
+    try:
+        db = sqlite_telegram_settings_db(connection)
+    finally:
+        connection.close()
     if not isinstance(db, dict):
-        raise RuntimeError("telegram-bot.json must contain a JSON object")
+        raise RuntimeError("Telegram settings must contain an object")
     mode = db.get("routeMode", "direct")
     if mode not in ("direct", "cascade"):
-        raise RuntimeError("telegram-bot.json routeMode must be direct or cascade")
+        raise RuntimeError("Telegram routeMode must be direct or cascade")
     if not isinstance(db.get("botName", "Vireika"), str):
-        raise RuntimeError("telegram-bot.json botName must be a string")
+        raise RuntimeError("Telegram botName must be a string")
     if not isinstance(db.get("paymentAmount", ""), str):
-        raise RuntimeError("telegram-bot.json paymentAmount must be a string")
+        raise RuntimeError("Telegram paymentAmount must be a string")
     if not isinstance(db.get("paymentTotalAmount", ""), str):
-        raise RuntimeError("telegram-bot.json paymentTotalAmount must be a string")
+        raise RuntimeError("Telegram paymentTotalAmount must be a string")
     if db.get("paymentCurrency", "₽") not in ("₽", "$", "€"):
-        raise RuntimeError("telegram-bot.json paymentCurrency must be ₽, $, or €")
+        raise RuntimeError("Telegram paymentCurrency must be ₽, $, or €")
     if db.get("paymentRoundingMode", "none") not in ("none", "step"):
-        raise RuntimeError("telegram-bot.json paymentRoundingMode must be none or step")
+        raise RuntimeError("Telegram paymentRoundingMode must be none or step")
     if not isinstance(db.get("paymentRoundingStep", "10"), str):
-        raise RuntimeError("telegram-bot.json paymentRoundingStep must be a string")
+        raise RuntimeError("Telegram paymentRoundingStep must be a string")
     if db.get("paymentTransferMethod", "none") not in ("none", "phone", "card", "bank-account"):
-        raise RuntimeError("telegram-bot.json paymentTransferMethod must be none, phone, card, or bank-account")
+        raise RuntimeError("Telegram paymentTransferMethod must be none, phone, card, or bank-account")
     for key in ("paymentPhone", "paymentBank", "paymentCard", "paymentBankAccount"):
         if not isinstance(db.get(key, ""), str):
-            raise RuntimeError(f"telegram-bot.json {key} must be a string")
+            raise RuntimeError(f"Telegram {key} must be a string")
     if not isinstance(db.get("clientSubscriptions", {}), dict):
-        raise RuntimeError("telegram-bot.json clientSubscriptions must be an object")
+        raise RuntimeError("Telegram clientSubscriptions must be an object")
     if not isinstance(db.get("clientSubscriptionState", {}), dict):
-        raise RuntimeError("telegram-bot.json clientSubscriptionState must be an object")
+        raise RuntimeError("Telegram clientSubscriptionState must be an object")
     if not isinstance(db.get("dailySummaryState", {}), dict):
-        raise RuntimeError("telegram-bot.json dailySummaryState must be an object")
+        raise RuntimeError("Telegram dailySummaryState must be an object")
     if not isinstance(db.get("adminState", {}), dict):
-        raise RuntimeError("telegram-bot.json adminState must be an object")
+        raise RuntimeError("Telegram adminState must be an object")
     diag.context["telegram_bot_db"] = db
-    return f"{TELEGRAM_BOT_PATH} parsed"
+    return f"{MANAGER_DB_PATH} Telegram settings loaded from SQLite"
 
 
 def sqlite_ready_connection():
@@ -457,10 +404,8 @@ def check_sqlite_database(diag):
             raise RuntimeError(f"schema version {version}, expected {sqlite_schema.CURRENT_SCHEMA_VERSION}")
 
         ready = sqlite_read_ready(connection)
-        reads_enabled = sqlite_reads_enabled()
-        writes_enabled = sqlite_writes_enabled()
-        if (reads_enabled or writes_enabled) and not ready:
-            raise RuntimeError("SQLite reads/writes are enabled, but read-ready metadata is not true")
+        if not ready:
+            raise RuntimeError("SQLite read-ready metadata is not true")
 
         counts = {
             "connections": table_count(connection, "reality_connections"),
@@ -476,9 +421,8 @@ def check_sqlite_database(diag):
             if issues:
                 raise RuntimeError("; ".join(issues[:8]))
 
-        flags = f"reads={'on' if reads_enabled else 'off'}, writes={'on' if writes_enabled else 'off'}"
         count_text = ", ".join(f"{key}={value}" for key, value in counts.items())
-        return f"{MANAGER_DB_PATH} schema={version}, quick_check=ok, sqliteReady={'yes' if ready else 'no'}, {flags}, {count_text}"
+        return f"{MANAGER_DB_PATH} schema={version}, quick_check=ok, sqliteReady=yes, {count_text}"
     finally:
         connection.close()
 
@@ -487,45 +431,30 @@ def sqlite_alignment_issues(diag, connection):
     issues = []
 
     client_db = diag.context.get("client_db", {})
-    json_clients = set(client_db.get("clients", {})) if isinstance(client_db.get("clients", {}), dict) else set()
+    clients_section = client_db.get("clients", {}) if isinstance(client_db.get("clients", {}), dict) else {}
+    connections_section = client_db.get("connections", {}) if isinstance(client_db.get("connections", {}), dict) else {}
+    for name, entry in clients_section.items():
+        if not isinstance(entry, dict):
+            issues.append(f"SQLite client record is invalid: {name}")
+            continue
+        connection_tag = str(entry.get("connection") or "").strip()
+        if connection_tag and connection_tag not in connections_section:
+            issues.append(f"SQLite client has missing Reality connection: {name} -> {connection_tag}")
+
     sqlite_clients = table_values(connection, "clients", "name")
-    if json_clients and json_clients != sqlite_clients:
-        issues.append(format_set_difference("SQLite clients differ from clients.json", json_clients, sqlite_clients))
-
-    json_connections = set(client_db.get("connections", {})) if isinstance(client_db.get("connections", {}), dict) else set()
-    sqlite_connections = table_values(connection, "reality_connections", "tag")
-    if json_connections and json_connections != sqlite_connections:
-        issues.append(format_set_difference("SQLite connections differ from clients.json", json_connections, sqlite_connections))
-
-    traffic_db = diag.context.get("traffic_db", {})
-    json_traffic = set(traffic_db.get("clients", {})) if isinstance(traffic_db.get("clients", {}), dict) else set()
     sqlite_traffic = table_values(connection, "traffic_totals", "client_name")
-    expected_traffic = json_traffic & sqlite_clients
-    if expected_traffic != sqlite_traffic:
-        issues.append(format_set_difference("SQLite traffic differs from traffic.json known clients", expected_traffic, sqlite_traffic))
+    stale_traffic = sqlite_traffic - sqlite_clients
+    if stale_traffic:
+        issues.append(format_set_difference("SQLite traffic has unknown clients", set(), stale_traffic))
 
-    activity_exceptions_db = diag.context.get("activity_exceptions_db", {})
-    json_exceptions = set()
-    if isinstance(activity_exceptions_db.get("items", []), list):
-        for item in activity_exceptions_db.get("items", []):
-            if isinstance(item, dict) and item.get("value"):
-                json_exceptions.add(str(item["value"]))
-            elif isinstance(item, str):
-                json_exceptions.add(item)
-    sqlite_exceptions = table_values(connection, "activity_exceptions", "value")
-    if json_exceptions and json_exceptions != sqlite_exceptions:
-        issues.append(format_set_difference("SQLite activity exceptions differ from activity-exceptions.json", json_exceptions, sqlite_exceptions))
-
-    if not (sqlite_reads_enabled() and sqlite_writes_enabled()):
-        telegram_db = diag.context.get("telegram_bot_db", {})
-        json_subscriptions = {
-            str(item.get("clientId") or item.get("clientUuid") or "")
-            for item in telegram_db.get("clientSubscriptions", {}).values()
-            if isinstance(item, dict) and str(item.get("clientId") or item.get("clientUuid") or "").strip()
-        } if isinstance(telegram_db.get("clientSubscriptions", {}), dict) else set()
-        sqlite_subscriptions = table_values(connection, "telegram_subscriptions", "client_uuid")
-        if json_subscriptions != sqlite_subscriptions:
-            issues.append(format_set_difference("SQLite Telegram subscriptions differ from telegram-bot.json", json_subscriptions, sqlite_subscriptions))
+    sqlite_subscriptions = {
+        value
+        for value in table_values(connection, "telegram_subscriptions", "client_name")
+        if value
+    }
+    stale_subscriptions = sqlite_subscriptions - sqlite_clients
+    if stale_subscriptions:
+        issues.append(format_set_difference("SQLite Telegram subscriptions have unknown clients", set(), stale_subscriptions))
 
     return [issue for issue in issues if issue]
 
@@ -723,10 +652,10 @@ def check_client_db_alignment(diag):
         if connection and connection not in known_tags:
             problems.append(f"{name}: unknown connection {connection}")
         if entry.get("enabled") is not False and name not in active_names:
-            problems.append(f"{name}: enabled in clients.json but absent from config")
+            problems.append(f"{name}: enabled in SQLite but absent from config")
     if problems:
         raise RuntimeError("; ".join(problems[:8]))
-    source = diag.context.get("client_db_source", "clients.json")
+    source = diag.context.get("client_db_source", "SQLite")
     return f"{source} matches active Reality connections"
 
 
@@ -736,9 +665,9 @@ def check_traffic_db_alignment(diag):
     stale = sorted(traffic_names - client_names)
     diag.context["stale_traffic_clients"] = stale
     if stale:
-        source = diag.context.get("traffic_db_source", "traffic.json")
+        source = diag.context.get("traffic_db_source", "SQLite")
         raise RuntimeError(f"{source} has stale clients: " + ", ".join(stale[:8]))
-    source = diag.context.get("traffic_db_source", "traffic.json")
+    source = diag.context.get("traffic_db_source", "SQLite")
     return f"{source} client rows are known"
 
 
@@ -841,49 +770,6 @@ def check_traffic_limit_reset_state(diag):
     return "traffic-limit reset state OK"
 
 
-def cleanup_stale_traffic_clients(diag):
-    stale = diag.context.get("stale_traffic_clients", [])
-    if not stale:
-        return
-    if diag.context.get("traffic_db_source") != "traffic.json":
-        return
-
-    print()
-    print("В traffic.json найдены клиенты, которых уже нет в clients.json:")
-    for name in stale:
-        print(f" - {name}")
-
-    if not sys.stdin.isatty():
-        line_warn("Очистка пропущена: для изменения traffic.json нужен интерактивный терминал.")
-        return
-
-    answer = input("Удалить эти строки из traffic.json? [y/N]: ").strip().lower()
-    if answer not in ("y", "yes", "д", "да"):
-        print("Очистка traffic.json пропущена.")
-        return
-
-    traffic_db = diag.context.get("traffic_db") or load_json(TRAFFIC_PATH)
-    traffic_clients = traffic_db.setdefault("clients", {})
-    removed = []
-    for name in stale:
-        if name in traffic_clients:
-            traffic_clients.pop(name, None)
-            removed.append(name)
-
-    if removed:
-        save_traffic_db(traffic_db)
-        diag.context["traffic_db"] = traffic_db
-        diag.context["stale_traffic_clients"] = []
-        diag.warnings = [
-            message
-            for message in diag.warnings
-            if not message.startswith("Traffic DB alignment: traffic.json has stale clients:")
-        ]
-        line_ok("Removed stale traffic clients from traffic.json: " + ", ".join(removed))
-    else:
-        line_ok("No stale traffic clients left in traffic.json.")
-
-
 def check_torrent_policy(diag):
     blocked = any("bittorrent" in rule_values(rule, "protocol") and rule.get("outboundTag") == BLOCKED_TAG for rule in routing_rules(diag.context["config"]))
     if blocked:
@@ -946,14 +832,14 @@ def is_geoip_warning_tag(tag):
 def check_geoip_warning_routing(diag):
     config = diag.context["config"]
     env = diag.context.get("server_env", {})
-    legacy = (env.get("ACTIVITY_GEOIP_WARNING_CODE") or "").strip()
+    old_code = (env.get("ACTIVITY_GEOIP_WARNING_CODE") or "").strip()
     code = (env.get("ACTIVITY_XRAY_GEOIP_WARNING_CODE") or "").strip().upper()
     outbounds = config.get("outbounds", [])
     outbound_tags = {item.get("tag") for item in outbounds if is_geoip_warning_tag(item.get("tag"))}
     rules = [rule for rule in routing_rules(config) if is_geoip_warning_tag(rule.get("outboundTag"))]
 
-    if legacy:
-        raise RuntimeError("legacy ACTIVITY_GEOIP_WARNING_CODE is still present in server.env")
+    if old_code:
+        raise RuntimeError("old ACTIVITY_GEOIP_WARNING_CODE is still present in server.env")
     if not code and not outbound_tags and not rules:
         return "GeoIP routing warnings are disabled"
     if not code:
@@ -984,12 +870,7 @@ def check_file_permissions():
     checked = []
     for path in (
         CONFIG_PATH,
-        CLIENT_DB_PATH,
         SERVER_ENV_PATH,
-        TRAFFIC_PATH,
-        ACTIVITY_PATH,
-        ACTIVITY_EXCEPTIONS_PATH,
-        TELEGRAM_BOT_PATH,
         MANAGER_DB_PATH,
     ):
         if not path.exists():
@@ -998,11 +879,6 @@ def check_file_permissions():
         if mode & 0o007:
             raise RuntimeError(f"{path} is readable by others: mode {mode:o}")
         checked.append(f"{path.name}={mode:o}")
-    if ACTIVITY_DIR.exists():
-        mode = stat.S_IMODE(ACTIVITY_DIR.stat().st_mode)
-        if mode & 0o007:
-            raise RuntimeError(f"{ACTIVITY_DIR} is accessible by others: mode {mode:o}")
-        checked.append(f"{ACTIVITY_DIR.name}={mode:o}")
     return "sensitive file permissions OK: " + ", ".join(checked)
 
 
@@ -1043,7 +919,6 @@ def run_diagnostics():
     diag.check("WARP config", lambda: check_warp_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
     diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
-    cleanup_stale_traffic_clients(diag)
     return diag.summary()
 
 

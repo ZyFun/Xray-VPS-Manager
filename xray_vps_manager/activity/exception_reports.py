@@ -5,7 +5,6 @@ from __future__ import annotations
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import reports as activity_reports
-from xray_vps_manager.activity import sync as activity_sync
 from xray_vps_manager.activity import time as activity_time
 
 
@@ -103,7 +102,4 @@ def exception_candidate_rows(days_value: str = "7") -> list[dict]:
 
 
 def activity_client_names_for_reports(start=None, end=None):
-    sqlite_clients = activity_repository.event_client_names_for_read(start, end)
-    if sqlite_clients is not None:
-        return {name: {} for name in sqlite_clients}
-    return activity_sync.known_clients()
+    return {name: {} for name in activity_repository.event_client_names_for_read(start, end)}

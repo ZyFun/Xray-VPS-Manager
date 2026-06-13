@@ -11,7 +11,8 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-from xray_vps_manager.core.paths import CLIENT_LOG_DIR, CONFIG_PATH, XRAY_BIN
+from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.process import run_capture
 from xray_vps_manager.telegram import api, bot_commands, poller, settings
 
@@ -206,15 +207,12 @@ def choose_private_chat(db):
 
 def initialize_geoip_offsets(db):
     state = db.setdefault("geoipState", {})
-    files = {}
-    if CLIENT_LOG_DIR.exists():
-        for path in CLIENT_LOG_DIR.glob("*.jsonl"):
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            files[str(path)] = {"inode": stat.st_ino, "offset": stat.st_size}
-    state["files"] = files
+    try:
+        _events, last_id = activity_repository.geoip_events_after_for_read()
+    except Exception:
+        last_id = 0
+    state.pop("files", None)
+    state["sqliteLastEventId"] = int(last_id or 0)
     state["sentIds"] = []
     state["updated"] = utc_stamp()
 

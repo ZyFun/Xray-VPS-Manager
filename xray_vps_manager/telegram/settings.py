@@ -1,15 +1,12 @@
-"""Telegram bot settings stored in telegram-bot.json."""
+"""Telegram bot settings stored in SQLite."""
 
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-import json
-import os
 import shutil
 from pathlib import Path
 
-from xray_vps_manager.core.paths import TELEGRAM_DB_PATH
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import settings as sqlite_settings
@@ -17,8 +14,6 @@ from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
     sqlite_read_ready,
-    sqlite_reads_enabled,
-    sqlite_writes_enabled,
     truthy,
 )
 from xray_vps_manager.telegram.payments import (
@@ -65,27 +60,11 @@ class TelegramDbReadResult:
     source: str
 
 
-def load_json(path, default):
-    if not path.exists():
-        return copy.deepcopy(default)
-    try:
-        data = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return copy.deepcopy(default)
-    return data if isinstance(data, dict) else copy.deepcopy(default)
-
-
 def chown_xray(path):
     try:
         shutil.chown(path, user="root", group="xray")
     except LookupError:
         shutil.chown(path, user="root")
-
-
-def ensure_config_dir(path=TELEGRAM_DB_PATH):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    chown_xray(path.parent)
-    os.chmod(path.parent, 0o750)
 
 
 def normalize_db(db):
@@ -152,32 +131,30 @@ def normalize_db(db):
     return merged
 
 
-def load_db(path=TELEGRAM_DB_PATH):
-    return normalize_db(load_json(path, DEFAULT_DB))
+def load_db(path=None, *, db_path: str | Path | None = None):
+    return load_db_sql(path, db_path=db_path)
 
 
-def load_db_sql(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
+def load_db_sql(path=None, *, db_path: str | Path | None = None):
     return load_db_sql_result(path, db_path=db_path).db
 
 
-def load_db_sql_result(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None) -> TelegramDbReadResult:
-    if sqlite_reads_enabled():
-        if not database.database_file_exists(db_path):
-            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
-        connection = None
-        try:
-            connection = database.open_database(db_path)
-            if not sqlite_read_ready(connection):
-                raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
-            return TelegramDbReadResult(load_db_from_sqlite(connection), "sqlite")
-        except SQLiteReadUnavailable:
-            raise
-        except Exception as exc:
-            raise SQLiteReadUnavailable(f"SQLite reads are enabled but Telegram settings cannot be read: {exc}") from exc
-        finally:
-            if connection is not None:
-                connection.close()
-    return TelegramDbReadResult(load_db(path), "json")
+def load_db_sql_result(path=None, *, db_path: str | Path | None = None) -> TelegramDbReadResult:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return TelegramDbReadResult(load_db_from_sqlite(connection), "sqlite")
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite Telegram settings cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def load_db_from_sqlite(connection) -> dict:
@@ -220,38 +197,19 @@ def load_db_from_sqlite(connection) -> dict:
     return normalize_db(db)
 
 
-def save_db(db, path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
+def save_db(db, path=None, *, db_path: str | Path | None = None):
     db = normalize_db(db)
-    if sqlite_writes_enabled():
-        write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
-        return
-    write_json_db(db, path)
+    write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
-def write_json_db(db, path=TELEGRAM_DB_PATH):
-    ensure_config_dir(path)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(db, indent=2, ensure_ascii=False) + "\n")
-    chown_xray(tmp)
-    os.chmod(tmp, 0o640)
-    tmp.replace(path)
-
-
-def save_db_sections(db, sections, path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
-    if sqlite_writes_enabled():
-        write_db_sections_to_sqlite_for_write(db, sections, db_path=db_path, strict=True)
-        return
-    current = load_db(path)
-    for section in sections:
-        if section in db:
-            current[section] = db[section]
-    save_db(current, path, db_path=db_path)
+def save_db_sections(db, sections, path=None, *, db_path: str | Path | None = None):
+    write_db_sections_to_sqlite_for_write(db, sections, db_path=db_path, strict=True)
 
 
 def write_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None, strict: bool = False) -> bool:
-    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+    if not database.database_file_exists(db_path):
         if strict:
-            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+            raise RuntimeError("SQLite manager database is missing")
         return False
 
     connection = None
@@ -259,7 +217,7 @@ def write_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None, stric
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
             if strict:
-                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+                raise RuntimeError("SQLite database is not marked ready")
             return False
 
         normalized = normalize_db(db)
@@ -289,9 +247,9 @@ def write_db_sections_to_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+    if not database.database_file_exists(db_path):
         if strict:
-            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+            raise RuntimeError("SQLite manager database is missing")
         return False
 
     connection = None
@@ -299,7 +257,7 @@ def write_db_sections_to_sqlite_for_write(
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
             if strict:
-                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+                raise RuntimeError("SQLite database is not marked ready")
             return False
 
         normalized = normalize_db(db)

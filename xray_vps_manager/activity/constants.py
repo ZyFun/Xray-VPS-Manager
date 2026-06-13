@@ -6,12 +6,7 @@ import re
 from pathlib import Path
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
-CLIENT_DB_PATH = Path("/usr/local/etc/xray/clients.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
-ACTIVITY_DB_PATH = Path("/usr/local/etc/xray/activity.json")
-ACTIVITY_EXCEPTIONS_PATH = Path("/usr/local/etc/xray/activity-exceptions.json")
-ACTIVITY_DIR = Path("/usr/local/etc/xray/activity")
-CLIENT_LOG_DIR = ACTIVITY_DIR / "clients"
 EXPORT_DIR = Path("/root/xray_activity_exports")
 LOCK_PATH = Path("/usr/local/etc/xray/activity.lock")
 ACCESS_LOG_PATH = Path("/var/log/xray/access.log")
@@ -40,4 +35,3 @@ ROUTE_RE = re.compile(r"\[([^\]]+)\]")
 TARGET_RE = re.compile(r"\b(?P<status>accepted|rejected)\s+(?P<target>(?P<network>tcp|udp):\S+)")
 NETWORK_TARGET_RE = re.compile(r"\b(?P<target>(?P<network>tcp|udp):\S+)")
 EXCEPTION_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:*?/-]+$")
-

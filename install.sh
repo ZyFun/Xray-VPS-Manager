@@ -584,21 +584,14 @@ install -d -o xray -g xray -m 0755 /var/log/xray
 touch /var/log/xray/access.log /var/log/xray/error.log
 chown xray:xray /var/log/xray/access.log /var/log/xray/error.log
 chmod 0644 /var/log/xray/access.log /var/log/xray/error.log
-install -d -o root -g xray -m 0750 /usr/local/etc/xray/activity
-install -d -o root -g xray -m 0750 /usr/local/etc/xray/activity/clients
 install -d -o root -g root -m 0700 /root/xray_activity_exports
-if [[ ! -f /usr/local/etc/xray/activity-exceptions.json ]]; then
-  printf '{\n  "version": 1,\n  "items": []\n}\n' >/usr/local/etc/xray/activity-exceptions.json
-  chown root:xray /usr/local/etc/xray/activity-exceptions.json
-  chmod 0640 /usr/local/etc/xray/activity-exceptions.json
-fi
 
 if [[ -f /usr/local/etc/xray/config.json ]]; then
   cp -a /usr/local/etc/xray/config.json "/usr/local/etc/xray/config.json.bak.$(date -u +%Y%m%d%H%M%S)"
 fi
 
 state_bak_stamp="$(date -u +%Y%m%d%H%M%S)"
-backup_and_remove_state_file() {
+backup_and_remove_manager_db() {
   local path="$1"
   if [[ -f "$path" ]]; then
     cp -a "$path" "${path}.bak.${state_bak_stamp}"
@@ -606,12 +599,7 @@ backup_and_remove_state_file() {
   fi
 }
 
-backup_and_remove_state_file /usr/local/etc/xray/clients.json
-backup_and_remove_state_file /usr/local/etc/xray/traffic.json
-backup_and_remove_state_file /usr/local/etc/xray/activity.json
-backup_and_remove_state_file /usr/local/etc/xray/activity-exceptions.json
-backup_and_remove_state_file /usr/local/etc/xray/telegram-bot.json
-backup_and_remove_state_file /usr/local/etc/xray/manager.db
+backup_and_remove_manager_db /usr/local/etc/xray/manager.db
 
 server_addr="$(detect_server_addr)"
 created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -753,8 +741,6 @@ REALITY_SNI=${REALITY_SNI}
 REALITY_DEST=${REALITY_DEST}
 FINGERPRINT=${FINGERPRINT}
 MANAGER_TIMEZONE=${MANAGER_TIMEZONE}
-MANAGER_SQLITE_READS_ENABLED=true
-MANAGER_SQLITE_WRITES_ENABLED=true
 ACTIVITY_LOGGING_ENABLED=false
 ACTIVITY_RETENTION_DAYS=365
 ACTIVITY_RISK_BURST_EVENTS=1000

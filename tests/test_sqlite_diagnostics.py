@@ -1,5 +1,4 @@
 from pathlib import Path
-import os
 import tempfile
 import unittest
 from unittest import mock
@@ -118,13 +117,13 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
 
             self.assertFalse(db_path.exists())
 
-    def test_ready_sqlite_database_passes_with_matching_json_context(self) -> None:
+    def test_ready_sqlite_database_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
             diag = self.make_diag()
 
-            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
                 result = test_command.check_sqlite_database(diag)
 
             self.assertIn("schema=1", result)
@@ -135,28 +134,25 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
     def test_ready_sqlite_database_reports_alignment_issues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            self.make_sqlite_db(db_path, client_name="bob")
+            self.make_sqlite_db(db_path)
             diag = self.make_diag()
+            diag.context["client_db"]["clients"]["alice"]["connection"] = "missing-connection"
 
-            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.dict(os.environ, {}, clear=True):
-                with self.assertRaisesRegex(RuntimeError, "SQLite clients differ"):
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
+                with self.assertRaisesRegex(RuntimeError, "missing Reality connection"):
                     test_command.check_sqlite_database(diag)
 
-    def test_enabled_sqlite_flag_requires_read_ready_metadata(self) -> None:
+    def test_sqlite_database_requires_read_ready_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path, ready=False)
             diag = self.make_diag()
 
-            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1"},
-                clear=True,
-            ):
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
                 with self.assertRaisesRegex(RuntimeError, "read-ready metadata"):
                     test_command.check_sqlite_database(diag)
 
-    def test_primary_sqlite_allows_telegram_subscriptions_to_outgrow_legacy_json(self) -> None:
+    def test_sqlite_allows_multiple_telegram_subscriptions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
@@ -178,35 +174,18 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
                 connection.close()
             diag = self.make_diag()
 
-            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
-                clear=True,
-            ):
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
                 result = test_command.check_sqlite_database(diag)
 
             self.assertIn("telegramSubscriptions=2", result)
 
-    def test_diagnostics_load_runtime_state_from_sqlite_when_legacy_json_is_missing(self) -> None:
+    def test_diagnostics_load_runtime_state_from_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            db_path = root / "manager.db"
+            db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
             diag = test_command.Diagnostics()
 
-            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
-                test_command, "CLIENT_DB_PATH", root / "missing-clients.json"
-            ), mock.patch.object(
-                test_command, "TRAFFIC_PATH", root / "missing-traffic.json"
-            ), mock.patch.object(
-                test_command, "ACTIVITY_EXCEPTIONS_PATH", root / "missing-exceptions.json"
-            ), mock.patch.object(
-                test_command, "TELEGRAM_BOT_PATH", root / "missing-telegram.json"
-            ), mock.patch.dict(
-                os.environ,
-                {"XRAY_MANAGER_SQLITE_READS": "1"},
-                clear=True,
-            ):
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
                 clients_result = test_command.check_client_db(diag)
                 traffic_result = test_command.check_traffic_db(diag)
                 exceptions_result = test_command.check_activity_exceptions_db(diag)

@@ -134,7 +134,7 @@ def restore_backup_from_menu(call: CommandRunner, confirm: ConfirmCallback) -> N
         return
     print()
     print(f"Будет восстановлен бэкап: {archive}")
-    print("Текущие config.json, server.env, manager.db и legacy-файлы из архива будут заменены.")
+    print("Текущие config.json, server.env и manager.db будут заменены данными из архива.")
     print("Перед восстановлением будет автоматически создан pre-restore бэкап текущего состояния.")
     if not confirm("Продолжить восстановление"):
         print("Восстановление отменено.")
