@@ -10,6 +10,7 @@ from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
 from xray_vps_manager.telegram import settings as telegram_settings
 
 
@@ -164,20 +165,19 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
                 },
             )
 
-    def test_read_falls_back_to_json_when_sqlite_database_is_missing(self) -> None:
+    def test_read_fails_when_sqlite_database_is_missing_and_sqlite_reads_are_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             json_path = Path(tmp_dir) / "telegram-bot.json"
             missing_db_path = Path(tmp_dir) / "missing.db"
             self.make_json_db(json_path)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = telegram_settings.load_db_sql_result(json_path, db_path=missing_db_path)
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
+                    telegram_settings.load_db_sql_result(json_path, db_path=missing_db_path)
 
-            self.assertEqual(result.source, "json")
-            self.assertEqual(result.db["botName"], "JsonBot")
             self.assertFalse(missing_db_path.exists())
 
-    def test_read_falls_back_to_json_when_sqlite_import_is_not_marked_ready(self) -> None:
+    def test_read_fails_when_sqlite_import_is_not_marked_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             json_path = Path(tmp_dir) / "telegram-bot.json"
             db_path = Path(tmp_dir) / "manager.db"
@@ -185,10 +185,8 @@ class TelegramSettingsReadSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path, ready=False)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = telegram_settings.load_db_sql_result(json_path, db_path=db_path)
-
-            self.assertEqual(result.source, "json")
-            self.assertEqual(result.db["botName"], "JsonBot")
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "JSON import is not marked ready"):
+                    telegram_settings.load_db_sql_result(json_path, db_path=db_path)
 
 
 if __name__ == "__main__":

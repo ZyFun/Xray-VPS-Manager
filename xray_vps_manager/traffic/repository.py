@@ -11,7 +11,12 @@ from xray_vps_manager.core.paths import TRAFFIC_PATH
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
+from xray_vps_manager.db.storage import (
+    SQLiteReadUnavailable,
+    sqlite_read_ready,
+    sqlite_reads_enabled,
+    sqlite_writes_enabled,
+)
 
 
 @dataclass(frozen=True)
@@ -42,17 +47,22 @@ def load_traffic_db_for_read_result(
     *,
     db_path: str | Path | None = None,
 ) -> TrafficDbReadResult:
-    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+    if sqlite_reads_enabled():
+        if not database.database_file_exists(db_path):
+            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
+        connection = None
         try:
             connection = database.open_database(db_path)
-            try:
-                if not sqlite_read_ready(connection):
-                    return TrafficDbReadResult(load_traffic_db(path), "json")
-                return TrafficDbReadResult(load_traffic_db_from_sqlite(connection), "sqlite")
-            finally:
+            if not sqlite_read_ready(connection):
+                raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
+            return TrafficDbReadResult(load_traffic_db_from_sqlite(connection), "sqlite")
+        except SQLiteReadUnavailable:
+            raise
+        except Exception as exc:
+            raise SQLiteReadUnavailable(f"SQLite reads are enabled but traffic cannot be read: {exc}") from exc
+        finally:
+            if connection is not None:
                 connection.close()
-        except Exception:
-            pass
     return TrafficDbReadResult(load_traffic_db(path), "json")
 
 

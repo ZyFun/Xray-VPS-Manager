@@ -16,7 +16,12 @@ from xray_vps_manager.activity.repository import chown_xray, ensure_dirs, load_j
 from xray_vps_manager.activity.time import utc_stamp
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
+from xray_vps_manager.db.storage import (
+    SQLiteReadUnavailable,
+    sqlite_read_ready,
+    sqlite_reads_enabled,
+    sqlite_writes_enabled,
+)
 
 
 def normalize_exception_value(value: str, fatal: bool = True) -> str:
@@ -111,14 +116,19 @@ def load_activity_exceptions_for_read(
     *,
     db_path: str | Path | None = None,
 ) -> dict:
-    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+    if sqlite_reads_enabled():
+        if not database.database_file_exists(db_path):
+            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
         connection = None
         try:
             connection = database.open_database(db_path)
             if sqlite_read_ready(connection):
                 return {"version": 1, "items": sqlite_activity.list_exceptions(connection)}
-        except Exception:
-            pass
+            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
+        except SQLiteReadUnavailable:
+            raise
+        except Exception as exc:
+            raise SQLiteReadUnavailable(f"SQLite reads are enabled but activity exceptions cannot be read: {exc}") from exc
         finally:
             if connection is not None:
                 connection.close()

@@ -10,6 +10,7 @@ from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
 from xray_vps_manager.traffic import repository as traffic_repository
 
 
@@ -119,20 +120,19 @@ class TrafficRepositoryReadSwitchTests(unittest.TestCase):
             self.assertEqual(entry["history"]["2026-06-12"]["09"], {"incoming": 300, "outgoing": 400})
             self.assertEqual(result.db["accessLog"]["offset"], 900)
 
-    def test_read_falls_back_to_json_when_sqlite_database_is_missing(self) -> None:
+    def test_read_fails_when_sqlite_database_is_missing_and_sqlite_reads_are_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             json_path = Path(tmp_dir) / "traffic.json"
             missing_db_path = Path(tmp_dir) / "missing.db"
             self.make_json_db(json_path)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = traffic_repository.load_traffic_db_for_read_result(json_path, db_path=missing_db_path)
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
+                    traffic_repository.load_traffic_db_for_read_result(json_path, db_path=missing_db_path)
 
-            self.assertEqual(result.source, "json")
-            self.assertIn("json_client", result.db["clients"])
             self.assertFalse(missing_db_path.exists())
 
-    def test_read_falls_back_to_json_when_sqlite_import_is_not_marked_ready(self) -> None:
+    def test_read_fails_when_sqlite_import_is_not_marked_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             json_path = Path(tmp_dir) / "traffic.json"
             db_path = Path(tmp_dir) / "manager.db"
@@ -140,10 +140,8 @@ class TrafficRepositoryReadSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path, ready=False)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True):
-                result = traffic_repository.load_traffic_db_for_read_result(json_path, db_path=db_path)
-
-            self.assertEqual(result.source, "json")
-            self.assertIn("json_client", result.db["clients"])
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "JSON import is not marked ready"):
+                    traffic_repository.load_traffic_db_for_read_result(json_path, db_path=db_path)
 
 
 if __name__ == "__main__":

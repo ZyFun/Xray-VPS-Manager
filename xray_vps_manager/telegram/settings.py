@@ -14,7 +14,13 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled, truthy
+from xray_vps_manager.db.storage import (
+    SQLiteReadUnavailable,
+    sqlite_read_ready,
+    sqlite_reads_enabled,
+    sqlite_writes_enabled,
+    truthy,
+)
 from xray_vps_manager.telegram.payments import (
     PAYMENT_SETTING_KEYS,
     normalize_payment_transfer_method,
@@ -155,17 +161,22 @@ def load_db_sql(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
 
 
 def load_db_sql_result(path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None) -> TelegramDbReadResult:
-    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+    if sqlite_reads_enabled():
+        if not database.database_file_exists(db_path):
+            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
+        connection = None
         try:
             connection = database.open_database(db_path)
-            try:
-                if not sqlite_read_ready(connection):
-                    return TelegramDbReadResult(load_db(path), "json")
-                return TelegramDbReadResult(load_db_from_sqlite(connection), "sqlite")
-            finally:
+            if not sqlite_read_ready(connection):
+                raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
+            return TelegramDbReadResult(load_db_from_sqlite(connection), "sqlite")
+        except SQLiteReadUnavailable:
+            raise
+        except Exception as exc:
+            raise SQLiteReadUnavailable(f"SQLite reads are enabled but Telegram settings cannot be read: {exc}") from exc
+        finally:
+            if connection is not None:
                 connection.close()
-        except Exception:
-            pass
     return TelegramDbReadResult(load_db(path), "json")
 
 

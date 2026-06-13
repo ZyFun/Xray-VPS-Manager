@@ -14,6 +14,10 @@ SQLITE_READ_READY_KEY = "jsonImport.completed"
 TRUE_VALUES = {"1", "true", "yes", "y", "on", "enable", "enabled"}
 
 
+class SQLiteReadUnavailable(RuntimeError):
+    """Raised when SQLite reads are enabled but the SQLite source cannot be used."""
+
+
 def truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in TRUE_VALUES
 

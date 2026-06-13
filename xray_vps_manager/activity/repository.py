@@ -21,7 +21,12 @@ from xray_vps_manager.activity.time import parse_time, utc_stamp
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
-from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
+from xray_vps_manager.db.storage import (
+    SQLiteReadUnavailable,
+    sqlite_read_ready,
+    sqlite_reads_enabled,
+    sqlite_writes_enabled,
+)
 
 
 def load_json(path: Path, default):
@@ -78,14 +83,19 @@ def write_json_activity_db(db: dict) -> None:
 
 
 def load_activity_db(retention_days: int, enabled: bool, *, db_path: str | Path | None = None) -> dict:
-    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+    if sqlite_reads_enabled():
+        if not database.database_file_exists(db_path):
+            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
         connection = None
         try:
             connection = database.open_database(db_path)
             if sqlite_read_ready(connection):
                 return load_activity_db_from_sqlite(connection, retention_days, enabled)
-        except Exception:
-            pass
+            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
+        except SQLiteReadUnavailable:
+            raise
+        except Exception as exc:
+            raise SQLiteReadUnavailable(f"SQLite reads are enabled but activity state cannot be read: {exc}") from exc
         finally:
             if connection is not None:
                 connection.close()
@@ -256,7 +266,9 @@ def iter_events_for_read(
     *,
     db_path: str | Path | None = None,
 ) -> Iterable[dict]:
-    if sqlite_reads_enabled() and database.database_file_exists(db_path):
+    if sqlite_reads_enabled():
+        if not database.database_file_exists(db_path):
+            raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
         connection = None
         try:
             connection = database.open_database(db_path)
@@ -269,8 +281,11 @@ def iter_events_for_read(
                     end=end_key,
                 )
                 return
-        except Exception:
-            pass
+            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
+        except SQLiteReadUnavailable:
+            raise
+        except Exception as exc:
+            raise SQLiteReadUnavailable(f"SQLite reads are enabled but activity events cannot be read: {exc}") from exc
         finally:
             if connection is not None:
                 connection.close()
@@ -283,20 +298,24 @@ def event_client_names_for_read(
     *,
     db_path: str | Path | None = None,
 ) -> list[str] | None:
-    if not sqlite_reads_enabled() or not database.database_file_exists(db_path):
+    if not sqlite_reads_enabled():
         return None
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
     connection = None
     try:
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
-            return None
+            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
         start_key = None
         end_key = None
         if start is not None and end is not None:
             start_key, end_key = sqlite_date_bounds(start, end)
         return sqlite_activity.list_event_clients(connection, start=start_key, end=end_key)
-    except Exception:
-        return None
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite reads are enabled but activity clients cannot be read: {exc}") from exc
     finally:
         if connection is not None:
             connection.close()
@@ -309,13 +328,15 @@ def geoip_events_after_for_read(
     limit: int = 1000,
     db_path: str | Path | None = None,
 ) -> tuple[list[dict], int] | None:
-    if not sqlite_reads_enabled() or not database.database_file_exists(db_path):
+    if not sqlite_reads_enabled():
         return None
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite reads are enabled but manager database is missing.")
     connection = None
     try:
         connection = database.open_database(db_path)
         if not sqlite_read_ready(connection):
-            return None
+            raise SQLiteReadUnavailable("SQLite reads are enabled but JSON import is not marked ready.")
         if after_id <= 0 and not after_time:
             return [], sqlite_activity.max_event_id(connection)
         events = list(
@@ -329,8 +350,10 @@ def geoip_events_after_for_read(
         if events:
             return events, max(int(event.get("id") or 0) for event in events)
         return [], max(after_id, sqlite_activity.max_event_id(connection))
-    except Exception:
-        return None
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite reads are enabled but GeoIP activity events cannot be read: {exc}") from exc
     finally:
         if connection is not None:
             connection.close()

@@ -14,6 +14,7 @@ from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import settings as sqlite_settings
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -157,23 +158,23 @@ class ActivityRepositoryReadSwitchTests(unittest.TestCase):
             self.assertEqual(clients, ["sqlite_client"])
             self.assertEqual(exceptions[0]["value"], "*.sqlite.example.com")
 
-    def test_read_falls_back_to_json_when_sqlite_database_is_missing(self) -> None:
+    def test_read_fails_when_sqlite_database_is_missing_and_sqlite_reads_are_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             log_dir, exceptions_path = self.make_json_activity(root)
             missing_db_path = root / "missing.db"
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True), mock.patch.object(activity_repository, "CLIENT_LOG_DIR", log_dir):
-                events = self.read_events("json_client", missing_db_path)
-                clients = activity_repository.event_client_names_for_read(date(2026, 6, 12), date(2026, 6, 12), db_path=missing_db_path)
-                exceptions = activity_exceptions.exception_items_for_read(exceptions_path, db_path=missing_db_path)
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
+                    self.read_events("json_client", missing_db_path)
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
+                    activity_repository.event_client_names_for_read(date(2026, 6, 12), date(2026, 6, 12), db_path=missing_db_path)
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
+                    activity_exceptions.exception_items_for_read(exceptions_path, db_path=missing_db_path)
 
-            self.assertEqual([event["host"] for event in events], ["json.example.com"])
-            self.assertIsNone(clients)
-            self.assertEqual(exceptions[0]["value"], "*.json.example.com")
             self.assertFalse(missing_db_path.exists())
 
-    def test_read_falls_back_to_json_when_sqlite_import_is_not_marked_ready(self) -> None:
+    def test_read_fails_when_sqlite_import_is_not_marked_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             log_dir, exceptions_path = self.make_json_activity(root)
@@ -181,13 +182,12 @@ class ActivityRepositoryReadSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path, ready=False)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_READS": "1"}, clear=True), mock.patch.object(activity_repository, "CLIENT_LOG_DIR", log_dir):
-                events = self.read_events("json_client", db_path)
-                clients = activity_repository.event_client_names_for_read(date(2026, 6, 12), date(2026, 6, 12), db_path=db_path)
-                exceptions = activity_exceptions.exception_items_for_read(exceptions_path, db_path=db_path)
-
-            self.assertEqual([event["host"] for event in events], ["json.example.com"])
-            self.assertIsNone(clients)
-            self.assertEqual(exceptions[0]["value"], "*.json.example.com")
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "JSON import is not marked ready"):
+                    self.read_events("json_client", db_path)
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "JSON import is not marked ready"):
+                    activity_repository.event_client_names_for_read(date(2026, 6, 12), date(2026, 6, 12), db_path=db_path)
+                with self.assertRaisesRegex(SQLiteReadUnavailable, "JSON import is not marked ready"):
+                    activity_exceptions.exception_items_for_read(exceptions_path, db_path=db_path)
 
 
 if __name__ == "__main__":
