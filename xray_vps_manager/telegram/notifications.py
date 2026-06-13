@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.activity import exceptions as activity_exceptions
+from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.telegram import messages, payments, subscriptions
 from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import history as traffic_history
@@ -41,6 +42,7 @@ class NotificationContext:
     send_message: Callable[..., Any]
     bot_name: Callable[[dict | None], str]
     client_log_dir: Path
+    manager_db_path: Path | None = None
 
 
 def format_traffic(value):
@@ -423,8 +425,25 @@ def event_id(event):
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def iter_new_events(ctx: NotificationContext, db):
-    state = db.setdefault("geoipState", {})
+def iter_new_sqlite_events(ctx: NotificationContext, db, state):
+    after_id = int(state.get("sqliteLastEventId", 0) or 0)
+    after_time = None
+    if after_id <= 0:
+        after_time = state.get("lastGeoipNotification") or db.get("lastGeoipNotification")
+    result = activity_repository.geoip_events_after_for_read(
+        after_id=after_id,
+        after_time=after_time,
+        db_path=ctx.manager_db_path,
+    )
+    if result is None:
+        return None
+    events, last_id = result
+    state["sqliteLastEventId"] = int(last_id or after_id or 0)
+    state["updated"] = ctx.utc_stamp()
+    return events
+
+
+def iter_new_jsonl_events(ctx: NotificationContext, state):
     files = state.setdefault("files", {})
     if not ctx.client_log_dir.exists():
         return []
@@ -454,6 +473,14 @@ def iter_new_events(ctx: NotificationContext, db):
             events.append(event)
     state["updated"] = ctx.utc_stamp()
     return events
+
+
+def iter_new_events(ctx: NotificationContext, db):
+    state = db.setdefault("geoipState", {})
+    sqlite_events = iter_new_sqlite_events(ctx, db, state)
+    if sqlite_events is not None:
+        return sqlite_events
+    return iter_new_jsonl_events(ctx, state)
 
 
 def build_geoip_message(ctx: NotificationContext, events):

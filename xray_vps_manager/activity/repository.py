@@ -302,6 +302,40 @@ def event_client_names_for_read(
             connection.close()
 
 
+def geoip_events_after_for_read(
+    *,
+    after_id: int = 0,
+    after_time: str | None = None,
+    limit: int = 1000,
+    db_path: str | Path | None = None,
+) -> tuple[list[dict], int] | None:
+    if not sqlite_reads_enabled() or not database.database_file_exists(db_path):
+        return None
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            return None
+        if after_id <= 0 and not after_time:
+            return [], sqlite_activity.max_event_id(connection)
+        events = list(
+            sqlite_activity.iter_geoip_events_after(
+                connection,
+                after_id=after_id,
+                after_time=after_time,
+                limit=limit,
+            )
+        )
+        if events:
+            return events, max(int(event.get("id") or 0) for event in events)
+        return [], max(after_id, sqlite_activity.max_event_id(connection))
+    except Exception:
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def mirror_event_to_sqlite_for_write(
     event: dict,
     *,

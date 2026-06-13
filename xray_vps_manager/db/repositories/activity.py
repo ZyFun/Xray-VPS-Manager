@@ -108,6 +108,53 @@ def iter_events(
         yield _event_from_row(connection, row)
 
 
+def max_event_id(connection: sqlite3.Connection) -> int:
+    row = connection.execute("SELECT COALESCE(MAX(id), 0) AS value FROM activity_events").fetchone()
+    return int(row["value"] or 0)
+
+
+def iter_geoip_events_after(
+    connection: sqlite3.Connection,
+    *,
+    after_id: int = 0,
+    after_time: str | None = None,
+    limit: int = 1000,
+) -> Iterable[dict[str, Any]]:
+    clauses = [
+        """
+        (
+            outbound LIKE ?
+            OR EXISTS (
+                SELECT 1
+                FROM activity_event_risks
+                WHERE activity_event_risks.event_id = activity_events.id
+                  AND activity_event_risks.risk LIKE ?
+            )
+        )
+        """
+    ]
+    params: list[Any] = ["geoip-warning-%", "xray-geoip:%"]
+    if after_id > 0:
+        clauses.append("id > ?")
+        params.append(after_id)
+    elif after_time:
+        clauses.append("event_time > ?")
+        params.append(after_time)
+    params.append(max(1, int(limit or 1000)))
+    rows = connection.execute(
+        f"""
+        SELECT *
+        FROM activity_events
+        WHERE {" AND ".join(clauses)}
+        ORDER BY id
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    for row in rows:
+        yield _event_from_row(connection, row)
+
+
 def list_event_clients(
     connection: sqlite3.Connection,
     *,
