@@ -2,8 +2,14 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-XRAY_ZIP_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-XRAY_DGST_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip.dgst"
+XRAY_GITHUB_ZIP_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+XRAY_GITHUB_DGST_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip.dgst"
+XRAY_SOURCE="${XRAY_SOURCE:-github}"
+XRAY_ZIP_URL="${XRAY_ZIP_URL:-}"
+XRAY_DGST_URL="${XRAY_DGST_URL:-}"
+XRAY_LOCAL_ZIP="${XRAY_LOCAL_ZIP:-}"
+XRAY_LOCAL_DGST="${XRAY_LOCAL_DGST:-}"
+XRAY_DOWNLOAD_ATTEMPTS="${XRAY_DOWNLOAD_ATTEMPTS:-4}"
 PORT="${PORT:-443}"
 REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
 REALITY_DEST=""
@@ -139,6 +145,67 @@ validate_manager_timezone() {
   fi
 }
 
+resolve_install_path() {
+  local value="$1"
+  if [[ "$value" == /* ]]; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$SCRIPT_DIR/$value"
+  fi
+}
+
+validate_xray_source() {
+  XRAY_SOURCE="$(printf '%s' "$XRAY_SOURCE" | tr '[:upper:]' '[:lower:]')"
+  case "$XRAY_SOURCE" in
+    github)
+      XRAY_ZIP_URL="$XRAY_GITHUB_ZIP_URL"
+      XRAY_DGST_URL="$XRAY_GITHUB_DGST_URL"
+      XRAY_LOCAL_ZIP=""
+      XRAY_LOCAL_DGST=""
+      ;;
+    custom)
+      if [[ -z "$XRAY_ZIP_URL" ]]; then
+        echo "XRAY_ZIP_URL is required when XRAY_SOURCE=custom." >&2
+        exit 1
+      fi
+      if [[ "$XRAY_ZIP_URL" != http://* && "$XRAY_ZIP_URL" != https://* ]]; then
+        echo "XRAY_ZIP_URL must start with http:// or https://." >&2
+        exit 1
+      fi
+      if [[ -n "$XRAY_DGST_URL" && "$XRAY_DGST_URL" != http://* && "$XRAY_DGST_URL" != https://* ]]; then
+        echo "XRAY_DGST_URL must start with http:// or https://, or be empty." >&2
+        exit 1
+      fi
+      XRAY_LOCAL_ZIP=""
+      XRAY_LOCAL_DGST=""
+      ;;
+    local)
+      if [[ -z "$XRAY_LOCAL_ZIP" ]]; then
+        echo "XRAY_LOCAL_ZIP is required when XRAY_SOURCE=local." >&2
+        exit 1
+      fi
+      XRAY_LOCAL_ZIP="$(resolve_install_path "$XRAY_LOCAL_ZIP")"
+      if [[ ! -f "$XRAY_LOCAL_ZIP" ]]; then
+        echo "XRAY_LOCAL_ZIP not found: $XRAY_LOCAL_ZIP" >&2
+        exit 1
+      fi
+      if [[ -n "$XRAY_LOCAL_DGST" ]]; then
+        XRAY_LOCAL_DGST="$(resolve_install_path "$XRAY_LOCAL_DGST")"
+        if [[ ! -f "$XRAY_LOCAL_DGST" ]]; then
+          echo "XRAY_LOCAL_DGST not found: $XRAY_LOCAL_DGST" >&2
+          exit 1
+        fi
+      fi
+      XRAY_ZIP_URL=""
+      XRAY_DGST_URL=""
+      ;;
+    *)
+      echo "XRAY_SOURCE must be one of: github, custom, local." >&2
+      exit 1
+      ;;
+  esac
+}
+
 validate_install_options() {
   FINGERPRINT="$(printf '%s' "$FINGERPRINT" | tr '[:upper:]' '[:lower:]')"
   validate_port "$PORT" "PORT"
@@ -151,6 +218,7 @@ validate_install_options() {
     exit 1
   fi
   validate_server_name "$SERVER_NAME"
+  validate_xray_source
 
   REALITY_DEST="${REALITY_SNI}:443"
 }
@@ -292,6 +360,46 @@ prompt_manager_timezone() {
   done
 }
 
+prompt_xray_source() {
+  local input
+  echo "Не удалось скачать Xray из текущего источника после всех попыток."
+  echo "Выбери, что сделать дальше:"
+  echo "  1) повторить текущий источник"
+  echo "  2) ввести свой URL на Xray-linux-64.zip"
+  echo "  3) использовать локальный Xray-linux-64.zip, заранее скопированный на сервер"
+  echo "  0) остановить установку"
+  read -r -p "Действие [1]: " input
+  input="${input:-1}"
+  input="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+  case "$input" in
+    0|abort|stop|exit)
+      echo "Установка остановлена: Xray не скачан." >&2
+      exit 1
+      ;;
+    1|retry|again|повторить)
+      ;;
+    2|custom)
+      XRAY_SOURCE="custom"
+      echo "Введи прямую ссылку на Xray-linux-64.zip. Это должен быть источник, которому ты доверяешь."
+      read -r -p "XRAY_ZIP_URL: " XRAY_ZIP_URL
+      echo "Если есть ссылка на .dgst с SHA2-256, введи её. Если нет - нажми Enter."
+      read -r -p "XRAY_DGST_URL [empty]: " XRAY_DGST_URL
+      ;;
+    3|local)
+      XRAY_SOURCE="local"
+      echo "Укажи путь к Xray-linux-64.zip на сервере. Относительный путь считается от папки install.sh."
+      read -r -p "XRAY_LOCAL_ZIP [Xray-linux-64.zip]: " XRAY_LOCAL_ZIP
+      XRAY_LOCAL_ZIP="${XRAY_LOCAL_ZIP:-Xray-linux-64.zip}"
+      echo "Если рядом есть .dgst с SHA2-256, укажи путь. Если нет - нажми Enter."
+      read -r -p "XRAY_LOCAL_DGST [empty]: " XRAY_LOCAL_DGST
+      ;;
+    *)
+      echo "Неверное значение. Повторяю текущий источник."
+      ;;
+  esac
+  validate_xray_source
+}
+
 prompt_install_options() {
   if [[ ! -t 0 ]]; then
     validate_install_options
@@ -334,17 +442,115 @@ prompt_install_options() {
   echo "  SERVER_NAME=${SERVER_NAME}"
   echo "  FINGERPRINT=${FINGERPRINT}"
   echo "  MANAGER_TIMEZONE=${MANAGER_TIMEZONE:-server local time}"
+  echo "  XRAY_SOURCE=${XRAY_SOURCE} (альтернативу можно выбрать, если скачивание не удастся)"
   echo
 }
 
 prompt_install_options
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y ca-certificates curl unzip openssl python3 tzdata
+apt_get_with_lock_retry() {
+  local attempt=1
+  local max_attempts=60
+  local output status
+  while true; do
+    output="$(apt-get -o DPkg::Lock::Timeout=300 "$@" 2>&1)" && {
+      printf '%s\n' "$output"
+      return 0
+    }
+    status=$?
+    if ! grep -qiE 'Could not get lock|Unable to lock|Could not open lock|is another process using it' <<<"$output"; then
+      printf '%s\n' "$output" >&2
+      return "$status"
+    fi
+    if (( attempt >= max_attempts )); then
+      printf '%s\n' "$output" >&2
+      echo "Timed out waiting for apt/dpkg locks." >&2
+      return "$status"
+    fi
+    echo "apt/dpkg lock is busy, waiting 5s... (${attempt}/${max_attempts})" >&2
+    sleep 5
+    attempt=$((attempt + 1))
+  done
+}
 
-echo "Xray download source: official GitHub Releases"
-echo "Xray URL: ${XRAY_ZIP_URL}"
+prepare_xray_archive() {
+  local target_dir="$1"
+  local max_attempts attempt retries_left delay status
+  case "$XRAY_SOURCE" in
+    github|custom)
+      max_attempts="$XRAY_DOWNLOAD_ATTEMPTS"
+      if [[ ! "$max_attempts" =~ ^[0-9]+$ ]] || (( max_attempts < 1 )); then
+        max_attempts=4
+      fi
+      while true; do
+        attempt=1
+        while (( attempt <= max_attempts )); do
+          retries_left=$((max_attempts - attempt))
+          echo "Downloading Xray archive from ${XRAY_SOURCE}: attempt ${attempt}/${max_attempts}, retries left: ${retries_left}"
+          if curl -fL --connect-timeout 20 --max-time 240 -o "$target_dir/Xray-linux-64.zip" "$XRAY_ZIP_URL"; then
+            break 2
+          fi
+          status=$?
+          if (( retries_left > 0 )); then
+            delay=$((attempt * 2))
+            echo "Xray archive download failed with exit code ${status}. Retries left: ${retries_left}. Waiting ${delay}s..."
+            sleep "$delay"
+          else
+            echo "Xray archive download failed with exit code ${status}. Retries left: 0." >&2
+          fi
+          attempt=$((attempt + 1))
+        done
+        if [[ ! -t 0 ]]; then
+          return 1
+        fi
+        prompt_xray_source
+        if [[ "$XRAY_SOURCE" == "local" ]]; then
+          cp -f "$XRAY_LOCAL_ZIP" "$target_dir/Xray-linux-64.zip"
+          if [[ -n "$XRAY_LOCAL_DGST" ]]; then
+            cp -f "$XRAY_LOCAL_DGST" "$target_dir/Xray-linux-64.zip.dgst"
+          fi
+          return 0
+        fi
+      done
+      if [[ -n "$XRAY_DGST_URL" ]]; then
+        max_attempts=2
+        attempt=1
+        while (( attempt <= max_attempts )); do
+          retries_left=$((max_attempts - attempt))
+          echo "Downloading Xray digest: attempt ${attempt}/${max_attempts}, retries left: ${retries_left}"
+          if curl -fL --connect-timeout 20 --max-time 90 -o "$target_dir/Xray-linux-64.zip.dgst" "$XRAY_DGST_URL"; then
+            break
+          fi
+          status=$?
+          if (( retries_left > 0 )); then
+            echo "Xray digest download failed with exit code ${status}. Retries left: ${retries_left}. Waiting 2s..."
+            sleep 2
+          else
+            echo "Xray digest download failed with exit code ${status}. Continuing without digest." >&2
+          fi
+          attempt=$((attempt + 1))
+        done
+      fi
+      ;;
+    local)
+      cp -f "$XRAY_LOCAL_ZIP" "$target_dir/Xray-linux-64.zip"
+      if [[ -n "$XRAY_LOCAL_DGST" ]]; then
+        cp -f "$XRAY_LOCAL_DGST" "$target_dir/Xray-linux-64.zip.dgst"
+      fi
+      ;;
+  esac
+}
+
+export DEBIAN_FRONTEND=noninteractive
+apt_get_with_lock_retry update
+apt_get_with_lock_retry install -y ca-certificates curl unzip openssl python3 tzdata
+
+echo "Xray source: ${XRAY_SOURCE}"
+if [[ "$XRAY_SOURCE" == "local" ]]; then
+  echo "Xray local archive: ${XRAY_LOCAL_ZIP}"
+else
+  echo "Xray URL: ${XRAY_ZIP_URL}"
+fi
 
 workdir="$(mktemp -d)"
 cleanup() {
@@ -352,8 +558,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-curl -fL --retry 3 --connect-timeout 20 --max-time 240 -o "$workdir/Xray-linux-64.zip" "$XRAY_ZIP_URL"
-curl -fL --retry 3 --connect-timeout 20 --max-time 90 -o "$workdir/Xray-linux-64.zip.dgst" "$XRAY_DGST_URL" || true
+prepare_xray_archive "$workdir"
 
 if [[ -s "$workdir/Xray-linux-64.zip.dgst" ]]; then
   expected_sha256="$(awk -F'= ' '/^SHA2-256=/ {print $2}' "$workdir/Xray-linux-64.zip.dgst" | tr -d '[:space:]')"

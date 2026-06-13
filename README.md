@@ -69,8 +69,9 @@ cd /root/xray_server
 bash install.sh
 ```
 
-Xray скачивается только из официального источника Xray: XTLS/Xray-core GitHub Releases.
+По умолчанию Xray скачивается из официального источника Xray: XTLS/Xray-core GitHub Releases.
 Используется последняя стабильная версия. Если доступен digest-файл, установщик проверяет SHA256.
+Если архив не скачался после нескольких попыток, интерактивная установка покажет, сколько retry осталось, а затем предложит повторить попытку, ввести свой URL или использовать локальный zip-архив Xray.
 После копирования папки установщик очищает служебные `._*` файлы, которые могут появиться при переносе проекта с некоторых desktop-систем.
 Новая установка сразу создаёт `/usr/local/etc/xray/manager.db` и включает SQLite-чтение/запись. Старые `clients.json`, `traffic.json`, `activity.json`, `activity-exceptions.json`, `telegram-bot.json` и прежняя `manager.db`, если они были на сервере, переименовываются в `.bak.<timestamp>` и не используются как runtime-база.
 
@@ -97,6 +98,28 @@ SERVER_NAME=Xray
 FINGERPRINT=chrome
 MANAGER_TIMEZONE=server local time
 ```
+
+Альтернативный источник Xray можно задать заранее для неинтерактивной установки.
+
+Свой URL:
+
+```bash
+XRAY_SOURCE=custom \
+XRAY_ZIP_URL=https://DOWNLOAD_HOST/Xray-linux-64.zip \
+XRAY_DGST_URL=https://DOWNLOAD_HOST/Xray-linux-64.zip.dgst \
+bash install.sh
+```
+
+Локальный архив, заранее скопированный на сервер:
+
+```bash
+XRAY_SOURCE=local \
+XRAY_LOCAL_ZIP=/root/xray_server/Xray-linux-64.zip \
+XRAY_LOCAL_DGST=/root/xray_server/Xray-linux-64.zip.dgst \
+bash install.sh
+```
+
+`XRAY_LOCAL_DGST` и `XRAY_DGST_URL` можно не указывать, если digest-файла нет.
 
 `MANAGER_TIMEZONE` можно оставить пустым, тогда будет использоваться системное время сервера.
 В интерактивной установке часовой пояс выбирается из списка. Для редкой зоны можно выбрать поиск по IANA-списку, например по слову `Moscow`, `Europe` или `Novosibirsk`.
