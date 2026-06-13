@@ -304,8 +304,8 @@ def print_geoip_region_table(rows: list[tuple[str, str]], include_search: bool =
     print(border)
     print(table_row(headers, widths))
     print(border)
-    for index, row in enumerate(values):
-        print(table_row(row, widths, row_index=index))
+    for row in values:
+        print(table_row(row, widths))
     print(border)
 
 

@@ -20,7 +20,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-13 08:50 UTC"
+MENU_UPDATED = "2026-06-13 09:02 UTC"
 
 
 def die(message):
@@ -45,8 +45,8 @@ def print_menu_header():
     print(title_border)
     print(f"| {'Xray VPS Manager'.ljust(total_width)} |")
     print(row_border)
-    for index, row in enumerate(rows):
-        print(table_row(row, [label_width, value_width], row_index=index))
+    for row in rows:
+        print(table_row(row, [label_width, value_width]))
     print(row_border)
     warning = menu_status.security_audit_header_warning()
     if warning:
@@ -272,8 +272,8 @@ def print_menu_table(rows):
     print(border)
     print(table_row(headers, widths))
     print(border)
-    for index, row in enumerate(rows):
-        print(table_row(row, widths, row_index=index))
+    for row in rows:
+        print(table_row(row, widths))
     print(border)
 
 

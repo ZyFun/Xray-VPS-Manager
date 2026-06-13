@@ -50,38 +50,20 @@ class TerminalTests(unittest.TestCase):
         self.assertIn("\033[32m", lines[3])
         self.assertIn("\033[33m", lines[4])
 
-    def test_table_lines_stripe_every_second_data_row_when_ansi_is_enabled(self) -> None:
-        lines = terminal.table_lines(
-            ["NAME", "STATUS"],
-            [
-                ["alice", "enabled"],
-                ["bob", "disabled"],
-                ["carol", "enabled"],
-            ],
-            enable_ansi=True,
-        )
-
-        self.assertNotIn(terminal.ZEBRA_BG, lines[3])
-        self.assertIn(terminal.ZEBRA_BG, lines[4])
-        self.assertNotIn(terminal.ZEBRA_BG, lines[5])
-        self.assertEqual(terminal.ANSI_RE.sub("", lines[4]), "| bob   | disabled |")
-
-    def test_striped_rows_keep_background_after_colored_cell_reset(self) -> None:
+    def test_table_lines_can_disable_ansi_colors(self) -> None:
         def color_status(raw: str, padded: str) -> str:
-            return terminal.yellow(padded) if raw == "paid" else padded
+            return terminal.green(padded)
 
         lines = terminal.table_lines(
             ["CLIENT", "PAYMENT"],
-            [["alice", "free"], ["bob", "paid"]],
+            [["alice", "free"]],
             color_columns={1},
             colorizer=color_status,
-            enable_ansi=True,
+            enable_ansi=False,
         )
 
-        self.assertTrue(lines[4].startswith(terminal.ZEBRA_BG))
-        self.assertIn(terminal.yellow("paid   "), lines[4])
-        self.assertIn("\033[0m" + terminal.ZEBRA_BG, lines[4])
-        self.assertEqual(terminal.ANSI_RE.sub("", lines[4]), "| bob    | paid    |")
+        self.assertEqual(lines[3], "| alice  | free    |")
+        self.assertNotIn("\033[32m", "\n".join(lines))
 
 
 if __name__ == "__main__":

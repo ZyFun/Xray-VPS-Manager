@@ -135,8 +135,8 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
     print(border)
     print(table_row(headers, widths))
     print(border)
-    for index, row in enumerate(values):
-        print(table_row(row, widths, row_index=index))
+    for row in values:
+        print(table_row(row, widths))
     print(border)
 
 
