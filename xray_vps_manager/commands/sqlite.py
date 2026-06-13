@@ -517,6 +517,24 @@ def run_xray_test() -> str:
     return "xray-test passed"
 
 
+def sqlite_cutover_already_active() -> bool:
+    if not sqlite_reads_enabled() or not sqlite_writes_enabled():
+        return False
+    validate_database_ready()
+    return True
+
+
+def validate_existing_cutover(*, run_test: bool = True) -> int:
+    print("SQLite reads and writes are already enabled.")
+    print("Skipping JSON import and running validation against the current SQLite database.")
+    run_cutover_validation()
+    if run_test:
+        print("Running xray-test...")
+        print(run_xray_test())
+    print("SQLite cutover is already active.")
+    return 0
+
+
 def confirm_cutover(yes: bool) -> None:
     if yes:
         return
@@ -531,6 +549,12 @@ def confirm_cutover(yes: bool) -> None:
 
 def cutover(*, yes: bool = False, run_test: bool = True) -> int:
     require_root()
+    try:
+        if sqlite_cutover_already_active():
+            return validate_existing_cutover(run_test=run_test)
+    except Exception as exc:
+        die(f"SQLite cutover validation failed: {exc}")
+
     confirm_cutover(yes)
     writers_stopped = False
     flags_enabled = False

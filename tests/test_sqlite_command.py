@@ -111,6 +111,8 @@ class SQLiteCommandTests(unittest.TestCase):
                 sqlite_command, "SERVER_ENV_PATH", env_path
             ), mock.patch.object(
                 sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.dict(
+                os.environ, {}, clear=True
             ), mock.patch.object(
                 sqlite_command, "stop_writers"
             ) as stop_writers, mock.patch.object(
@@ -143,6 +145,72 @@ class SQLiteCommandTests(unittest.TestCase):
             self.assertIn("Validating SQLite cutover...", output)
             self.assertIn("OK SQLite cutover validation passed.", output)
             self.assertIn("SQLite cutover complete.", output)
+
+    def test_cutover_already_active_skips_json_import_and_validates_current_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            connection = database.open_database(db_path)
+            try:
+                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
+            finally:
+                connection.close()
+
+            stdout = StringIO()
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
+                clear=True,
+            ), mock.patch.object(
+                sqlite_command, "confirm_cutover"
+            ) as confirm_cutover, mock.patch.object(
+                sqlite_command, "stop_writers"
+            ) as stop_writers, mock.patch.object(
+                sqlite_command, "start_writers"
+            ) as start_writers, mock.patch.object(
+                sqlite_command.backup_command, "create_backup"
+            ) as create_backup, mock.patch.object(
+                sqlite_command.json_import, "import_json_files"
+            ) as import_json_files, mock.patch.object(
+                sqlite_command, "run_xray_test", return_value="xray-test passed"
+            ) as run_xray_test, redirect_stdout(stdout):
+                code = sqlite_command.cutover(yes=False)
+
+            self.assertEqual(code, 0)
+            confirm_cutover.assert_not_called()
+            stop_writers.assert_not_called()
+            start_writers.assert_not_called()
+            create_backup.assert_not_called()
+            import_json_files.assert_not_called()
+            run_xray_test.assert_called_once_with()
+            output = stdout.getvalue()
+            self.assertIn("Skipping JSON import", output)
+            self.assertIn("OK SQLite cutover validation passed.", output)
+            self.assertIn("SQLite cutover is already active.", output)
+
+    def test_cutover_with_enabled_flags_and_missing_database_fails_without_json_import(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "missing-manager.db"
+            stderr = StringIO()
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
+                clear=True,
+            ), mock.patch.object(
+                sqlite_command, "stop_writers"
+            ) as stop_writers, mock.patch.object(
+                sqlite_command.json_import, "import_json_files"
+            ) as import_json_files, redirect_stdout(StringIO()), redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as caught:
+                    sqlite_command.cutover(yes=True)
+
+            self.assertEqual(caught.exception.code, 1)
+            stop_writers.assert_not_called()
+            import_json_files.assert_not_called()
+            self.assertIn("SQLite cutover validation failed", stderr.getvalue())
 
     def test_preflight_imports_to_temporary_database_without_touching_manager_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

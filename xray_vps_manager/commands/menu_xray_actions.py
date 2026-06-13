@@ -223,6 +223,7 @@ def sqlite_validate_cutover(call: CommandRunner) -> None:
 def sqlite_cutover(call: CommandRunner, confirm: ConfirmCallback) -> None:
     print("Cutover остановит manager-сервисы записи, создаст бэкап, импортирует JSON/JSONL в SQLite")
     print("и включит SQLite как основной источник чтения и записи.")
+    print("Если SQLite уже включён, команда только проверит текущую базу без повторного импорта JSON.")
     if confirm("Выполнить финальное переключение на SQLite?"):
         call(["xray-vps-manager", "sqlite", "cutover", "--yes"])
     else:
