@@ -28,6 +28,7 @@ class TelegramMessageTests(unittest.TestCase):
         self.assertIn("• проверить статус подписки;", text)
         self.assertIn("• отписаться от бота, если уведомления больше не нужны.", text)
         self.assertIn("Обычно я напоминаю об оплате в 08:00", text)
+        self.assertIn("Иногда я также присылаю технические уведомления", text)
 
     def test_expiry_reminder_includes_payment_amount_without_client_name(self) -> None:
         text = messages.build_expiry_reminder_message(
