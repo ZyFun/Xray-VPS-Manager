@@ -104,12 +104,17 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
     now_local = ctx.utc_now().astimezone(tzinfo)
     day = target_day or (now_local.date() - timedelta(days=1))
     day_key = day.isoformat()
+    db = ctx.load_db()
     client_db = ctx.load_client_db()
     traffic_db = ctx.load_traffic_db()
     clients = subscriptions.client_db_clients(client_db)
     enabled_count = sum(1 for entry in clients.values() if client_enabled(entry))
     rows, total_in, total_out = daily_traffic_rows(client_db, traffic_db, day_key)
     total = total_in + total_out
+    total_rent = payments.format_payment_amount(
+        str(db.get("paymentTotalAmount") or "").strip(),
+        db.get("paymentCurrency") or "₽",
+    )
 
     lines = [
         "Xray VPS Manager: ежедневная сводка",
@@ -118,6 +123,7 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
         f"Xray: {systemd_state(ctx, 'xray.service')}",
         f"Telegram poller: {systemd_state(ctx, 'xray-telegram-poller.service')}",
         f"Клиенты: включено {enabled_count} из {len(clients)}, online сейчас: {online_clients_count(ctx, client_db, traffic_db)}",
+        f"Общая аренда сервера: {total_rent}",
         f"Диск /: {disk_usage_label('/')}",
         "",
         "Трафик за предыдущий день:",
