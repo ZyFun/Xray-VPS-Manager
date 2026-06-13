@@ -187,6 +187,40 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
 
             self.assertIn("telegramSubscriptions=2", result)
 
+    def test_diagnostics_load_runtime_state_from_sqlite_when_legacy_json_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            self.make_sqlite_db(db_path)
+            diag = test_command.Diagnostics()
+
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                test_command, "CLIENT_DB_PATH", root / "missing-clients.json"
+            ), mock.patch.object(
+                test_command, "TRAFFIC_PATH", root / "missing-traffic.json"
+            ), mock.patch.object(
+                test_command, "ACTIVITY_EXCEPTIONS_PATH", root / "missing-exceptions.json"
+            ), mock.patch.object(
+                test_command, "TELEGRAM_BOT_PATH", root / "missing-telegram.json"
+            ), mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "1"},
+                clear=True,
+            ):
+                clients_result = test_command.check_client_db(diag)
+                traffic_result = test_command.check_traffic_db(diag)
+                exceptions_result = test_command.check_activity_exceptions_db(diag)
+                telegram_result = test_command.check_telegram_bot_db(diag)
+
+            self.assertIn("clients loaded from SQLite", clients_result)
+            self.assertIn("traffic loaded from SQLite", traffic_result)
+            self.assertIn("activity exceptions loaded from SQLite", exceptions_result)
+            self.assertIn("Telegram settings loaded from SQLite", telegram_result)
+            self.assertIn("alice", diag.context["client_db"]["clients"])
+            self.assertIn("alice", diag.context["traffic_db"]["clients"])
+            self.assertEqual(diag.context["activity_exceptions_db"]["items"][0]["value"], "*.example.com")
+            self.assertIn("111", diag.context["telegram_bot_db"]["clientSubscriptions"])
+
 
 if __name__ == "__main__":
     unittest.main()

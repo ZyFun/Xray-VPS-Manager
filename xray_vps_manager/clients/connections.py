@@ -1,4 +1,4 @@
-"""Reality connection records stored in clients.json."""
+"""Reality connection records."""
 
 from __future__ import annotations
 

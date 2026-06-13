@@ -31,7 +31,7 @@ HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN")
 
 BACKUP_FILES = [
     ("usr/local/etc/xray/config.json", CONFIG_PATH, True),
-    ("usr/local/etc/xray/clients.json", CLIENT_DB_PATH, True),
+    ("usr/local/etc/xray/clients.json", CLIENT_DB_PATH, False),
     (SERVER_ENV_ARCNAME, SERVER_ENV_PATH, True),
     ("usr/local/etc/xray/traffic.json", TRAFFIC_PATH, False),
     ("usr/local/etc/xray/activity.json", ACTIVITY_PATH, False),
@@ -154,6 +154,9 @@ def create_backup(path_only=False, quiet=False, sync=True):
     if sync:
         sync_traffic()
 
+    if not MANAGER_DB_PATH.exists() and not CLIENT_DB_PATH.exists():
+        die(f"Neither {MANAGER_DB_PATH} nor legacy {CLIENT_DB_PATH} exists; refusing to create an incomplete backup.")
+
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(BACKUP_DIR, 0o700)
 
@@ -210,7 +213,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
     elif not quiet:
         print(f"Backup created: {archive}")
         print(f"Size: {format_size(archive.stat().st_size)}")
-        print("Contains: config.json, clients.json, portable server.env, traffic.json, manager.db, activity logs, activity exceptions, Telegram bot config.")
+        print("Contains: config.json, portable server.env, manager.db, and any available legacy JSON/JSONL rollback files.")
         print("Host-specific server.env values such as SERVER_ADDR are not stored; restore keeps the current server values.")
         print("Keep this file private: it contains Reality private keys and client data.")
     return archive

@@ -11,7 +11,8 @@
 - стартовый клиент `starter`
 - новая ссылка в `/root/xray-reality-client.txt`
 - статистика трафика через локальный Xray API
-- сохранение накопительной статистики в `/usr/local/etc/xray/traffic.json`
+- основная база менеджера в `/usr/local/etc/xray/manager.db`
+- сохранение накопительной статистики в SQLite
 - почасовая и подневная история трафика за последние 6 месяцев
 - опциональный журнал метаданных активности по клиентам с хранением 365 дней
 - дневные и месячные лимиты трафика клиентов с автоотключением
@@ -71,6 +72,7 @@ bash install.sh
 Xray скачивается только из официального источника Xray: XTLS/Xray-core GitHub Releases.
 Используется последняя стабильная версия. Если доступен digest-файл, установщик проверяет SHA256.
 После копирования папки установщик очищает служебные `._*` файлы, которые могут появиться при переносе проекта с некоторых desktop-систем.
+Новая установка сразу создаёт `/usr/local/etc/xray/manager.db` и включает SQLite-чтение/запись. Старые `clients.json`, `traffic.json`, `activity.json`, `activity-exceptions.json`, `telegram-bot.json` и прежняя `manager.db`, если они были на сервере, переименовываются в `.bak.<timestamp>` и не используются как runtime-база.
 
 Перед установкой Xray можно изменить базовые параметры:
 
@@ -385,7 +387,7 @@ xray-client add-connection backup443 8443 www.microsoft.com chrome
 xray-client remove-connection ИМЯ_ИЛИ_TAG
 ```
 
-Удаление убирает Reality inbound из `config.json`, запись подключения из `clients.json`, всех клиентов этого подключения и их историю трафика из `traffic.json`.
+Удаление убирает Reality inbound из `config.json`, запись подключения из `manager.db`, всех клиентов этого подключения и их историю трафика.
 Последнее Reality-подключение удалить нельзя.
 
 ## Клиенты
@@ -506,7 +508,7 @@ Connection: backup443  |  PORT=8443  |  SNI=www.microsoft.com  |  TAG=vless-real
 `ACCESS UNTIL` показывает дату и время отключения в часовом поясе менеджера или зелёную надпись `бессрочно`, если срок не установлен.
 `LIMIT` показывает `без лимита`, дневной лимит `/day` или месячный лимит `/month`.
 
-Накопительная статистика сохраняется в `/usr/local/etc/xray/traffic.json` и переживает перезапуск Xray или сервера.
+Накопительная статистика сохраняется в `/usr/local/etc/xray/manager.db` и переживает перезапуск Xray или сервера.
 `xray-traffic-sync.timer` сохраняет счётчики раз в минуту, а `xray.service` пытается сохранить их перед штатной остановкой.
 История по часам и дням хранится 6 месяцев, после этого старые дневные bucket удаляются автоматически.
 Общий суммарный трафик клиента (`IN`, `OUT`, `TOTAL` в `xray-client list`) хранится постоянно.
@@ -899,7 +901,7 @@ Telegram бот -> Обновить меню команд Telegram
 Чтобы подключить напоминания, нажми кнопку «Подключить уведомления» или просто отправь сюда свою VLESS Reality-ссылку. По ней я определю твой ключ и включу уведомления.
 ```
 
-В автоматическом режиме ответы на сообщения пользователей обрабатывает `xray-telegram-poller.service`. Он держит исходящий long polling-запрос к Telegram API и отвечает почти сразу после сообщения пользователя. `xray-traffic-sync.timer` остаётся для фоновых задач: запускает `xray-telegram notify-geoip --quiet` и `xray-telegram notify-expiry --quiet`. Исключения suspicious из `activity-exceptions.json` учитываются: по ним GeoIP-уведомления не отправляются.
+В автоматическом режиме ответы на сообщения пользователей обрабатывает `xray-telegram-poller.service`. Он держит исходящий long polling-запрос к Telegram API и отвечает почти сразу после сообщения пользователя. `xray-traffic-sync.timer` остаётся для фоновых задач: запускает `xray-telegram notify-geoip --quiet` и `xray-telegram notify-expiry --quiet`. Исключения suspicious из `manager.db` учитываются: по ним GeoIP-уведомления не отправляются.
 
 Пример напоминания клиенту:
 
@@ -1198,9 +1200,9 @@ xray-update --rollback ИМЯ_БЭКАПА
 xray-test
 ```
 
-`xray-test` проверяет Xray, config.json, все Reality-подключения и локальные порты, Stats API, JSON-базы, `server.env`, таймзону, helper-скрипты, timers, сервис сбора трафика, torrent-правило и каскадную конфигурацию.
+`xray-test` проверяет Xray, config.json, все Reality-подключения и локальные порты, Stats API, SQLite-базу менеджера, доступные legacy JSON-файлы, `server.env`, таймзону, helper-скрипты, timers, сервис сбора трафика, torrent-правило и каскадную конфигурацию.
 При проверке установленного Python-пакета служебные `._*` файлы не считаются исходниками менеджера.
-Если в `traffic.json` найдены строки статистики по клиентам, которых уже нет в `clients.json`, интерактивный запуск предложит удалить эти устаревшие строки в конце проверки.
+На старых legacy-установках, если в `traffic.json` найдены строки статистики по клиентам, которых уже нет в `clients.json`, интерактивный запуск предложит удалить эти устаревшие строки в конце проверки.
 Глубокий сетевой тест каскада остаётся отдельной командой `xray-set-cascade --test`, потому что он временно меняет конфиг и перезапускает Xray.
 
 Посмотреть статус Xray:
@@ -1249,13 +1251,14 @@ systemctl status xray-client-expire.timer --no-pager
 
 ```text
 /usr/local/etc/xray/config.json          основной конфиг Xray
-/usr/local/etc/xray/clients.json         база клиентов, подключений и лимитов трафика
+/usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, Telegram и настроек оплаты
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
-/usr/local/etc/xray/traffic.json         накопительная статистика и история трафика за 6 месяцев
-/usr/local/etc/xray/activity.json        сводная база журнала активности
-/usr/local/etc/xray/activity-exceptions.json база исключений suspicious
-/usr/local/etc/xray/telegram-bot.json    настройки Telegram-бота и chat_id уведомлений
-/usr/local/etc/xray/activity             детальные JSONL-журналы активности клиентов
+/usr/local/etc/xray/clients.json         legacy/rollback база клиентов, если осталась после старой установки
+/usr/local/etc/xray/traffic.json         legacy/rollback статистика, если осталась после старой установки
+/usr/local/etc/xray/activity.json        legacy/rollback сводка активности, если осталась после старой установки
+/usr/local/etc/xray/activity-exceptions.json legacy/rollback исключения suspicious, если остались после старой установки
+/usr/local/etc/xray/telegram-bot.json    legacy/rollback настройки Telegram-бота, если остались после старой установки
+/usr/local/etc/xray/activity             legacy/rollback JSONL-журналы активности клиентов, если остались после старой установки
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /usr/local/sbin/xray-client              управление клиентами
 /usr/local/sbin/xray-menu                интерактивное меню
@@ -1312,15 +1315,17 @@ xray-backup create
 
 ```text
 /usr/local/etc/xray/config.json
-/usr/local/etc/xray/clients.json
 /usr/local/etc/xray/server.env
+/usr/local/etc/xray/manager.db
+/usr/local/etc/xray/clients.json
 /usr/local/etc/xray/traffic.json
 /usr/local/etc/xray/activity.json
 /usr/local/etc/xray/activity-exceptions.json
 /usr/local/etc/xray/telegram-bot.json
-/usr/local/etc/xray/manager.db
 /usr/local/etc/xray/activity
 ```
+
+Для новых SQLite-first установок обязательная база данных - `manager.db`. Остальные JSON/JSONL-файлы добавляются в архив только если они ещё существуют как legacy/rollback-данные.
 
 Архивы хранятся на сервере в `/root/xray_backups`.
 Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
@@ -1377,6 +1382,8 @@ SQLite-база менеджера хранится в:
 ```text
 /usr/local/etc/xray/manager.db
 ```
+
+На новых установках `install.sh` создаёт эту базу сразу и включает SQLite-чтение/запись в `server.env`. Отдельный JSON-to-SQLite cutover нужен только для старых установок, где рабочие данные ещё находятся в legacy JSON/JSONL.
 
 Проверить состояние базы и флаги чтения/записи:
 

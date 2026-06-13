@@ -1,4 +1,4 @@
-"""Client activity reports built from activity JSONL events."""
+"""Client activity reports built from recorded activity events."""
 
 from __future__ import annotations
 

@@ -1,9 +1,4 @@
-"""SQLite schema definition for manager state.
-
-This module only creates and upgrades the SQLite schema. Existing JSON
-repositories still remain the runtime source of truth until the migration
-cutover is implemented and verified.
-"""
+"""SQLite schema definition for manager state."""
 
 from __future__ import annotations
 

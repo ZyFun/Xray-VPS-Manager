@@ -392,6 +392,22 @@ if [[ -f /usr/local/etc/xray/config.json ]]; then
   cp -a /usr/local/etc/xray/config.json "/usr/local/etc/xray/config.json.bak.$(date -u +%Y%m%d%H%M%S)"
 fi
 
+state_bak_stamp="$(date -u +%Y%m%d%H%M%S)"
+backup_and_remove_state_file() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    cp -a "$path" "${path}.bak.${state_bak_stamp}"
+    rm -f "$path"
+  fi
+}
+
+backup_and_remove_state_file /usr/local/etc/xray/clients.json
+backup_and_remove_state_file /usr/local/etc/xray/traffic.json
+backup_and_remove_state_file /usr/local/etc/xray/activity.json
+backup_and_remove_state_file /usr/local/etc/xray/activity-exceptions.json
+backup_and_remove_state_file /usr/local/etc/xray/telegram-bot.json
+backup_and_remove_state_file /usr/local/etc/xray/manager.db
+
 server_addr="$(detect_server_addr)"
 created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 uuid="$(/usr/local/bin/xray uuid)"
@@ -524,38 +540,6 @@ cat >/usr/local/etc/xray/config.json <<EOF
 }
 EOF
 
-cat >/usr/local/etc/xray/clients.json <<EOF
-{
-  "connections": {
-    "vless-reality": {
-      "tag": "vless-reality",
-      "name": "default",
-      "created": "${created}",
-      "port": ${PORT},
-      "sni": "${REALITY_SNI}",
-      "dest": "${REALITY_DEST}",
-      "fingerprint": "${FINGERPRINT}",
-      "publicKey": "${public_key}",
-      "shortId": "${short_id}"
-    }
-  },
-  "clients": {
-    "${CLIENT_NAME}": {
-      "id": "${uuid}",
-      "created": "${created}",
-      "enabled": true,
-      "connection": "vless-reality",
-      "client": {
-        "id": "${uuid}",
-        "flow": "xtls-rprx-vision",
-        "level": 0,
-        "email": "${CLIENT_NAME}|created=${created}"
-      }
-    }
-  }
-}
-EOF
-
 cat >/usr/local/etc/xray/server.env <<EOF
 SERVER_ADDR=${server_addr}
 SERVER_NAME=${SERVER_NAME}
@@ -564,8 +548,8 @@ REALITY_SNI=${REALITY_SNI}
 REALITY_DEST=${REALITY_DEST}
 FINGERPRINT=${FINGERPRINT}
 MANAGER_TIMEZONE=${MANAGER_TIMEZONE}
-MANAGER_SQLITE_READS_ENABLED=false
-MANAGER_SQLITE_WRITES_ENABLED=false
+MANAGER_SQLITE_READS_ENABLED=true
+MANAGER_SQLITE_WRITES_ENABLED=true
 ACTIVITY_LOGGING_ENABLED=false
 ACTIVITY_RETENTION_DAYS=365
 ACTIVITY_RISK_BURST_EVENTS=1000
@@ -575,8 +559,8 @@ ACTIVITY_RISK_UNIQUE_PORTS=20
 ACTIVITY_XRAY_GEOIP_WARNING_CODE=
 EOF
 
-chown root:xray /usr/local/etc/xray/config.json /usr/local/etc/xray/clients.json /usr/local/etc/xray/server.env
-chmod 0640 /usr/local/etc/xray/config.json /usr/local/etc/xray/clients.json /usr/local/etc/xray/server.env
+chown root:xray /usr/local/etc/xray/config.json /usr/local/etc/xray/server.env
+chmod 0640 /usr/local/etc/xray/config.json /usr/local/etc/xray/server.env
 
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-client" /usr/local/sbin/xray-client
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-cascade" /usr/local/sbin/xray-set-cascade
@@ -596,6 +580,69 @@ find /usr/local/lib/xray-vps-manager/xray_vps_manager -name '._*' -delete
 chown -R root:root /usr/local/lib/xray-vps-manager/xray_vps_manager
 find /usr/local/lib/xray-vps-manager/xray_vps_manager -type d -exec chmod 0755 {} \;
 find /usr/local/lib/xray-vps-manager/xray_vps_manager -type f -exec chmod 0644 {} \;
+
+INSTALL_CLIENT_NAME="$CLIENT_NAME" \
+INSTALL_CREATED="$created" \
+INSTALL_PORT="$PORT" \
+INSTALL_REALITY_SNI="$REALITY_SNI" \
+INSTALL_REALITY_DEST="$REALITY_DEST" \
+INSTALL_FINGERPRINT="$FINGERPRINT" \
+INSTALL_PUBLIC_KEY="$public_key" \
+INSTALL_SHORT_ID="$short_id" \
+INSTALL_UUID="$uuid" \
+PYTHONPATH=/usr/local/lib/xray-vps-manager \
+python3 <<'PY'
+import os
+
+from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import clients, connections, settings
+from xray_vps_manager.core.paths import MANAGER_DB_PATH
+
+client_name = os.environ["INSTALL_CLIENT_NAME"]
+created = os.environ["INSTALL_CREATED"]
+connection_tag = "vless-reality"
+client_uuid = os.environ["INSTALL_UUID"]
+
+connection = database.open_database(MANAGER_DB_PATH)
+try:
+    with database.transaction(connection):
+        connections.upsert_connection(
+            connection,
+            connection_tag,
+            {
+                "tag": connection_tag,
+                "name": "default",
+                "created": created,
+                "port": int(os.environ["INSTALL_PORT"]),
+                "sni": os.environ["INSTALL_REALITY_SNI"],
+                "dest": os.environ["INSTALL_REALITY_DEST"],
+                "fingerprint": os.environ["INSTALL_FINGERPRINT"],
+                "publicKey": os.environ["INSTALL_PUBLIC_KEY"],
+                "shortId": os.environ["INSTALL_SHORT_ID"],
+            },
+        )
+        clients.upsert_client(
+            connection,
+            client_name,
+            {
+                "id": client_uuid,
+                "created": created,
+                "enabled": True,
+                "connection": connection_tag,
+                "client": {
+                    "id": client_uuid,
+                    "flow": "xtls-rprx-vision",
+                    "level": 0,
+                    "email": f"{client_name}|created={created}",
+                },
+            },
+        )
+        settings.set_metadata(connection, "jsonImport.completed", "true")
+finally:
+    connection.close()
+PY
+chown root:xray /usr/local/etc/xray/manager.db
+chmod 0640 /usr/local/etc/xray/manager.db
 
 client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=tcp&flow=xtls-rprx-vision&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F#${SERVER_NAME}"
 

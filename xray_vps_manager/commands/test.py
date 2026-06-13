@@ -15,6 +15,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db import schema as sqlite_schema
+from xray_vps_manager.db.repositories import activity as sqlite_activity
+from xray_vps_manager.db.repositories import clients as sqlite_clients
+from xray_vps_manager.db.repositories import connections as sqlite_connections
+from xray_vps_manager.db.repositories import telegram as sqlite_telegram
+from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import sqlite_read_ready, sqlite_reads_enabled, sqlite_writes_enabled
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -277,26 +282,57 @@ def check_config_json(diag):
 
 
 def check_client_db(diag):
+    if not CLIENT_DB_PATH.exists() and sqlite_reads_enabled():
+        connection = sqlite_ready_connection()
+        try:
+            db = {
+                "connections": sqlite_connections.list_connections(connection),
+                "clients": sqlite_clients.list_clients(connection),
+            }
+        finally:
+            connection.close()
+        diag.context["client_db"] = db
+        diag.context["client_db_source"] = "SQLite"
+        return f"{MANAGER_DB_PATH} clients loaded from SQLite"
+
     db = load_json(CLIENT_DB_PATH)
     if not isinstance(db.get("clients", {}), dict):
         raise RuntimeError("clients.json must contain object field: clients")
     diag.context["client_db"] = db
+    diag.context["client_db_source"] = "clients.json"
     return f"{CLIENT_DB_PATH} parsed"
 
 
 def check_traffic_db(diag):
     if not TRAFFIC_PATH.exists():
+        if sqlite_reads_enabled():
+            connection = sqlite_ready_connection()
+            try:
+                diag.context["traffic_db"] = {"clients": sqlite_traffic.list_traffic_entries(connection)}
+            finally:
+                connection.close()
+            diag.context["traffic_db_source"] = "SQLite"
+            return f"{MANAGER_DB_PATH} traffic loaded from SQLite"
         diag.context["traffic_db"] = {"clients": {}}
+        diag.context["traffic_db_source"] = "traffic.json"
         return f"{TRAFFIC_PATH} not created yet"
     db = load_json(TRAFFIC_PATH)
     if not isinstance(db.get("clients", {}), dict):
         raise RuntimeError("traffic.json must contain object field: clients")
     diag.context["traffic_db"] = db
+    diag.context["traffic_db_source"] = "traffic.json"
     return f"{TRAFFIC_PATH} parsed"
 
 
 def check_activity_exceptions_db(diag):
     if not ACTIVITY_EXCEPTIONS_PATH.exists():
+        if sqlite_reads_enabled():
+            connection = sqlite_ready_connection()
+            try:
+                diag.context["activity_exceptions_db"] = {"items": sqlite_activity.list_exceptions(connection)}
+            finally:
+                connection.close()
+            return f"{MANAGER_DB_PATH} activity exceptions loaded from SQLite"
         diag.context["activity_exceptions_db"] = {"items": []}
         return f"{ACTIVITY_EXCEPTIONS_PATH} not created yet"
     db = load_json(ACTIVITY_EXCEPTIONS_PATH)
@@ -308,6 +344,14 @@ def check_activity_exceptions_db(diag):
 
 def check_telegram_bot_db(diag):
     if not TELEGRAM_BOT_PATH.exists():
+        if sqlite_reads_enabled():
+            connection = sqlite_ready_connection()
+            try:
+                db = sqlite_telegram_settings_db(connection)
+            finally:
+                connection.close()
+            diag.context["telegram_bot_db"] = db
+            return f"{MANAGER_DB_PATH} Telegram settings loaded from SQLite"
         diag.context["telegram_bot_db"] = {}
         return f"{TELEGRAM_BOT_PATH} not created yet"
     db = load_json(TELEGRAM_BOT_PATH)
@@ -343,6 +387,50 @@ def check_telegram_bot_db(diag):
         raise RuntimeError("telegram-bot.json adminState must be an object")
     diag.context["telegram_bot_db"] = db
     return f"{TELEGRAM_BOT_PATH} parsed"
+
+
+def sqlite_ready_connection():
+    if not MANAGER_DB_PATH.exists():
+        raise RuntimeError(f"not found: {MANAGER_DB_PATH}")
+    connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
+    try:
+        if not sqlite_read_ready(connection):
+            raise RuntimeError("manager_metadata jsonImport.completed is not true")
+        return connection
+    except Exception:
+        connection.close()
+        raise
+
+
+def sqlite_telegram_settings_db(connection):
+    db = {
+        "routeMode": "direct",
+        "botName": "Vireika",
+        "paymentAmount": "",
+        "paymentTotalAmount": "",
+        "paymentCurrency": "₽",
+        "paymentRoundingMode": "none",
+        "paymentRoundingStep": "10",
+        "paymentTransferMethod": "none",
+        "paymentPhone": "",
+        "paymentBank": "",
+        "paymentCard": "",
+        "paymentBankAccount": "",
+        "clientSubscriptions": {},
+        "clientSubscriptionState": {},
+        "dailySummaryState": {},
+        "adminState": {},
+    }
+    for key, value in sqlite_telegram.list_settings(connection).items():
+        db[key] = value
+    for item in sqlite_telegram.list_subscriptions(connection):
+        chat_id = str(item.get("chatId") or "")
+        if chat_id:
+            db["clientSubscriptions"][chat_id] = {
+                "clientId": item.get("clientUuid", ""),
+                "client": item.get("clientName", ""),
+            }
+    return db
 
 
 def table_count(connection, table):
@@ -638,7 +726,8 @@ def check_client_db_alignment(diag):
             problems.append(f"{name}: enabled in clients.json but absent from config")
     if problems:
         raise RuntimeError("; ".join(problems[:8]))
-    return "clients.json matches active Reality connections"
+    source = diag.context.get("client_db_source", "clients.json")
+    return f"{source} matches active Reality connections"
 
 
 def check_traffic_db_alignment(diag):
@@ -647,8 +736,10 @@ def check_traffic_db_alignment(diag):
     stale = sorted(traffic_names - client_names)
     diag.context["stale_traffic_clients"] = stale
     if stale:
-        raise RuntimeError("traffic.json has stale clients: " + ", ".join(stale[:8]))
-    return "traffic.json client rows are known"
+        source = diag.context.get("traffic_db_source", "traffic.json")
+        raise RuntimeError(f"{source} has stale clients: " + ", ".join(stale[:8]))
+    source = diag.context.get("traffic_db_source", "traffic.json")
+    return f"{source} client rows are known"
 
 
 def manager_timezone(diag):
@@ -753,6 +844,8 @@ def check_traffic_limit_reset_state(diag):
 def cleanup_stale_traffic_clients(diag):
     stale = diag.context.get("stale_traffic_clients", [])
     if not stale:
+        return
+    if diag.context.get("traffic_db_source") != "traffic.json":
         return
 
     print()
@@ -889,7 +982,16 @@ def check_geoip_warning_routing(diag):
 
 def check_file_permissions():
     checked = []
-    for path in (CONFIG_PATH, CLIENT_DB_PATH, SERVER_ENV_PATH, TRAFFIC_PATH, ACTIVITY_PATH, ACTIVITY_EXCEPTIONS_PATH, TELEGRAM_BOT_PATH):
+    for path in (
+        CONFIG_PATH,
+        CLIENT_DB_PATH,
+        SERVER_ENV_PATH,
+        TRAFFIC_PATH,
+        ACTIVITY_PATH,
+        ACTIVITY_EXCEPTIONS_PATH,
+        TELEGRAM_BOT_PATH,
+        MANAGER_DB_PATH,
+    ):
         if not path.exists():
             continue
         mode = stat.S_IMODE(path.stat().st_mode)

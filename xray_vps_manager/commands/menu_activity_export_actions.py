@@ -151,7 +151,7 @@ def delete_all_activity_exports_from_menu(call: CommandRunner, confirm: ConfirmC
     print()
     print(f"Будут удалены все архивы экспорта активности: {len(rows)}")
     print("Это действие удалит только архивы в /root/xray_activity_exports.")
-    print("Журнал активности, traffic.json, clients.json и конфигурация Xray не изменятся.")
+    print("Журнал активности, manager.db и конфигурация Xray не изменятся.")
     if not confirm("Удалить все архивы экспорта активности"):
         print("Удаление отменено.")
         return

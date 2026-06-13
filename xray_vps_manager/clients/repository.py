@@ -1,4 +1,4 @@
-"""Repository for clients.json."""
+"""Repository facade for client and Reality connection state."""
 
 from __future__ import annotations
 
