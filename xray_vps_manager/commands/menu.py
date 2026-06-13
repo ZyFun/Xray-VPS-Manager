@@ -170,6 +170,7 @@ def update_menu_actions():
         ("10", "SQLite: preflight без переключения"),
         ("11", "SQLite: проверить cutover"),
         ("12", "SQLite: выполнить cutover"),
+        ("13", "SQLite: удалить legacy JSON/JSONL"),
         ("0", "Назад"),
     ]
 
@@ -425,6 +426,7 @@ def update_menu_handlers():
         "10": ("SQLite: preflight без переключения", lambda: menu_xray_actions.sqlite_preflight(call)),
         "11": ("SQLite: проверить cutover", lambda: menu_xray_actions.sqlite_validate_cutover(call)),
         "12": ("SQLite: выполнить cutover", lambda: menu_xray_actions.sqlite_cutover(call, confirm)),
+        "13": ("SQLite: удалить legacy JSON/JSONL", lambda: menu_xray_actions.sqlite_cleanup_legacy(call, confirm)),
     }
 
 

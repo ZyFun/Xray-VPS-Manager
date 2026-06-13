@@ -46,6 +46,25 @@ class MenuXrayActionsTests(unittest.TestCase):
 
         self.assertEqual(calls, [["xray-vps-manager", "sqlite", "cutover", "--yes"]])
 
+    def test_sqlite_cleanup_legacy_requires_confirmation(self) -> None:
+        calls = []
+        stdout = StringIO()
+
+        with redirect_stdout(stdout):
+            menu_xray_actions.sqlite_cleanup_legacy(calls.append, lambda _message: False)
+
+        self.assertEqual(calls, [])
+        self.assertIn("Очистка legacy SQLite отменена.", stdout.getvalue())
+
+    def test_sqlite_cleanup_legacy_calls_manager_command_after_confirmation(self) -> None:
+        calls = []
+        stdout = StringIO()
+
+        with redirect_stdout(stdout):
+            menu_xray_actions.sqlite_cleanup_legacy(calls.append, lambda _message: True)
+
+        self.assertEqual(calls, [["xray-vps-manager", "sqlite", "cleanup-legacy", "--yes"]])
+
 
 if __name__ == "__main__":
     unittest.main()

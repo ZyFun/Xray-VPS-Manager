@@ -1440,6 +1440,18 @@ Cutover останавливает manager-сервисы, которые мог
 xray-vps-manager sqlite validate-cutover
 ```
 
+После успешного cutover и проверки можно посмотреть legacy JSON/JSONL-файлы, которые больше не используются как runtime-база:
+
+```bash
+xray-vps-manager sqlite cleanup-legacy
+```
+
+Без `--yes` команда ничего не удаляет. Для удаления она сначала проверит текущий SQLite cutover, создаст свежий backup и только после этого удалит найденные `clients.json`, `traffic.json`, `activity.json`, `activity-exceptions.json`, `telegram-bot.json` и старые `activity/clients/*.jsonl`:
+
+```bash
+xray-vps-manager sqlite cleanup-legacy --yes
+```
+
 Если нужно выполнить последовательность без финального `xray-test`, можно добавить `--skip-test`, но для обычного переключения лучше оставлять проверку включённой.
 
 Перед финальным переключением не запускайте параллельно `xray-menu` и другие команды, которые меняют клиентов, трафик, Telegram-настройки или журнал активности.
@@ -1451,6 +1463,7 @@ SQLite: статус базы
 SQLite: preflight без переключения
 SQLite: проверить cutover
 SQLite: выполнить cutover
+SQLite: удалить legacy JSON/JSONL
 ```
 
 ## Бэкапы

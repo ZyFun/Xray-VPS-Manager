@@ -212,6 +212,131 @@ class SQLiteCommandTests(unittest.TestCase):
             import_json_files.assert_not_called()
             self.assertIn("SQLite cutover validation failed", stderr.getvalue())
 
+    def test_cleanup_legacy_dry_run_lists_files_without_deleting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            clients_path = root / "clients.json"
+            traffic_path = root / "traffic.json"
+            client_log_dir = root / "activity" / "clients"
+            client_log_dir.mkdir(parents=True)
+            client_log = client_log_dir / "alice.jsonl"
+            clients_path.write_text("{}\n")
+            traffic_path.write_text("{}\n")
+            client_log.write_text("{}\n")
+
+            stdout = StringIO()
+            with mock.patch.object(sqlite_command, "CLIENT_DB_PATH", clients_path), mock.patch.object(
+                sqlite_command, "TRAFFIC_PATH", traffic_path
+            ), mock.patch.object(
+                sqlite_command, "ACTIVITY_PATH", root / "missing-activity.json"
+            ), mock.patch.object(
+                sqlite_command, "ACTIVITY_EXCEPTIONS_PATH", root / "missing-exceptions.json"
+            ), mock.patch.object(
+                sqlite_command, "TELEGRAM_DB_PATH", root / "missing-telegram.json"
+            ), mock.patch.object(
+                sqlite_command, "CLIENT_LOG_DIR", client_log_dir
+            ), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), redirect_stdout(stdout):
+                code = sqlite_command.cleanup_legacy(yes=False)
+
+            self.assertEqual(code, 0)
+            self.assertTrue(clients_path.exists())
+            self.assertTrue(traffic_path.exists())
+            self.assertTrue(client_log.exists())
+            output = stdout.getvalue()
+            self.assertIn(str(clients_path), output)
+            self.assertIn(str(client_log), output)
+            self.assertIn("Dry run only", output)
+
+    def test_cleanup_legacy_validates_backs_up_and_deletes_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            connection = database.open_database(db_path)
+            try:
+                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
+            finally:
+                connection.close()
+
+            clients_path = root / "clients.json"
+            traffic_path = root / "traffic.json"
+            activity_path = root / "activity.json"
+            exceptions_path = root / "activity-exceptions.json"
+            telegram_path = root / "telegram-bot.json"
+            for path in (clients_path, traffic_path, activity_path, exceptions_path, telegram_path):
+                path.write_text("{}\n")
+            client_log_dir = root / "activity" / "clients"
+            client_log_dir.mkdir(parents=True)
+            client_log = client_log_dir / "alice.jsonl"
+            client_log.write_text("{}\n")
+            backup_path = root / "backup.tar.gz"
+            backup_path.write_bytes(b"backup")
+
+            stdout = StringIO()
+            with mock.patch.object(sqlite_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                sqlite_command, "CLIENT_DB_PATH", clients_path
+            ), mock.patch.object(
+                sqlite_command, "TRAFFIC_PATH", traffic_path
+            ), mock.patch.object(
+                sqlite_command, "ACTIVITY_PATH", activity_path
+            ), mock.patch.object(
+                sqlite_command, "ACTIVITY_EXCEPTIONS_PATH", exceptions_path
+            ), mock.patch.object(
+                sqlite_command, "TELEGRAM_DB_PATH", telegram_path
+            ), mock.patch.object(
+                sqlite_command, "CLIENT_LOG_DIR", client_log_dir
+            ), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
+                clear=True,
+            ), mock.patch.object(
+                sqlite_command.backup_command, "create_backup", return_value=backup_path
+            ) as create_backup, redirect_stdout(stdout):
+                code = sqlite_command.cleanup_legacy(yes=True)
+
+            self.assertEqual(code, 0)
+            create_backup.assert_called_once_with(path_only=False, quiet=True, sync=True)
+            self.assertTrue(db_path.exists())
+            for path in (clients_path, traffic_path, activity_path, exceptions_path, telegram_path, client_log):
+                self.assertFalse(path.exists())
+            output = stdout.getvalue()
+            self.assertIn("OK SQLite cutover validation passed.", output)
+            self.assertIn("Pre-cleanup backup:", output)
+            self.assertIn("Deleted legacy JSON/JSONL state files: 6", output)
+
+    def test_cleanup_legacy_rejects_non_file_legacy_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            clients_path = root / "clients.json"
+            clients_path.mkdir()
+            backup_path = root / "backup.tar.gz"
+            backup_path.write_bytes(b"backup")
+
+            with mock.patch.object(sqlite_command, "CLIENT_DB_PATH", clients_path), mock.patch.object(
+                sqlite_command, "TRAFFIC_PATH", root / "missing-traffic.json"
+            ), mock.patch.object(
+                sqlite_command, "ACTIVITY_PATH", root / "missing-activity.json"
+            ), mock.patch.object(
+                sqlite_command, "ACTIVITY_EXCEPTIONS_PATH", root / "missing-exceptions.json"
+            ), mock.patch.object(
+                sqlite_command, "TELEGRAM_DB_PATH", root / "missing-telegram.json"
+            ), mock.patch.object(
+                sqlite_command, "CLIENT_LOG_DIR", root / "missing-logs"
+            ), mock.patch.object(
+                sqlite_command.os, "geteuid", return_value=0
+            ), mock.patch.object(
+                sqlite_command.backup_command, "create_backup"
+            ) as create_backup, redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    sqlite_command.cleanup_legacy(yes=True)
+
+            self.assertEqual(caught.exception.code, 1)
+            create_backup.assert_not_called()
+            self.assertTrue(clients_path.exists())
+
     def test_preflight_imports_to_temporary_database_without_touching_manager_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

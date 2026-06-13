@@ -14,7 +14,16 @@ from xray_vps_manager.commands import backup as backup_command
 from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity.time import parse_time
 from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.core.paths import MANAGER_DB_PATH, SERVER_ENV_PATH
+from xray_vps_manager.core.paths import (
+    ACTIVITY_EXCEPTIONS_PATH,
+    ACTIVITY_PATH,
+    CLIENT_DB_PATH,
+    CLIENT_LOG_DIR,
+    MANAGER_DB_PATH,
+    SERVER_ENV_PATH,
+    TELEGRAM_DB_PATH,
+    TRAFFIC_PATH,
+)
 from xray_vps_manager.core.server_env import read_server_env, write_server_env
 from xray_vps_manager.db import database, json_import, schema
 from xray_vps_manager.telegram import payments as telegram_payments
@@ -630,6 +639,76 @@ def set_server_env_flag(key: str, enabled: bool) -> int:
     return 0
 
 
+def legacy_state_file_paths() -> tuple[Path, ...]:
+    return (
+        CLIENT_DB_PATH,
+        TRAFFIC_PATH,
+        ACTIVITY_PATH,
+        ACTIVITY_EXCEPTIONS_PATH,
+        TELEGRAM_DB_PATH,
+    )
+
+
+def legacy_activity_log_paths() -> list[Path]:
+    if not CLIENT_LOG_DIR.exists():
+        return []
+    return sorted(path for path in CLIENT_LOG_DIR.glob("*.jsonl") if path.is_file() or path.is_symlink())
+
+
+def existing_legacy_state_paths() -> list[Path]:
+    paths = [path for path in legacy_state_file_paths() if path.exists()]
+    paths.extend(legacy_activity_log_paths())
+    return sorted(paths, key=lambda item: str(item))
+
+
+def verify_legacy_paths_are_files(paths: list[Path]) -> None:
+    invalid = [str(path) for path in paths if not path.is_file() and not path.is_symlink()]
+    if invalid:
+        raise RuntimeError("refusing to delete non-file legacy paths: " + ", ".join(invalid))
+
+
+def cleanup_legacy(*, yes: bool = False) -> int:
+    require_root()
+    paths = existing_legacy_state_paths()
+    if not paths:
+        print("No legacy JSON/JSONL state files found.")
+        return 0
+
+    print("Legacy JSON/JSONL state files:")
+    for path in paths:
+        print(f" - {path}")
+
+    if not yes:
+        print()
+        print("Dry run only. Re-run with --yes to validate SQLite, create a backup, and delete these files.")
+        return 0
+
+    try:
+        verify_legacy_paths_are_files(paths)
+        print()
+        print("Validating SQLite cutover before cleanup...")
+        run_cutover_validation()
+
+        print("Creating backup before deleting legacy state...")
+        backup_path = backup_command.create_backup(path_only=False, quiet=True, sync=True)
+        verify_backup_file(backup_path, "Pre-cleanup")
+        print(f"Pre-cleanup backup: {backup_path}")
+
+        deleted = []
+        for path in paths:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+                deleted.append(path)
+    except Exception as exc:
+        die(f"SQLite legacy cleanup failed: {exc}")
+
+    print()
+    print(f"Deleted legacy JSON/JSONL state files: {len(deleted)}")
+    for path in deleted:
+        print(f" - {path}")
+    return 0
+
+
 def usage() -> None:
     print(
         """Usage:
@@ -638,6 +717,7 @@ def usage() -> None:
   xray-vps-manager sqlite preflight
   xray-vps-manager sqlite validate-cutover
   xray-vps-manager sqlite cutover [--yes] [--skip-test]
+  xray-vps-manager sqlite cleanup-legacy [--yes]
   xray-vps-manager sqlite enable-reads
   xray-vps-manager sqlite disable-reads
   xray-vps-manager sqlite enable-writes
@@ -671,6 +751,13 @@ def main() -> None:
             usage()
             sys.exit(1)
         sys.exit(cutover(yes="--yes" in args, run_test="--skip-test" not in args))
+    if command == "cleanup-legacy":
+        allowed = {"--yes"}
+        unknown = [arg for arg in args if arg not in allowed]
+        if unknown:
+            usage()
+            sys.exit(1)
+        sys.exit(cleanup_legacy(yes="--yes" in args))
     if command == "enable-reads" and not args:
         sys.exit(set_server_env_flag(SQLITE_READS_SERVER_ENV, True))
     if command == "disable-reads" and not args:
