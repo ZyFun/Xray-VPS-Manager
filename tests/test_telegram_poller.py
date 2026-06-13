@@ -1,5 +1,7 @@
 import unittest
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from xray_vps_manager.telegram import admin, poller
 
@@ -26,6 +28,8 @@ class TelegramPollerTests(unittest.TestCase):
             load_db=lambda: db,
             save_db_sections=save_db_sections,
             load_client_db=lambda: {"clients": {}},
+            load_traffic_db=lambda: {"clients": {}},
+            display_timezone=lambda: (ZoneInfo("Europe/Moscow"), "Europe/Moscow"),
             format_access_until=lambda value: value or "бессрочно",
             run_capture=lambda *args, **kwargs: None,
             send_chat_message=send_chat_message,
@@ -89,6 +93,72 @@ class TelegramPollerTests(unittest.TestCase):
 
         self.assertEqual(events[0], ("save", ("clientSubscriptionState",), 26))
         self.assertTrue(any(event[0] == "send" for event in events))
+
+    def test_traffic_callback_sends_report_for_subscribed_client(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 30, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 35,
+                "callback_query": {
+                    "id": "callback-traffic",
+                    "data": "client:traffic:day",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(db, updates, events)
+        today = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+        ctx = poller.PollerContext(
+            **{
+                **ctx.__dict__,
+                "load_client_db": lambda: {
+                    "clients": {
+                        "alice": {"id": "00000000-0000-0000-0000-000000000001"},
+                        "bob": {"id": "00000000-0000-0000-0000-000000000002"},
+                    }
+                },
+                "load_traffic_db": lambda: {
+                    "clients": {
+                        "alice": {
+                            "history": {
+                                today: {
+                                    "00": {"incoming": 1024, "outgoing": 2048},
+                                }
+                            }
+                        },
+                        "bob": {
+                            "history": {
+                                today: {
+                                    "00": {"incoming": 999999, "outgoing": 999999},
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Статистика трафика за сутки", sent[2])
+        self.assertIn("1.00KB", sent[2])
+        self.assertIn("2.00KB", sent[2])
+        self.assertNotIn("alice", sent[2])
+        self.assertNotIn("bob", sent[2])
 
 
 if __name__ == "__main__":

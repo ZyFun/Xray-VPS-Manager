@@ -206,6 +206,8 @@ def poller_context():
         load_db=load_db,
         save_db_sections=save_db_sections,
         load_client_db=load_client_db,
+        load_traffic_db=load_traffic_db,
+        display_timezone=display_timezone,
         format_access_until=format_access_until,
         run_capture=run_capture,
         send_chat_message=send_chat_message,

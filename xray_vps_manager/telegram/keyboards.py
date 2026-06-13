@@ -12,9 +12,21 @@ def client_menu_keyboard():
         [{"text": "Подключить уведомления", "callback_data": "client:subscribe"}],
         [{"text": "Статус подписки", "callback_data": "client:status"}],
         [{"text": "Получить VLESS-ссылку", "callback_data": "client:link"}],
+        [{"text": "Статистика трафика", "callback_data": "client:traffic"}],
         [{"text": "Отключить уведомления", "callback_data": "client:unsubscribe"}],
         [{"text": "Помощь", "callback_data": "client:help"}],
     ]
+
+
+def client_traffic_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "За сутки", "callback_data": "client:traffic:day"}],
+            [{"text": "За сутки по часам", "callback_data": "client:traffic:day-hours"}],
+            [{"text": "За неделю по дням", "callback_data": "client:traffic:week-days"}],
+            [{"text": "Назад", "callback_data": "client:help"}],
+        ]
+    }
 
 
 def client_keyboard_for_chat(db, chat_id):

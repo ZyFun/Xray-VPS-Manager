@@ -271,6 +271,7 @@ def configure_bot_commands():
         {"command": "start", "description": "Открыть меню"},
         {"command": "status", "description": "Показать подписку"},
         {"command": "link", "description": "Получить VLESS-ссылку"},
+        {"command": "traffic", "description": "Показать статистику трафика"},
         {"command": "unsubscribe", "description": "Отключить напоминания"},
         {"command": "help", "description": "Помощь"},
     ]

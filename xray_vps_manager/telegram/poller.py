@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from xray_vps_manager.telegram import admin, keyboards, messages, subscriptions
+from xray_vps_manager.telegram import admin, keyboards, messages, subscriptions, traffic
 
 USER_POLL_SHORT_TIMEOUT = 2
 USER_POLL_LONG_TIMEOUT = 45
@@ -22,6 +22,8 @@ class PollerContext:
     load_db: Callable[[], dict]
     save_db_sections: Callable[[dict, tuple[str, ...]], None]
     load_client_db: Callable[[], dict]
+    load_traffic_db: Callable[[], dict]
+    display_timezone: Callable[[], tuple[Any, str]]
     format_access_until: Callable[[str], str]
     run_capture: Callable[..., Any]
     send_chat_message: Callable[..., Any]
@@ -61,6 +63,16 @@ def send_client_menu(ctx: PollerContext, db, chat_id, text=None, parse_mode=None
     )
 
 
+def send_client_traffic_menu(ctx: PollerContext, db, chat_id, text=None, parse_mode=None):
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        text or traffic.traffic_menu_text(),
+        reply_markup=keyboards.client_traffic_keyboard(),
+        parse_mode=parse_mode,
+    )
+
+
 def subscription_status_for_chat(ctx: PollerContext, db, chat_id):
     return subscriptions.subscription_status_for_chat(db, chat_id, ctx.load_client_db(), ctx.format_access_until)
 
@@ -73,6 +85,17 @@ def current_vless_link_code_for_chat(ctx: PollerContext, db, chat_id):
         ctx.xray_client,
         ctx.run_capture,
         ctx.server_name_fragment(),
+    )
+
+
+def traffic_report_for_chat(ctx: PollerContext, db, chat_id, kind):
+    return traffic.traffic_report_for_chat(
+        db,
+        chat_id,
+        ctx.load_client_db(),
+        ctx.load_traffic_db(),
+        ctx.display_timezone,
+        kind,
     )
 
 
@@ -115,6 +138,9 @@ def handle_user_message(ctx: PollerContext, db, update):
     if command == "/link":
         text, parse_mode = current_vless_link_code_for_chat(ctx, db, chat_id)
         send_client_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
+        return True
+    if command == "/traffic":
+        send_client_traffic_menu(ctx, db, chat_id)
         return True
     if command in ("/unsubscribe", "/stop"):
         send_client_menu(ctx, db, chat_id, subscriptions.unsubscribe_chat(db, chat_id))
@@ -165,6 +191,16 @@ def handle_callback_query(ctx: PollerContext, db, update):
         ctx.answer_callback_query(db, callback_id)
         text, parse_mode = current_vless_link_code_for_chat(ctx, db, chat_id)
         send_client_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
+        return True
+    if data == "client:traffic":
+        ctx.answer_callback_query(db, callback_id)
+        send_client_traffic_menu(ctx, db, chat_id)
+        return True
+    if data.startswith("client:traffic:"):
+        ctx.answer_callback_query(db, callback_id)
+        kind = data.rsplit(":", 1)[-1]
+        text, parse_mode = traffic_report_for_chat(ctx, db, chat_id, kind)
+        send_client_traffic_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
         return True
     if data == "client:unsubscribe":
         ctx.answer_callback_query(db, callback_id, "Готово")
