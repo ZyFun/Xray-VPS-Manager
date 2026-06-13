@@ -90,6 +90,8 @@ def parse_utc_timestamp(value: str | None) -> datetime | None:
     raw = (value or "").strip()
     if not raw:
         return None
+    if raw.endswith(" UTC"):
+        raw = raw[:-4].strip() + "+00:00"
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     try:
@@ -109,6 +111,13 @@ def format_manager_time(moment: datetime) -> str:
     local = moment.astimezone(manager_timezone())
     tz_name = local.tzname() or manager_timezone_label()
     return local.strftime("%Y-%m-%d %H:%M ") + tz_name
+
+
+def manager_updated_header_value(value: str) -> str:
+    moment = parse_utc_timestamp(value)
+    if not moment:
+        return value
+    return format_manager_time(moment)
 
 
 def asset_mtime_label(name: str) -> str:

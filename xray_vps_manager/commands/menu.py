@@ -20,7 +20,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-13 11:58 UTC"
+MENU_UPDATED = "2026-06-13 12:17 UTC"
 
 
 def die(message):
@@ -32,7 +32,7 @@ def print_menu_header():
     rows = [
         ("Xray Version", menu_status.current_xray_version()),
         ("Manager Version", MENU_VERSION),
-        ("Manager Updated", MENU_UPDATED),
+        ("Manager Updated", menu_status.manager_updated_header_value(MENU_UPDATED)),
         ("Geo Assets", menu_status.geo_assets_header_value()),
         ("Security Audit", menu_status.security_audit_header_value()),
     ]
