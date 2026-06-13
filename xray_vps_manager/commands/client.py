@@ -18,6 +18,7 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import runtime as client_runtime
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.clients import status as client_status
+from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
@@ -170,14 +171,14 @@ def save_db(db):
 
 def restart_xray_with_config_test():
     run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-    run(["systemctl", "restart", "xray"])
+    restart_systemd_unit("xray")
 
 
 def restore_config_backup(backup):
     shutil.copy2(backup, CONFIG_PATH)
     shutil.chown(CONFIG_PATH, user="root", group="xray")
     os.chmod(CONFIG_PATH, 0o640)
-    run(["systemctl", "restart", "xray"])
+    restart_systemd_unit("xray")
 
 
 def save_config_restart_xray_and_db(config, db):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from collections.abc import Sequence
 
 
@@ -32,3 +33,21 @@ def run_capture(
         timeout=timeout,
         **kwargs,
     )
+
+
+def restart_systemd_unit(unit: str, timeout: int = 30, retry_delay: float = 1.0) -> subprocess.CompletedProcess[str]:
+    result = run_capture(["systemctl", "restart", unit], timeout=timeout)
+    if result.returncode == 0:
+        return result
+
+    run_capture(["systemctl", "reset-failed", unit], timeout=10)
+    if retry_delay > 0:
+        time.sleep(retry_delay)
+
+    retry = run_capture(["systemctl", "restart", unit], timeout=timeout)
+    if retry.returncode == 0:
+        return retry
+
+    stdout = "\n".join(part for part in (result.stdout, retry.stdout) if part).strip()
+    stderr = "\n".join(part for part in (result.stderr, retry.stderr) if part).strip()
+    raise subprocess.CalledProcessError(retry.returncode, retry.args, stdout, stderr)

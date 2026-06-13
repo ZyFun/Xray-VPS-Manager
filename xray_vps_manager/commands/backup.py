@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
+from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 
@@ -426,7 +427,7 @@ def start_timers():
 
 def test_and_restart():
     run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-    run(["systemctl", "restart", "xray"])
+    restart_systemd_unit("xray")
     active = run_capture(["systemctl", "is-active", "xray"], timeout=10)
     if active.returncode != 0:
         die("Xray did not become active after restore.")
