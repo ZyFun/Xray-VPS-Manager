@@ -1,15 +1,22 @@
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from xray_vps_manager.telegram import admin, poller
 
 
 class TelegramPollerTests(unittest.TestCase):
-    def make_context(self, db, updates, events, client_db=None):
+    def make_context(self, db, updates, events, client_db=None, run_capture=None):
         if client_db is None:
             client_db = {"clients": {}}
+        if callable(client_db):
+            load_client_db = client_db
+        else:
+            load_client_db = lambda: client_db
+        if run_capture is None:
+            run_capture = lambda *args, **kwargs: None
 
         def save_db_sections(updated_db, sections):
             state = updated_db.get("clientSubscriptionState", {})
@@ -24,10 +31,10 @@ class TelegramPollerTests(unittest.TestCase):
             return {"ok": True, "result": updates}
 
         admin_context = admin.AdminContext(
-            load_client_db=lambda: client_db,
+            load_client_db=load_client_db,
             save_db_sections=save_db_sections,
             format_access_until=lambda value: value or "бессрочно",
-            run_capture=lambda *args, **kwargs: None,
+            run_capture=run_capture,
             send_chat_message=send_chat_message,
             bot_name=lambda current_db=None: "Vireika",
             notification_context=None,
@@ -35,11 +42,11 @@ class TelegramPollerTests(unittest.TestCase):
         return poller.PollerContext(
             load_db=lambda: db,
             save_db_sections=save_db_sections,
-            load_client_db=lambda: client_db,
+            load_client_db=load_client_db,
             load_traffic_db=lambda: {"clients": {}},
             display_timezone=lambda: (ZoneInfo("Europe/Moscow"), "Europe/Moscow"),
             format_access_until=lambda value: value or "бессрочно",
-            run_capture=lambda *args, **kwargs: None,
+            run_capture=run_capture,
             send_chat_message=send_chat_message,
             answer_callback_query=lambda *args, **kwargs: events.append(("answer",)),
             curl_json=curl_json,
@@ -76,6 +83,218 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertEqual(events[0], ("save", ("clientSubscriptionState",), 16))
         self.assertIn(("answer",), events)
         self.assertTrue(any(event[0] == "send" for event in events))
+
+    def test_owner_can_extend_client_subscription_from_admin_panel(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 100, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {},
+        }
+        updates = [
+            {
+                "update_id": 101,
+                "callback_query": {
+                    "id": "callback-extend-menu",
+                    "data": "admin:client-extend",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 102,
+                "callback_query": {
+                    "id": "callback-extend-alice",
+                    "data": "admin:client-extend:0",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 103,
+                "message": {
+                    "text": "14",
+                    "chat": {"id": "111", "type": "private", "username": "owner"},
+                },
+            },
+        ]
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Client: alice\nAccess until: 2026-07-01 00:00",
+                stderr="",
+            )
+
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"expiresAt": "2026-07-01T00:00:00+03:00"}}},
+            run_capture=run_capture,
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertIn(("run", ["/usr/local/sbin/xray-client", "extend-days", "alice", "14"], 120), events)
+        self.assertNotIn("111", db.get("adminState", {}))
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Подписка продлена для alice на 14 дн.", sent[2])
+        self.assertIn("Доступ до: 2026-07-01T00:00:00+03:00", sent[2])
+
+    def test_owner_extend_selection_uses_saved_button_list_when_clients_change(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 105, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {},
+        }
+        updates = [
+            {
+                "update_id": 106,
+                "callback_query": {
+                    "id": "callback-extend-menu",
+                    "data": "admin:client-extend",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 107,
+                "callback_query": {
+                    "id": "callback-extend-first",
+                    "data": "admin:client-extend:0",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 108,
+                "message": {
+                    "text": "7",
+                    "chat": {"id": "111", "type": "private", "username": "owner"},
+                },
+            },
+        ]
+        events = []
+        snapshots = [
+            {"clients": {"alice": {"expiresAt": "2026-07-01T00:00:00+03:00"}, "bob": {}}},
+            {"clients": {"aaron": {}, "alice": {"expiresAt": "2026-07-08T00:00:00+03:00"}, "bob": {}}},
+        ]
+
+        def load_client_db():
+            if len(snapshots) > 1:
+                return snapshots.pop(0)
+            return snapshots[0]
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ctx = self.make_context(db, updates, events, client_db=load_client_db, run_capture=run_capture)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertIn(("run", ["/usr/local/sbin/xray-client", "extend-days", "alice", "7"], 120), events)
+        self.assertNotIn(("run", ["/usr/local/sbin/xray-client", "extend-days", "aaron", "7"], 120), events)
+
+    def test_owner_extend_subscription_rejects_non_numeric_days(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 110, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {
+                "111": {
+                    "action": "extend-subscription-days",
+                    "client": "alice",
+                    "startedAt": "2026-06-12T22:00:00Z",
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 111,
+                "message": {
+                    "text": "две недели",
+                    "chat": {"id": "111", "type": "private", "username": "owner"},
+                },
+            }
+        ]
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"expiresAt": "2026-07-01T00:00:00+03:00"}}},
+            run_capture=run_capture,
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertFalse(any(event[0] == "run" for event in events))
+        self.assertEqual(db["adminState"]["111"]["action"], "extend-subscription-days")
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Нужно отправить положительное целое число дней.", sent[2])
+
+    def test_owner_extend_subscription_back_clears_pending_state(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 120, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {
+                "111": {
+                    "action": "extend-subscription-days",
+                    "client": "alice",
+                    "startedAt": "2026-06-12T22:00:00Z",
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 121,
+                "callback_query": {
+                    "id": "callback-back",
+                    "data": "admin:clients",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 122,
+                "message": {
+                    "text": "14",
+                    "chat": {"id": "111", "type": "private", "username": "owner"},
+                },
+            },
+        ]
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"expiresAt": "2026-07-01T00:00:00+03:00"}}},
+            run_capture=run_capture,
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertFalse(any(event[0] == "run" for event in events))
+        self.assertNotIn("111", db.get("adminState", {}))
 
     def test_poll_saves_update_offset_before_replying_to_text_message(self) -> None:
         db = {

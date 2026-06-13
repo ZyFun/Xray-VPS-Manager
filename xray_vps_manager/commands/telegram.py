@@ -189,6 +189,7 @@ def admin_context():
         send_chat_message=send_chat_message,
         bot_name=bot_name,
         notification_context=notification_context(),
+        xray_client=XRAY_CLIENT,
     )
 
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.telegram import keyboards, messages, notifications, payments, subscriptions
 
 
@@ -19,6 +20,7 @@ class AdminContext:
     send_chat_message: Callable[..., Any]
     bot_name: Callable[[dict | None], str]
     notification_context: notifications.NotificationContext
+    xray_client: Path = Path("/usr/local/sbin/xray-client")
 
 
 def send_admin_menu(ctx: AdminContext, db, chat_id, text=None):
@@ -31,6 +33,35 @@ def send_admin_notices_menu(ctx: AdminContext, db, chat_id, text=None):
         chat_id,
         text or messages.admin_notices_intro_text(),
         reply_markup=keyboards.admin_notices_keyboard(),
+    )
+
+
+def send_admin_clients_menu(ctx: AdminContext, db, chat_id, text=None):
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        text or "Xray VPS Manager: клиенты",
+        reply_markup=keyboards.admin_clients_keyboard(),
+    )
+
+
+def admin_client_names(ctx: AdminContext) -> list[str]:
+    clients = subscriptions.client_db_clients(ctx.load_client_db())
+    return sorted(str(name) for name, entry in clients.items() if isinstance(entry, dict))
+
+
+def send_admin_client_extend_list(ctx: AdminContext, db, chat_id):
+    names = admin_client_names(ctx)
+    if not names:
+        clear_client_extend_state_if_pending(ctx, db, chat_id)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиентов пока нет.")
+        return
+    set_client_extend_selection(ctx, db, chat_id, names)
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        "Выбери клиента, которому нужно продлить подписку.",
+        reply_markup=keyboards.admin_client_extend_keyboard(names),
     )
 
 
@@ -72,6 +103,13 @@ def subscribers_text(ctx: AdminContext, db):
     if len(user_subscriptions) > 25:
         lines.append(f"...и ещё подписок: {len(user_subscriptions) - 25}")
     return "\n".join(lines)
+
+
+def admin_utc_stamp(ctx: AdminContext) -> str:
+    notification_context = ctx.notification_context
+    if notification_context is not None and hasattr(notification_context, "utc_stamp"):
+        return notification_context.utc_stamp()
+    return ""
 
 
 def run_server_test_text(ctx: AdminContext):
@@ -141,15 +179,40 @@ def preview_notice(ctx: AdminContext, db, chat_id, kind):
 
 
 def set_custom_notice_waiting(ctx: AdminContext, db, chat_id):
-    db.setdefault("adminState", {})[str(chat_id)] = {"action": "custom-notice-text", "startedAt": ctx.notification_context.utc_stamp()}
+    db.setdefault("adminState", {})[str(chat_id)] = {"action": "custom-notice-text", "startedAt": admin_utc_stamp(ctx)}
     ctx.save_db_sections(db, ("adminState",))
 
 
-def clear_admin_state(ctx: AdminContext, db, chat_id):
+def set_client_extend_waiting(ctx: AdminContext, db, chat_id, name):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "extend-subscription-days",
+        "client": name,
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def set_client_extend_selection(ctx: AdminContext, db, chat_id, names):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "extend-subscription-select",
+        "clients": list(names),
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def clear_admin_state(ctx: AdminContext, db, chat_id, clear_custom_notice=True):
     state = db.setdefault("adminState", {})
     state.pop(str(chat_id), None)
-    state.pop("customNoticeText", None)
+    if clear_custom_notice:
+        state.pop("customNoticeText", None)
     ctx.save_db_sections(db, ("adminState",))
+
+
+def clear_client_extend_state_if_pending(ctx: AdminContext, db, chat_id):
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    if pending.get("action") in ("extend-subscription-select", "extend-subscription-days"):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
 
 
 def send_admin_notice(ctx: AdminContext, db, chat_id, kind):
@@ -185,6 +248,101 @@ def handle_custom_notice_text(ctx: AdminContext, db, chat_id, text):
     return True
 
 
+def selected_client_name(db, chat_id, index_value):
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return ""
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    names = pending.get("clients", []) if pending.get("action") == "extend-subscription-select" else []
+    if index < 0 or index >= len(names):
+        return ""
+    return str(names[index])
+
+
+def set_extend_subscription_waiting(ctx: AdminContext, db, chat_id, name):
+    set_client_extend_waiting(ctx, db, chat_id, name)
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        f"Отправь числом, на сколько дней продлить подписку для {name}.\n\n"
+        "Например: 30\n"
+        "Если передумаешь, отправь /cancel.",
+        reply_markup=keyboards.admin_client_extend_cancel_keyboard(),
+    )
+
+
+def command_output(result):
+    stdout = getattr(result, "stdout", "") or ""
+    stderr = getattr(result, "stderr", "") or ""
+    return (stdout + (("\n" + stderr) if stderr else "")).strip()
+
+
+def extend_subscription_text(ctx: AdminContext, name, days, result):
+    if getattr(result, "returncode", 1) != 0:
+        output = command_output(result)
+        details = f"\n\n{output}" if output else ""
+        return messages.truncate_telegram_text(f"Не удалось продлить подписку для {name}, exit {getattr(result, 'returncode', 1)}.{details}")
+
+    try:
+        clients = subscriptions.client_db_clients(ctx.load_client_db())
+    except Exception:
+        clients = {}
+    entry = clients.get(name, {})
+    access_until = ctx.format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else "")
+    lines = [
+        f"Подписка продлена для {name} на {days} дн.",
+        f"Доступ до: {access_until}",
+    ]
+    output = command_output(result)
+    if output:
+        lines.extend(["", output])
+    return messages.truncate_telegram_text("\n".join(lines))
+
+
+def handle_extend_subscription_days(ctx: AdminContext, db, chat_id, text):
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    if pending.get("action") != "extend-subscription-days":
+        return False
+    if text.lower() in ("/cancel", "cancel", "отмена"):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Продление подписки отменено.")
+        return True
+
+    name = str(pending.get("client") or "")
+    if name not in admin_client_names(ctx):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент больше не найден. Выбери клиента заново.")
+        return True
+
+    try:
+        days = client_access.parse_extend_days(text)
+    except ValueError:
+        ctx.send_chat_message(
+            db,
+            chat_id,
+            "Нужно отправить положительное целое число дней. Например: 30\n\n"
+            "Если передумаешь, отправь /cancel.",
+            reply_markup=keyboards.admin_client_extend_cancel_keyboard(),
+        )
+        return True
+
+    result = ctx.run_capture([str(ctx.xray_client), "extend-days", name, str(days)], timeout=120)
+    clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+    send_admin_clients_menu(ctx, db, chat_id, extend_subscription_text(ctx, name, days, result))
+    return True
+
+
+def handle_pending_text(ctx: AdminContext, db, chat_id, text):
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    action = pending.get("action")
+    if action == "custom-notice-text":
+        return handle_custom_notice_text(ctx, db, chat_id, text)
+    if action == "extend-subscription-days":
+        return handle_extend_subscription_days(ctx, db, chat_id, text)
+    return False
+
+
 def handle_callback(ctx: AdminContext, db, chat_id, data):
     if data == "admin:menu":
         send_admin_menu(ctx, db, chat_id)
@@ -194,6 +352,28 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
         return True
     if data == "admin:subscribers":
         send_admin_menu(ctx, db, chat_id, subscribers_text(ctx, db))
+        return True
+    if data == "admin:clients":
+        clear_client_extend_state_if_pending(ctx, db, chat_id)
+        send_admin_clients_menu(ctx, db, chat_id)
+        return True
+    if data == "admin:client-extend":
+        send_admin_client_extend_list(ctx, db, chat_id)
+        return True
+    if data.startswith("admin:client-extend:"):
+        name = selected_client_name(db, chat_id, data.rsplit(":", 1)[1])
+        if not name:
+            send_admin_clients_menu(ctx, db, chat_id, "Клиент не найден. Открой список заново.")
+            return True
+        if name not in admin_client_names(ctx):
+            clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+            send_admin_clients_menu(ctx, db, chat_id, "Клиент больше не найден. Выбери клиента заново.")
+            return True
+        set_extend_subscription_waiting(ctx, db, chat_id, name)
+        return True
+    if data == "admin:client-extend-cancel":
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Продление подписки отменено.")
         return True
     if data == "admin:daily-summary":
         send_admin_menu(ctx, db, chat_id, notifications.build_daily_summary_message(ctx.notification_context))

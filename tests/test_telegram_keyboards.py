@@ -73,6 +73,27 @@ class TelegramKeyboardTests(unittest.TestCase):
 
         self.assertIn({"text": "Клиентское меню", "callback_data": "client:menu"}, buttons)
 
+    def test_admin_menu_includes_clients_button(self) -> None:
+        rows = keyboards.admin_menu_keyboard()["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertIn({"text": "Клиенты", "callback_data": "admin:clients"}, buttons)
+
+    def test_admin_clients_keyboard_contains_extend_action(self) -> None:
+        rows = keyboards.admin_clients_keyboard()["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(buttons[0], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
+        self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:menu"})
+
+    def test_admin_client_extend_keyboard_uses_client_indexes(self) -> None:
+        rows = keyboards.admin_client_extend_keyboard(["alice", "bob"])["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(buttons[0], {"text": "alice", "callback_data": "admin:client-extend:0"})
+        self.assertEqual(buttons[1], {"text": "bob", "callback_data": "admin:client-extend:1"})
+        self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:clients"})
+
 
 if __name__ == "__main__":
     unittest.main()

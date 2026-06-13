@@ -154,7 +154,7 @@ def handle_user_message(ctx: PollerContext, db, update):
     if not text:
         send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
         return True
-    if keyboards.is_owner_chat(db, chat_id) and admin.handle_custom_notice_text(ctx.admin_context, db, chat_id, text):
+    if keyboards.is_owner_chat(db, chat_id) and admin.handle_pending_text(ctx.admin_context, db, chat_id, text):
         return True
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
     if command == "/admin":

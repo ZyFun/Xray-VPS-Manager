@@ -61,6 +61,7 @@ def admin_menu_keyboard():
                 {"text": "Подписки клиентов", "callback_data": "admin:subscribers"},
             ],
             [{"text": "Сводка сервера", "callback_data": "admin:daily-summary"}],
+            [{"text": "Клиенты", "callback_data": "admin:clients"}],
             [
                 {"text": "Проверить GeoIP", "callback_data": "admin:geoip"},
                 {"text": "Проверить напоминания", "callback_data": "admin:expiry"},
@@ -71,6 +72,33 @@ def admin_menu_keyboard():
             ],
             [{"text": "Уведомления", "callback_data": "admin:notices"}],
             [{"text": "Клиентское меню", "callback_data": "client:menu"}],
+        ]
+    }
+
+
+def admin_clients_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Продлить подписку", "callback_data": "admin:client-extend"}],
+            [{"text": "Назад", "callback_data": "admin:menu"}],
+        ]
+    }
+
+
+def admin_client_extend_keyboard(client_names):
+    rows = [
+        [{"text": str(name), "callback_data": f"admin:client-extend:{index}"}]
+        for index, name in enumerate(client_names)
+    ]
+    rows.append([{"text": "Назад", "callback_data": "admin:clients"}])
+    return {"inline_keyboard": rows}
+
+
+def admin_client_extend_cancel_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Отмена", "callback_data": "admin:client-extend-cancel"}],
+            [{"text": "Назад", "callback_data": "admin:clients"}],
         ]
     }
 
