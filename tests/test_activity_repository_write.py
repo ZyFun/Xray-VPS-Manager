@@ -144,7 +144,7 @@ class ActivityRepositoryWriteSwitchTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(events, [])
 
-    def test_append_event_mirrors_event_to_ready_sqlite_database(self) -> None:
+    def test_append_event_writes_to_sqlite_when_write_flag_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
@@ -161,6 +161,7 @@ class ActivityRepositoryWriteSwitchTests(unittest.TestCase):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["host"], "example.com")
             self.assertEqual(events[0]["risks"], ["xray-geoip:RU"])
+            self.assertFalse((root / "activity" / "clients" / "sqlite_client.jsonl").exists())
 
     def test_append_event_uses_sqlite_as_primary_when_read_and_write_flags_are_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -184,16 +185,17 @@ class ActivityRepositoryWriteSwitchTests(unittest.TestCase):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["host"], "example.com")
 
-    def test_append_event_skips_sqlite_when_client_is_missing(self) -> None:
+    def test_append_event_fails_when_sqlite_write_client_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
             self.make_sqlite_db(db_path)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True), self.patch_activity_dirs(root):
-                activity_repository.append_event(activity_event("missing_client"), db_path=db_path)
+                with self.assertRaisesRegex(RuntimeError, "client is missing"):
+                    activity_repository.append_event(activity_event("missing_client"), db_path=db_path)
 
-            self.assertTrue((root / "activity" / "clients" / "missing_client.jsonl").exists())
+            self.assertFalse((root / "activity" / "clients" / "missing_client.jsonl").exists())
             connection = database.open_database(db_path)
             try:
                 events = list(sqlite_activity.iter_events(connection))
@@ -233,7 +235,7 @@ class ActivityRepositoryWriteSwitchTests(unittest.TestCase):
             self.assertFalse(missing_db_path.exists())
             self.assertFalse((root / "activity" / "clients" / "sqlite_client.jsonl").exists())
 
-    def test_save_exceptions_mirrors_current_items_to_ready_sqlite_database(self) -> None:
+    def test_save_exceptions_writes_to_sqlite_when_write_flag_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
@@ -243,7 +245,7 @@ class ActivityRepositoryWriteSwitchTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True), self.patch_activity_dirs(root):
                 activity_exceptions.save_activity_exceptions(exception_db(), exceptions_path, db_path=db_path)
 
-            self.assertEqual(json.loads(exceptions_path.read_text())["items"][0]["value"], "*.example.com")
+            self.assertFalse(exceptions_path.exists())
             connection = database.open_database(db_path)
             try:
                 exceptions = sqlite_activity.list_exceptions(connection)
@@ -410,7 +412,7 @@ class ActivityRepositoryWriteSwitchTests(unittest.TestCase):
             self.assertEqual([event["time"] for event in events], ["2026-06-12T08:00:00Z"])
             self.assertNotIn("2026-06-01", db["clients"]["sqlite_client"]["days"])
 
-    def test_activity_mirror_skips_missing_or_not_ready_database(self) -> None:
+    def test_activity_write_fails_for_missing_or_not_ready_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             missing_db_path = root / "missing.db"
@@ -419,10 +421,14 @@ class ActivityRepositoryWriteSwitchTests(unittest.TestCase):
             self.make_sqlite_db(not_ready_db_path, ready=False)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True), self.patch_activity_dirs(root):
-                activity_repository.append_event(activity_event(), db_path=missing_db_path)
-                activity_exceptions.save_activity_exceptions(exception_db(), exceptions_path, db_path=not_ready_db_path)
+                with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
+                    activity_repository.append_event(activity_event(), db_path=missing_db_path)
+                with self.assertRaisesRegex(RuntimeError, "JSON import is not marked ready"):
+                    activity_exceptions.save_activity_exceptions(exception_db(), exceptions_path, db_path=not_ready_db_path)
 
             self.assertFalse(missing_db_path.exists())
+            self.assertFalse((root / "activity" / "clients" / "sqlite_client.jsonl").exists())
+            self.assertFalse(exceptions_path.exists())
             connection = database.open_database(not_ready_db_path)
             try:
                 self.assertEqual(sqlite_activity.list_exceptions(connection)[0]["value"], "old.example.com")

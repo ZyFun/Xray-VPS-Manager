@@ -91,11 +91,10 @@ def save_activity_exceptions(
     *,
     db_path: str | Path | None = None,
 ) -> None:
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         write_activity_exceptions_to_sqlite_for_write(db, db_path=db_path, strict=True)
         return
     write_activity_exceptions_json(db, path)
-    mirror_activity_exceptions_to_sqlite_for_write(db, db_path=db_path)
 
 
 def write_activity_exceptions_json(db: dict, path=ACTIVITY_EXCEPTIONS_PATH) -> None:
@@ -141,14 +140,6 @@ def exception_items_for_read(
     db_path: str | Path | None = None,
 ) -> list[dict]:
     return load_activity_exceptions_for_read(path, db_path=db_path).get("items", [])
-
-
-def mirror_activity_exceptions_to_sqlite_for_write(
-    db: dict,
-    *,
-    db_path: str | Path | None = None,
-) -> bool:
-    return write_activity_exceptions_to_sqlite_for_write(db, db_path=db_path, strict=False)
 
 
 def write_activity_exceptions_to_sqlite_for_write(

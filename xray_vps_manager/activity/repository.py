@@ -66,11 +66,10 @@ def ensure_dirs() -> None:
 
 
 def save_activity_db(db: dict, *, db_path: str | Path | None = None) -> None:
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         write_activity_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
         return
     write_json_activity_db(db)
-    mirror_activity_db_to_sqlite_for_write(db, db_path=db_path)
 
 
 def write_json_activity_db(db: dict) -> None:
@@ -132,7 +131,7 @@ def safe_client_file(name: str) -> Path:
 
 
 def append_event(event: dict, *, db_path: str | Path | None = None) -> None:
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         write_event_to_sqlite_for_write(event, db_path=db_path, strict=True)
         return
     ensure_dirs()
@@ -141,7 +140,6 @@ def append_event(event: dict, *, db_path: str | Path | None = None) -> None:
         handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
     chown_xray(path)
     os.chmod(path, 0o640)
-    mirror_event_to_sqlite_for_write(event, db_path=db_path)
 
 
 def update_summary(db: dict, event: dict) -> None:
@@ -228,7 +226,7 @@ def prune_activity(
     cutoff_dt = datetime.combine(cutoff_date, datetime.min.time(), tzinfo=timezone.utc)
     prune_db_summary(db, cutoff_date)
     removed = 0
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         removed += prune_sqlite_activity_for_write(cutoff_dt, db_path=db_path, strict=True)
     elif CLIENT_LOG_DIR.exists():
         for path in CLIENT_LOG_DIR.glob("*.jsonl"):
@@ -359,14 +357,6 @@ def geoip_events_after_for_read(
             connection.close()
 
 
-def mirror_event_to_sqlite_for_write(
-    event: dict,
-    *,
-    db_path: str | Path | None = None,
-) -> bool:
-    return write_event_to_sqlite_for_write(event, db_path=db_path, strict=False)
-
-
 def write_event_to_sqlite_for_write(
     event: dict,
     *,
@@ -399,14 +389,6 @@ def write_event_to_sqlite_for_write(
     finally:
         if connection is not None:
             connection.close()
-
-
-def mirror_activity_db_to_sqlite_for_write(
-    db: dict,
-    *,
-    db_path: str | Path | None = None,
-) -> bool:
-    return write_activity_db_to_sqlite_for_write(db, db_path=db_path, strict=False)
 
 
 def write_activity_db_to_sqlite_for_write(

@@ -110,7 +110,7 @@ class TrafficRepositoryWriteSwitchTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(set(entries), {"old_client"})
 
-    def test_save_mirrors_traffic_to_ready_sqlite_database(self) -> None:
+    def test_save_writes_traffic_to_sqlite_when_write_flag_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             json_path = root / "traffic.json"
@@ -139,7 +139,7 @@ class TrafficRepositoryWriteSwitchTests(unittest.TestCase):
                     "updated": "2026-06-12T08:02:00Z",
                 },
             )
-            self.assertIn("json_client", self.read_json_file(json_path)["clients"])
+            self.assertFalse(json_path.exists())
 
     def test_save_uses_sqlite_as_primary_when_read_and_write_flags_are_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -179,16 +179,17 @@ class TrafficRepositoryWriteSwitchTests(unittest.TestCase):
             self.assertEqual(access_log_state["offset"], 456)
             self.assertEqual(set(self.read_json_file(json_path)["clients"]), {"rollback_client"})
 
-    def test_save_does_not_create_missing_sqlite_database(self) -> None:
+    def test_save_fails_when_sqlite_write_database_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             json_path = root / "traffic.json"
             missing_db_path = root / "missing.db"
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True):
-                traffic_repository.save_traffic_db(traffic_db(), json_path, db_path=missing_db_path)
+                with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
+                    traffic_repository.save_traffic_db(traffic_db(), json_path, db_path=missing_db_path)
 
-            self.assertIn("json_client", self.read_json_file(json_path)["clients"])
+            self.assertFalse(json_path.exists())
             self.assertFalse(missing_db_path.exists())
 
     def test_save_fails_when_sqlite_primary_database_is_missing(self) -> None:
@@ -208,7 +209,7 @@ class TrafficRepositoryWriteSwitchTests(unittest.TestCase):
             self.assertFalse(json_path.exists())
             self.assertFalse(missing_db_path.exists())
 
-    def test_save_skips_sqlite_mirror_when_import_is_not_marked_ready(self) -> None:
+    def test_save_fails_when_sqlite_write_import_is_not_marked_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             json_path = root / "traffic.json"
@@ -216,8 +217,10 @@ class TrafficRepositoryWriteSwitchTests(unittest.TestCase):
             self.make_sqlite_db(db_path, ready=False)
 
             with mock.patch.dict(os.environ, {"XRAY_MANAGER_SQLITE_WRITES": "1"}, clear=True):
-                traffic_repository.save_traffic_db(traffic_db(), json_path, db_path=db_path)
+                with self.assertRaisesRegex(RuntimeError, "JSON import is not marked ready"):
+                    traffic_repository.save_traffic_db(traffic_db(), json_path, db_path=db_path)
 
+            self.assertFalse(json_path.exists())
             connection = database.open_database(db_path)
             try:
                 entries = sqlite_traffic.list_traffic_entries(connection)

@@ -80,11 +80,10 @@ def save_traffic_db(
     *,
     db_path: str | Path | None = None,
 ) -> None:
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
         return
     save_json(path, db, mode=0o640, group_xray=True)
-    mirror_traffic_db_to_sqlite_for_write(db, db_path=db_path)
 
 
 def traffic_clients(db: dict | None) -> dict:
@@ -121,7 +120,7 @@ def remove_traffic_clients(
     *,
     db_path: str | Path | None = None,
 ) -> bool:
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         return remove_traffic_clients_from_sqlite_for_write(names, db_path=db_path, strict=True)
 
     db = load_traffic_db(path)
@@ -134,14 +133,6 @@ def remove_traffic_clients(
     if changed:
         save_traffic_db(db, path)
     return changed
-
-
-def mirror_traffic_db_to_sqlite_for_write(
-    db: dict[str, Any],
-    *,
-    db_path: str | Path | None = None,
-) -> bool:
-    return write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=False)
 
 
 def write_traffic_db_to_sqlite_for_write(

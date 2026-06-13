@@ -58,11 +58,10 @@ def save_db(
     db_path: str | Path | None = None,
 ) -> None:
     db = normalize_client_defaults(db)
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
         return
     write_json_db(db, path)
-    mirror_db_to_sqlite_for_write(db, db_path=db_path)
 
 
 def write_json_db(db: dict[str, Any], path: Path = CLIENT_DB_PATH) -> None:
@@ -112,14 +111,6 @@ def load_db_from_sqlite(connection) -> dict[str, Any]:
             "clients": sqlite_clients.list_clients(connection),
         }
     )
-
-
-def mirror_db_to_sqlite_for_write(
-    db: dict[str, Any],
-    *,
-    db_path: str | Path | None = None,
-) -> bool:
-    return write_db_to_sqlite_for_write(db, db_path=db_path, strict=False)
 
 
 def write_db_to_sqlite_for_write(

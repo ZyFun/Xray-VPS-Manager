@@ -222,11 +222,10 @@ def load_db_from_sqlite(connection) -> dict:
 
 def save_db(db, path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
     db = normalize_db(db)
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
         return
     write_json_db(db, path)
-    mirror_db_to_sqlite_for_write(db, db_path=db_path)
 
 
 def write_json_db(db, path=TELEGRAM_DB_PATH):
@@ -239,7 +238,7 @@ def write_json_db(db, path=TELEGRAM_DB_PATH):
 
 
 def save_db_sections(db, sections, path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
-    if sqlite_writes_enabled() and sqlite_reads_enabled():
+    if sqlite_writes_enabled():
         write_db_sections_to_sqlite_for_write(db, sections, db_path=db_path, strict=True)
         return
     current = load_db(path)
@@ -247,10 +246,6 @@ def save_db_sections(db, sections, path=TELEGRAM_DB_PATH, *, db_path: str | Path
         if section in db:
             current[section] = db[section]
     save_db(current, path, db_path=db_path)
-
-
-def mirror_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None) -> bool:
-    return write_db_to_sqlite_for_write(db, db_path=db_path, strict=False)
 
 
 def write_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None, strict: bool = False) -> bool:
