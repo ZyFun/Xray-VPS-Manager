@@ -212,22 +212,8 @@ def sqlite_status(call: CommandRunner) -> None:
     call(["xray-vps-manager", "sqlite", "status"])
 
 
-def sqlite_preflight(call: CommandRunner) -> None:
-    call(["xray-vps-manager", "sqlite", "preflight"])
-
-
 def sqlite_validate_cutover(call: CommandRunner) -> None:
     call(["xray-vps-manager", "sqlite", "validate-cutover"])
-
-
-def sqlite_cutover(call: CommandRunner, confirm: ConfirmCallback) -> None:
-    print("Cutover остановит manager-сервисы записи, создаст бэкап, импортирует JSON/JSONL в SQLite")
-    print("и включит SQLite как основной источник чтения и записи.")
-    print("Если SQLite уже включён, команда только проверит текущую базу без повторного импорта JSON.")
-    if confirm("Выполнить финальное переключение на SQLite?"):
-        call(["xray-vps-manager", "sqlite", "cutover", "--yes"])
-    else:
-        print("Cutover SQLite отменён.")
 
 
 def sqlite_cleanup_legacy(call: CommandRunner, confirm: ConfirmCallback) -> None:

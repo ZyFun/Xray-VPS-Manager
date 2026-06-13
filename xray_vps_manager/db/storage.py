@@ -1,4 +1,4 @@
-"""Feature flags for gradual SQLite cutover."""
+"""Feature flags for selecting SQLite as the manager runtime store."""
 
 from __future__ import annotations
 

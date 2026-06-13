@@ -395,7 +395,7 @@ def sqlite_ready_connection():
     connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
     try:
         if not sqlite_read_ready(connection):
-            raise RuntimeError("manager_metadata jsonImport.completed is not true")
+            raise RuntimeError("SQLite read-ready metadata is not true")
         return connection
     except Exception:
         connection.close()
@@ -444,7 +444,7 @@ def table_values(connection, table, column):
 
 def check_sqlite_database(diag):
     if not MANAGER_DB_PATH.exists():
-        raise RuntimeError(f"not found: {MANAGER_DB_PATH}; run JSON-to-SQLite import before enabling SQLite reads/writes")
+        raise RuntimeError(f"not found: {MANAGER_DB_PATH}; run install.sh or restore a backup with manager.db")
 
     connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
     try:
@@ -460,7 +460,7 @@ def check_sqlite_database(diag):
         reads_enabled = sqlite_reads_enabled()
         writes_enabled = sqlite_writes_enabled()
         if (reads_enabled or writes_enabled) and not ready:
-            raise RuntimeError("SQLite reads/writes are enabled, but manager_metadata jsonImport.completed is not true")
+            raise RuntimeError("SQLite reads/writes are enabled, but read-ready metadata is not true")
 
         counts = {
             "connections": table_count(connection, "reality_connections"),
@@ -478,7 +478,7 @@ def check_sqlite_database(diag):
 
         flags = f"reads={'on' if reads_enabled else 'off'}, writes={'on' if writes_enabled else 'off'}"
         count_text = ", ".join(f"{key}={value}" for key, value in counts.items())
-        return f"{MANAGER_DB_PATH} schema={version}, quick_check=ok, importReady={'yes' if ready else 'no'}, {flags}, {count_text}"
+        return f"{MANAGER_DB_PATH} schema={version}, quick_check=ok, sqliteReady={'yes' if ready else 'no'}, {flags}, {count_text}"
     finally:
         connection.close()
 

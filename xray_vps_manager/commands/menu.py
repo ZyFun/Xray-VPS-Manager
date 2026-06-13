@@ -167,10 +167,8 @@ def update_menu_actions():
         ("7", "Обновить geoip/geosite из Loyalsoldier"),
         ("8", "Обновить geoip.dat из v2fly"),
         ("9", "SQLite: статус базы"),
-        ("10", "SQLite: preflight без переключения"),
-        ("11", "SQLite: проверить cutover"),
-        ("12", "SQLite: выполнить cutover"),
-        ("13", "SQLite: удалить legacy JSON/JSONL"),
+        ("10", "SQLite: проверить cutover"),
+        ("11", "SQLite: удалить legacy JSON/JSONL"),
         ("0", "Назад"),
     ]
 
@@ -423,10 +421,8 @@ def update_menu_handlers():
         "7": ("Обновить geoip/geosite из Loyalsoldier", lambda: menu_xray_actions.update_assets(call, "loyalsoldier")),
         "8": ("Обновить geoip.dat из v2fly", lambda: menu_xray_actions.update_assets(call, "v2fly")),
         "9": ("SQLite: статус базы", lambda: menu_xray_actions.sqlite_status(call)),
-        "10": ("SQLite: preflight без переключения", lambda: menu_xray_actions.sqlite_preflight(call)),
-        "11": ("SQLite: проверить cutover", lambda: menu_xray_actions.sqlite_validate_cutover(call)),
-        "12": ("SQLite: выполнить cutover", lambda: menu_xray_actions.sqlite_cutover(call, confirm)),
-        "13": ("SQLite: удалить legacy JSON/JSONL", lambda: menu_xray_actions.sqlite_cleanup_legacy(call, confirm)),
+        "10": ("SQLite: проверить cutover", lambda: menu_xray_actions.sqlite_validate_cutover(call)),
+        "11": ("SQLite: удалить legacy JSON/JSONL", lambda: menu_xray_actions.sqlite_cleanup_legacy(call, confirm)),
     }
 
 

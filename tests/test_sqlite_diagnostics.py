@@ -129,7 +129,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
 
             self.assertIn("schema=1", result)
             self.assertIn("quick_check=ok", result)
-            self.assertIn("importReady=yes", result)
+            self.assertIn("sqliteReady=yes", result)
             self.assertIn("clients=1", result)
 
     def test_ready_sqlite_database_reports_alignment_issues(self) -> None:
@@ -142,7 +142,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "SQLite clients differ"):
                     test_command.check_sqlite_database(diag)
 
-    def test_enabled_sqlite_flag_requires_completed_import(self) -> None:
+    def test_enabled_sqlite_flag_requires_read_ready_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path, ready=False)
@@ -153,7 +153,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
                 {"XRAY_MANAGER_SQLITE_READS": "1"},
                 clear=True,
             ):
-                with self.assertRaisesRegex(RuntimeError, "jsonImport.completed"):
+                with self.assertRaisesRegex(RuntimeError, "read-ready metadata"):
                     test_command.check_sqlite_database(diag)
 
     def test_primary_sqlite_allows_telegram_subscriptions_to_outgrow_legacy_json(self) -> None:
