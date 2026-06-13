@@ -8,10 +8,12 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.core.paths import MANAGER_DB_PATH
 from xray_vps_manager.telegram import messages, payments, subscriptions
 from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import history as traffic_history
@@ -62,6 +64,17 @@ def disk_usage_label(path="/"):
     used = usage.total - usage.free
     percent = int((used / usage.total) * 100) if usage.total else 0
     return f"{percent}% занято, свободно {format_traffic(usage.free)}"
+
+
+def database_usage_label(path: Path | None = None):
+    db_path = Path(path or MANAGER_DB_PATH)
+    related = [db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")]
+    existing = [item for item in related if item.exists()]
+    if not existing:
+        return f"{db_path.name}: missing"
+    total = sum(item.stat().st_size for item in existing if item.is_file())
+    details = ", ".join(f"{item.name} {format_traffic(item.stat().st_size)}" for item in existing if item.is_file())
+    return f"{format_traffic(total)} ({details})"
 
 
 def client_enabled(entry):
@@ -124,6 +137,7 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
         f"Telegram poller: {systemd_state(ctx, 'xray-telegram-poller.service')}",
         f"Клиенты: включено {enabled_count} из {len(clients)}, online сейчас: {online_clients_count(ctx, client_db, traffic_db)}",
         f"Общая аренда сервера: {total_rent}",
+        f"База данных: {database_usage_label(ctx.manager_db_path)}",
         f"Диск /: {disk_usage_label('/')}",
         "",
         "Трафик за предыдущий день:",

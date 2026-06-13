@@ -176,6 +176,7 @@ def notification_context():
         send_chat_message=send_chat_message,
         send_message=send_message,
         bot_name=bot_name,
+        manager_db_path=MANAGER_DB_PATH,
     )
 
 

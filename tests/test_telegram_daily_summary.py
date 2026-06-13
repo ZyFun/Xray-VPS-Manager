@@ -1,5 +1,7 @@
 from datetime import date, datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest import mock
 
@@ -7,7 +9,7 @@ from xray_vps_manager.telegram import notifications
 
 
 class TelegramDailySummaryTests(unittest.TestCase):
-    def make_context(self, db):
+    def make_context(self, db, manager_db_path=None):
         client_db = {
             "clients": {
                 "alice": {"enabled": True, "paymentType": "paid"},
@@ -41,6 +43,7 @@ class TelegramDailySummaryTests(unittest.TestCase):
             send_chat_message=lambda *_args, **_kwargs: None,
             send_message=lambda *_args, **_kwargs: None,
             bot_name=lambda _db=None: "Vireika",
+            manager_db_path=manager_db_path,
         )
 
     def test_daily_summary_includes_total_rent_amount_not_client_share(self) -> None:
@@ -64,6 +67,20 @@ class TelegramDailySummaryTests(unittest.TestCase):
             text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
 
         self.assertIn("Общая аренда сервера: не указана", text)
+
+    def test_daily_summary_includes_sqlite_database_sizes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            db_path.write_bytes(b"x" * 2048)
+            Path(f"{db_path}-wal").write_bytes(b"x" * 1024)
+            ctx = self.make_context({"paymentTotalAmount": "500", "paymentCurrency": "₽"}, db_path)
+
+            with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
+                text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
+
+        self.assertIn("База данных: 3.00KB", text)
+        self.assertIn("manager.db 2.00KB", text)
+        self.assertIn("manager.db-wal 1.00KB", text)
 
 
 if __name__ == "__main__":
