@@ -82,6 +82,40 @@ class TelegramDailySummaryTests(unittest.TestCase):
         self.assertIn("manager.db 2.00KB", text)
         self.assertIn("manager.db-wal 1.00KB", text)
 
+    def test_daily_summary_reports_no_reboot_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            required_path = Path(tmp_dir) / "reboot-required"
+            packages_path = Path(tmp_dir) / "reboot-required.pkgs"
+            ctx = self.make_context({"paymentTotalAmount": "500", "paymentCurrency": "₽"})
+
+            with (
+                mock.patch.object(notifications, "disk_usage_label", return_value="ok"),
+                mock.patch.object(notifications, "REBOOT_REQUIRED_PATH", required_path),
+                mock.patch.object(notifications, "REBOOT_REQUIRED_PACKAGES_PATH", packages_path),
+            ):
+                text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
+
+        self.assertIn("Система: перезагрузка не требуется", text)
+
+    def test_daily_summary_reports_kernel_reboot_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            required_path = Path(tmp_dir) / "reboot-required"
+            packages_path = Path(tmp_dir) / "reboot-required.pkgs"
+            required_path.write_text("*** System restart required ***\n", encoding="utf-8")
+            packages_path.write_text("linux-image-6.8.0-124-generic\nlinux-base\n", encoding="utf-8")
+            ctx = self.make_context({"paymentTotalAmount": "500", "paymentCurrency": "₽"})
+
+            with (
+                mock.patch.object(notifications, "disk_usage_label", return_value="ok"),
+                mock.patch.object(notifications, "REBOOT_REQUIRED_PATH", required_path),
+                mock.patch.object(notifications, "REBOOT_REQUIRED_PACKAGES_PATH", packages_path),
+            ):
+                text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
+
+        self.assertIn("Система: требуется перезагрузка после обновления ядра", text)
+        self.assertIn("linux-image-6.8.0-124-generic", text)
+        self.assertIn("linux-base", text)
+
 
 if __name__ == "__main__":
     unittest.main()

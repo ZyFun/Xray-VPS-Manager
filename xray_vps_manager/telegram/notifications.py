@@ -23,6 +23,9 @@ EXPIRY_REMINDER_DAYS = (5, 1)
 EXPIRY_REMINDER_HOUR = 8
 DAILY_SUMMARY_HOUR = 8
 ONLINE_WINDOW_SECONDS = 300
+REBOOT_REQUIRED_PATH = Path("/var/run/reboot-required")
+REBOOT_REQUIRED_PACKAGES_PATH = Path("/var/run/reboot-required.pkgs")
+KERNEL_REBOOT_PACKAGE_PREFIXES = ("linux-image", "linux-modules", "linux-base", "linux-generic")
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,36 @@ def database_usage_label(path: Path | None = None):
     total = sum(item.stat().st_size for item in existing if item.is_file())
     details = ", ".join(f"{item.name} {format_traffic(item.stat().st_size)}" for item in existing if item.is_file())
     return f"{format_traffic(total)} ({details})"
+
+
+def reboot_required_packages(path: Path | None = None) -> list[str]:
+    packages_path = Path(path or REBOOT_REQUIRED_PACKAGES_PATH)
+    if not packages_path.exists():
+        return []
+    try:
+        lines = packages_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [line.strip() for line in lines if line.strip()]
+
+
+def system_reboot_label(required_path: Path | None = None, packages_path: Path | None = None):
+    marker_path = Path(required_path or REBOOT_REQUIRED_PATH)
+    if not marker_path.exists():
+        return "перезагрузка не требуется"
+
+    packages = reboot_required_packages(packages_path)
+    has_kernel_package = any(
+        package.startswith(KERNEL_REBOOT_PACKAGE_PREFIXES)
+        for package in packages
+    )
+    reason = "после обновления ядра" if has_kernel_package else "после обновления системы"
+    if not packages:
+        return f"требуется перезагрузка {reason}"
+    package_label = ", ".join(packages[:5])
+    if len(packages) > 5:
+        package_label += f", ...и ещё {len(packages) - 5}"
+    return f"требуется перезагрузка {reason} (пакеты: {package_label})"
 
 
 def client_enabled(entry):
@@ -135,6 +168,7 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
         f"Период трафика: {day_key} ({timezone_label})",
         f"Xray: {systemd_state(ctx, 'xray.service')}",
         f"Telegram poller: {systemd_state(ctx, 'xray-telegram-poller.service')}",
+        f"Система: {system_reboot_label()}",
         f"Клиенты: включено {enabled_count} из {len(clients)}, online сейчас: {online_clients_count(ctx, client_db, traffic_db)}",
         f"Общая аренда сервера: {total_rent}",
         f"База данных: {database_usage_label(ctx.manager_db_path)}",
