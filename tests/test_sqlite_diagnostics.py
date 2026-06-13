@@ -156,6 +156,37 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "jsonImport.completed"):
                     test_command.check_sqlite_database(diag)
 
+    def test_primary_sqlite_allows_telegram_subscriptions_to_outgrow_legacy_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+            connection = database.open_database(db_path)
+            try:
+                sqlite_telegram.upsert_subscription(
+                    connection,
+                    {
+                        "chatId": "222",
+                        "clientName": "alice",
+                        "clientUuid": "00000000-0000-0000-0000-000000000002",
+                        "connection": "vless-reality",
+                        "linkSignature": {"linkHash": "hash-2"},
+                        "enabled": True,
+                        "createdAt": "2026-06-13T08:01:00Z",
+                    },
+                )
+            finally:
+                connection.close()
+            diag = self.make_diag()
+
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
+                clear=True,
+            ):
+                result = test_command.check_sqlite_database(diag)
+
+            self.assertIn("telegramSubscriptions=2", result)
+
 
 if __name__ == "__main__":
     unittest.main()

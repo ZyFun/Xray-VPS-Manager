@@ -7,7 +7,10 @@ from xray_vps_manager.telegram import admin, poller
 
 
 class TelegramPollerTests(unittest.TestCase):
-    def make_context(self, db, updates, events):
+    def make_context(self, db, updates, events, client_db=None):
+        if client_db is None:
+            client_db = {"clients": {}}
+
         def save_db_sections(updated_db, sections):
             state = updated_db.get("clientSubscriptionState", {})
             events.append(("save", tuple(sections), state.get("userUpdateOffset")))
@@ -16,7 +19,7 @@ class TelegramPollerTests(unittest.TestCase):
             events.append(("send", str(chat_id), text))
 
         admin_context = admin.AdminContext(
-            load_client_db=lambda: {"clients": {}},
+            load_client_db=lambda: client_db,
             save_db_sections=save_db_sections,
             format_access_until=lambda value: value or "бессрочно",
             run_capture=lambda *args, **kwargs: None,
@@ -27,7 +30,7 @@ class TelegramPollerTests(unittest.TestCase):
         return poller.PollerContext(
             load_db=lambda: db,
             save_db_sections=save_db_sections,
-            load_client_db=lambda: {"clients": {}},
+            load_client_db=lambda: client_db,
             load_traffic_db=lambda: {"clients": {}},
             display_timezone=lambda: (ZoneInfo("Europe/Moscow"), "Europe/Moscow"),
             format_access_until=lambda value: value or "бессрочно",
@@ -93,6 +96,120 @@ class TelegramPollerTests(unittest.TestCase):
 
         self.assertEqual(events[0], ("save", ("clientSubscriptionState",), 26))
         self.assertTrue(any(event[0] == "send" for event in events))
+
+    def test_start_shows_status_for_subscribed_client(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 30, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 35,
+                "message": {
+                    "text": "/start",
+                    "chat": {"id": "222", "type": "private", "username": "client"},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Текущая подписка:", sent[2])
+        self.assertIn("Статус: включён", sent[2])
+        self.assertNotIn("Отправь свою VLESS", sent[2])
+
+    def test_subscribe_button_does_not_reask_link_for_subscribed_client(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 40, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 45,
+                "callback_query": {
+                    "id": "callback-subscribe",
+                    "data": "client:subscribe",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Уведомления уже подключены.", sent[2])
+        self.assertIn("Статус: включён", sent[2])
+        self.assertNotIn("Отправь сюда свою VLESS", sent[2])
+
+    def test_plain_text_from_subscribed_client_shows_status(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 50, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 55,
+                "message": {
+                    "text": "привет",
+                    "chat": {"id": "222", "type": "private", "username": "client"},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Текущая подписка:", sent[2])
+        self.assertNotIn("Я не нашёл VLESS-ссылку", sent[2])
 
     def test_traffic_callback_sends_report_for_subscribed_client(self) -> None:
         db = {

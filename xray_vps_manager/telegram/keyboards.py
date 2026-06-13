@@ -7,15 +7,22 @@ def is_owner_chat(db, chat_id):
     return str(chat_id or "") == str(db.get("chatId") or "")
 
 
-def client_menu_keyboard():
-    return [
-        [{"text": "Подключить уведомления", "callback_data": "client:subscribe"}],
+def is_subscribed_chat(db, chat_id):
+    subscriptions = db.get("clientSubscriptions", {})
+    return isinstance(subscriptions, dict) and isinstance(subscriptions.get(str(chat_id)), dict)
+
+
+def client_menu_keyboard(show_subscribe=True):
+    rows = [
         [{"text": "Статус подписки", "callback_data": "client:status"}],
         [{"text": "Получить VLESS-ссылку", "callback_data": "client:link"}],
         [{"text": "Статистика трафика", "callback_data": "client:traffic"}],
-        [{"text": "Отключить уведомления", "callback_data": "client:unsubscribe"}],
+        [{"text": "Отписаться от бота", "callback_data": "client:unsubscribe"}],
         [{"text": "Помощь", "callback_data": "client:help"}],
     ]
+    if show_subscribe:
+        rows.insert(0, [{"text": "Подключить уведомления", "callback_data": "client:subscribe"}])
+    return rows
 
 
 def client_traffic_keyboard():
@@ -30,7 +37,7 @@ def client_traffic_keyboard():
 
 
 def client_keyboard_for_chat(db, chat_id):
-    rows = list(client_menu_keyboard())
+    rows = list(client_menu_keyboard(show_subscribe=not is_subscribed_chat(db, chat_id)))
     if is_owner_chat(db, chat_id):
         rows.append([{"text": "Админ-панель", "callback_data": "admin:menu"}])
     return {"inline_keyboard": rows}

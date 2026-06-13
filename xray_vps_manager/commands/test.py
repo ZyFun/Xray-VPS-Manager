@@ -428,15 +428,16 @@ def sqlite_alignment_issues(diag, connection):
     if json_exceptions and json_exceptions != sqlite_exceptions:
         issues.append(format_set_difference("SQLite activity exceptions differ from activity-exceptions.json", json_exceptions, sqlite_exceptions))
 
-    telegram_db = diag.context.get("telegram_bot_db", {})
-    json_subscriptions = {
-        str(item.get("clientId") or item.get("clientUuid") or "")
-        for item in telegram_db.get("clientSubscriptions", {}).values()
-        if isinstance(item, dict) and str(item.get("clientId") or item.get("clientUuid") or "").strip()
-    } if isinstance(telegram_db.get("clientSubscriptions", {}), dict) else set()
-    sqlite_subscriptions = table_values(connection, "telegram_subscriptions", "client_uuid")
-    if json_subscriptions != sqlite_subscriptions:
-        issues.append(format_set_difference("SQLite Telegram subscriptions differ from telegram-bot.json", json_subscriptions, sqlite_subscriptions))
+    if not (sqlite_reads_enabled() and sqlite_writes_enabled()):
+        telegram_db = diag.context.get("telegram_bot_db", {})
+        json_subscriptions = {
+            str(item.get("clientId") or item.get("clientUuid") or "")
+            for item in telegram_db.get("clientSubscriptions", {}).values()
+            if isinstance(item, dict) and str(item.get("clientId") or item.get("clientUuid") or "").strip()
+        } if isinstance(telegram_db.get("clientSubscriptions", {}), dict) else set()
+        sqlite_subscriptions = table_values(connection, "telegram_subscriptions", "client_uuid")
+        if json_subscriptions != sqlite_subscriptions:
+            issues.append(format_set_difference("SQLite Telegram subscriptions differ from telegram-bot.json", json_subscriptions, sqlite_subscriptions))
 
     return [issue for issue in issues if issue]
 

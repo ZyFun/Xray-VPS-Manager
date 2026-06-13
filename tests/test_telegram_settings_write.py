@@ -314,6 +314,87 @@ class TelegramSettingsWriteSwitchTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(self.read_json_file(json_path)["botName"], "RollbackBot")
 
+    def test_save_state_section_preserves_existing_expiry_reminders_in_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            json_path = root / "telegram-bot.json"
+            db_path = root / "manager.db"
+            self.make_sqlite_db(db_path)
+            connection = database.open_database(db_path)
+            try:
+                sqlite_telegram.set_state(
+                    connection,
+                    "clientSubscriptionState",
+                    {
+                        "userUpdateOffset": 100,
+                        "expiryReminders": {"sent-key": "2026-06-13T07:00:00Z"},
+                        "lastExpiryReminderCheck": "2026-06-13T07:00:00Z",
+                    },
+                )
+            finally:
+                connection.close()
+
+            stale_poller_state = {
+                "clientSubscriptionState": {
+                    "userUpdateOffset": 90,
+                    "expiryReminders": {},
+                    "lastUserPoll": "2026-06-13T07:01:00Z",
+                    "lastExpiryReminderCheck": "2026-06-12T22:00:00Z",
+                }
+            }
+            with mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
+                clear=True,
+            ):
+                self.save_sections_with_mocked_permissions(
+                    stale_poller_state,
+                    ["clientSubscriptionState"],
+                    json_path,
+                    db_path,
+                )
+
+            connection = database.open_database(db_path)
+            try:
+                state = sqlite_telegram.get_state(connection, "clientSubscriptionState")
+                self.assertEqual(state["userUpdateOffset"], 100)
+                self.assertEqual(state["expiryReminders"], {"sent-key": "2026-06-13T07:00:00Z"})
+                self.assertEqual(state["lastExpiryReminderCheck"], "2026-06-13T07:00:00Z")
+                self.assertEqual(state["lastUserPoll"], "2026-06-13T07:01:00Z")
+            finally:
+                connection.close()
+            self.assertFalse(json_path.exists())
+
+    def test_save_state_section_does_not_rewrite_sqlite_subscriptions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            json_path = root / "telegram-bot.json"
+            db_path = root / "manager.db"
+            self.make_sqlite_db(db_path)
+
+            with mock.patch.dict(
+                os.environ,
+                {"XRAY_MANAGER_SQLITE_READS": "1", "XRAY_MANAGER_SQLITE_WRITES": "1"},
+                clear=True,
+            ):
+                self.save_sections_with_mocked_permissions(
+                    {
+                        "clientSubscriptions": {},
+                        "clientSubscriptionState": {"userUpdateOffset": 11, "expiryReminders": {}},
+                    },
+                    ["clientSubscriptionState"],
+                    json_path,
+                    db_path,
+                )
+
+            connection = database.open_database(db_path)
+            try:
+                subscriptions = sqlite_telegram.list_subscriptions(connection)
+            finally:
+                connection.close()
+            self.assertEqual(len(subscriptions), 1)
+            self.assertEqual(subscriptions[0]["chatId"], "999")
+
 
 if __name__ == "__main__":
     unittest.main()

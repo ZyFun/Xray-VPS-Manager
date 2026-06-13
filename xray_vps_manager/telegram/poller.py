@@ -77,6 +77,22 @@ def subscription_status_for_chat(ctx: PollerContext, db, chat_id):
     return subscriptions.subscription_status_for_chat(db, chat_id, ctx.load_client_db(), ctx.format_access_until)
 
 
+def client_home_text(ctx: PollerContext, db, chat_id):
+    if subscriptions.chat_has_subscription(db, chat_id):
+        return subscription_status_for_chat(ctx, db, chat_id)
+    return subscription_intro_text(ctx)
+
+
+def subscribe_prompt_for_chat(ctx: PollerContext, db, chat_id):
+    client_db = ctx.load_client_db()
+    _name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
+    if entry and not error:
+        return "Уведомления уже подключены.\n\n" + subscriptions.client_access_summary(entry, ctx.format_access_until)
+    if subscriptions.chat_has_subscription(db, chat_id) and error:
+        return error + "\n\n" + messages.subscribe_prompt_text()
+    return messages.subscribe_prompt_text()
+
+
 def current_vless_link_code_for_chat(ctx: PollerContext, db, chat_id):
     return subscriptions.current_vless_link_code_for_chat(
         db,
@@ -118,7 +134,7 @@ def handle_user_message(ctx: PollerContext, db, update):
     chat_id = str(chat["id"])
     text = str(message.get("text") or "").strip()
     if not text:
-        send_client_menu(ctx, db, chat_id, "Отправь текстовую VLESS-ссылку или нажми кнопку ниже.")
+        send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
         return True
     if keyboards.is_owner_chat(db, chat_id) and admin.handle_custom_notice_text(ctx.admin_context, db, chat_id, text):
         return True
@@ -130,7 +146,7 @@ def handle_user_message(ctx: PollerContext, db, update):
             send_client_menu(ctx, db, chat_id)
         return True
     if command in ("/start", "/help"):
-        send_client_menu(ctx, db, chat_id)
+        send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
         return True
     if command == "/status":
         send_client_menu(ctx, db, chat_id, subscription_status_for_chat(ctx, db, chat_id))
@@ -156,7 +172,10 @@ def handle_user_message(ctx: PollerContext, db, update):
             + "\n\nНапоминания придут в 08:00 за 5 дней и за 1 день до окончания доступа.",
         )
         return True
-    send_client_menu(ctx, db, chat_id, "Я не нашёл VLESS-ссылку. Отправь свою ссылку целиком или нажми кнопку ниже.")
+    if subscriptions.chat_has_subscription(db, chat_id):
+        send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
+    else:
+        send_client_menu(ctx, db, chat_id, "Я не нашёл VLESS-ссылку. Отправь свою ссылку целиком или нажми кнопку ниже.")
     return True
 
 
@@ -181,7 +200,7 @@ def handle_callback_query(ctx: PollerContext, db, update):
 
     if data == "client:subscribe":
         ctx.answer_callback_query(db, callback_id)
-        send_client_menu(ctx, db, chat_id, messages.subscribe_prompt_text())
+        send_client_menu(ctx, db, chat_id, subscribe_prompt_for_chat(ctx, db, chat_id))
         return True
     if data == "client:status":
         ctx.answer_callback_query(db, callback_id)
@@ -208,11 +227,11 @@ def handle_callback_query(ctx: PollerContext, db, update):
         return True
     if data == "client:help":
         ctx.answer_callback_query(db, callback_id)
-        send_client_menu(ctx, db, chat_id)
+        send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
         return True
 
     ctx.answer_callback_query(db, callback_id, "Неизвестная кнопка")
-    send_client_menu(ctx, db, chat_id)
+    send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
     return True
 
 

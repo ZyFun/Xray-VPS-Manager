@@ -145,6 +145,11 @@ def subscription_entry_for_chat(db, chat_id, client_db):
     return name, entry, ""
 
 
+def chat_has_subscription(db, chat_id):
+    subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
+    return isinstance(subscription, dict)
+
+
 def subscription_status_for_chat(db, chat_id, client_db, format_access_until):
     subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
     if not subscription:

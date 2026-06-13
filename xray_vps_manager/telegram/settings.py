@@ -49,6 +49,9 @@ DEFAULT_DB = {
     "adminState": {},
 }
 
+TELEGRAM_SETTING_KEYS = ("version", "enabled", "token", "botName", "chatId", "chatLabel", "routeMode")
+STATE_KEYS = ("geoipState", "clientSubscriptionState", "dailySummaryState", "adminState")
+
 
 @dataclass(frozen=True)
 class TelegramDbReadResult:
@@ -226,9 +229,9 @@ def write_json_db(db, path=TELEGRAM_DB_PATH):
 
 def save_db_sections(db, sections, path=TELEGRAM_DB_PATH, *, db_path: str | Path | None = None):
     if sqlite_writes_enabled() and sqlite_reads_enabled():
-        current = load_db_sql(path, db_path=db_path)
-    else:
-        current = load_db(path)
+        write_db_sections_to_sqlite_for_write(db, sections, db_path=db_path, strict=True)
+        return
+    current = load_db(path)
     for section in sections:
         if section in db:
             current[section] = db[section]
@@ -254,40 +257,15 @@ def write_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None, stric
             return False
 
         normalized = normalize_db(db)
-        known_clients = set(sqlite_clients.list_clients(connection))
         with database.transaction(connection):
-            for key in ("version", "enabled", "token", "botName", "chatId", "chatLabel", "routeMode"):
+            for key in TELEGRAM_SETTING_KEYS:
                 sqlite_telegram.set_setting(connection, key, _sqlite_scalar(normalized.get(key, "")))
             for key in PAYMENT_SETTING_KEYS:
                 sqlite_settings.set_payment_setting(connection, key, str(normalized.get(key, "")))
-            for key in ("geoipState", "clientSubscriptionState", "dailySummaryState", "adminState"):
+            for key in STATE_KEYS:
                 state = normalized.get(key)
                 sqlite_telegram.set_state(connection, key, state if isinstance(state, dict) else {})
-
-            sqlite_telegram.delete_all_subscriptions(connection)
-            subscriptions = normalized.get("clientSubscriptions", {})
-            if isinstance(subscriptions, dict):
-                for chat_id, subscription in subscriptions.items():
-                    if not isinstance(subscription, dict):
-                        continue
-                    client_uuid = str(subscription.get("clientId") or subscription.get("clientUuid") or "").strip()
-                    if not client_uuid:
-                        continue
-                    client_name = str(subscription.get("client") or subscription.get("clientName") or "").strip()
-                    sqlite_telegram.upsert_subscription(
-                        connection,
-                        {
-                            "chatId": str(chat_id),
-                            "chatLabel": subscription.get("chatLabel") or "",
-                            "clientName": client_name if client_name in known_clients else "",
-                            "clientUuid": client_uuid,
-                            "connection": subscription.get("connection") or "",
-                            "linkSignature": {"linkHash": subscription.get("linkHash") or ""},
-                            "enabled": subscription.get("enabled") is not False,
-                            "createdAt": subscription.get("subscribedAt") or subscription.get("createdAt") or "",
-                            "updatedAt": subscription.get("updatedAt") or subscription.get("subscribedAt") or "",
-                        },
-                    )
+            replace_subscriptions_in_sqlite(connection, normalized)
         return True
     except Exception:
         if strict:
@@ -296,6 +274,114 @@ def write_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None, stric
     finally:
         if connection is not None:
             connection.close()
+
+
+def write_db_sections_to_sqlite_for_write(
+    db,
+    sections,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> bool:
+    if not sqlite_writes_enabled() or not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite writes are enabled but manager database is missing")
+        return False
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite writes are enabled but JSON import is not marked ready")
+            return False
+
+        normalized = normalize_db(db)
+        with database.transaction(connection):
+            for section in sections:
+                if section in TELEGRAM_SETTING_KEYS:
+                    sqlite_telegram.set_setting(connection, section, _sqlite_scalar(normalized.get(section, "")))
+                elif section in PAYMENT_SETTING_KEYS:
+                    sqlite_settings.set_payment_setting(connection, section, str(normalized.get(section, "")))
+                elif section in STATE_KEYS:
+                    state = normalized.get(section)
+                    if not isinstance(state, dict):
+                        state = {}
+                    if section == "clientSubscriptionState":
+                        current = sqlite_telegram.get_state(connection, section, {})
+                        state = merge_client_subscription_state(current, state)
+                    sqlite_telegram.set_state(connection, section, state)
+                elif section == "clientSubscriptions":
+                    replace_subscriptions_in_sqlite(connection, normalized)
+        return True
+    except Exception:
+        if strict:
+            raise
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def replace_subscriptions_in_sqlite(connection, normalized: dict) -> None:
+    known_clients = set(sqlite_clients.list_clients(connection))
+    sqlite_telegram.delete_all_subscriptions(connection)
+    subscriptions = normalized.get("clientSubscriptions", {})
+    if not isinstance(subscriptions, dict):
+        return
+    for chat_id, subscription in subscriptions.items():
+        if not isinstance(subscription, dict):
+            continue
+        client_uuid = str(subscription.get("clientId") or subscription.get("clientUuid") or "").strip()
+        if not client_uuid:
+            continue
+        client_name = str(subscription.get("client") or subscription.get("clientName") or "").strip()
+        sqlite_telegram.upsert_subscription(
+            connection,
+            {
+                "chatId": str(chat_id),
+                "chatLabel": subscription.get("chatLabel") or "",
+                "clientName": client_name if client_name in known_clients else "",
+                "clientUuid": client_uuid,
+                "connection": subscription.get("connection") or "",
+                "linkSignature": {"linkHash": subscription.get("linkHash") or ""},
+                "enabled": subscription.get("enabled") is not False,
+                "createdAt": subscription.get("subscribedAt") or subscription.get("createdAt") or "",
+                "updatedAt": subscription.get("updatedAt") or subscription.get("subscribedAt") or "",
+            },
+        )
+
+
+def merge_client_subscription_state(current: dict, incoming: dict) -> dict:
+    merged = dict(current if isinstance(current, dict) else {})
+    incoming = incoming if isinstance(incoming, dict) else {}
+    merged.update(incoming)
+
+    try:
+        merged["userUpdateOffset"] = max(
+            int((current or {}).get("userUpdateOffset", 0) or 0),
+            int(incoming.get("userUpdateOffset", 0) or 0),
+        )
+    except (TypeError, ValueError):
+        merged["userUpdateOffset"] = int((current or {}).get("userUpdateOffset", 0) or 0)
+
+    current_reminders = (current or {}).get("expiryReminders", {})
+    incoming_reminders = incoming.get("expiryReminders", {})
+    reminders = {}
+    if isinstance(current_reminders, dict):
+        reminders.update(current_reminders)
+    if isinstance(incoming_reminders, dict):
+        reminders.update(incoming_reminders)
+    if len(reminders) > 2000:
+        reminders = dict(sorted(reminders.items(), key=lambda item: item[1])[-2000:])
+    merged["expiryReminders"] = reminders
+
+    for key in ("lastUserPoll", "lastExpiryReminderCheck", "lastExpiryReminder"):
+        current_value = str((current or {}).get(key) or "")
+        incoming_value = str(incoming.get(key) or "")
+        if current_value or incoming_value:
+            merged[key] = max(current_value, incoming_value)
+    return merged
 
 
 def _sqlite_scalar(value) -> str:
