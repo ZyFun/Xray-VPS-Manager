@@ -20,6 +20,15 @@ class TelegramMessageTests(unittest.TestCase):
         self.assertIn("Привет. Я бот Vireika.", text)
         self.assertIn("VLESS Reality-ссылку", text)
 
+    def test_client_help_text_uses_configured_bot_name(self) -> None:
+        text = messages.client_help_text({}, bot_name)
+
+        self.assertIn("Vireika: помощь", text)
+        self.assertIn("Я рядом, чтобы было проще следить за доступом к VPN.", text)
+        self.assertIn("• проверить статус подписки;", text)
+        self.assertIn("• отписаться от бота, если уведомления больше не нужны.", text)
+        self.assertIn("Обычно я напоминаю об оплате в 08:00", text)
+
     def test_expiry_reminder_includes_payment_amount_without_client_name(self) -> None:
         text = messages.build_expiry_reminder_message(
             {},

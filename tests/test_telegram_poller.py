@@ -211,6 +211,110 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertIn("Текущая подписка:", sent[2])
         self.assertNotIn("Я не нашёл VLESS-ссылку", sent[2])
 
+    def test_help_command_sends_client_help_text(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 60, "expiryReminders": {}},
+            "clientSubscriptions": {},
+        }
+        updates = [
+            {
+                "update_id": 65,
+                "message": {
+                    "text": "/help",
+                    "chat": {"id": "222", "type": "private", "username": "client"},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(db, updates, events)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Vireika: помощь", sent[2])
+        self.assertIn("• получить актуальную VLESS-ссылку;", sent[2])
+        self.assertNotIn("Привет. Я бот Vireika.", sent[2])
+
+    def test_help_callback_sends_client_help_text(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 70, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 75,
+                "callback_query": {
+                    "id": "callback-help",
+                    "data": "client:help",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Vireika: помощь", sent[2])
+        self.assertIn("• отписаться от бота, если уведомления больше не нужны.", sent[2])
+        self.assertNotIn("Текущая подписка:", sent[2])
+
+    def test_client_menu_callback_returns_home_instead_of_help(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 80, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 85,
+                "callback_query": {
+                    "id": "callback-menu",
+                    "data": "client:menu",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Текущая подписка:", sent[2])
+        self.assertNotIn("Vireika: помощь", sent[2])
+
     def test_traffic_callback_sends_report_for_subscribed_client(self) -> None:
         db = {
             "enabled": True,

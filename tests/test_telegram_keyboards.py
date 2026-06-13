@@ -44,7 +44,13 @@ class TelegramKeyboardTests(unittest.TestCase):
                 {"text": "За неделю по дням", "callback_data": "client:traffic:week-days"},
             ],
         )
-        self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "client:help"})
+        self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "client:menu"})
+
+    def test_admin_menu_client_menu_button_returns_to_client_menu(self) -> None:
+        rows = keyboards.admin_menu_keyboard()["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertIn({"text": "Клиентское меню", "callback_data": "client:menu"}, buttons)
 
 
 if __name__ == "__main__":

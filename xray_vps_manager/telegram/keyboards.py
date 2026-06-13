@@ -31,7 +31,7 @@ def client_traffic_keyboard():
             [{"text": "За сутки", "callback_data": "client:traffic:day"}],
             [{"text": "За сутки по часам", "callback_data": "client:traffic:day-hours"}],
             [{"text": "За неделю по дням", "callback_data": "client:traffic:week-days"}],
-            [{"text": "Назад", "callback_data": "client:help"}],
+            [{"text": "Назад", "callback_data": "client:menu"}],
         ]
     }
 
@@ -60,7 +60,7 @@ def admin_menu_keyboard():
                 {"text": "Создать backup", "callback_data": "admin:backup"},
             ],
             [{"text": "Уведомления", "callback_data": "admin:notices"}],
-            [{"text": "Клиентское меню", "callback_data": "client:help"}],
+            [{"text": "Клиентское меню", "callback_data": "client:menu"}],
         ]
     }
 

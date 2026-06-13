@@ -83,6 +83,10 @@ def client_home_text(ctx: PollerContext, db, chat_id):
     return subscription_intro_text(ctx)
 
 
+def client_help_text(ctx: PollerContext, db):
+    return messages.client_help_text(db, ctx.bot_name)
+
+
 def subscribe_prompt_for_chat(ctx: PollerContext, db, chat_id):
     client_db = ctx.load_client_db()
     _name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
@@ -145,8 +149,11 @@ def handle_user_message(ctx: PollerContext, db, update):
         else:
             send_client_menu(ctx, db, chat_id)
         return True
-    if command in ("/start", "/help"):
+    if command == "/start":
         send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
+        return True
+    if command == "/help":
+        send_client_menu(ctx, db, chat_id, client_help_text(ctx, db))
         return True
     if command == "/status":
         send_client_menu(ctx, db, chat_id, subscription_status_for_chat(ctx, db, chat_id))
@@ -225,9 +232,13 @@ def handle_callback_query(ctx: PollerContext, db, update):
         ctx.answer_callback_query(db, callback_id, "Готово")
         send_client_menu(ctx, db, chat_id, subscriptions.unsubscribe_chat(db, chat_id))
         return True
-    if data == "client:help":
+    if data == "client:menu":
         ctx.answer_callback_query(db, callback_id)
         send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
+        return True
+    if data == "client:help":
+        ctx.answer_callback_query(db, callback_id)
+        send_client_menu(ctx, db, chat_id, client_help_text(ctx, db))
         return True
 
     ctx.answer_callback_query(db, callback_id, "Неизвестная кнопка")
