@@ -5,6 +5,7 @@ import unittest
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
+from xray_vps_manager.db.repositories import cascades as sqlite_cascades
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
@@ -39,7 +40,13 @@ class ClientRepositoryReadTests(unittest.TestCase):
                         "id": "00000000-0000-0000-0000-000000000002",
                         "email": "sqlite_client|created=2026-06-12T09:01:00Z",
                     },
+                    "selectedCascadeTag": "cascade-us",
                 },
+            )
+            sqlite_cascades.upsert_route(
+                connection,
+                "cascade-us",
+                {"tag": "cascade-us", "country": "США", "label": "us"},
             )
             if ready:
                 sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
@@ -57,6 +64,8 @@ class ClientRepositoryReadTests(unittest.TestCase):
             self.assertIn("sqlite_client", result.db["clients"])
             self.assertEqual(result.db["connections"]["sqlite-connection"]["fingerprint"], "safari")
             self.assertEqual(result.db["clients"]["sqlite_client"]["paymentType"], "free")
+            self.assertEqual(result.db["clients"]["sqlite_client"]["selectedCascadeTag"], "cascade-us")
+            self.assertEqual(result.db["cascadeRoutes"]["cascade-us"]["country"], "США")
 
     def test_read_fails_when_sqlite_database_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

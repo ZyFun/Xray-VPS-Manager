@@ -26,7 +26,9 @@ class TelegramMessageTests(unittest.TestCase):
         self.assertIn("Vireika: помощь", text)
         self.assertIn("Я рядом, чтобы было проще следить за доступом к VPN.", text)
         self.assertIn("• проверить статус подписки;", text)
+        self.assertIn("• сменить страну подключения;", text)
         self.assertIn("• отписаться от бота, если уведомления больше не нужны.", text)
+        self.assertIn("После смены страны переподключи VPN", text)
         self.assertIn("Обычно я напоминаю об оплате в 08:00", text)
         self.assertIn("Иногда я также присылаю технические уведомления", text)
 

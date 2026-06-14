@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from xray_vps_manager.xray import client_routes
+
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
@@ -117,19 +119,18 @@ def match_vless_to_client(parsed_link, client_db):
     return None, "UUID найден, но Reality-параметры ссылки не совпадают с текущей базой: " + detail
 
 
-def client_access_summary(entry, format_access_until):
+def client_access_summary(entry, format_access_until, client_db=None):
     status = "отключён" if entry.get("enabled") is False else "включён"
     reason = entry.get("disabledReason", "")
     if reason == "expired":
         status = "отключён: срок истёк"
     elif reason == "traffic-limit":
         status = "отключён: лимит трафика"
-    return "\n".join(
-        [
-            f"Статус: {status}",
-            f"Доступ до: {format_access_until(entry.get('expiresAt', ''))}",
-        ]
-    )
+    lines = [f"Статус: {status}"]
+    if isinstance(client_db, dict):
+        lines.append(f"Страна: {client_routes.selected_route_label(client_db, entry)}")
+    lines.append(f"Доступ до: {format_access_until(entry.get('expiresAt', ''))}")
+    return "\n".join(lines)
 
 
 def subscription_entry_for_chat(db, chat_id, client_db):
@@ -157,7 +158,7 @@ def subscription_status_for_chat(db, chat_id, client_db, format_access_until):
     _name, entry, error = subscription_entry_for_chat(db, chat_id, client_db)
     if error:
         return error
-    return "Текущая подписка:\n" + client_access_summary(entry, format_access_until)
+    return "Текущая подписка:\n" + client_access_summary(entry, format_access_until, client_db)
 
 
 def neutral_vless_fragment(link, server_fragment):

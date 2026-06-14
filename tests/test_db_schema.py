@@ -27,6 +27,7 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "activity_events",
                     "activity_event_risks",
                     "activity_exceptions",
+                    "cascade_routes",
                     "telegram_settings",
                     "telegram_subscriptions",
                     "telegram_state",
@@ -40,6 +41,7 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "idx_traffic_history_client_date",
                     "idx_activity_events_client_time",
                     "idx_activity_event_risks_risk",
+                    "idx_cascade_routes_country",
                     "idx_telegram_subscriptions_uuid",
                 }.issubset(schema.index_names(connection))
             )
@@ -49,7 +51,7 @@ class SQLiteSchemaTests(unittest.TestCase):
             schema.ensure_schema(connection)
 
             rows = connection.execute("SELECT version, name FROM schema_migrations").fetchall()
-            self.assertEqual(rows, [(1, "initial_manager_schema")])
+            self.assertEqual(rows, [(1, "initial_manager_schema"), (2, "cascade_client_routes")])
 
     def test_schema_rejects_newer_database_versions(self) -> None:
         connection = sqlite3.connect(":memory:")

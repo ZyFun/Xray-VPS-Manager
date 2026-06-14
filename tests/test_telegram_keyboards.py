@@ -10,6 +10,7 @@ class TelegramKeyboardTests(unittest.TestCase):
         self.assertIn({"text": "Статистика трафика", "callback_data": "client:traffic"}, buttons)
         self.assertIn({"text": "Статус подписки", "callback_data": "client:status"}, buttons)
         self.assertIn({"text": "Получить VLESS-ссылку", "callback_data": "client:link"}, buttons)
+        self.assertIn({"text": "Страна подключения", "callback_data": "client:country"}, buttons)
 
     def test_subscribed_client_menu_uses_unsubscribe_button_label_and_places_it_last(self) -> None:
         buttons = [button for row in keyboards.client_menu_keyboard(subscribed=True) for button in row]
@@ -38,6 +39,7 @@ class TelegramKeyboardTests(unittest.TestCase):
 
         self.assertNotIn({"text": "Подключить уведомления", "callback_data": "client:subscribe"}, buttons)
         self.assertIn({"text": "Статус подписки", "callback_data": "client:status"}, buttons)
+        self.assertIn({"text": "Страна подключения", "callback_data": "client:country"}, buttons)
         self.assertIn({"text": "Отписаться от бота", "callback_data": "client:unsubscribe"}, buttons)
         self.assertEqual(buttons[-1], {"text": "Отписаться от бота", "callback_data": "client:unsubscribe"})
 
@@ -65,6 +67,20 @@ class TelegramKeyboardTests(unittest.TestCase):
                 {"text": "За неделю по дням", "callback_data": "client:traffic:week-days"},
             ],
         )
+        self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "client:menu"})
+
+    def test_client_country_keyboard_marks_current_route(self) -> None:
+        rows = keyboards.client_country_keyboard(
+            [
+                {"tag": "cascade-de", "display": "Германия"},
+                {"tag": "cascade-us", "display": "США"},
+            ],
+            current_tag="cascade-de",
+        )["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(buttons[0], {"text": "Германия (выбрана)", "callback_data": "client:country:cascade-de"})
+        self.assertEqual(buttons[1], {"text": "США", "callback_data": "client:country:cascade-us"})
         self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "client:menu"})
 
     def test_admin_menu_client_menu_button_returns_to_client_menu(self) -> None:

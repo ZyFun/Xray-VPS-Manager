@@ -24,6 +24,8 @@ from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import reports as traffic_reports
 from xray_vps_manager.traffic import repository as traffic_repository
+from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -179,7 +181,14 @@ def restore_config_backup(backup):
     restart_systemd_unit("xray")
 
 
+def restore_config_file(backup):
+    shutil.copy2(backup, CONFIG_PATH)
+    shutil.chown(CONFIG_PATH, user="root", group="xray")
+    os.chmod(CONFIG_PATH, 0o640)
+
+
 def save_config_restart_xray_and_db(config, db):
+    client_routes.ensure_all_client_route_config(config, db)
     backup = save_config(config)
     try:
         restart_xray_with_config_test()
@@ -347,6 +356,48 @@ def print_payment_summary():
         print(f"WARN: Payment summary unavailable: {detail}", file=sys.stderr)
 
 
+def resolve_cascade_route_tag(config, db, value):
+    raw = str(value or "").strip()
+    if not raw:
+        die("Cascade route is required.")
+    options = client_routes.route_options(db, config)
+    by_tag = {item["tag"]: item for item in options}
+    if raw in by_tag:
+        return raw
+    try:
+        tag = cascade_config.cascade_tag(raw)
+    except ValueError:
+        tag = ""
+    if tag and tag in by_tag:
+        return tag
+    country_matches = [
+        item["tag"]
+        for item in options
+        if str(item.get("country") or "").casefold() == raw.casefold()
+        or str(item.get("display") or "").casefold() == raw.casefold()
+    ]
+    if len(country_matches) == 1:
+        return country_matches[0]
+    if len(country_matches) > 1:
+        die("Country matches more than one cascade route. Use cascade tag.")
+    die(f"Cascade route not found: {raw}")
+
+
+def print_route_options(config, db):
+    rows = []
+    active = cascade_config.active_cascade_tag(config)
+    for item in client_routes.route_options(db, config):
+        tag = item["tag"]
+        rows.append(
+            [
+                item.get("display") or "-",
+                tag,
+                "yes" if tag == active else "-",
+            ]
+        )
+    print_table(["COUNTRY", "TAG", "GLOBAL ACTIVE"], rows, empty_message="Cascade routes are not configured.")
+
+
 def load_traffic_db():
     return traffic_repository.load_traffic_db_for_read()
 
@@ -388,7 +439,7 @@ def traffic_limit_status(db_entry, traffic_db_entry, now=None):
 
 
 def print_client_table(rows):
-    headers = ["NAME", "STATUS", "PAYMENT", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
+    headers = ["NAME", "STATUS", "PAYMENT", "COUNTRY", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
     color_columns = {headers.index("STATUS"), headers.index("PAYMENT"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
     print_table(headers, rows, empty_message=None, color_columns=color_columns, colorizer=color_label)
 
@@ -495,6 +546,7 @@ def cmd_list():
                     row["name"],
                     row["status"],
                     row["paymentType"],
+                    row["cascade"],
                     online,
                     format_traffic(incoming),
                     format_traffic(outgoing),
@@ -643,6 +695,68 @@ def cmd_set_payment(name, payment_value):
     print(f"Client: {name}")
     print(f"Payment type: {client_payments.payment_type_label(entry)}")
     print_payment_summary()
+
+
+def cmd_sync_routes():
+    config = load_config()
+    db = load_db()
+    changed = client_routes.ensure_all_client_route_config(config, db)
+    if changed:
+        backup = save_config_restart_xray_and_db(config, db)
+        print("Client cascade routes synchronized.")
+        print(f"Backup: {backup}")
+    else:
+        save_db(db)
+        print("Client cascade routes are already synchronized.")
+    print_route_options(config, db)
+
+
+def cmd_route(name, route_value=None):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    client_routes.sync_routes_from_config(config, db)
+    entry = db_entry_for_existing_client(config, db, name)
+    current_tag = client_routes.selected_route_tag(entry)
+
+    if route_value is None:
+        print(f"Client: {name}")
+        print(f"Current country: {client_routes.selected_route_label(db, entry)}")
+        print(f"Current cascade: {current_tag or '-'}")
+        print_route_options(config, db)
+        save_db(db)
+        return
+
+    tag = resolve_cascade_route_tag(config, db, route_value)
+    if current_tag == tag:
+        save_db(db)
+        print(f"Client: {name}")
+        print(f"Country already selected: {client_routes.selected_route_label(db, entry)}")
+        print(f"Cascade: {tag}")
+        return
+
+    next_entry = dict(entry)
+    next_entry["selectedCascadeTag"] = tag
+    client_routes.ensure_client_route_config(config, name, next_entry, tag)
+    backup = save_config(config)
+    try:
+        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+    except subprocess.CalledProcessError:
+        restore_config_file(backup)
+        die(f"New route config failed. Restored backup: {backup}")
+
+    ok, detail = client_routes.apply_runtime_override(name, next_entry, tag, run_capture)
+    if not ok:
+        restore_config_file(backup)
+        die("Runtime route switch failed. Run xray-client sync-routes first and check Xray RoutingService. Detail: " + detail)
+
+    client_repository.db_clients(db)[name] = next_entry
+    save_db(db)
+    print(f"Client: {name}")
+    print(f"Selected country: {client_routes.selected_route_label(db, next_entry)}")
+    print(f"Cascade: {tag}")
+    print(f"Backup: {backup}")
+    print("Runtime route updated without Xray restart.")
 
 
 def cmd_remove(name):
@@ -911,6 +1025,8 @@ def usage():
   xray-client set-days NAME DAYS
   xray-client extend-days NAME DAYS
   xray-client set-payment NAME paid|free
+  xray-client sync-routes
+  xray-client route NAME [COUNTRY_OR_TAG]
   xray-client expire-due [--quiet]
   xray-client traffic-summary [YYYY-MM]
   xray-client traffic-day NAME [YYYY-MM-DD]
@@ -1004,6 +1120,10 @@ def main():
         cmd_extend_days(sys.argv[2], sys.argv[3])
     elif command in ("set-payment", "payment-type") and len(sys.argv) == 4:
         cmd_set_payment(sys.argv[2], sys.argv[3])
+    elif command == "sync-routes" and len(sys.argv) == 2:
+        cmd_sync_routes()
+    elif command == "route" and len(sys.argv) in (3, 4):
+        cmd_route(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
     elif command == "expire-due" and len(sys.argv) in (2, 3):
         quiet = len(sys.argv) == 3 and sys.argv[2] == "--quiet"
         if len(sys.argv) == 3 and not quiet:

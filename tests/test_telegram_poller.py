@@ -936,6 +936,8 @@ class TelegramPollerTests(unittest.TestCase):
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Vireika: помощь", sent[2])
         self.assertIn("• получить актуальную VLESS-ссылку;", sent[2])
+        self.assertIn("• сменить страну подключения;", sent[2])
+        self.assertIn("После смены страны переподключи VPN", sent[2])
         self.assertNotIn("Привет. Я бот Vireika.", sent[2])
 
     def test_help_callback_sends_client_help_text(self) -> None:
@@ -975,6 +977,7 @@ class TelegramPollerTests(unittest.TestCase):
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Vireika: помощь", sent[2])
         self.assertIn("• отписаться от бота, если уведомления больше не нужны.", sent[2])
+        self.assertIn("После смены страны переподключи VPN", sent[2])
         self.assertNotIn("Текущая подписка:", sent[2])
 
     def test_client_menu_callback_returns_home_instead_of_help(self) -> None:
@@ -1014,6 +1017,179 @@ class TelegramPollerTests(unittest.TestCase):
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Текущая подписка:", sent[2])
         self.assertNotIn("Vireika: помощь", sent[2])
+
+    def test_country_menu_shows_current_country_for_subscribed_client(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 86, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 87,
+                "callback_query": {
+                    "id": "callback-country",
+                    "data": "client:country",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={
+                "cascadeRoutes": {
+                    "cascade-de": {"country": "Германия"},
+                    "cascade-us": {"country": "США"},
+                },
+                "clients": {
+                    "alice": {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "selectedCascadeTag": "cascade-de",
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Текущая страна: Германия", sent[2])
+
+    def test_selecting_current_country_does_not_call_route_command(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 88, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 89,
+                "callback_query": {
+                    "id": "callback-country-de",
+                    "data": "client:country:cascade-de",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={
+                "cascadeRoutes": {
+                    "cascade-de": {"country": "Германия"},
+                    "cascade-us": {"country": "США"},
+                },
+                "clients": {
+                    "alice": {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "selectedCascadeTag": "cascade-de",
+                    }
+                },
+            },
+            run_capture=run_capture,
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertFalse(any(event[0] == "run" for event in events))
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Эта страна уже выбрана: Германия.", sent[2])
+
+    def test_selecting_new_country_mentions_vpn_reconnect(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 90, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 91,
+                "callback_query": {
+                    "id": "callback-country-us",
+                    "data": "client:country:cascade-us",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        snapshots = [
+            {
+                "cascadeRoutes": {
+                    "cascade-de": {"country": "Германия"},
+                    "cascade-us": {"country": "США"},
+                },
+                "clients": {
+                    "alice": {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "selectedCascadeTag": "cascade-de",
+                    }
+                },
+            },
+            {
+                "cascadeRoutes": {
+                    "cascade-de": {"country": "Германия"},
+                    "cascade-us": {"country": "США"},
+                },
+                "clients": {
+                    "alice": {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "selectedCascadeTag": "cascade-us",
+                    }
+                },
+            },
+        ]
+
+        def load_client_db():
+            if len(snapshots) > 1:
+                return snapshots.pop(0)
+            return snapshots[0]
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ctx = self.make_context(db, updates, events, client_db=load_client_db, run_capture=run_capture)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertIn(("run", ["/usr/local/sbin/xray-client", "route", "alice", "cascade-us"], 20), events)
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Страна подключения изменена: США.", sent[2])
+        self.assertIn("Переподключи VPN", sent[2])
 
     def test_unsubscribe_callback_resets_chat_command_menu(self) -> None:
         db = {

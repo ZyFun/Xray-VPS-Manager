@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.telegram import admin, bot_commands, keyboards, messages, subscriptions, traffic
+from xray_vps_manager.xray import client_routes
 
 USER_POLL_SHORT_TIMEOUT = 2
 USER_POLL_LONG_TIMEOUT = 45
@@ -140,6 +141,27 @@ def send_client_traffic_menu(ctx: PollerContext, db, chat_id, text=None, parse_m
     register_client_message(ctx, db, chat_id, response)
 
 
+def send_client_country_menu(ctx: PollerContext, db, chat_id, text=None):
+    client_db = ctx.load_client_db()
+    _name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
+    if error:
+        send_client_menu(ctx, db, chat_id, error)
+        return
+    options = client_routes.route_options(client_db)
+    if not options:
+        send_client_menu(ctx, db, chat_id, "Страны подключения ещё не настроены. Обратись к администратору.")
+        return
+    current_tag = client_routes.selected_route_tag(entry)
+    current_label = client_routes.selected_route_label(client_db, entry)
+    response = ctx.send_chat_message(
+        db,
+        chat_id,
+        text or f"Текущая страна: {current_label}\n\nВыбери страну подключения.",
+        reply_markup=keyboards.client_country_keyboard(options, current_tag),
+    )
+    register_client_message(ctx, db, chat_id, response)
+
+
 def subscription_status_for_chat(ctx: PollerContext, db, chat_id):
     return subscriptions.subscription_status_for_chat(db, chat_id, ctx.load_client_db(), ctx.format_access_until)
 
@@ -158,7 +180,7 @@ def subscribe_prompt_for_chat(ctx: PollerContext, db, chat_id):
     client_db = ctx.load_client_db()
     _name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
     if entry and not error:
-        return "Уведомления уже подключены.\n\n" + subscriptions.client_access_summary(entry, ctx.format_access_until)
+        return "Уведомления уже подключены.\n\n" + subscriptions.client_access_summary(entry, ctx.format_access_until, client_db)
     if subscriptions.chat_has_subscription(db, chat_id) and error:
         return error + "\n\n" + messages.subscribe_prompt_text()
     return messages.subscribe_prompt_text()
@@ -259,7 +281,7 @@ def handle_user_message(ctx: PollerContext, db, update):
             db,
             chat_id,
             "Подписка подключена.\n\n"
-            + subscriptions.client_access_summary(entry, ctx.format_access_until)
+            + subscriptions.client_access_summary(entry, ctx.format_access_until, ctx.load_client_db())
             + "\n\nНапоминания придут в 08:00 за 5 дней и за 1 день до окончания доступа.",
         )
         return True
@@ -315,6 +337,47 @@ def handle_callback_query(ctx: PollerContext, db, update):
     if data == "client:traffic":
         ctx.answer_callback_query(db, callback_id)
         send_client_traffic_menu(ctx, db, chat_id)
+        return True
+    if data == "client:country":
+        ctx.answer_callback_query(db, callback_id)
+        send_client_country_menu(ctx, db, chat_id)
+        return True
+    if data.startswith("client:country:"):
+        client_db = ctx.load_client_db()
+        name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
+        if error:
+            ctx.answer_callback_query(db, callback_id)
+            send_client_menu(ctx, db, chat_id, error)
+            return True
+        tag = data[len("client:country:"):]
+        options = {item["tag"]: item for item in client_routes.route_options(client_db)}
+        if tag not in options:
+            ctx.answer_callback_query(db, callback_id, "Страна недоступна")
+            send_client_country_menu(ctx, db, chat_id, "Эта страна сейчас недоступна. Выбери другую.")
+            return True
+        if client_routes.selected_route_tag(entry) == tag:
+            label = client_routes.route_label(options[tag], tag)
+            ctx.answer_callback_query(db, callback_id, "Уже выбрана")
+            send_client_country_menu(ctx, db, chat_id, f"Эта страна уже выбрана: {label}.")
+            return True
+        result = ctx.run_capture([str(ctx.xray_client), "route", name, tag], timeout=20)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+            ctx.answer_callback_query(db, callback_id, "Не удалось переключить")
+            send_client_country_menu(ctx, db, chat_id, "Не удалось переключить страну: " + detail)
+            return True
+        label = client_routes.route_label(options[tag], tag)
+        ctx.answer_callback_query(db, callback_id, "Готово")
+        updated_db = ctx.load_client_db()
+        updated_entry = subscriptions.client_db_clients(updated_db).get(name, entry)
+        send_client_country_menu(
+            ctx,
+            db,
+            chat_id,
+            f"Страна подключения изменена: {label}.\n\n"
+            f"Текущая страна: {client_routes.selected_route_label(updated_db, updated_entry)}\n\n"
+            "Переподключи VPN, чтобы новые соединения пошли через выбранный маршрут.",
+        )
         return True
     if data.startswith("client:traffic:"):
         ctx.answer_callback_query(db, callback_id)

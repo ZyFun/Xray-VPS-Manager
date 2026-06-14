@@ -5,6 +5,7 @@ import unittest
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
+from xray_vps_manager.db.repositories import cascades as sqlite_cascades
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 
@@ -33,7 +34,11 @@ def client_db() -> dict:
                     "email": "alice|created=2026-06-12T08:01:00Z",
                 },
                 "paymentType": "paid",
+                "selectedCascadeTag": "cascade-de",
             }
+        },
+        "cascadeRoutes": {
+            "cascade-de": {"tag": "cascade-de", "country": "Германия", "label": "de"},
         },
     }
 
@@ -86,12 +91,15 @@ class ClientRepositoryWriteTests(unittest.TestCase):
             try:
                 clients = sqlite_clients.list_clients(connection)
                 connections = sqlite_connections.list_connections(connection)
+                routes = sqlite_cascades.list_routes(connection)
             finally:
                 connection.close()
             self.assertEqual(set(clients), {"alice"})
             self.assertEqual(set(connections), {"vless-reality"})
             self.assertEqual(clients["alice"]["paymentType"], "paid")
+            self.assertEqual(clients["alice"]["selectedCascadeTag"], "cascade-de")
             self.assertEqual(connections["vless-reality"]["fingerprint"], "chrome")
+            self.assertEqual(routes["cascade-de"]["country"], "Германия")
             self.assertFalse(json_path.exists())
 
     def test_save_fails_when_sqlite_database_is_missing(self) -> None:

@@ -26,6 +26,7 @@ _CLIENT_KNOWN_KEYS = {
     "trafficLimitExceededBytes",
     "trafficLimitResetAt",
     "paymentType",
+    "selectedCascadeTag",
     "extra",
 }
 
@@ -57,6 +58,7 @@ def _entry_from_row(connection: sqlite3.Connection, row) -> dict[str, Any] | Non
             "connection": row["connection_tag"] or "",
             "client": decode_json(row["xray_client_json"]),
             "paymentType": row["payment_type"] or "free",
+            "selectedCascadeTag": row["selected_cascade_tag"] or "",
         }
     )
     for db_key, json_key in (
@@ -91,9 +93,9 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
             """
             INSERT INTO clients(
                 name, uuid, email, connection_tag, created_at, enabled, disabled_reason, disabled_at,
-                expires_at, access_days, expired_at, payment_type, xray_client_json, extra_json
+                expires_at, access_days, expired_at, payment_type, selected_cascade_tag, xray_client_json, extra_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 uuid = excluded.uuid,
                 email = excluded.email,
@@ -106,6 +108,7 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
                 access_days = excluded.access_days,
                 expired_at = excluded.expired_at,
                 payment_type = excluded.payment_type,
+                selected_cascade_tag = excluded.selected_cascade_tag,
                 xray_client_json = excluded.xray_client_json,
                 extra_json = excluded.extra_json
             """,
@@ -122,6 +125,7 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
                 entry.get("accessDays"),
                 entry.get("expiredAt") or None,
                 normalize_payment_type(entry.get("paymentType", "free")),
+                entry.get("selectedCascadeTag") or None,
                 encode_json(client),
                 encode_json(extra),
             ),

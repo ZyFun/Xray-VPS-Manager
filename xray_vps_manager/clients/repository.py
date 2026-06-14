@@ -9,6 +9,7 @@ from typing import Any
 from xray_vps_manager.clients.payments import normalize_payment_type
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
+from xray_vps_manager.db.repositories import cascades as sqlite_cascades
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
@@ -30,10 +31,15 @@ def db_connections(db: dict[str, Any]) -> dict[str, Any]:
     return db.setdefault("connections", {})
 
 
+def db_cascade_routes(db: dict[str, Any]) -> dict[str, Any]:
+    return db.setdefault("cascadeRoutes", {})
+
+
 def normalize_client_defaults(db: dict[str, Any]) -> dict[str, Any]:
     for entry in db_clients(db).values():
         if isinstance(entry, dict):
             entry["paymentType"] = normalize_payment_type(entry.get("paymentType", "free"))
+            entry.setdefault("selectedCascadeTag", "")
     return db
 
 
@@ -85,6 +91,7 @@ def load_db_from_sqlite(connection) -> dict[str, Any]:
     return normalize_client_defaults(
         {
             "connections": sqlite_connections.list_connections(connection),
+            "cascadeRoutes": sqlite_cascades.list_routes(connection),
             "clients": sqlite_clients.list_clients(connection),
         }
     )
@@ -115,6 +122,14 @@ def write_db_to_sqlite_for_write(
             for tag, record in connections.items():
                 if isinstance(record, dict):
                     sqlite_connections.upsert_connection(connection, str(tag), record)
+            routes = db.get("cascadeRoutes")
+            if isinstance(routes, dict):
+                for tag, record in routes.items():
+                    if isinstance(record, dict):
+                        sqlite_cascades.upsert_route(connection, str(tag), record)
+                desired_routes = {str(tag) for tag, record in routes.items() if isinstance(record, dict)}
+                for tag in set(sqlite_cascades.list_routes(connection)) - desired_routes:
+                    sqlite_cascades.delete_route(connection, tag)
             for name, entry in clients.items():
                 if isinstance(entry, dict):
                     sqlite_clients.upsert_client(connection, str(name), entry)

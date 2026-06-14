@@ -126,7 +126,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
             with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
                 result = test_command.check_sqlite_database(diag)
 
-            self.assertIn("schema=1", result)
+            self.assertIn("schema=2", result)
             self.assertIn("quick_check=ok", result)
             self.assertIn("sqliteReady=yes", result)
             self.assertIn("clients=1", result)

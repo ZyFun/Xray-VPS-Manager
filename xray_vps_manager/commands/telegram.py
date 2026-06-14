@@ -19,6 +19,8 @@ from xray_vps_manager.telegram import poller as telegram_poller
 from xray_vps_manager.telegram import setup as telegram_setup
 from xray_vps_manager.telegram import settings as telegram_settings
 from xray_vps_manager.telegram import subscriptions as telegram_subscriptions
+from xray_vps_manager.xray import client_routes
+from xray_vps_manager.xray import config as xray_config
 
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 MANAGER_DB_PATH = Path("/usr/local/etc/xray/manager.db")
@@ -131,7 +133,14 @@ def format_event_time(value):
 
 
 def load_client_db():
-    return client_repository.load_db_sql()
+    db = client_repository.load_db_sql()
+    try:
+        config = xray_config.load_config()
+    except Exception:
+        return db
+    if client_routes.sync_routes_from_config(config, db):
+        client_repository.save_db(db)
+    return db
 
 
 def load_traffic_db():

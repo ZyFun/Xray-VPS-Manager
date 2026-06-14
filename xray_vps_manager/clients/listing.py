@@ -8,6 +8,7 @@ from xray_vps_manager.clients.connections import ensure_connections
 from xray_vps_manager.clients.models import split_email
 from xray_vps_manager.clients.payments import payment_type_label
 from xray_vps_manager.clients.repository import db_clients
+from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import clients, default_connection_tag, inbound_tag, reality_inbounds
 
 
@@ -33,6 +34,7 @@ def client_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str, An
                     "paymentType": payment_type_label(entry),
                     "expiresAt": entry.get("expiresAt", ""),
                     "connection": entry.get("connection") or tag,
+                    "cascade": client_routes.selected_route_label(db, entry),
                 }
             )
             seen.add(name)
@@ -50,6 +52,7 @@ def client_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str, An
                 "paymentType": payment_type_label(entry),
                 "expiresAt": entry.get("expiresAt", ""),
                 "connection": entry.get("connection") or default_connection_tag(config),
+                "cascade": client_routes.selected_route_label(db, entry),
             }
         )
     return rows

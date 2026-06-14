@@ -16,6 +16,7 @@ def subscribed_client_menu_keyboard():
     return [
         [{"text": "Статус подписки", "callback_data": "client:status"}],
         [{"text": "Получить VLESS-ссылку", "callback_data": "client:link"}],
+        [{"text": "Страна подключения", "callback_data": "client:country"}],
         [{"text": "Статистика трафика", "callback_data": "client:traffic"}],
         [{"text": "Помощь", "callback_data": "client:help"}],
         [{"text": "Отписаться от бота", "callback_data": "client:unsubscribe"}],
@@ -44,6 +45,18 @@ def client_traffic_keyboard():
             [{"text": "Назад", "callback_data": "client:menu"}],
         ]
     }
+
+
+def client_country_keyboard(options, current_tag=""):
+    rows = []
+    for item in options:
+        tag = str(item.get("tag") or "")
+        label = str(item.get("display") or item.get("country") or tag)
+        if tag == current_tag:
+            label = f"{label} (выбрана)"
+        rows.append([{"text": label, "callback_data": f"client:country:{tag}"}])
+    rows.append([{"text": "Назад", "callback_data": "client:menu"}])
+    return {"inline_keyboard": rows}
 
 
 def client_keyboard_for_chat(db, chat_id):

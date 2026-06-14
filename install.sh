@@ -624,6 +624,7 @@ cat >/usr/local/etc/xray/config.json <<EOF
   "api": {
     "tag": "api",
     "services": [
+      "RoutingService",
       "StatsService"
     ]
   },

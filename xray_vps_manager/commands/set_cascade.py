@@ -11,8 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import client_routes
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 GEOIP_WARNING_OUTBOUND_PREFIX = "geoip-warning-"
@@ -152,6 +154,23 @@ def outbound_by_tag(config, tag):
         if outbound.get("tag") == tag:
             return outbound
     return None
+
+
+def load_client_db_optional():
+    try:
+        return client_repository.load_db_sql()
+    except Exception as exc:
+        print(f"WARN: client route DB sync skipped: {exc}", file=sys.stderr)
+        return None
+
+
+def save_client_db_optional(db):
+    if db is None:
+        return
+    try:
+        client_repository.save_db(db)
+    except Exception as exc:
+        print(f"WARN: client route DB save skipped: {exc}", file=sys.stderr)
 
 
 def route_source_outbound(config, fallback=None):
@@ -394,13 +413,18 @@ def current_route_label(config):
 
 def cascade_rows(config):
     active = cascade_config.active_cascade_tag(config)
+    db = load_client_db_optional()
+    if db is not None and client_routes.sync_routes_from_config(config, db):
+        save_client_db_optional(db)
     rows = []
     for index, outbound in enumerate(cascade_config.cascade_outbounds(config), start=1):
         tag = outbound.get("tag", "")
+        record = client_repository.db_cascade_routes(db).get(tag, {}) if db is not None else {}
         rows.append(
             [
                 index,
                 cascade_config.cascade_name_from_tag(tag),
+                client_routes.route_label(record, tag),
                 tag,
                 "active" if tag == active else "-",
                 outbound_address(outbound),
@@ -411,7 +435,7 @@ def cascade_rows(config):
 
 def print_cascade_table(config):
     print_table(
-        ["#", "Name", "Tag", "Route", "Address"],
+        ["#", "Name", "Country", "Tag", "Route", "Address"],
         cascade_rows(config),
         empty_message="Cascade outbounds are not configured.",
     )
@@ -474,6 +498,38 @@ def read_cascade_name(args):
     return cascade_config.DEFAULT_CASCADE_NAME
 
 
+def parse_add_args(args):
+    country = ""
+    rest = []
+    index = 0
+    while index < len(args):
+        item = args[index]
+        if item == "--country":
+            if index + 1 >= len(args):
+                die("--country requires value.")
+            country = args[index + 1]
+            index += 2
+            continue
+        rest.append(item)
+        index += 1
+    return read_cascade_name(rest), country
+
+
+def read_cascade_country(initial=""):
+    if initial:
+        try:
+            return client_routes.normalize_country(initial)
+        except ValueError as exc:
+            die(str(exc))
+    if not sys.stdin.isatty():
+        return ""
+    value = input("Cascade country [не указана]: ").strip()
+    try:
+        return client_routes.normalize_country(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def read_vless_link():
     if sys.stdin.isatty():
         print("Paste upstream VLESS link and press Enter:")
@@ -488,16 +544,25 @@ def cmd_status():
 
 
 def cmd_add(args):
-    name = read_cascade_name(args)
+    name, initial_country = parse_add_args(args)
+    country = read_cascade_country(initial_country)
     tag = cascade_config.cascade_tag(name)
     uri = read_vless_link()
     outbound, label = parse_vless(uri, tag=tag)
     config = load_config()
     before = copy.deepcopy(config)
+    db = load_client_db_optional()
+    if db is not None:
+        client_routes.sync_routes_from_config(config, db)
     configure_cascade(config, outbound)
+    if db is not None:
+        client_routes.upsert_route_country(db, tag, country, label=name)
+        client_routes.ensure_all_client_route_config(config, db)
     backup = apply_config(config, before)
+    save_client_db_optional(db)
 
     print(f"Cascade enabled: {name} ({tag})")
+    print(f"Country: {country or 'not specified'}")
     print(f"Upstream: {label}")
     print(f"Backup: {backup}")
     print(f"All non-private outbound traffic now goes through tag: {tag}")
@@ -509,13 +574,36 @@ def cmd_use(args):
     config = load_config()
     tag = tag_from_name_or_die(args[0]) if args else choose_cascade_tag(config, "Active cascade")
     before = copy.deepcopy(config)
+    db = load_client_db_optional()
     try:
         set_active_cascade(config, tag)
     except ValueError as exc:
         die(str(exc))
+    if db is not None:
+        client_routes.sync_routes_from_config(config, db)
+        client_routes.ensure_all_client_route_config(config, db)
     backup = apply_config(config, before)
+    save_client_db_optional(db)
     print(f"Active cascade: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Backup: {backup}")
+
+
+def cmd_country(args):
+    if len(args) < 2:
+        die("Usage: xray-set-cascade country NAME_OR_TAG COUNTRY")
+    config = load_config()
+    tag = tag_from_name_or_die(args[0])
+    if not cascade_config.cascade_outbound(config, tag):
+        die(f"Cascade outbound is not configured: {tag}")
+    country = client_routes.normalize_country(" ".join(args[1:]))
+    db = load_client_db_optional()
+    if db is None:
+        die("Client database is unavailable.")
+    client_routes.sync_routes_from_config(config, db)
+    client_routes.upsert_route_country(db, tag, country, label=cascade_config.cascade_name_from_tag(tag) or tag)
+    save_client_db_optional(db)
+    print(f"Cascade: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
+    print(f"Country: {country or 'not specified'}")
 
 
 def confirm_remove(tag):
@@ -535,6 +623,14 @@ def cmd_remove(args):
     except ValueError as exc:
         die(str(exc))
     backup = apply_config(config, before)
+    db = load_client_db_optional()
+    if db is not None:
+        client_repository.db_cascade_routes(db).pop(tag, None)
+        for entry in client_repository.db_clients(db).values():
+            if isinstance(entry, dict) and entry.get("selectedCascadeTag") == tag:
+                entry["selectedCascadeTag"] = cascade_config.active_cascade_tag(config)
+        client_routes.sync_routes_from_config(config, db)
+        save_client_db_optional(db)
     print(f"Cascade removed: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Current catch-all route: {current_route_label(config)}")
     print(f"Backup: {backup}")
@@ -645,6 +741,7 @@ def print_usage():
   xray-set-cascade add [NAME]      Add/replace named cascade and make it active
   xray-set-cascade list            Show configured cascades
   xray-set-cascade use [NAME]      Select active cascade
+  xray-set-cascade country NAME COUNTRY
   xray-set-cascade test [NAME]     Test active or named cascade
   xray-set-cascade test-select     Select cascade from table and test it
   xray-set-cascade remove [NAME]   Remove named cascade
@@ -674,6 +771,8 @@ def main():
         cmd_add(rest)
     elif command in ("use", "switch", "select"):
         cmd_use(rest)
+    elif command in ("country", "set-country"):
+        cmd_country(rest)
     elif command in ("remove", "delete", "rm"):
         cmd_remove(rest)
     elif command in ("--disable", "--direct", "disable", "direct"):

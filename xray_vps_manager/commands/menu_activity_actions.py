@@ -14,6 +14,7 @@ from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import load_config as load_xray_config
 from xray_vps_manager.xray.config import save_config
 
@@ -157,11 +158,13 @@ def remove_xray_geoip_warning_config(config: dict) -> bool:
 def insert_before_catchall_route(rules: list[dict], rule: dict) -> None:
     insert_index = len(rules)
     for index, existing in enumerate(rules):
-        if (
+        is_client_route = str(existing.get("balancerTag") or "").startswith(client_routes.CLIENT_BALANCER_PREFIX)
+        is_catchall = (
             existing.get("outboundTag") == WARP_OUTBOUND_TAG
             or existing.get("outboundTag") == DIRECT_OUTBOUND_TAG
             or cascade_config.is_cascade_tag(existing.get("outboundTag"))
-        ) and existing.get("network") == "tcp,udp":
+        ) and existing.get("network") == "tcp,udp"
+        if is_client_route or is_catchall:
             insert_index = index
             break
     rules.insert(insert_index, rule)
