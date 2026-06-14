@@ -16,13 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from xray_vps_manager.xray import cascade as cascade_config
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 WARP_DIR = Path("/usr/local/etc/xray/warp")
 WGCF_BIN = Path("/usr/local/bin/wgcf")
 WGCF_ACCOUNT = WARP_DIR / "wgcf-account.toml"
 WGCF_PROFILE = WARP_DIR / "wgcf-profile.conf"
 WARP_OUTBOUND_TAG = "warp-out"
-CASCADE_UPSTREAM_TAG = "cascade-upstream"
 DIRECT_TAG = "direct"
 BLOCKED_TAG = "blocked"
 API_TAG = "api"
@@ -482,8 +483,17 @@ def upsert_warp_outbound(config, endpoint_override=None, replace=True):
 
 def remove_managed_catchall_routes(config):
     rules = routing_rules(config)
-    managed = {WARP_OUTBOUND_TAG, CASCADE_UPSTREAM_TAG, DIRECT_TAG}
-    kept = [rule for rule in rules if not (rule.get("outboundTag") in managed and is_catchall_rule(rule))]
+    kept = [
+        rule
+        for rule in rules
+        if not (
+            (
+                rule.get("outboundTag") in {WARP_OUTBOUND_TAG, DIRECT_TAG}
+                or cascade_config.is_cascade_tag(rule.get("outboundTag"))
+            )
+            and is_catchall_rule(rule)
+        )
+    ]
     config["routing"]["rules"] = kept
     return len(kept) != len(rules)
 
@@ -510,8 +520,9 @@ def enable_warp_route(config, endpoint_override=None):
 
 def disable_warp_route(config):
     changed = remove_managed_catchall_routes(config)
-    if any(item.get("tag") == CASCADE_UPSTREAM_TAG for item in config.get("outbounds", [])):
-        append_catchall_route(config, CASCADE_UPSTREAM_TAG)
+    cascade_tag = cascade_config.first_cascade_tag(config)
+    if cascade_tag:
+        append_catchall_route(config, cascade_tag)
         changed = True
     return changed
 
@@ -585,8 +596,9 @@ def cmd_disable():
         return
     backup = apply_config(config)
     print("WARP route is disabled.")
-    if any(item.get("tag") == CASCADE_UPSTREAM_TAG for item in config.get("outbounds", [])):
-        print("Catch-all traffic restored to cascade-upstream.")
+    cascade_tag = cascade_config.active_cascade_tag(config)
+    if cascade_tag:
+        print(f"Catch-all traffic restored to {cascade_tag}.")
     else:
         print("Catch-all traffic restored to default direct outbound.")
     print(f"Backup: {backup}")

@@ -169,12 +169,28 @@ def print_initial_link() -> None:
         print("Файл /root/xray-reality-client.txt не найден. Можно вывести ссылку через xray-client link NAME.")
 
 
+def show_cascades(call: CommandRunner) -> None:
+    call(["xray-set-cascade", "list"])
+
+
 def add_or_replace_cascade(call: CommandRunner) -> None:
-    call(["xray-set-cascade"])
+    call(["xray-set-cascade", "add"])
+
+
+def select_cascade(call: CommandRunner) -> None:
+    call(["xray-set-cascade", "use"])
 
 
 def test_cascade(call: CommandRunner) -> None:
     call(["xray-set-cascade", "--test"])
+
+
+def test_selected_cascade(call: CommandRunner) -> None:
+    call(["xray-set-cascade", "test-select"])
+
+
+def remove_cascade(call: CommandRunner) -> None:
+    call(["xray-set-cascade", "remove"])
 
 
 def disable_cascade(call: CommandRunner) -> None:

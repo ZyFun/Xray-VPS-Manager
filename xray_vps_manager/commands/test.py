@@ -20,6 +20,7 @@ from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import sqlite_read_ready
+from xray_vps_manager.xray import cascade as cascade_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -27,7 +28,6 @@ MANAGER_DB_PATH = Path("/usr/local/etc/xray/manager.db")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
 STATS_SERVER = "127.0.0.1:10085"
-UPSTREAM_TAG = "cascade-upstream"
 WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_TAG = "direct"
 BLOCKED_TAG = "blocked"
@@ -779,18 +779,24 @@ def check_torrent_policy(diag):
 
 def check_cascade_config(diag):
     config = diag.context["config"]
-    outbound = next((item for item in config.get("outbounds", []) if item.get("tag") == UPSTREAM_TAG), None)
-    if not outbound:
+    outbounds = cascade_config.cascade_outbounds(config)
+    if not outbounds:
         return "Cascade outbound is not configured"
-    if outbound.get("protocol") != "vless":
-        raise RuntimeError("cascade-upstream must use protocol=vless")
-    vnext = outbound.get("settings", {}).get("vnext", [])
-    if not vnext or not vnext[0].get("address") or not vnext[0].get("port"):
-        raise RuntimeError("cascade-upstream has incomplete vnext settings")
-    route = any(rule.get("outboundTag") == UPSTREAM_TAG and rule.get("type") == "field" for rule in routing_rules(config))
-    if not route:
-        raise RuntimeError("routing rule to cascade-upstream is missing")
-    return "Cascade config is present; deep network test remains in Cascade menu"
+    tags = {item.get("tag") for item in outbounds}
+    for outbound in outbounds:
+        tag = outbound.get("tag") or "cascade-unknown"
+        if outbound.get("protocol") != "vless":
+            raise RuntimeError(f"{tag} must use protocol=vless")
+        vnext = outbound.get("settings", {}).get("vnext", [])
+        if not vnext or not vnext[0].get("address") or not vnext[0].get("port"):
+            raise RuntimeError(f"{tag} has incomplete vnext settings")
+    active = cascade_config.active_cascade_tag(config)
+    catchall = cascade_config.current_catchall_tag(config)
+    if cascade_config.is_cascade_tag(catchall) and catchall not in tags:
+        raise RuntimeError(f"active cascade route points to missing outbound: {catchall}")
+    if active:
+        return f"Cascade config is present; active route: {active}; deep network test remains in Cascade menu"
+    return f"Cascade config is present but not active; configured: {len(outbounds)}"
 
 
 def is_catchall_rule(rule, tag):

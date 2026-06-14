@@ -13,10 +13,10 @@ from pathlib import Path
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
 from xray_vps_manager.core.terminal import table_border, table_row
+from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray.config import load_config as load_xray_config
 from xray_vps_manager.xray.config import save_config
 
-CASCADE_UPSTREAM_TAG = "cascade-upstream"
 WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
@@ -129,12 +129,12 @@ def xray_geoip_warning_source_outbound(config: dict) -> dict:
     outbounds = config.setdefault("outbounds", [])
     for outbound in outbounds:
         if outbound.get("tag") == WARP_OUTBOUND_TAG and any(
-            rule.get("outboundTag") == WARP_OUTBOUND_TAG for rule in routing_rules(config)
+            cascade_config.is_catchall_rule(rule, WARP_OUTBOUND_TAG) for rule in routing_rules(config)
         ):
             return outbound
-    for outbound in outbounds:
-        if outbound.get("tag") == CASCADE_UPSTREAM_TAG:
-            return outbound
+    active_cascade = cascade_config.active_cascade_outbound(config)
+    if active_cascade:
+        return active_cascade
     return ensure_direct_outbound(config)
 
 
@@ -157,7 +157,11 @@ def remove_xray_geoip_warning_config(config: dict) -> bool:
 def insert_before_catchall_route(rules: list[dict], rule: dict) -> None:
     insert_index = len(rules)
     for index, existing in enumerate(rules):
-        if existing.get("outboundTag") in (WARP_OUTBOUND_TAG, CASCADE_UPSTREAM_TAG) and existing.get("network") == "tcp,udp":
+        if (
+            existing.get("outboundTag") == WARP_OUTBOUND_TAG
+            or existing.get("outboundTag") == DIRECT_OUTBOUND_TAG
+            or cascade_config.is_cascade_tag(existing.get("outboundTag"))
+        ) and existing.get("network") == "tcp,udp":
             insert_index = index
             break
     rules.insert(insert_index, rule)
@@ -368,7 +372,7 @@ def choose_geoip_region() -> str:
 
 def set_xray_geoip_routing_region() -> None:
     print("Эта настройка добавит Xray routing rule вида geoip:CODE -> отдельный outbound tag.")
-    print("Маршрут трафика не меняется: outbound дублирует текущий cascade-upstream или direct, но access log получит отдельную метку.")
+    print("Маршрут трафика не меняется: outbound дублирует текущий активный cascade-*, WARP или direct, но access log получит отдельную метку.")
     print("Для доменных целей routing будет временно переключён в IPOnDemand, иначе catch-all может сработать до GeoIP-проверки.")
     code = choose_geoip_region()
     if not code:

@@ -15,8 +15,8 @@ from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.process import run_capture
 from xray_vps_manager.telegram import api, bot_commands, poller, settings
+from xray_vps_manager.xray import cascade as cascade_config
 
-CASCADE_UPSTREAM_TAG = "cascade-upstream"
 TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
 TELEGRAM_SOCKS_HOST = api.TELEGRAM_SOCKS_HOST
 TELEGRAM_SOCKS_PORT = api.TELEGRAM_SOCKS_PORT
@@ -101,7 +101,8 @@ def telegram_proxy_configured(config):
 
 
 def ensure_telegram_proxy_config(config):
-    if not any(item.get("tag") == CASCADE_UPSTREAM_TAG for item in config.get("outbounds", [])):
+    cascade_tag = cascade_config.selected_cascade_tag(config)
+    if not cascade_tag:
         raise RuntimeError("Cascade outbound is not configured. Add cascade first or use direct Telegram route mode.")
 
     remove_telegram_proxy_config(config)
@@ -120,9 +121,10 @@ def ensure_telegram_proxy_config(config):
         {
             "type": "field",
             "inboundTag": [TELEGRAM_SOCKS_TAG],
-            "outboundTag": CASCADE_UPSTREAM_TAG,
+            "outboundTag": cascade_tag,
         },
     )
+    return cascade_tag
 
 
 def wait_for_tcp(host, port, timeout=8.0):
@@ -145,7 +147,7 @@ def set_route_mode(mode):
     if mode == "cascade":
         db["routeMode"] = mode
         settings.save_db(db)
-        ensure_telegram_proxy_config(config)
+        cascade_tag = ensure_telegram_proxy_config(config)
         try:
             backup = apply_config(config)
         except Exception:
@@ -154,7 +156,7 @@ def set_route_mode(mode):
             raise
         if not wait_for_tcp(TELEGRAM_SOCKS_HOST, TELEGRAM_SOCKS_PORT):
             raise RuntimeError(f"Telegram SOCKS inbound did not open: {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}")
-        print(f"Telegram Bot API traffic will use cascade through SOCKS {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}.")
+        print(f"Telegram Bot API traffic will use {cascade_tag} through SOCKS {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}.")
         print(f"Backup: {backup}")
     else:
         changed = remove_telegram_proxy_config(config)
@@ -314,7 +316,7 @@ def setup():
     print()
     print("Как боту выходить в интернет?")
     print("1. direct: напрямую с этого сервера")
-    print("2. cascade: через исходящий сервер, настроенный как cascade-upstream")
+    print("2. cascade: через активный исходящий сервер cascade-*")
     mode_choice = input("Route mode [1-direct]: ").strip() or "1"
     mode = "cascade" if mode_choice == "2" else "direct"
     settings.save_db(db)

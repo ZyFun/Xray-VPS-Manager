@@ -11,6 +11,24 @@ class MenuXrayActionsTests(unittest.TestCase):
 
         self.assertEqual(calls, [["xray-vps-manager", "sqlite", "status"]])
 
+    def test_cascade_menu_actions_call_named_cascade_commands(self) -> None:
+        calls = []
+
+        menu_xray_actions.show_cascades(calls.append)
+        menu_xray_actions.select_cascade(calls.append)
+        menu_xray_actions.test_selected_cascade(calls.append)
+        menu_xray_actions.remove_cascade(calls.append)
+
+        self.assertEqual(
+            calls,
+            [
+                ["xray-set-cascade", "list"],
+                ["xray-set-cascade", "use"],
+                ["xray-set-cascade", "test-select"],
+                ["xray-set-cascade", "remove"],
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

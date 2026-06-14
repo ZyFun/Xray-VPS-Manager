@@ -20,7 +20,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-14 09:21 UTC"
+MENU_UPDATED = "2026-06-14 16:07 UTC"
 
 
 def die(message):
@@ -118,9 +118,13 @@ def reality_menu_actions():
 
 def cascade_menu_actions():
     return [
-        ("1", "Добавить/заменить каскад"),
-        ("2", "Проверить каскад"),
-        ("3", "Отключить каскад"),
+        ("1", "Показать каскады"),
+        ("2", "Добавить/заменить каскад"),
+        ("3", "Выбрать активный каскад"),
+        ("4", "Проверить активный каскад"),
+        ("5", "Проверить выбранный каскад"),
+        ("6", "Удалить каскад"),
+        ("7", "Отключить каскадный маршрут"),
         ("0", "Назад"),
     ]
 
@@ -354,9 +358,13 @@ def reality_menu_handlers():
 
 def cascade_menu_handlers():
     return {
-        "1": ("Добавить/заменить каскад", lambda: menu_xray_actions.add_or_replace_cascade(call)),
-        "2": ("Проверить каскад", lambda: menu_xray_actions.test_cascade(call)),
-        "3": ("Отключить каскад", lambda: menu_xray_actions.disable_cascade(call)),
+        "1": ("Показать каскады", lambda: menu_xray_actions.show_cascades(call)),
+        "2": ("Добавить/заменить каскад", lambda: menu_xray_actions.add_or_replace_cascade(call)),
+        "3": ("Выбрать активный каскад", lambda: menu_xray_actions.select_cascade(call)),
+        "4": ("Проверить активный каскад", lambda: menu_xray_actions.test_cascade(call)),
+        "5": ("Проверить выбранный каскад", lambda: menu_xray_actions.test_selected_cascade(call)),
+        "6": ("Удалить каскад", lambda: menu_xray_actions.remove_cascade(call)),
+        "7": ("Отключить каскадный маршрут", lambda: menu_xray_actions.disable_cascade(call)),
     }
 
 
