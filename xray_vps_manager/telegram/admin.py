@@ -27,6 +27,15 @@ def send_admin_menu(ctx: AdminContext, db, chat_id, text=None):
     ctx.send_chat_message(db, chat_id, text or messages.admin_intro_text(), reply_markup=keyboards.admin_menu_keyboard())
 
 
+def send_admin_status_menu(ctx: AdminContext, db, chat_id, text=None):
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        text or messages.admin_status_intro_text(),
+        reply_markup=keyboards.admin_status_keyboard(),
+    )
+
+
 def send_admin_notices_menu(ctx: AdminContext, db, chat_id, text=None):
     ctx.send_chat_message(
         db,
@@ -40,8 +49,44 @@ def send_admin_clients_menu(ctx: AdminContext, db, chat_id, text=None):
     ctx.send_chat_message(
         db,
         chat_id,
-        text or "Xray VPS Manager: клиенты",
+        text or messages.admin_clients_intro_text(),
         reply_markup=keyboards.admin_clients_keyboard(),
+    )
+
+
+def send_admin_payments_menu(ctx: AdminContext, db, chat_id, text=None):
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        text or messages.admin_payments_intro_text(),
+        reply_markup=keyboards.admin_payments_keyboard(),
+    )
+
+
+def send_admin_backups_menu(ctx: AdminContext, db, chat_id, text=None):
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        text or messages.admin_backups_intro_text(),
+        reply_markup=keyboards.admin_backups_keyboard(),
+    )
+
+
+def send_admin_activity_menu(ctx: AdminContext, db, chat_id, text=None):
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        text or messages.admin_activity_intro_text(),
+        reply_markup=keyboards.admin_activity_keyboard(),
+    )
+
+
+def send_admin_settings_menu(ctx: AdminContext, db, chat_id, text=None):
+    ctx.send_chat_message(
+        db,
+        chat_id,
+        text or messages.admin_settings_intro_text(),
+        reply_markup=keyboards.admin_settings_keyboard(),
     )
 
 
@@ -103,6 +148,59 @@ def subscribers_text(ctx: AdminContext, db):
     if len(user_subscriptions) > 25:
         lines.append(f"...и ещё подписок: {len(user_subscriptions) - 25}")
     return "\n".join(lines)
+
+
+def payment_total_text(ctx: AdminContext, db):
+    client_db = ctx.load_client_db()
+    total = payments.format_payment_amount(str(db.get("paymentTotalAmount") or "").strip(), db.get("paymentCurrency") or "₽")
+    return "\n".join(
+        [
+            "Xray VPS Manager: текущая сумма",
+            "",
+            f"Общая аренда: {total}",
+            f"Платных клиентов: {payments.paid_client_count(client_db)}",
+            f"Реквизиты: {payments.payment_transfer_label(db)}",
+        ]
+    )
+
+
+def payment_share_text(ctx: AdminContext, db):
+    client_db = ctx.load_client_db()
+    return "\n".join(
+        [
+            "Xray VPS Manager: сумма на клиента",
+            "",
+            f"Платных клиентов: {payments.paid_client_count(client_db)}",
+            f"Сумма на клиента: {payments.payment_amount_label(db, client_db)}",
+            f"Округление: {payments.payment_rounding_label(db)}",
+        ]
+    )
+
+
+def payment_rounding_text(db):
+    return "\n".join(
+        [
+            "Xray VPS Manager: округление оплаты",
+            "",
+            f"Округление: {payments.payment_rounding_label(db)}",
+        ]
+    )
+
+
+def settings_status_text(ctx: AdminContext, db):
+    chat_label = str(db.get("chatLabel") or "").strip()
+    chat_id = str(db.get("chatId") or "").strip()
+    owner = chat_label or chat_id or "не настроен"
+    return "\n".join(
+        [
+            "Xray VPS Manager: настройки бота",
+            "",
+            f"Имя бота: {ctx.bot_name(db)}",
+            f"Уведомления: {'включены' if db.get('enabled') else 'отключены'}",
+            f"Owner chat: {owner}",
+            f"Маршрут Telegram: {db.get('routeMode', 'direct')}",
+        ]
+    )
 
 
 def admin_utc_stamp(ctx: AdminContext) -> str:
@@ -347,15 +445,42 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
     if data == "admin:menu":
         send_admin_menu(ctx, db, chat_id)
         return True
+    if data == "admin:status-menu":
+        send_admin_status_menu(ctx, db, chat_id)
+        return True
     if data == "admin:status":
-        send_admin_menu(ctx, db, chat_id, status_text(ctx, db))
+        send_admin_status_menu(ctx, db, chat_id, status_text(ctx, db))
+        return True
+    if data == "admin:settings-status":
+        send_admin_settings_menu(ctx, db, chat_id, settings_status_text(ctx, db))
         return True
     if data == "admin:subscribers":
-        send_admin_menu(ctx, db, chat_id, subscribers_text(ctx, db))
+        send_admin_clients_menu(ctx, db, chat_id, subscribers_text(ctx, db))
         return True
     if data == "admin:clients":
         clear_client_extend_state_if_pending(ctx, db, chat_id)
         send_admin_clients_menu(ctx, db, chat_id)
+        return True
+    if data == "admin:payments":
+        send_admin_payments_menu(ctx, db, chat_id)
+        return True
+    if data == "admin:payment-total":
+        send_admin_payments_menu(ctx, db, chat_id, payment_total_text(ctx, db))
+        return True
+    if data == "admin:payment-share":
+        send_admin_payments_menu(ctx, db, chat_id, payment_share_text(ctx, db))
+        return True
+    if data == "admin:payment-rounding":
+        send_admin_payments_menu(ctx, db, chat_id, payment_rounding_text(db))
+        return True
+    if data == "admin:backups":
+        send_admin_backups_menu(ctx, db, chat_id)
+        return True
+    if data == "admin:activity":
+        send_admin_activity_menu(ctx, db, chat_id)
+        return True
+    if data == "admin:settings":
+        send_admin_settings_menu(ctx, db, chat_id)
         return True
     if data == "admin:client-extend":
         send_admin_client_extend_list(ctx, db, chat_id)
@@ -376,27 +501,27 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
         send_admin_clients_menu(ctx, db, chat_id, "Продление подписки отменено.")
         return True
     if data == "admin:daily-summary":
-        send_admin_menu(ctx, db, chat_id, notifications.build_daily_summary_message(ctx.notification_context))
+        send_admin_status_menu(ctx, db, chat_id, notifications.build_daily_summary_message(ctx.notification_context))
         return True
     if data == "admin:geoip":
         rc = notifications.notify_geoip(ctx.notification_context, quiet=True)
         text = "GeoIP-проверка выполнена. Если были новые события, бот отправил отдельное уведомление."
         if rc != 0:
             text = f"GeoIP-проверка завершилась с ошибкой, exit {rc}."
-        send_admin_menu(ctx, db, chat_id, text)
+        send_admin_activity_menu(ctx, db, chat_id, text)
         return True
     if data == "admin:expiry":
         rc = notifications.notify_expiry(ctx.notification_context, quiet=True)
         text = "Проверка напоминаний выполнена."
         if rc != 0:
             text = f"Проверка напоминаний завершилась с ошибкой, exit {rc}."
-        send_admin_menu(ctx, db, chat_id, text)
+        send_admin_status_menu(ctx, db, chat_id, text)
         return True
     if data == "admin:test":
-        send_admin_menu(ctx, db, chat_id, run_server_test_text(ctx))
+        send_admin_status_menu(ctx, db, chat_id, run_server_test_text(ctx))
         return True
     if data == "admin:backup":
-        send_admin_menu(ctx, db, chat_id, create_backup_text(ctx))
+        send_admin_backups_menu(ctx, db, chat_id, create_backup_text(ctx))
         return True
     if data == "admin:notices":
         send_admin_notices_menu(ctx, db, chat_id)

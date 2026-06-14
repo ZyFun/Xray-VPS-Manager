@@ -67,7 +67,28 @@ def client_help_text(db, bot_name):
 def admin_intro_text():
     return (
         "Xray VPS Manager: админ-панель\n\n"
-        "Кнопки ниже выполняют проверку, сводку, создание резервной копии и ручные уведомления клиентам."
+        "Выбери раздел ниже."
+    )
+
+
+def admin_status_intro_text():
+    return (
+        "Xray VPS Manager: статус\n\n"
+        "Здесь собраны проверки сервера, сводка и ручной запуск напоминаний."
+    )
+
+
+def admin_clients_intro_text():
+    return (
+        "Xray VPS Manager: клиенты\n\n"
+        "Здесь можно посмотреть Telegram-подписки клиентов и продлить доступ."
+    )
+
+
+def admin_payments_intro_text():
+    return (
+        "Xray VPS Manager: платежи\n\n"
+        "Здесь показаны сохранённая сумма аренды, расчёт на клиента и округление."
     )
 
 
@@ -75,6 +96,27 @@ def admin_notices_intro_text():
     return (
         "Xray VPS Manager: уведомления клиентам\n\n"
         "Выбери готовое сообщение или составь своё. Перед отправкой бот покажет предпросмотр."
+    )
+
+
+def admin_backups_intro_text():
+    return (
+        "Xray VPS Manager: бэкапы\n\n"
+        "Здесь можно создать резервную копию на сервере."
+    )
+
+
+def admin_activity_intro_text():
+    return (
+        "Xray VPS Manager: активность\n\n"
+        "Здесь можно вручную проверить новые GeoIP-предупреждения."
+    )
+
+
+def admin_settings_intro_text():
+    return (
+        "Xray VPS Manager: настройки бота\n\n"
+        "Здесь собрана служебная информация о Telegram-боте."
     )
 
 

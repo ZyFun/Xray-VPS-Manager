@@ -73,18 +73,74 @@ class TelegramKeyboardTests(unittest.TestCase):
 
         self.assertIn({"text": "Клиентское меню", "callback_data": "client:menu"}, buttons)
 
-    def test_admin_menu_includes_clients_button(self) -> None:
+    def test_admin_menu_groups_admin_sections(self) -> None:
         rows = keyboards.admin_menu_keyboard()["inline_keyboard"]
+
+        self.assertEqual(
+            rows,
+            [
+                [
+                    {"text": "Статус", "callback_data": "admin:status-menu"},
+                    {"text": "Клиенты", "callback_data": "admin:clients"},
+                ],
+                [
+                    {"text": "Платежи", "callback_data": "admin:payments"},
+                    {"text": "Уведомления", "callback_data": "admin:notices"},
+                ],
+                [
+                    {"text": "Бэкапы", "callback_data": "admin:backups"},
+                    {"text": "Активность", "callback_data": "admin:activity"},
+                ],
+                [{"text": "Настройки бота", "callback_data": "admin:settings"}],
+                [{"text": "Клиентское меню", "callback_data": "client:menu"}],
+            ],
+        )
+
+    def test_admin_status_keyboard_contains_status_actions(self) -> None:
+        rows = keyboards.admin_status_keyboard()["inline_keyboard"]
         buttons = [button for row in rows for button in row]
 
-        self.assertIn({"text": "Клиенты", "callback_data": "admin:clients"}, buttons)
+        self.assertEqual(
+            buttons,
+            [
+                {"text": "Статус бота", "callback_data": "admin:status"},
+                {"text": "Сводка сервера", "callback_data": "admin:daily-summary"},
+                {"text": "Проверка сервера", "callback_data": "admin:test"},
+                {"text": "Проверить напоминания", "callback_data": "admin:expiry"},
+                {"text": "Назад", "callback_data": "admin:menu"},
+            ],
+        )
 
     def test_admin_clients_keyboard_contains_extend_action(self) -> None:
         rows = keyboards.admin_clients_keyboard()["inline_keyboard"]
         buttons = [button for row in rows for button in row]
 
-        self.assertEqual(buttons[0], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
+        self.assertEqual(buttons[0], {"text": "Подписки клиентов", "callback_data": "admin:subscribers"})
+        self.assertEqual(buttons[1], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
         self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:menu"})
+
+    def test_admin_payments_keyboard_contains_read_only_payment_sections(self) -> None:
+        rows = keyboards.admin_payments_keyboard()["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(
+            buttons,
+            [
+                {"text": "Текущая сумма", "callback_data": "admin:payment-total"},
+                {"text": "Сумма на клиента", "callback_data": "admin:payment-share"},
+                {"text": "Округление", "callback_data": "admin:payment-rounding"},
+                {"text": "Назад", "callback_data": "admin:menu"},
+            ],
+        )
+
+    def test_admin_service_keyboards_keep_existing_actions_in_submenus(self) -> None:
+        backup_buttons = [button for row in keyboards.admin_backups_keyboard()["inline_keyboard"] for button in row]
+        activity_buttons = [button for row in keyboards.admin_activity_keyboard()["inline_keyboard"] for button in row]
+        settings_buttons = [button for row in keyboards.admin_settings_keyboard()["inline_keyboard"] for button in row]
+
+        self.assertIn({"text": "Создать backup", "callback_data": "admin:backup"}, backup_buttons)
+        self.assertIn({"text": "Проверить GeoIP", "callback_data": "admin:geoip"}, activity_buttons)
+        self.assertIn({"text": "Статус бота", "callback_data": "admin:settings-status"}, settings_buttons)
 
     def test_admin_client_extend_keyboard_uses_client_indexes(self) -> None:
         rows = keyboards.admin_client_extend_keyboard(["alice", "bob"])["inline_keyboard"]

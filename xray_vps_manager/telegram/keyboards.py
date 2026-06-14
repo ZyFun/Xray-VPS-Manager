@@ -57,21 +57,31 @@ def admin_menu_keyboard():
     return {
         "inline_keyboard": [
             [
-                {"text": "Статус бота", "callback_data": "admin:status"},
-                {"text": "Подписки клиентов", "callback_data": "admin:subscribers"},
-            ],
-            [{"text": "Сводка сервера", "callback_data": "admin:daily-summary"}],
-            [{"text": "Клиенты", "callback_data": "admin:clients"}],
-            [
-                {"text": "Проверить GeoIP", "callback_data": "admin:geoip"},
-                {"text": "Проверить напоминания", "callback_data": "admin:expiry"},
+                {"text": "Статус", "callback_data": "admin:status-menu"},
+                {"text": "Клиенты", "callback_data": "admin:clients"},
             ],
             [
-                {"text": "Проверка сервера", "callback_data": "admin:test"},
-                {"text": "Создать backup", "callback_data": "admin:backup"},
+                {"text": "Платежи", "callback_data": "admin:payments"},
+                {"text": "Уведомления", "callback_data": "admin:notices"},
             ],
-            [{"text": "Уведомления", "callback_data": "admin:notices"}],
+            [
+                {"text": "Бэкапы", "callback_data": "admin:backups"},
+                {"text": "Активность", "callback_data": "admin:activity"},
+            ],
+            [{"text": "Настройки бота", "callback_data": "admin:settings"}],
             [{"text": "Клиентское меню", "callback_data": "client:menu"}],
+        ]
+    }
+
+
+def admin_status_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Статус бота", "callback_data": "admin:status"}],
+            [{"text": "Сводка сервера", "callback_data": "admin:daily-summary"}],
+            [{"text": "Проверка сервера", "callback_data": "admin:test"}],
+            [{"text": "Проверить напоминания", "callback_data": "admin:expiry"}],
+            [{"text": "Назад", "callback_data": "admin:menu"}],
         ]
     }
 
@@ -79,6 +89,7 @@ def admin_menu_keyboard():
 def admin_clients_keyboard():
     return {
         "inline_keyboard": [
+            [{"text": "Подписки клиентов", "callback_data": "admin:subscribers"}],
             [{"text": "Продлить подписку", "callback_data": "admin:client-extend"}],
             [{"text": "Назад", "callback_data": "admin:menu"}],
         ]
@@ -103,12 +114,50 @@ def admin_client_extend_cancel_keyboard():
     }
 
 
+def admin_payments_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Текущая сумма", "callback_data": "admin:payment-total"}],
+            [{"text": "Сумма на клиента", "callback_data": "admin:payment-share"}],
+            [{"text": "Округление", "callback_data": "admin:payment-rounding"}],
+            [{"text": "Назад", "callback_data": "admin:menu"}],
+        ]
+    }
+
+
 def admin_notices_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "Плановые работы", "callback_data": "admin:notice:start"}],
             [{"text": "Работы завершены", "callback_data": "admin:notice:done"}],
             [{"text": "Своё сообщение", "callback_data": "admin:notice:custom"}],
+            [{"text": "Назад", "callback_data": "admin:menu"}],
+        ]
+    }
+
+
+def admin_backups_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Создать backup", "callback_data": "admin:backup"}],
+            [{"text": "Назад", "callback_data": "admin:menu"}],
+        ]
+    }
+
+
+def admin_activity_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Проверить GeoIP", "callback_data": "admin:geoip"}],
+            [{"text": "Назад", "callback_data": "admin:menu"}],
+        ]
+    }
+
+
+def admin_settings_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Статус бота", "callback_data": "admin:settings-status"}],
             [{"text": "Назад", "callback_data": "admin:menu"}],
         ]
     }
