@@ -219,6 +219,10 @@ def handle_callback_query(ctx: PollerContext, db, update):
             ctx.answer_callback_query(db, callback_id, "Админ-панель доступна только владельцу.", show_alert=True)
             send_client_menu(ctx, db, chat_id)
             return True
+        message_id = admin.callback_message_id(message)
+        if not admin.accept_admin_callback(ctx.admin_context, db, chat_id, data, message_id):
+            ctx.answer_callback_query(db, callback_id, "Эта кнопка уже устарела. Используй последнее сообщение бота.")
+            return True
         ctx.answer_callback_query(db, callback_id)
         return admin.handle_callback(ctx.admin_context, db, chat_id, data)
 

@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from xray_vps_manager.telegram import admin, poller
@@ -83,6 +84,75 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertEqual(events[0], ("save", ("clientSubscriptionState",), 16))
         self.assertIn(("answer",), events)
         self.assertTrue(any(event[0] == "send" for event in events))
+
+    def test_duplicate_admin_callback_from_same_message_runs_once(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 20, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {},
+        }
+        updates = [
+            {
+                "update_id": 21,
+                "callback_query": {
+                    "id": "callback-payments-1",
+                    "data": "admin:payments",
+                    "message": {"message_id": 77, "chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 22,
+                "callback_query": {
+                    "id": "callback-payments-2",
+                    "data": "admin:payments",
+                    "message": {"message_id": 77, "chat": {"id": "111", "type": "private"}},
+                },
+            },
+        ]
+        events = []
+        ctx = self.make_context(db, updates, events)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"]
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Xray VPS Manager: платежи", sent[0][2])
+        guard = db["adminState"]["callbackGuards"]["111"]
+        self.assertEqual(guard["consumedMessageIds"], [77])
+
+    def test_admin_panel_callback_is_owner_only(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 30, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {},
+        }
+        updates = [
+            {
+                "update_id": 31,
+                "callback_query": {
+                    "id": "callback-admin-menu",
+                    "data": "admin:menu",
+                    "message": {"message_id": 88, "chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(db, updates, events)
+
+        with mock.patch.object(admin, "handle_callback", side_effect=AssertionError("admin callback must be owner-only")):
+            self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertIn(("answer",), events)
+        sent = [event for event in events if event[0] == "send"]
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn("Xray VPS Manager: админ-панель", sent[0][2])
+        self.assertNotIn("callbackGuards", db.get("adminState", {}))
 
     def test_owner_can_extend_client_subscription_from_admin_panel(self) -> None:
         db = {

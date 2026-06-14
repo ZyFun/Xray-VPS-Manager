@@ -10,6 +10,9 @@ from typing import Any
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.telegram import keyboards, messages, notifications, payments, subscriptions
 
+ADMIN_CALLBACK_GUARDS_KEY = "callbackGuards"
+ADMIN_CONSUMED_CALLBACK_LIMIT = 40
+
 
 @dataclass(frozen=True)
 class AdminContext:
@@ -23,70 +26,160 @@ class AdminContext:
     xray_client: Path = Path("/usr/local/sbin/xray-client")
 
 
+def normalize_message_id(value):
+    try:
+        message_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    if message_id <= 0:
+        return None
+    return message_id
+
+
+def response_message_id(response):
+    if not isinstance(response, dict):
+        return None
+    result = response.get("result")
+    if not isinstance(result, dict):
+        result = response
+    return normalize_message_id(result.get("message_id"))
+
+
+def callback_message_id(callback_message):
+    if not isinstance(callback_message, dict):
+        return None
+    return normalize_message_id(callback_message.get("message_id"))
+
+
+def _callback_guard(db, chat_id):
+    admin_state = db.setdefault("adminState", {})
+    guards = admin_state.setdefault(ADMIN_CALLBACK_GUARDS_KEY, {})
+    if not isinstance(guards, dict):
+        guards = {}
+        admin_state[ADMIN_CALLBACK_GUARDS_KEY] = guards
+    chat_key = str(chat_id)
+    guard = guards.setdefault(chat_key, {})
+    if not isinstance(guard, dict):
+        guard = {}
+        guards[chat_key] = guard
+    return guard
+
+
+def _consumed_message_ids(guard):
+    consumed = []
+    for value in guard.get("consumedMessageIds", []):
+        message_id = normalize_message_id(value)
+        if message_id is not None:
+            consumed.append(message_id)
+    return consumed[-ADMIN_CONSUMED_CALLBACK_LIMIT:]
+
+
+def accept_admin_callback(ctx: AdminContext, db, chat_id, data, message_id):
+    message_id = normalize_message_id(message_id)
+    if message_id is None:
+        return True
+
+    guard = _callback_guard(db, chat_id)
+    active_message_id = normalize_message_id(guard.get("activeMessageId"))
+    consumed = _consumed_message_ids(guard)
+    if data != "admin:menu" and active_message_id is not None and message_id != active_message_id:
+        return False
+    if message_id in consumed:
+        return False
+
+    consumed.append(message_id)
+    guard["consumedMessageIds"] = consumed[-ADMIN_CONSUMED_CALLBACK_LIMIT:]
+    guard["activeMessageId"] = ""
+    ctx.save_db_sections(db, ("adminState",))
+    return True
+
+
+def register_admin_message(ctx: AdminContext, db, chat_id, response):
+    message_id = response_message_id(response)
+    if message_id is None:
+        return
+    guard = _callback_guard(db, chat_id)
+    guard["activeMessageId"] = message_id
+    guard["consumedMessageIds"] = _consumed_message_ids(guard)
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def send_admin_response(ctx: AdminContext, db, chat_id, text, reply_markup):
+    response = ctx.send_chat_message(db, chat_id, text, reply_markup=reply_markup)
+    register_admin_message(ctx, db, chat_id, response)
+
+
 def send_admin_menu(ctx: AdminContext, db, chat_id, text=None):
-    ctx.send_chat_message(db, chat_id, text or messages.admin_intro_text(), reply_markup=keyboards.admin_menu_keyboard())
+    send_admin_response(ctx, db, chat_id, text or messages.admin_intro_text(), keyboards.admin_menu_keyboard())
 
 
 def send_admin_status_menu(ctx: AdminContext, db, chat_id, text=None):
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         text or messages.admin_status_intro_text(),
-        reply_markup=keyboards.admin_status_keyboard(),
+        keyboards.admin_status_keyboard(),
     )
 
 
 def send_admin_notices_menu(ctx: AdminContext, db, chat_id, text=None):
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         text or messages.admin_notices_intro_text(),
-        reply_markup=keyboards.admin_notices_keyboard(),
+        keyboards.admin_notices_keyboard(),
     )
 
 
 def send_admin_clients_menu(ctx: AdminContext, db, chat_id, text=None):
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         text or messages.admin_clients_intro_text(),
-        reply_markup=keyboards.admin_clients_keyboard(),
+        keyboards.admin_clients_keyboard(),
     )
 
 
 def send_admin_payments_menu(ctx: AdminContext, db, chat_id, text=None):
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         text or messages.admin_payments_intro_text(),
-        reply_markup=keyboards.admin_payments_keyboard(),
+        keyboards.admin_payments_keyboard(),
     )
 
 
 def send_admin_backups_menu(ctx: AdminContext, db, chat_id, text=None):
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         text or messages.admin_backups_intro_text(),
-        reply_markup=keyboards.admin_backups_keyboard(),
+        keyboards.admin_backups_keyboard(),
     )
 
 
 def send_admin_activity_menu(ctx: AdminContext, db, chat_id, text=None):
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         text or messages.admin_activity_intro_text(),
-        reply_markup=keyboards.admin_activity_keyboard(),
+        keyboards.admin_activity_keyboard(),
     )
 
 
 def send_admin_settings_menu(ctx: AdminContext, db, chat_id, text=None):
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         text or messages.admin_settings_intro_text(),
-        reply_markup=keyboards.admin_settings_keyboard(),
+        keyboards.admin_settings_keyboard(),
     )
 
 
@@ -102,11 +195,12 @@ def send_admin_client_extend_list(ctx: AdminContext, db, chat_id):
         send_admin_clients_menu(ctx, db, chat_id, "Клиентов пока нет.")
         return
     set_client_extend_selection(ctx, db, chat_id, names)
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         "Выбери клиента, которому нужно продлить подписку.",
-        reply_markup=keyboards.admin_client_extend_keyboard(names),
+        keyboards.admin_client_extend_keyboard(names),
     )
 
 
@@ -273,7 +367,7 @@ def preview_notice(ctx: AdminContext, db, chat_id, kind):
             message,
         ]
     )
-    ctx.send_chat_message(db, chat_id, text, reply_markup=keyboards.admin_notice_confirm_keyboard(kind))
+    send_admin_response(ctx, db, chat_id, text, keyboards.admin_notice_confirm_keyboard(kind))
 
 
 def set_custom_notice_waiting(ctx: AdminContext, db, chat_id):
@@ -360,13 +454,14 @@ def selected_client_name(db, chat_id, index_value):
 
 def set_extend_subscription_waiting(ctx: AdminContext, db, chat_id, name):
     set_client_extend_waiting(ctx, db, chat_id, name)
-    ctx.send_chat_message(
+    send_admin_response(
+        ctx,
         db,
         chat_id,
         f"Отправь числом, на сколько дней продлить подписку для {name}.\n\n"
         "Например: 30\n"
         "Если передумаешь, отправь /cancel.",
-        reply_markup=keyboards.admin_client_extend_cancel_keyboard(),
+        keyboards.admin_client_extend_cancel_keyboard(),
     )
 
 
@@ -416,12 +511,13 @@ def handle_extend_subscription_days(ctx: AdminContext, db, chat_id, text):
     try:
         days = client_access.parse_extend_days(text)
     except ValueError:
-        ctx.send_chat_message(
+        send_admin_response(
+            ctx,
             db,
             chat_id,
             "Нужно отправить положительное целое число дней. Например: 30\n\n"
             "Если передумаешь, отправь /cancel.",
-            reply_markup=keyboards.admin_client_extend_cancel_keyboard(),
+            keyboards.admin_client_extend_cancel_keyboard(),
         )
         return True
 
@@ -531,12 +627,13 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
         return True
     if data == "admin:notice:custom":
         set_custom_notice_waiting(ctx, db, chat_id)
-        ctx.send_chat_message(
+        send_admin_response(
+            ctx,
             db,
             chat_id,
             "Отправь следующим сообщением текст, который нужно разослать подписанным клиентам.\n\n"
             "Если передумаешь, отправь /cancel.",
-            reply_markup={"inline_keyboard": [[{"text": "Отмена", "callback_data": "admin:notice-cancel"}]]},
+            {"inline_keyboard": [[{"text": "Отмена", "callback_data": "admin:notice-cancel"}]]},
         )
         return True
     if data.startswith("admin:notice-send:"):
