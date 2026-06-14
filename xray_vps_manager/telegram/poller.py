@@ -15,6 +15,10 @@ USER_POLL_SHORT_TIMEOUT = 2
 USER_POLL_LONG_TIMEOUT = 45
 USER_POLLER_SLEEP_UNCONFIGURED = 30
 USER_POLLER_SLEEP_ERROR = 5
+CLIENT_CALLBACK_GUARDS_KEY = "callbackGuards"
+CLIENT_CONSUMED_CALLBACK_LIMIT = 40
+CLIENT_CALLBACK_STALE_TEXT = "Эта кнопка уже устарела. Используй последнее сообщение бота."
+CLIENT_CALLBACK_CROSS_MENU_ACTIONS = ("client:menu",)
 
 
 @dataclass(frozen=True)
@@ -53,24 +57,87 @@ def subscription_intro_text(ctx: PollerContext):
     return messages.subscription_intro_text(db, ctx.bot_name)
 
 
+def client_callback_state(db):
+    state = db.setdefault("clientSubscriptionState", {})
+    if not isinstance(state, dict):
+        state = {}
+        db["clientSubscriptionState"] = state
+    return state
+
+
+def client_callback_guard(db, chat_id):
+    state = client_callback_state(db)
+    guards = state.setdefault(CLIENT_CALLBACK_GUARDS_KEY, {})
+    if not isinstance(guards, dict):
+        guards = {}
+        state[CLIENT_CALLBACK_GUARDS_KEY] = guards
+    chat_key = str(chat_id)
+    guard = guards.setdefault(chat_key, {})
+    if not isinstance(guard, dict):
+        guard = {}
+        guards[chat_key] = guard
+    return guard
+
+
+def client_consumed_message_ids(guard):
+    consumed = []
+    for value in guard.get("consumedMessageIds", []):
+        message_id = admin.normalize_message_id(value)
+        if message_id is not None:
+            consumed.append(message_id)
+    return consumed[-CLIENT_CONSUMED_CALLBACK_LIMIT:]
+
+
+def register_client_message(ctx: PollerContext, db, chat_id, response):
+    message_id = admin.response_message_id(response)
+    if message_id is None:
+        return
+    guard = client_callback_guard(db, chat_id)
+    guard["activeMessageId"] = message_id
+    guard["consumedMessageIds"] = client_consumed_message_ids(guard)
+    ctx.save_db_sections(db, ("clientSubscriptionState",))
+
+
+def accept_client_callback(ctx: PollerContext, db, chat_id, data, message_id):
+    message_id = admin.normalize_message_id(message_id)
+    if message_id is None:
+        return True
+
+    guard = client_callback_guard(db, chat_id)
+    active_message_id = admin.normalize_message_id(guard.get("activeMessageId"))
+    consumed = client_consumed_message_ids(guard)
+    if data not in CLIENT_CALLBACK_CROSS_MENU_ACTIONS and active_message_id is not None and message_id != active_message_id:
+        return False
+    if message_id in consumed:
+        return False
+
+    consumed.append(message_id)
+    guard["consumedMessageIds"] = consumed[-CLIENT_CONSUMED_CALLBACK_LIMIT:]
+    guard["activeMessageId"] = ""
+    ctx.save_db_sections(db, ("clientSubscriptionState",))
+    return True
+
+
 def send_client_menu(ctx: PollerContext, db, chat_id, text=None, parse_mode=None):
-    ctx.send_chat_message(
+    response = ctx.send_chat_message(
         db,
         chat_id,
         text or subscription_intro_text(ctx),
         reply_markup=keyboards.client_keyboard_for_chat(db, chat_id),
         parse_mode=parse_mode,
     )
+    register_client_message(ctx, db, chat_id, response)
 
 
 def send_client_traffic_menu(ctx: PollerContext, db, chat_id, text=None, parse_mode=None):
-    ctx.send_chat_message(
+    response = ctx.send_chat_message(
         db,
         chat_id,
         text or traffic.traffic_menu_text(),
         reply_markup=keyboards.client_traffic_keyboard(),
         parse_mode=parse_mode,
     )
+    register_client_message(ctx, db, chat_id, response)
 
 
 def subscription_status_for_chat(ctx: PollerContext, db, chat_id):
@@ -221,10 +288,16 @@ def handle_callback_query(ctx: PollerContext, db, update):
             return True
         message_id = admin.callback_message_id(message)
         if not admin.accept_admin_callback(ctx.admin_context, db, chat_id, data, message_id):
-            ctx.answer_callback_query(db, callback_id, "Эта кнопка уже устарела. Используй последнее сообщение бота.")
+            ctx.answer_callback_query(db, callback_id, CLIENT_CALLBACK_STALE_TEXT)
             return True
         ctx.answer_callback_query(db, callback_id)
         return admin.handle_callback(ctx.admin_context, db, chat_id, data)
+
+    if data.startswith("client:"):
+        message_id = admin.callback_message_id(message)
+        if not accept_client_callback(ctx, db, chat_id, data, message_id):
+            ctx.answer_callback_query(db, callback_id, CLIENT_CALLBACK_STALE_TEXT)
+            return True
 
     if data == "client:subscribe":
         ctx.answer_callback_query(db, callback_id)

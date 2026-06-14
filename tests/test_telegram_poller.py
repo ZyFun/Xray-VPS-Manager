@@ -9,7 +9,7 @@ from xray_vps_manager.telegram import admin, poller
 
 
 class TelegramPollerTests(unittest.TestCase):
-    def make_context(self, db, updates, events, client_db=None, run_capture=None):
+    def make_context(self, db, updates, events, client_db=None, run_capture=None, send_response=None):
         if client_db is None:
             client_db = {"clients": {}}
         if callable(client_db):
@@ -25,6 +25,9 @@ class TelegramPollerTests(unittest.TestCase):
 
         def send_chat_message(_db, chat_id, text, reply_markup=None, parse_mode=None):
             events.append(("send", str(chat_id), text))
+            if callable(send_response):
+                return send_response(_db, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+            return send_response
 
         def curl_json(_db, method, payload=None, timeout=30):
             if method != "getUpdates":
@@ -467,6 +470,155 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertIn("Уведомления уже подключены.", sent[2])
         self.assertIn("Статус: включён", sent[2])
         self.assertNotIn("Отправь сюда свою VLESS", sent[2])
+
+    def test_duplicate_client_callback_from_same_message_runs_once(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 42, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 43,
+                "callback_query": {
+                    "id": "callback-help-1",
+                    "data": "client:help",
+                    "message": {"message_id": 77, "chat": {"id": "222", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 44,
+                "callback_query": {
+                    "id": "callback-help-2",
+                    "data": "client:help",
+                    "message": {"message_id": 77, "chat": {"id": "222", "type": "private"}},
+                },
+            },
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"]
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Vireika: помощь", sent[0][2])
+        guard = db["clientSubscriptionState"]["callbackGuards"]["222"]
+        self.assertEqual(guard["consumedMessageIds"], [77])
+
+    def test_old_client_callback_is_blocked_after_new_client_message(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {
+                "userUpdateOffset": 44,
+                "expiryReminders": {},
+                "callbackGuards": {"222": {"activeMessageId": 90, "consumedMessageIds": []}},
+            },
+            "clientSubscriptions": {
+                "222": {
+                    "client": "alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 45,
+                "callback_query": {
+                    "id": "callback-old-help",
+                    "data": "client:help",
+                    "message": {"message_id": 89, "chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(db, updates, events)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertFalse(any(event[0] == "send" for event in events))
+        guard = db["clientSubscriptionState"]["callbackGuards"]["222"]
+        self.assertEqual(guard["activeMessageId"], 90)
+        self.assertEqual(guard["consumedMessageIds"], [])
+
+    def test_client_menu_callback_can_open_from_admin_message(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {
+                "userUpdateOffset": 46,
+                "expiryReminders": {},
+                "callbackGuards": {"111": {"activeMessageId": 90, "consumedMessageIds": []}},
+            },
+            "clientSubscriptions": {},
+        }
+        updates = [
+            {
+                "update_id": 47,
+                "callback_query": {
+                    "id": "callback-client-menu",
+                    "data": "client:menu",
+                    "message": {"message_id": 50, "chat": {"id": "111", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(db, updates, events)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"]
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Привет. Я бот Vireika.", sent[0][2])
+        guard = db["clientSubscriptionState"]["callbackGuards"]["111"]
+        self.assertEqual(guard["consumedMessageIds"], [50])
+
+    def test_client_menu_send_registers_latest_callback_message(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 48, "expiryReminders": {}},
+            "clientSubscriptions": {},
+        }
+        updates = [
+            {
+                "update_id": 49,
+                "message": {
+                    "text": "/start",
+                    "chat": {"id": "222", "type": "private", "username": "client"},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            send_response={"ok": True, "result": {"message_id": 91}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        guard = db["clientSubscriptionState"]["callbackGuards"]["222"]
+        self.assertEqual(guard["activeMessageId"], 91)
 
     def test_vless_subscription_sets_subscribed_command_menu(self) -> None:
         db = {
