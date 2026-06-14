@@ -445,7 +445,7 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertNotIn("111", db.get("adminState", {}))
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Клиент добавлен.", sent[2])
-        self.assertIn("Ваш VPN-ключ:\nvless://alice-key@example.com:443?type=tcp#Xray", sent[2])
+        self.assertIn("Ваш VPN-ключ:\n<pre><code>vless://alice-key@example.com:443?type=tcp#Xray</code></pre>", sent[2])
         self.assertIn("По этому же ключу @ExampleVpnBot будет показывать статус подписки", sent[2])
         self.assertIn("Не забудь открыть @ExampleVpnBot и подключить уведомления.", sent[2])
         self.assertIn("Доступ до: 2026-07-14T00:00:00+03:00", sent[2])

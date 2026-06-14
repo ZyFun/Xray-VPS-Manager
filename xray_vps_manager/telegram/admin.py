@@ -106,8 +106,8 @@ def register_admin_message(ctx: AdminContext, db, chat_id, response):
     ctx.save_db_sections(db, ("adminState",))
 
 
-def send_admin_response(ctx: AdminContext, db, chat_id, text, reply_markup):
-    response = ctx.send_chat_message(db, chat_id, text, reply_markup=reply_markup)
+def send_admin_response(ctx: AdminContext, db, chat_id, text, reply_markup, parse_mode=None):
+    response = ctx.send_chat_message(db, chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
     register_admin_message(ctx, db, chat_id, response)
 
 
@@ -135,13 +135,14 @@ def send_admin_notices_menu(ctx: AdminContext, db, chat_id, text=None):
     )
 
 
-def send_admin_clients_menu(ctx: AdminContext, db, chat_id, text=None):
+def send_admin_clients_menu(ctx: AdminContext, db, chat_id, text=None, parse_mode=None):
     send_admin_response(
         ctx,
         db,
         chat_id,
         text or messages.admin_clients_intro_text(),
         keyboards.admin_clients_keyboard(),
+        parse_mode=parse_mode,
     )
 
 
@@ -621,19 +622,20 @@ def add_client_success_text(ctx: AdminContext, db, name, payment_type, result):
     return messages.build_client_added_message(db, link, access_until, payment_type, amount_label, ctx.bot_name)
 
 
-def add_client_result_text(ctx: AdminContext, db, pending, result):
+def add_client_result_message(ctx: AdminContext, db, pending, result):
     name = str(pending.get("client") or "")
     if getattr(result, "returncode", 1) != 0:
         output = command_output(result)
         details = f"\n\n{output}" if output else ""
-        return messages.truncate_telegram_text(f"Не удалось добавить клиента {name}, exit {getattr(result, 'returncode', 1)}.{details}")
-    return messages.truncate_telegram_text(add_client_success_text(ctx, db, name, pending.get("paymentType", "free"), result))
+        return messages.truncate_telegram_text(f"Не удалось добавить клиента {name}, exit {getattr(result, 'returncode', 1)}.{details}"), None
+    return add_client_success_text(ctx, db, name, pending.get("paymentType", "free"), result), "HTML"
 
 
 def run_add_client_from_pending(ctx: AdminContext, db, chat_id, pending, connection_tag=""):
     result = ctx.run_capture(add_client_command(ctx, pending, connection_tag), timeout=120)
     clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
-    send_admin_clients_menu(ctx, db, chat_id, add_client_result_text(ctx, db, pending, result))
+    text, parse_mode = add_client_result_message(ctx, db, pending, result)
+    send_admin_clients_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
     return True
 
 

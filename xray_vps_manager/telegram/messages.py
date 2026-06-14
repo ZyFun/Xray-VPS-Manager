@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 
 from xray_vps_manager.telegram import payments
@@ -181,6 +182,10 @@ def bot_notification_hint(db):
     return "Не забудь подключить уведомления в боте."
 
 
+def telegram_html_escape(value):
+    return html.escape(str(value or ""), quote=False)
+
+
 def build_client_added_message(db, vless_link, access_until, payment_type, payment_amount_label, bot_name):
     bot_label = bot_reference(db, bot_name)
     lines = [
@@ -189,7 +194,7 @@ def build_client_added_message(db, vless_link, access_until, payment_type, payme
         "Можно переслать это сообщение пользователю:",
         "",
         "Ваш VPN-ключ:",
-        str(vless_link or "").strip(),
+        f"<pre><code>{telegram_html_escape(str(vless_link or '').strip())}</code></pre>",
         "",
         f"По этому же ключу {bot_label} будет показывать статус подписки и напоминать о продлении.",
         bot_notification_hint(db),

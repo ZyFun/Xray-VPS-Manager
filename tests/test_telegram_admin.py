@@ -1,13 +1,16 @@
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from xray_vps_manager.telegram import admin
 
 
 class TelegramAdminTests(unittest.TestCase):
-    def make_context(self, events, client_db=None, send_response=None):
+    def make_context(self, events, client_db=None, send_response=None, run_capture=None):
         if client_db is None:
             client_db = {"clients": {}}
+        if run_capture is None:
+            run_capture = lambda *_args, **_kwargs: None
 
         def send_chat_message(_db, chat_id, text, reply_markup=None, parse_mode=None):
             events.append(
@@ -24,7 +27,7 @@ class TelegramAdminTests(unittest.TestCase):
             load_client_db=lambda: client_db,
             save_db_sections=lambda _db, sections: events.append({"save": tuple(sections)}),
             format_access_until=lambda value: value or "бессрочно",
-            run_capture=lambda *_args, **_kwargs: None,
+            run_capture=run_capture,
             send_chat_message=send_chat_message,
             bot_name=lambda current_db=None: "Vireika",
             notification_context=None,
@@ -110,6 +113,43 @@ class TelegramAdminTests(unittest.TestCase):
         admin.register_admin_message(ctx, db, "111", {"ok": True, "result": {"message_id": 43}})
 
         self.assertTrue(admin.accept_admin_callback(ctx, db, "111", "admin:menu", 42))
+
+    def test_add_client_success_sends_key_as_html_code_block(self) -> None:
+        db = {"botUsername": "ExampleVpnBot", "adminState": {}}
+        client_db = {
+            "clients": {
+                "alice": {
+                    "expiresAt": "2026-07-14T00:00:00+03:00",
+                    "paymentType": "paid",
+                }
+            }
+        }
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append({"run": command, "timeout": timeout})
+            return SimpleNamespace(
+                returncode=0,
+                stdout="vless://alice@example.com:443?type=tcp&security=reality#Xray",
+                stderr="",
+            )
+
+        ctx = self.make_context(events, client_db=client_db, run_capture=run_capture)
+
+        admin.run_add_client_from_pending(
+            ctx,
+            db,
+            "111",
+            {"client": "alice", "accessDays": "30", "paymentType": "paid"},
+            "vless-reality",
+        )
+
+        message = [event for event in events if "text" in event][-1]
+        self.assertEqual(message["parse_mode"], "HTML")
+        self.assertIn(
+            "<pre><code>vless://alice@example.com:443?type=tcp&amp;security=reality#Xray</code></pre>",
+            message["text"],
+        )
 
 
 if __name__ == "__main__":

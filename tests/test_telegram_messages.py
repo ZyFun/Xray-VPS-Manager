@@ -96,14 +96,17 @@ class TelegramMessageTests(unittest.TestCase):
                 "paymentPhone": "+79991234567",
                 "paymentBank": "Т-Банк (Тинькофф)",
             },
-            "vless://example",
+            "vless://example?type=tcp&security=reality#Xray",
             "2026-07-14 00:00 Europe/Moscow",
             "paid",
             "500 ₽",
             bot_name,
         )
 
-        self.assertIn("Ваш VPN-ключ:\nvless://example", text)
+        self.assertIn(
+            "Ваш VPN-ключ:\n<pre><code>vless://example?type=tcp&amp;security=reality#Xray</code></pre>",
+            text,
+        )
         self.assertIn("По этому же ключу @ExampleVpnBot будет показывать статус подписки", text)
         self.assertIn("Не забудь открыть @ExampleVpnBot и подключить уведомления.", text)
         self.assertIn("Сумма оплаты: 500 ₽", text)
