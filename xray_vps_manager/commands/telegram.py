@@ -377,6 +377,7 @@ def status():
         ("Enabled", "yes" if db.get("enabled") else "no"),
         ("Token", mask_token(db.get("token", ""))),
         ("Bot name", bot_name(db)),
+        ("Bot username", "@" + db.get("botUsername", "") if db.get("botUsername") else "-"),
         ("Chat", f"{db.get('chatLabel') or '-'} ({db.get('chatId') or '-'})"),
         ("Route mode", db.get("routeMode", "direct")),
         ("Payment amount", payment_amount_label(db)),

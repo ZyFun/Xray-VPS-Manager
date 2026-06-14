@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+import re
 import shutil
 from pathlib import Path
 
@@ -30,6 +31,7 @@ DEFAULT_DB = {
     "enabled": False,
     "token": "",
     "botName": DEFAULT_BOT_NAME,
+    "botUsername": "",
     "chatId": "",
     "chatLabel": "",
     "routeMode": "direct",
@@ -50,7 +52,7 @@ DEFAULT_DB = {
     "adminState": {},
 }
 
-TELEGRAM_SETTING_KEYS = ("version", "enabled", "token", "botName", "chatId", "chatLabel", "routeMode")
+TELEGRAM_SETTING_KEYS = ("version", "enabled", "token", "botName", "botUsername", "chatId", "chatLabel", "routeMode")
 STATE_KEYS = ("geoipState", "clientSubscriptionState", "dailySummaryState", "adminState")
 
 
@@ -128,6 +130,7 @@ def normalize_db(db):
             merged[key] = ""
     if merged.get("routeMode") not in ("direct", "cascade"):
         merged["routeMode"] = "direct"
+    merged["botUsername"] = normalize_bot_username(merged.get("botUsername", ""))
     return merged
 
 
@@ -370,6 +373,15 @@ def normalize_display_name(value, default, label):
         raise ValueError(f"{label} must not contain control characters.")
     if len(raw) > 64:
         raise ValueError(f"{label} must be 64 characters or shorter.")
+    return raw
+
+
+def normalize_bot_username(value):
+    raw = str(value or "").strip().lstrip("@")
+    if not raw:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", raw):
+        return ""
     return raw
 
 

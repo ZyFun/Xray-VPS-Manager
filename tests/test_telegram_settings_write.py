@@ -16,6 +16,7 @@ def telegram_db() -> dict:
         "enabled": True,
         "token": "json-token",
         "botName": "JsonBot",
+        "botUsername": "JsonVpnBot",
         "chatId": "111",
         "chatLabel": "owner",
         "routeMode": "cascade",
@@ -119,6 +120,7 @@ class TelegramSettingsWriteTests(unittest.TestCase):
             connection = database.open_database(db_path)
             try:
                 self.assertEqual(sqlite_telegram.get_setting(connection, "botName"), "JsonBot")
+                self.assertEqual(sqlite_telegram.get_setting(connection, "botUsername"), "JsonVpnBot")
                 self.assertEqual(sqlite_telegram.get_setting(connection, "enabled"), "true")
                 self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTotalAmount"), "500")
                 self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentCurrency"), "$")

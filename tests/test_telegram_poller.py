@@ -369,6 +369,205 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertFalse(any(event[0] == "run" for event in events))
         self.assertNotIn("111", db.get("adminState", {}))
 
+    def test_owner_can_add_paid_client_from_admin_panel(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "botUsername": "ExampleVpnBot",
+            "paymentTotalAmount": "500",
+            "paymentCurrency": "₽",
+            "paymentTransferMethod": "phone",
+            "paymentPhone": "+79991234567",
+            "paymentBank": "Т-Банк (Тинькофф)",
+            "clientSubscriptionState": {"userUpdateOffset": 130, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {},
+        }
+        updates = [
+            {
+                "update_id": 131,
+                "callback_query": {
+                    "id": "callback-add-menu",
+                    "data": "admin:client-add",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 132,
+                "message": {
+                    "text": "alice 30",
+                    "chat": {"id": "111", "type": "private", "username": "owner"},
+                },
+            },
+            {
+                "update_id": 133,
+                "callback_query": {
+                    "id": "callback-add-paid",
+                    "data": "admin:client-add-payment:paid",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+        ]
+        events = []
+        client_db = {
+            "connections": {
+                "vless-reality": {"tag": "vless-reality", "name": "main", "port": 443},
+            },
+            "clients": {},
+        }
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            client_db["clients"]["alice"] = {
+                "expiresAt": "2026-07-14T00:00:00+03:00",
+                "paymentType": "paid",
+                "connection": "vless-reality",
+            }
+            return SimpleNamespace(
+                returncode=0,
+                stdout="Added client: alice\nAmount per paid client: 500 ₽\nvless://alice-key@example.com:443?type=tcp#Xray",
+                stderr="",
+            )
+
+        ctx = self.make_context(db, updates, events, client_db=client_db, run_capture=run_capture)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertIn(
+            (
+                "run",
+                ["/usr/local/sbin/xray-client", "add", "alice", "30", "--connection", "vless-reality", "--payment", "paid"],
+                120,
+            ),
+            events,
+        )
+        self.assertNotIn("111", db.get("adminState", {}))
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Клиент добавлен.", sent[2])
+        self.assertIn("Ваш VPN-ключ:\nvless://alice-key@example.com:443?type=tcp#Xray", sent[2])
+        self.assertIn("По этому же ключу @ExampleVpnBot будет показывать статус подписки", sent[2])
+        self.assertIn("Не забудь открыть @ExampleVpnBot и подключить уведомления.", sent[2])
+        self.assertIn("Доступ до: 2026-07-14T00:00:00+03:00", sent[2])
+        self.assertIn("Сумма оплаты: 500 ₽", sent[2])
+        self.assertIn("Перевод нужно выполнить по номеру телефона:\n+79991234567", sent[2])
+        self.assertIn("Банк: Т-Банк (Тинькофф)", sent[2])
+        self.assertNotIn("Added client: alice", sent[2])
+
+    def test_owner_add_client_selects_saved_connection_from_admin_panel(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 135, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {},
+        }
+        updates = [
+            {
+                "update_id": 136,
+                "callback_query": {
+                    "id": "callback-add-menu",
+                    "data": "admin:client-add",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 137,
+                "message": {
+                    "text": "bob",
+                    "chat": {"id": "111", "type": "private", "username": "owner"},
+                },
+            },
+            {
+                "update_id": 138,
+                "callback_query": {
+                    "id": "callback-add-free",
+                    "data": "admin:client-add-payment:free",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 139,
+                "callback_query": {
+                    "id": "callback-add-connection",
+                    "data": "admin:client-add-connection:1",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+        ]
+        events = []
+        client_db = {
+            "connections": {
+                "vless-reality": {"tag": "vless-reality", "name": "main", "port": 443},
+                "vless-reality-2": {"tag": "vless-reality-2", "name": "second", "port": 8443},
+            },
+            "clients": {},
+        }
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            client_db["clients"]["bob"] = {
+                "expiresAt": "",
+                "paymentType": "free",
+                "connection": "vless-reality-2",
+            }
+            return SimpleNamespace(returncode=0, stdout="vless://bob-key@example.com:8443?type=tcp#Xray", stderr="")
+
+        ctx = self.make_context(db, updates, events, client_db=client_db, run_capture=run_capture)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertIn(
+            (
+                "run",
+                ["/usr/local/sbin/xray-client", "add", "bob", "0", "--connection", "vless-reality-2", "--payment", "free"],
+                120,
+            ),
+            events,
+        )
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Оплата: бесплатный клиент", sent[2])
+        self.assertNotIn("Сумма оплаты:", sent[2])
+
+    def test_owner_add_client_rejects_invalid_access_days(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 140, "expiryReminders": {}},
+            "clientSubscriptions": {},
+            "adminState": {
+                "111": {
+                    "action": "add-client-input",
+                    "startedAt": "2026-06-12T22:00:00Z",
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 141,
+                "message": {
+                    "text": "alice месяц",
+                    "chat": {"id": "111", "type": "private", "username": "owner"},
+                },
+            }
+        ]
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append(("run", command, timeout))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        ctx = self.make_context(db, updates, events, run_capture=run_capture)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertFalse(any(event[0] == "run" for event in events))
+        self.assertEqual(db["adminState"]["111"]["action"], "add-client-input")
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Срок доступа должен быть числом дней.", sent[2])
+
     def test_poll_saves_update_offset_before_replying_to_text_message(self) -> None:
         db = {
             "enabled": True,

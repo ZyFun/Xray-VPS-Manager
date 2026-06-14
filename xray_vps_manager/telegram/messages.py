@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from xray_vps_manager.telegram import payments
 
 TELEGRAM_MESSAGE_LIMIT = 3900
@@ -156,6 +158,50 @@ def build_access_updated_message(db, entry, bot_name, format_access_until):
             f"Доступ продлён до: {format_access_until(entry.get('expiresAt', ''))}",
         ]
     )
+
+
+def bot_username(db):
+    raw = str((db or {}).get("botUsername") or "").strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", raw):
+        return ""
+    return raw
+
+
+def bot_reference(db, bot_name):
+    username = bot_username(db)
+    if username:
+        return "@" + username
+    return "бот " + bot_name(db)
+
+
+def bot_notification_hint(db):
+    username = bot_username(db)
+    if username:
+        return f"Не забудь открыть @{username} и подключить уведомления."
+    return "Не забудь подключить уведомления в боте."
+
+
+def build_client_added_message(db, vless_link, access_until, payment_type, payment_amount_label, bot_name):
+    bot_label = bot_reference(db, bot_name)
+    lines = [
+        "Клиент добавлен.",
+        "",
+        "Можно переслать это сообщение пользователю:",
+        "",
+        "Ваш VPN-ключ:",
+        str(vless_link or "").strip(),
+        "",
+        f"По этому же ключу {bot_label} будет показывать статус подписки и напоминать о продлении.",
+        bot_notification_hint(db),
+        "",
+        f"Доступ до: {access_until}",
+    ]
+    if payment_type == "paid":
+        lines.append(f"Сумма оплаты: {payment_amount_label}")
+        lines.extend(payments.payment_transfer_message_lines(db))
+    else:
+        lines.append("Оплата: бесплатный клиент")
+    return "\n".join(lines)
 
 
 def normalize_maintenance_template_id(value):

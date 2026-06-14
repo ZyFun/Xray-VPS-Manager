@@ -5,6 +5,25 @@ from xray_vps_manager.telegram import setup
 
 
 class TelegramSetupTests(unittest.TestCase):
+    def test_configure_owner_saves_bot_username_from_get_me(self) -> None:
+        db = {"token": "token", "routeMode": "direct"}
+        saved = []
+
+        with mock.patch.object(setup.settings, "load_db_sql", return_value=db):
+            with mock.patch.object(setup, "maybe_adopt_existing_cascade_route", side_effect=lambda current_db: current_db):
+                with mock.patch.object(setup.api, "curl_json", return_value={"ok": True, "result": {"username": "ExampleVpnBot"}}):
+                    with mock.patch.object(setup, "choose_private_chat", return_value={"id": "111", "label": "owner"}):
+                        with mock.patch.object(setup, "initialize_geoip_offsets"):
+                            with mock.patch.object(setup, "refresh_user_update_offset"):
+                                with mock.patch.object(setup.settings, "save_db", side_effect=lambda current_db: saved.append(dict(current_db))):
+                                    with mock.patch.object(setup, "configure_bot_commands"):
+                                        with mock.patch.object(setup.api, "send_message"):
+                                            with mock.patch("builtins.print"):
+                                                setup.configure_owner()
+
+        self.assertEqual(saved[-1]["botUsername"], "ExampleVpnBot")
+        self.assertEqual(saved[-1]["chatId"], "111")
+
     def test_configure_bot_commands_sets_default_menu_for_unsubscribed_users(self) -> None:
         db = {"token": "token"}
         calls = []

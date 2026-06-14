@@ -45,6 +45,7 @@ class TelegramSettingsReadTests(unittest.TestCase):
                 "enabled": "true",
                 "token": "sqlite-token",
                 "botName": "SQLiteBot",
+                "botUsername": "SQLiteVpnBot",
                 "chatId": "222",
                 "chatLabel": "sqlite-owner",
                 "routeMode": "cascade",
@@ -89,6 +90,7 @@ class TelegramSettingsReadTests(unittest.TestCase):
             self.assertEqual(result.source, "sqlite")
             self.assertTrue(result.db["enabled"])
             self.assertEqual(result.db["botName"], "SQLiteBot")
+            self.assertEqual(result.db["botUsername"], "SQLiteVpnBot")
             self.assertEqual(result.db["paymentTotalAmount"], "500")
             self.assertEqual(result.db["paymentCurrency"], "$")
             self.assertEqual(result.db["paymentTransferMethod"], "card")

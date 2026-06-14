@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from xray_vps_manager.telegram import keyboards, messages, notifications, paymen
 
 ADMIN_CALLBACK_GUARDS_KEY = "callbackGuards"
 ADMIN_CONSUMED_CALLBACK_LIMIT = 40
+CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -188,10 +190,46 @@ def admin_client_names(ctx: AdminContext) -> list[str]:
     return sorted(str(name) for name, entry in clients.items() if isinstance(entry, dict))
 
 
+def admin_connection_options(ctx: AdminContext) -> list[dict[str, Any]]:
+    connections = subscriptions.client_db_connections(ctx.load_client_db())
+    rows = []
+    for tag, entry in connections.items():
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            {
+                "tag": str(tag),
+                "name": str(entry.get("name") or tag),
+                "port": entry.get("port", ""),
+            }
+        )
+    return sorted(rows, key=lambda item: (item["name"], item["tag"]))
+
+
+def validate_new_client_name(value: str) -> str:
+    name = str(value or "").strip()
+    if not CLIENT_NAME_RE.fullmatch(name):
+        raise ValueError("Имя клиента должно быть 1-64 символа: A-Z a-z 0-9 _ . @ -")
+    return name
+
+
+def parse_new_client_input(text: str) -> tuple[str, int | None, str]:
+    parts = str(text or "").strip().split(maxsplit=1)
+    if not parts:
+        raise ValueError("Отправь имя клиента. Например: ivan 30")
+    name = validate_new_client_name(parts[0])
+    days_raw = parts[1].strip() if len(parts) > 1 else "0"
+    try:
+        access_days = client_access.parse_access_days(days_raw)
+    except ValueError as exc:
+        raise ValueError("Срок доступа должен быть числом дней. 0 или пустой срок означает бессрочно.") from exc
+    return name, access_days, str(access_days if access_days is not None else 0)
+
+
 def send_admin_client_extend_list(ctx: AdminContext, db, chat_id):
     names = admin_client_names(ctx)
     if not names:
-        clear_client_extend_state_if_pending(ctx, db, chat_id)
+        clear_client_flow_state_if_pending(ctx, db, chat_id)
         send_admin_clients_menu(ctx, db, chat_id, "Клиентов пока нет.")
         return
     set_client_extend_selection(ctx, db, chat_id, names)
@@ -290,6 +328,7 @@ def settings_status_text(ctx: AdminContext, db):
             "Xray VPS Manager: настройки бота",
             "",
             f"Имя бота: {ctx.bot_name(db)}",
+            f"Username бота: {'@' + db.get('botUsername', '') if db.get('botUsername') else 'не указан'}",
             f"Уведомления: {'включены' if db.get('enabled') else 'отключены'}",
             f"Owner chat: {owner}",
             f"Маршрут Telegram: {db.get('routeMode', 'direct')}",
@@ -393,6 +432,36 @@ def set_client_extend_selection(ctx: AdminContext, db, chat_id, names):
     ctx.save_db_sections(db, ("adminState",))
 
 
+def set_client_add_input_waiting(ctx: AdminContext, db, chat_id):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "add-client-input",
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def set_client_add_payment_waiting(ctx: AdminContext, db, chat_id, name, access_days_arg):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "add-client-payment",
+        "client": name,
+        "accessDays": str(access_days_arg),
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def set_client_add_connection_selection(ctx: AdminContext, db, chat_id, pending, connections):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "add-client-connection",
+        "client": pending.get("client", ""),
+        "accessDays": str(pending.get("accessDays", "0")),
+        "paymentType": pending.get("paymentType", "free"),
+        "connections": list(connections),
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
 def clear_admin_state(ctx: AdminContext, db, chat_id, clear_custom_notice=True):
     state = db.setdefault("adminState", {})
     state.pop(str(chat_id), None)
@@ -402,8 +471,18 @@ def clear_admin_state(ctx: AdminContext, db, chat_id, clear_custom_notice=True):
 
 
 def clear_client_extend_state_if_pending(ctx: AdminContext, db, chat_id):
+    clear_client_flow_state_if_pending(ctx, db, chat_id)
+
+
+def clear_client_flow_state_if_pending(ctx: AdminContext, db, chat_id):
     pending = db.get("adminState", {}).get(str(chat_id), {})
-    if pending.get("action") in ("extend-subscription-select", "extend-subscription-days"):
+    if pending.get("action") in (
+        "extend-subscription-select",
+        "extend-subscription-days",
+        "add-client-input",
+        "add-client-payment",
+        "add-client-connection",
+    ):
         clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
 
 
@@ -452,6 +531,35 @@ def selected_client_name(db, chat_id, index_value):
     return str(names[index])
 
 
+def selected_connection(db, chat_id, index_value) -> dict[str, Any]:
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return {}
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    connections = pending.get("connections", []) if pending.get("action") == "add-client-connection" else []
+    if index < 0 or index >= len(connections):
+        return {}
+    item = connections[index]
+    return item if isinstance(item, dict) else {}
+
+
+def set_add_client_input_waiting(ctx: AdminContext, db, chat_id):
+    set_client_add_input_waiting(ctx, db, chat_id)
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        "Отправь имя клиента и срок доступа одним сообщением.\n\n"
+        "Примеры:\n"
+        "ivan 30\n"
+        "ivan 0\n\n"
+        "Если срок не указать или указать 0, доступ будет бессрочным.\n"
+        "Если передумаешь, отправь /cancel.",
+        keyboards.admin_client_add_cancel_keyboard(),
+    )
+
+
 def set_extend_subscription_waiting(ctx: AdminContext, db, chat_id, name):
     set_client_extend_waiting(ctx, db, chat_id, name)
     send_admin_response(
@@ -469,6 +577,162 @@ def command_output(result):
     stdout = getattr(result, "stdout", "") or ""
     stderr = getattr(result, "stderr", "") or ""
     return (stdout + (("\n" + stderr) if stderr else "")).strip()
+
+
+def first_vless_link(output):
+    for line in str(output or "").splitlines():
+        value = line.strip()
+        if value.startswith("vless://"):
+            return value
+    return ""
+
+
+def add_client_command(ctx: AdminContext, pending, connection_tag=""):
+    command = [
+        str(ctx.xray_client),
+        "add",
+        str(pending.get("client") or ""),
+        str(pending.get("accessDays") or "0"),
+    ]
+    if connection_tag:
+        command.extend(["--connection", str(connection_tag)])
+    command.extend(["--payment", str(pending.get("paymentType") or "free")])
+    return command
+
+
+def add_client_success_text(ctx: AdminContext, db, name, payment_type, result):
+    link = first_vless_link(command_output(result))
+    if not link:
+        link_result = ctx.run_capture([str(ctx.xray_client), "link", name], timeout=20)
+        if getattr(link_result, "returncode", 1) == 0:
+            link = first_vless_link(command_output(link_result))
+    if not link:
+        return "Клиент добавлен, но xray-client не вернул VLESS-ссылку. Выведи её через SSH: xray-client link " + name
+
+    try:
+        client_db = ctx.load_client_db()
+        clients = subscriptions.client_db_clients(client_db)
+    except Exception:
+        client_db = {"clients": {}}
+        clients = {}
+    entry = clients.get(name, {})
+    access_until = ctx.format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else "")
+    amount_label = payments.payment_amount_label(db, client_db)
+    return messages.build_client_added_message(db, link, access_until, payment_type, amount_label, ctx.bot_name)
+
+
+def add_client_result_text(ctx: AdminContext, db, pending, result):
+    name = str(pending.get("client") or "")
+    if getattr(result, "returncode", 1) != 0:
+        output = command_output(result)
+        details = f"\n\n{output}" if output else ""
+        return messages.truncate_telegram_text(f"Не удалось добавить клиента {name}, exit {getattr(result, 'returncode', 1)}.{details}")
+    return messages.truncate_telegram_text(add_client_success_text(ctx, db, name, pending.get("paymentType", "free"), result))
+
+
+def run_add_client_from_pending(ctx: AdminContext, db, chat_id, pending, connection_tag=""):
+    result = ctx.run_capture(add_client_command(ctx, pending, connection_tag), timeout=120)
+    clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+    send_admin_clients_menu(ctx, db, chat_id, add_client_result_text(ctx, db, pending, result))
+    return True
+
+
+def add_client_payment_text(name):
+    return "\n".join(
+        [
+            "Выбери статус оплаты для нового клиента.",
+            "",
+            f"Клиент: {name}",
+            "Платный клиент участвует в расчёте суммы и получает напоминания об оплате.",
+        ]
+    )
+
+
+def handle_add_client_input(ctx: AdminContext, db, chat_id, text):
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    if pending.get("action") != "add-client-input":
+        return False
+    if text.lower() in ("/cancel", "cancel", "отмена"):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Добавление клиента отменено.")
+        return True
+
+    try:
+        name, _access_days, access_days_arg = parse_new_client_input(text)
+    except ValueError as exc:
+        send_admin_response(
+            ctx,
+            db,
+            chat_id,
+            str(exc) + "\n\nНапример: ivan 30\nЕсли передумаешь, отправь /cancel.",
+            keyboards.admin_client_add_cancel_keyboard(),
+        )
+        return True
+
+    if name in admin_client_names(ctx):
+        send_admin_response(
+            ctx,
+            db,
+            chat_id,
+            f"Клиент {name} уже существует. Отправь другое имя или /cancel.",
+            keyboards.admin_client_add_cancel_keyboard(),
+        )
+        return True
+
+    set_client_add_payment_waiting(ctx, db, chat_id, name, access_days_arg)
+    send_admin_response(ctx, db, chat_id, add_client_payment_text(name), keyboards.admin_client_add_payment_keyboard())
+    return True
+
+
+def handle_add_client_payment(ctx: AdminContext, db, chat_id, payment_type):
+    if payment_type not in ("paid", "free"):
+        send_admin_clients_menu(ctx, db, chat_id, "Неизвестный статус оплаты.")
+        return True
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    if pending.get("action") != "add-client-payment":
+        send_admin_clients_menu(ctx, db, chat_id, "Добавление клиента не активно. Начни заново.")
+        return True
+    name = str(pending.get("client") or "")
+    if not name:
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Не удалось прочитать имя клиента. Начни заново.")
+        return True
+    if name in admin_client_names(ctx):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент уже существует. Добавление отменено.")
+        return True
+
+    pending = {
+        "client": name,
+        "accessDays": str(pending.get("accessDays") or "0"),
+        "paymentType": payment_type,
+    }
+    connections = admin_connection_options(ctx)
+    if len(connections) > 1:
+        set_client_add_connection_selection(ctx, db, chat_id, pending, connections)
+        send_admin_response(
+            ctx,
+            db,
+            chat_id,
+            "Выбери Reality-подключение для нового клиента.",
+            keyboards.admin_client_add_connection_keyboard(connections),
+        )
+        return True
+    connection_tag = connections[0]["tag"] if len(connections) == 1 else ""
+    return run_add_client_from_pending(ctx, db, chat_id, pending, connection_tag)
+
+
+def handle_add_client_connection(ctx: AdminContext, db, chat_id, index_value):
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    if pending.get("action") != "add-client-connection":
+        send_admin_clients_menu(ctx, db, chat_id, "Выбор подключения не активен. Начни добавление заново.")
+        return True
+    item = selected_connection(db, chat_id, index_value)
+    tag = str(item.get("tag") or "")
+    if not tag:
+        send_admin_clients_menu(ctx, db, chat_id, "Подключение не найдено. Начни добавление заново.")
+        return True
+    return run_add_client_from_pending(ctx, db, chat_id, pending, tag)
 
 
 def extend_subscription_text(ctx: AdminContext, name, days, result):
@@ -532,6 +796,8 @@ def handle_pending_text(ctx: AdminContext, db, chat_id, text):
     action = pending.get("action")
     if action == "custom-notice-text":
         return handle_custom_notice_text(ctx, db, chat_id, text)
+    if action == "add-client-input":
+        return handle_add_client_input(ctx, db, chat_id, text)
     if action == "extend-subscription-days":
         return handle_extend_subscription_days(ctx, db, chat_id, text)
     return False
@@ -554,7 +820,7 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
         send_admin_clients_menu(ctx, db, chat_id, subscribers_text(ctx, db))
         return True
     if data == "admin:clients":
-        clear_client_extend_state_if_pending(ctx, db, chat_id)
+        clear_client_flow_state_if_pending(ctx, db, chat_id)
         send_admin_clients_menu(ctx, db, chat_id)
         return True
     if data == "admin:payments":
@@ -577,6 +843,17 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
         return True
     if data == "admin:settings":
         send_admin_settings_menu(ctx, db, chat_id)
+        return True
+    if data == "admin:client-add":
+        set_add_client_input_waiting(ctx, db, chat_id)
+        return True
+    if data.startswith("admin:client-add-payment:"):
+        return handle_add_client_payment(ctx, db, chat_id, data.rsplit(":", 1)[1])
+    if data.startswith("admin:client-add-connection:"):
+        return handle_add_client_connection(ctx, db, chat_id, data.rsplit(":", 1)[1])
+    if data == "admin:client-add-cancel":
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Добавление клиента отменено.")
         return True
     if data == "admin:client-extend":
         send_admin_client_extend_list(ctx, db, chat_id)

@@ -276,7 +276,8 @@ def configure_owner(send_test=True):
     db = maybe_adopt_existing_cascade_route(db)
     me = api.curl_json(db, "getMe")
     bot = me.get("result", {})
-    print(f"Бот найден: @{bot.get('username', 'unknown')}")
+    db["botUsername"] = settings.normalize_bot_username(bot.get("username", ""))
+    print(f"Бот найден: @{db['botUsername'] or bot.get('username', 'unknown')}")
     chat = choose_private_chat(db)
     db["chatId"] = chat["id"]
     db["chatLabel"] = chat["label"]

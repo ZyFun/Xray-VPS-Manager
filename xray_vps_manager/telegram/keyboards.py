@@ -89,6 +89,7 @@ def admin_status_keyboard():
 def admin_clients_keyboard():
     return {
         "inline_keyboard": [
+            [{"text": "Добавить клиента", "callback_data": "admin:client-add"}],
             [{"text": "Подписки клиентов", "callback_data": "admin:subscribers"}],
             [{"text": "Продлить подписку", "callback_data": "admin:client-extend"}],
             [{"text": "Назад", "callback_data": "admin:menu"}],
@@ -109,6 +110,40 @@ def admin_client_extend_cancel_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "Отмена", "callback_data": "admin:client-extend-cancel"}],
+            [{"text": "Назад", "callback_data": "admin:clients"}],
+        ]
+    }
+
+
+def admin_client_add_payment_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Платный", "callback_data": "admin:client-add-payment:paid"},
+                {"text": "Бесплатный", "callback_data": "admin:client-add-payment:free"},
+            ],
+            [{"text": "Отмена", "callback_data": "admin:client-add-cancel"}],
+            [{"text": "Назад", "callback_data": "admin:clients"}],
+        ]
+    }
+
+
+def admin_client_add_connection_keyboard(connections):
+    rows = []
+    for index, item in enumerate(connections):
+        name = str(item.get("name") or item.get("tag") or "")
+        port = item.get("port")
+        label = f"{name} · {port}" if port not in ("", None) else name
+        rows.append([{"text": label, "callback_data": f"admin:client-add-connection:{index}"}])
+    rows.append([{"text": "Отмена", "callback_data": "admin:client-add-cancel"}])
+    rows.append([{"text": "Назад", "callback_data": "admin:clients"}])
+    return {"inline_keyboard": rows}
+
+
+def admin_client_add_cancel_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Отмена", "callback_data": "admin:client-add-cancel"}],
             [{"text": "Назад", "callback_data": "admin:clients"}],
         ]
     }

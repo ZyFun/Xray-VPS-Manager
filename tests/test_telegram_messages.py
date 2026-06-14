@@ -88,6 +88,30 @@ class TelegramMessageTests(unittest.TestCase):
             ),
         )
 
+    def test_client_added_message_uses_payment_reminder_transfer_format(self) -> None:
+        text = messages.build_client_added_message(
+            {
+                "botUsername": "ExampleVpnBot",
+                "paymentTransferMethod": "phone",
+                "paymentPhone": "+79991234567",
+                "paymentBank": "Т-Банк (Тинькофф)",
+            },
+            "vless://example",
+            "2026-07-14 00:00 Europe/Moscow",
+            "paid",
+            "500 ₽",
+            bot_name,
+        )
+
+        self.assertIn("Ваш VPN-ключ:\nvless://example", text)
+        self.assertIn("По этому же ключу @ExampleVpnBot будет показывать статус подписки", text)
+        self.assertIn("Не забудь открыть @ExampleVpnBot и подключить уведомления.", text)
+        self.assertIn("Сумма оплаты: 500 ₽", text)
+        self.assertIn("Перевод нужно выполнить по номеру телефона:\n+79991234567", text)
+        self.assertIn("Банк: Т-Банк (Тинькофф)", text)
+        self.assertNotIn("Когда будет удобно", text)
+        self.assertNotIn("подтверждение", text)
+
     def test_maintenance_template_aliases_and_unknown_template(self) -> None:
         self.assertEqual(messages.normalize_maintenance_template_id(""), "start")
         self.assertEqual(messages.normalize_maintenance_template_id("2"), "done")

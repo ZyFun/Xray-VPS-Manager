@@ -111,12 +111,13 @@ class TelegramKeyboardTests(unittest.TestCase):
             ],
         )
 
-    def test_admin_clients_keyboard_contains_extend_action(self) -> None:
+    def test_admin_clients_keyboard_contains_client_actions(self) -> None:
         rows = keyboards.admin_clients_keyboard()["inline_keyboard"]
         buttons = [button for row in rows for button in row]
 
-        self.assertEqual(buttons[0], {"text": "Подписки клиентов", "callback_data": "admin:subscribers"})
-        self.assertEqual(buttons[1], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
+        self.assertEqual(buttons[0], {"text": "Добавить клиента", "callback_data": "admin:client-add"})
+        self.assertEqual(buttons[1], {"text": "Подписки клиентов", "callback_data": "admin:subscribers"})
+        self.assertEqual(buttons[2], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
         self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:menu"})
 
     def test_admin_payments_keyboard_contains_read_only_payment_sections(self) -> None:
@@ -149,6 +150,19 @@ class TelegramKeyboardTests(unittest.TestCase):
         self.assertEqual(buttons[0], {"text": "alice", "callback_data": "admin:client-extend:0"})
         self.assertEqual(buttons[1], {"text": "bob", "callback_data": "admin:client-extend:1"})
         self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:clients"})
+
+    def test_admin_client_add_connection_keyboard_uses_connection_indexes(self) -> None:
+        rows = keyboards.admin_client_add_connection_keyboard(
+            [
+                {"name": "main", "tag": "vless-reality", "port": 443},
+                {"name": "backup", "tag": "vless-reality-2", "port": 8443},
+            ]
+        )["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(buttons[0], {"text": "main · 443", "callback_data": "admin:client-add-connection:0"})
+        self.assertEqual(buttons[1], {"text": "backup · 8443", "callback_data": "admin:client-add-connection:1"})
+        self.assertIn({"text": "Отмена", "callback_data": "admin:client-add-cancel"}, buttons)
 
 
 if __name__ == "__main__":
