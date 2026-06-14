@@ -178,6 +178,7 @@ def admin_notices_keyboard():
         "inline_keyboard": [
             [{"text": "Плановые работы", "callback_data": "admin:notice:start"}],
             [{"text": "Работы завершены", "callback_data": "admin:notice:done"}],
+            [{"text": "Новости", "callback_data": "admin:notice:news"}],
             [{"text": "Своё сообщение", "callback_data": "admin:notice:custom"}],
             [{"text": "Назад", "callback_data": "admin:menu"}],
         ]

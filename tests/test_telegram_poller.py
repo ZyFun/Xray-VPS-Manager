@@ -157,6 +157,64 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertNotIn("Xray VPS Manager: админ-панель", sent[0][2])
         self.assertNotIn("callbackGuards", db.get("adminState", {}))
 
+    def test_owner_can_send_news_notice_from_admin_panel(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 40, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {"client": "alice", "clientId": "alice-id", "enabled": True},
+            },
+            "adminState": {},
+        }
+        updates = [
+            {
+                "update_id": 41,
+                "callback_query": {
+                    "id": "callback-news",
+                    "data": "admin:notice:news",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 42,
+                "message": {
+                    "text": "Добавили выбор страны подключения.",
+                    "chat": {"id": "111", "type": "private", "username": "owner"},
+                },
+            },
+            {
+                "update_id": 43,
+                "callback_query": {
+                    "id": "callback-send-news",
+                    "data": "admin:notice-send:news",
+                    "message": {"chat": {"id": "111", "type": "private"}},
+                },
+            },
+        ]
+        events = []
+
+        def send_notice(_ctx, _db, message, dry_run=False, yes=False, label="message"):
+            events.append(("notice", message, dry_run, yes, label))
+            return 0
+
+        ctx = self.make_context(db, updates, events)
+
+        with mock.patch.object(admin, "send_notice_message", side_effect=send_notice):
+            self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        preview = [event for event in events if event[0] == "send" and "Предпросмотр: Новости" in event[2]][0]
+        self.assertIn("Получателей: 1", preview[2])
+        self.assertIn("Vireika: объявление\n\nДобавили выбор страны подключения.", preview[2])
+        self.assertIn(
+            ("notice", "Vireika: объявление\n\nДобавили выбор страны подключения.", False, True, "Новости"),
+            events,
+        )
+        self.assertNotIn("newsNoticeText", db.get("adminState", {}))
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Уведомление отправлено подписанным клиентам.", sent[2])
+
     def test_owner_can_extend_client_subscription_from_admin_panel(self) -> None:
         db = {
             "enabled": True,

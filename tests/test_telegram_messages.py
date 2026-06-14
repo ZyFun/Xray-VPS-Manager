@@ -126,6 +126,15 @@ class TelegramMessageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Неизвестный шаблон"):
             messages.maintenance_notice_message({}, "strange", bot_name)
 
+    def test_news_notice_wraps_admin_text_with_announcement_header(self) -> None:
+        self.assertEqual(
+            messages.news_notice_message({}, "Добавили выбор страны.", bot_name),
+            "Vireika: объявление\n\nДобавили выбор страны.",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Текст новости пуст"):
+            messages.news_notice_message({}, "  ", bot_name)
+
     def test_truncate_telegram_text_keeps_short_text_and_marks_long_text(self) -> None:
         self.assertEqual(messages.truncate_telegram_text("short", limit=20), "short")
 

@@ -35,6 +35,19 @@ MAINTENANCE_NOTICE_TEMPLATES = {
 }
 
 
+def news_notice_message(db, text, bot_name):
+    body = str(text or "").strip()
+    if not body:
+        raise ValueError("Текст новости пуст.")
+    return "\n".join(
+        [
+            f"{bot_name(db)}: объявление",
+            "",
+            body,
+        ]
+    )
+
+
 def subscription_intro_text(db, bot_name):
     return (
         f"Привет. Я бот {bot_name(db)}.\n\n"

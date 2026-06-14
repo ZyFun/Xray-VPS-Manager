@@ -373,6 +373,10 @@ def maintenance_notice_message(ctx: AdminContext, db, template_id):
     return notifications.maintenance_notice_message(ctx.notification_context, db, template_id)
 
 
+def news_notice_message(ctx: AdminContext, db, text):
+    return messages.news_notice_message(db, text, ctx.bot_name)
+
+
 def maintenance_notice_recipients(db):
     return notifications.maintenance_notice_recipients(db)
 
@@ -395,6 +399,13 @@ def preview_notice(ctx: AdminContext, db, chat_id, kind):
             send_admin_notices_menu(ctx, db, chat_id, "Черновик своего сообщения пуст. Нажми «Своё сообщение» и отправь текст заново.")
             return
         title = "своё сообщение"
+    elif kind == "news":
+        draft = str(db.get("adminState", {}).get("newsNoticeText") or "").strip()
+        if not draft:
+            send_admin_notices_menu(ctx, db, chat_id, "Черновик новости пуст. Нажми «Новости» и отправь текст заново.")
+            return
+        message = news_notice_message(ctx, db, draft)
+        title = "Новости"
     else:
         message = maintenance_notice_message(ctx, db, kind)
         title = messages.MAINTENANCE_NOTICE_TEMPLATES[kind]["title"]
@@ -412,6 +423,11 @@ def preview_notice(ctx: AdminContext, db, chat_id, kind):
 
 def set_custom_notice_waiting(ctx: AdminContext, db, chat_id):
     db.setdefault("adminState", {})[str(chat_id)] = {"action": "custom-notice-text", "startedAt": admin_utc_stamp(ctx)}
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def set_news_notice_waiting(ctx: AdminContext, db, chat_id):
+    db.setdefault("adminState", {})[str(chat_id)] = {"action": "news-notice-text", "startedAt": admin_utc_stamp(ctx)}
     ctx.save_db_sections(db, ("adminState",))
 
 
@@ -468,6 +484,7 @@ def clear_admin_state(ctx: AdminContext, db, chat_id, clear_custom_notice=True):
     state.pop(str(chat_id), None)
     if clear_custom_notice:
         state.pop("customNoticeText", None)
+        state.pop("newsNoticeText", None)
     ctx.save_db_sections(db, ("adminState",))
 
 
@@ -494,6 +511,13 @@ def send_admin_notice(ctx: AdminContext, db, chat_id, kind):
             send_admin_notices_menu(ctx, db, chat_id, "Черновик своего сообщения пуст. Отправка отменена.")
             return
         label = "своё сообщение"
+    elif kind == "news":
+        draft = str(db.get("adminState", {}).get("newsNoticeText") or "").strip()
+        if not draft:
+            send_admin_notices_menu(ctx, db, chat_id, "Черновик новости пуст. Отправка отменена.")
+            return
+        message = news_notice_message(ctx, db, draft)
+        label = "Новости"
     else:
         message = maintenance_notice_message(ctx, db, kind)
         label = messages.MAINTENANCE_NOTICE_TEMPLATES[kind]["title"]
@@ -517,6 +541,21 @@ def handle_custom_notice_text(ctx: AdminContext, db, chat_id, text):
     db["adminState"].pop(str(chat_id), None)
     ctx.save_db_sections(db, ("adminState",))
     preview_notice(ctx, db, chat_id, "custom")
+    return True
+
+
+def handle_news_notice_text(ctx: AdminContext, db, chat_id, text):
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    if pending.get("action") != "news-notice-text":
+        return False
+    if text.lower() in ("/cancel", "cancel", "отмена"):
+        clear_admin_state(ctx, db, chat_id)
+        send_admin_notices_menu(ctx, db, chat_id, "Создание новости отменено.")
+        return True
+    db.setdefault("adminState", {})["newsNoticeText"] = text
+    db["adminState"].pop(str(chat_id), None)
+    ctx.save_db_sections(db, ("adminState",))
+    preview_notice(ctx, db, chat_id, "news")
     return True
 
 
@@ -798,6 +837,8 @@ def handle_pending_text(ctx: AdminContext, db, chat_id, text):
     action = pending.get("action")
     if action == "custom-notice-text":
         return handle_custom_notice_text(ctx, db, chat_id, text)
+    if action == "news-notice-text":
+        return handle_news_notice_text(ctx, db, chat_id, text)
     if action == "add-client-input":
         return handle_add_client_input(ctx, db, chat_id, text)
     if action == "extend-subscription-days":
@@ -904,6 +945,18 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
     if data in ("admin:notice:start", "admin:notice:done"):
         preview_notice(ctx, db, chat_id, data.rsplit(":", 1)[1])
         return True
+    if data == "admin:notice:news":
+        set_news_notice_waiting(ctx, db, chat_id)
+        send_admin_response(
+            ctx,
+            db,
+            chat_id,
+            "Отправь следующим сообщением текст новости для подписанных клиентов.\n\n"
+            "Бот добавит заголовок объявления и покажет предпросмотр перед отправкой.\n\n"
+            "Если передумаешь, отправь /cancel.",
+            {"inline_keyboard": [[{"text": "Отмена", "callback_data": "admin:notice-cancel"}]]},
+        )
+        return True
     if data == "admin:notice:custom":
         set_custom_notice_waiting(ctx, db, chat_id)
         send_admin_response(
@@ -917,7 +970,7 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
         return True
     if data.startswith("admin:notice-send:"):
         kind = data.rsplit(":", 1)[1]
-        if kind not in ("start", "done", "custom"):
+        if kind not in ("start", "done", "news", "custom"):
             send_admin_notices_menu(ctx, db, chat_id, "Неизвестный тип уведомления.")
             return True
         send_admin_notice(ctx, db, chat_id, kind)

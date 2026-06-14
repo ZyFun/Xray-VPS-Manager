@@ -150,6 +150,21 @@ class TelegramKeyboardTests(unittest.TestCase):
             ],
         )
 
+    def test_admin_notices_keyboard_contains_news_template(self) -> None:
+        rows = keyboards.admin_notices_keyboard()["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(
+            buttons,
+            [
+                {"text": "Плановые работы", "callback_data": "admin:notice:start"},
+                {"text": "Работы завершены", "callback_data": "admin:notice:done"},
+                {"text": "Новости", "callback_data": "admin:notice:news"},
+                {"text": "Своё сообщение", "callback_data": "admin:notice:custom"},
+                {"text": "Назад", "callback_data": "admin:menu"},
+            ],
+        )
+
     def test_admin_service_keyboards_keep_existing_actions_in_submenus(self) -> None:
         backup_buttons = [button for row in keyboards.admin_backups_keyboard()["inline_keyboard"] for button in row]
         activity_buttons = [button for row in keyboards.admin_activity_keyboard()["inline_keyboard"] for button in row]
