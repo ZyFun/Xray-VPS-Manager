@@ -73,7 +73,8 @@ def client_entry_id(entry):
 def expected_connection_params(client_db, entry):
     connection_tag = entry.get("connection", "")
     connection = client_db_connections(client_db).get(connection_tag, {})
-    return {
+    transport = normalize_value(connection.get("transport") or "tcp")
+    expected = {
         "port": str(connection.get("port", "")),
         "pbk": connection.get("publicKey", ""),
         "sni": connection.get("sni", ""),
@@ -81,9 +82,16 @@ def expected_connection_params(client_db, entry):
         "fp": connection.get("fingerprint", ""),
         "security": "reality",
         "encryption": "none",
-        "type": "tcp",
-        "flow": (entry.get("client") or {}).get("flow", "xtls-rprx-vision"),
+        "type": transport,
     }
+    if transport == "tcp":
+        expected["flow"] = (entry.get("client") or {}).get("flow", "xtls-rprx-vision")
+    elif transport == "grpc":
+        expected["serviceName"] = connection.get("grpcServiceName", "")
+    elif transport == "xhttp":
+        expected["path"] = connection.get("xhttpPath", "")
+        expected["mode"] = connection.get("xhttpMode", "")
+    return expected
 
 
 def match_vless_to_client(parsed_link, client_db):

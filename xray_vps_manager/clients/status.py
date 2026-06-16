@@ -16,11 +16,13 @@ from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.traffic.repository import traffic_entry
 from xray_vps_manager.xray.config import (
     active_client_any,
+    apply_client_transport,
     clients,
     default_connection_tag,
     find_inbound_by_tag,
     inbound_tag,
     reality_inbounds,
+    reality_transport_settings_from_inbound,
 )
 
 
@@ -75,6 +77,7 @@ def enable_db_client(config: dict[str, Any], name: str, entry: dict[str, Any]) -
     client = client_from_db_entry(name, entry)
     connection_tag = entry.get("connection") or default_connection_tag(config)
     inbound = find_inbound_by_tag(config, connection_tag)
+    apply_client_transport(client, reality_transport_settings_from_inbound(inbound)["transport"])
     clients(inbound).append(client)
     entry["client"] = client
     entry["connection"] = connection_tag

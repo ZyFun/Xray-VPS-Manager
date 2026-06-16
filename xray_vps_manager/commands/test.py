@@ -529,6 +529,16 @@ def check_reality_inbounds(diag):
             raise RuntimeError(f"{tag}: incomplete Reality settings")
         if dest != f"{sni}:443":
             raise RuntimeError(f"{tag}: Reality dest must be SNI:443, got {dest}")
+        stream = inbound.get("streamSettings", {})
+        network = (stream.get("network") or "tcp").lower()
+        if network not in ("tcp", "grpc", "xhttp"):
+            raise RuntimeError(f"{tag}: unsupported Reality transport: {network}")
+        if network == "grpc" and "serviceName" not in (stream.get("grpcSettings") or {}):
+            raise RuntimeError(f"{tag}: grpcSettings.serviceName is required")
+        if network == "xhttp":
+            xhttp = stream.get("xhttpSettings") or {}
+            if not xhttp.get("path") or not xhttp.get("mode"):
+                raise RuntimeError(f"{tag}: xhttpSettings.path and mode are required")
 
         for client in clients(inbound):
             client_id = client.get("id", "")
@@ -537,6 +547,10 @@ def check_reality_inbounds(diag):
                 raise RuntimeError(f"{tag}: client has invalid UUID")
             if not email:
                 raise RuntimeError(f"{tag}: client has empty email")
+            if network == "tcp" and client.get("flow") != "xtls-rprx-vision":
+                raise RuntimeError(f"{tag}: TCP Vision client has invalid flow")
+            if network != "tcp" and client.get("flow"):
+                raise RuntimeError(f"{tag}: {network} client must not use Vision flow")
             name = client_name(email)
             if name in names:
                 raise RuntimeError(f"duplicate active client name: {name}")

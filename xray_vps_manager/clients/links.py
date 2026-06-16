@@ -8,7 +8,12 @@ from urllib.parse import quote
 from xray_vps_manager.clients.connections import connection_fingerprint, ensure_connections
 from xray_vps_manager.clients.repository import db_clients
 from xray_vps_manager.clients.settings import server_addr, server_name
-from xray_vps_manager.xray.config import default_connection_tag, find_inbound_by_tag
+from xray_vps_manager.xray.config import (
+    client_flow_for_transport,
+    default_connection_tag,
+    find_inbound_by_tag,
+    reality_transport_settings_from_inbound,
+)
 from xray_vps_manager.xray.crypto import reality_public_key
 
 
@@ -40,16 +45,25 @@ def link_for(
         raise ValueError("Reality privateKey/serverNames not found in inbound.")
     public_key = reality_public_key(private_key)
 
+    transport_settings = reality_transport_settings_from_inbound(inbound)
+    transport = transport_settings["transport"]
     params = {
         "security": "reality",
         "encryption": "none",
         "pbk": public_key,
         "fp": connection_fingerprint(config, db, connection_tag),
-        "type": stream.get("network", "tcp"),
-        "flow": "xtls-rprx-vision",
+        "type": transport,
         "sni": sni,
         "sid": short_id,
         "spx": "/",
     }
+    flow = client_flow_for_transport(transport)
+    if flow:
+        params["flow"] = flow
+    if transport == "grpc":
+        params["serviceName"] = transport_settings["grpcServiceName"]
+    elif transport == "xhttp":
+        params["path"] = transport_settings["xhttpPath"]
+        params["mode"] = transport_settings["xhttpMode"]
     query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params.items())
     return f"vless://{client_id}@{server_addr()}:{port}?{query}#{quote(server_name(), safe='')}"

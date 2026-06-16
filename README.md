@@ -83,6 +83,7 @@ REALITY_SNI
 CLIENT_NAME
 SERVER_NAME
 FINGERPRINT
+REALITY_TRANSPORT
 MANAGER_TIMEZONE
 ```
 
@@ -96,6 +97,7 @@ REALITY_SNI=www.microsoft.com
 CLIENT_NAME=starter
 SERVER_NAME=Xray
 FINGERPRINT=chrome
+REALITY_TRANSPORT=tcp
 MANAGER_TIMEZONE=server local time
 ```
 
@@ -132,6 +134,8 @@ REALITY_DEST=REALITY_SNI:443
 
 `FINGERPRINT` задаёт маскировку браузера/uTLS в клиентской ссылке `vless://`.
 Доступные варианты: `chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`.
+
+`REALITY_TRANSPORT` задаёт transport первого VLESS Reality-подключения. По умолчанию используется `tcp` с Vision flow `xtls-rprx-vision`. Также доступны `grpc` и `xhttp`; для `grpc` используется `GRPC_SERVICE_NAME` (по умолчанию `vless-grpc`), для `xhttp` используются `XHTTP_PATH` (по умолчанию `/vless-xhttp`) и `XHTTP_MODE` (по умолчанию `auto`).
 
 Во время установки появится вопрос:
 
@@ -249,7 +253,8 @@ xray-menu
 4 Обновить REALITY_SNI и REALITY_DEST
 5 Обновить PORT, REALITY_SNI и REALITY_DEST
 6 Обновить FINGERPRINT
-7 Удалить подключение
+7 Обновить TRANSPORT
+8 Удалить подключение
 
 Настройки Xray -> Каскад:
 1 Показать каскады
@@ -393,6 +398,8 @@ xray-client connection-list
 
 ```bash
 xray-client add-connection ИМЯ PORT REALITY_SNI FINGERPRINT
+xray-client add-connection ИМЯ PORT REALITY_SNI FINGERPRINT grpc --grpc-service-name vless-grpc
+xray-client add-connection ИМЯ PORT REALITY_SNI FINGERPRINT xhttp --xhttp-path /vless-xhttp --xhttp-mode auto
 ```
 
 Пример:
@@ -401,9 +408,20 @@ xray-client add-connection ИМЯ PORT REALITY_SNI FINGERPRINT
 xray-client add-connection backup443 8443 www.microsoft.com chrome
 ```
 
-Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом, SNI, DEST и fingerprint.
+Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом, SNI, DEST, fingerprint и transport.
 `REALITY_DEST` создаётся автоматически как `REALITY_SNI:443`.
+Transport по умолчанию - `tcp`; для него используется Vision flow `xtls-rprx-vision`. Для `grpc` и `xhttp` flow в клиентский config и VLESS-ссылку не добавляется.
 При добавлении клиента через меню, если подключений больше одного, появится выбор подключения.
+
+Сменить transport существующего подключения:
+
+```bash
+xray-client connection-transport ИМЯ_ИЛИ_TAG tcp
+xray-client connection-transport ИМЯ_ИЛИ_TAG grpc --grpc-service-name vless-grpc
+xray-client connection-transport ИМЯ_ИЛИ_TAG xhttp --xhttp-path /vless-xhttp --xhttp-mode auto
+```
+
+После смены transport нужно выдать клиентам новые VLESS-ссылки через `xray-client link ИМЯ` или Telegram-кнопку получения актуальной ссылки.
 
 Удалить подключение вместе со всеми клиентами в нём:
 
@@ -1143,6 +1161,8 @@ xray-set-cascade
 xray-set-cascade add backup
 xray-set-cascade add backup --country Германия
 ```
+
+Каскад можно добавлять VLESS-ссылкой с transport `tcp`, `ws`, `grpc` или `xhttp`. Для `grpc` из ссылки читается `serviceName`, для `xhttp` читаются `path` и `mode`.
 
 При первичной синхронизации пустая страна активного каскада заполняется как `Германия`, а пустая страна остальных настроенных каскадов как `США`. Уже сохранённые вручную страны не перетираются.
 

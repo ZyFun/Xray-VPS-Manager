@@ -278,6 +278,34 @@ def validate_fingerprint(value):
     return value
 
 
+def validate_reality_transport(value):
+    try:
+        return xray_config.normalize_reality_transport(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_grpc_service_name(value):
+    try:
+        return xray_config.normalize_grpc_service_name(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_xhttp_path(value):
+    try:
+        return xray_config.normalize_xhttp_path(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_xhttp_mode(value):
+    try:
+        return xray_config.normalize_xhttp_mode(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def color_label(value, text):
     if value == "free":
         return f"{GREEN}{text}{RESET}"
@@ -460,19 +488,43 @@ def cmd_connection_list():
     ensure_connections(config, db)
     if read_result.source == "json":
         save_db(db)
-    headers = ["NAME", "TAG", "PORT", "SNI", "FINGERPRINT", "CREATED"]
+    headers = ["NAME", "TAG", "PORT", "SNI", "TRANSPORT", "FINGERPRINT", "CREATED"]
     print_table(headers, connection_rows(config, db), empty_message=None)
 
 
-def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
+def cmd_connection_add(
+    name,
+    port_value,
+    sni_value,
+    fingerprint_value="chrome",
+    transport_value="tcp",
+    grpc_service_name="",
+    xhttp_path="",
+    xhttp_mode="",
+):
     name = validate_connection_name(name)
     port = validate_port(port_value)
     sni = validate_host(sni_value, "REALITY_SNI")
     fp = validate_fingerprint(fingerprint_value or "chrome")
+    transport = validate_reality_transport(transport_value)
+    grpc_service_name = validate_grpc_service_name(grpc_service_name) if transport == "grpc" else ""
+    xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
+    xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
     config = load_config()
     db = load_db()
     try:
-        result = client_connections.add_connection(config, db, name, port, sni, fp)
+        result = client_connections.add_connection(
+            config,
+            db,
+            name,
+            port,
+            sni,
+            fp,
+            transport=transport,
+            grpc_service_name=grpc_service_name,
+            xhttp_path=xhttp_path,
+            xhttp_mode=xhttp_mode,
+        )
     except (ValueError, RuntimeError) as exc:
         die(str(exc))
 
@@ -484,7 +536,49 @@ def cmd_connection_add(name, port_value, sni_value, fingerprint_value="chrome"):
     print(f"REALITY_SNI: {result.sni}")
     print(f"REALITY_DEST: {result.dest}")
     print(f"FINGERPRINT: {result.fingerprint}")
+    print(f"TRANSPORT: {result.transport}")
+    if result.transport == "grpc":
+        print(f"GRPC_SERVICE_NAME: {result.grpc_service_name}")
+    elif result.transport == "xhttp":
+        print(f"XHTTP_PATH: {result.xhttp_path}")
+        print(f"XHTTP_MODE: {result.xhttp_mode}")
     print(f"Backup: {backup}")
+
+
+def cmd_connection_transport(identifier, transport_value, grpc_service_name="", xhttp_path="", xhttp_mode=""):
+    transport = validate_reality_transport(transport_value)
+    grpc_service_name = validate_grpc_service_name(grpc_service_name) if transport == "grpc" else ""
+    xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
+    xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_connections.update_connection_transport(
+            config,
+            db,
+            identifier,
+            transport,
+            grpc_service_name=grpc_service_name,
+            xhttp_path=xhttp_path,
+            xhttp_mode=xhttp_mode,
+        )
+    except (ValueError, RuntimeError) as exc:
+        die(str(exc))
+
+    backup = save_config_restart_xray_and_db(config, db)
+    if result.env_update is not None:
+        save_server_env_values(result.env_update)
+
+    print(f"Connection: {result.display_name} ({result.tag})")
+    print(f"TRANSPORT: {result.transport}")
+    if result.transport == "grpc":
+        print(f"GRPC_SERVICE_NAME: {result.grpc_service_name}")
+    elif result.transport == "xhttp":
+        print(f"XHTTP_PATH: {result.xhttp_path}")
+        print(f"XHTTP_MODE: {result.xhttp_mode}")
+    print("Updated clients: " + (", ".join(result.updated_clients or []) if result.updated_clients else "none"))
+    print(f"Backup: {backup}")
+    print("Выведи клиентам новые ссылки через xray-client link NAME.")
 
 
 def cmd_connection_remove(identifier):
@@ -1015,7 +1109,8 @@ def usage():
     print("""Usage:
   xray-client list
   xray-client connection-list
-  xray-client add-connection NAME PORT SNI [FINGERPRINT]
+  xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE]
+  xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE]
   xray-client remove-connection NAME_OR_TAG
   xray-client add NAME [DAYS] [--connection TAG] [--payment paid|free]
   xray-client disable NAME
@@ -1070,6 +1165,99 @@ def parse_add_args(args):
     return name, None, True, connection_tag, payment_type
 
 
+def parse_connection_add_args(args):
+    grpc_service_name = ""
+    xhttp_path = ""
+    xhttp_mode = ""
+    transport = ""
+    rest = list(args)
+    index = 0
+    positional = []
+    while index < len(rest):
+        item = rest[index]
+        if item == "--transport":
+            if index + 1 >= len(rest):
+                die("--transport requires tcp, grpc, or xhttp")
+            transport = rest[index + 1]
+            index += 2
+            continue
+        if item == "--grpc-service-name":
+            if index + 1 >= len(rest):
+                die("--grpc-service-name requires value")
+            grpc_service_name = rest[index + 1]
+            index += 2
+            continue
+        if item == "--xhttp-path":
+            if index + 1 >= len(rest):
+                die("--xhttp-path requires value")
+            xhttp_path = rest[index + 1]
+            index += 2
+            continue
+        if item == "--xhttp-mode":
+            if index + 1 >= len(rest):
+                die("--xhttp-mode requires value")
+            xhttp_mode = rest[index + 1]
+            index += 2
+            continue
+        if item.startswith("--"):
+            die(f"Unknown option: {item}")
+        positional.append(item)
+        index += 1
+
+    if len(positional) < 3 or len(positional) > 5:
+        usage()
+        sys.exit(1)
+
+    name, port, sni = positional[:3]
+    fingerprint_value = "chrome"
+    if len(positional) >= 4:
+        maybe_value = positional[3]
+        if maybe_value.lower() in xray_config.REALITY_TRANSPORTS:
+            transport = maybe_value
+        else:
+            fingerprint_value = maybe_value
+    if len(positional) == 5:
+        transport = positional[4]
+
+    transport = transport or "tcp"
+    return name, port, sni, fingerprint_value, transport, grpc_service_name, xhttp_path, xhttp_mode
+
+
+def parse_connection_transport_args(args):
+    if len(args) < 2:
+        usage()
+        sys.exit(1)
+    identifier = args[0]
+    transport = args[1]
+    grpc_service_name = ""
+    xhttp_path = ""
+    xhttp_mode = ""
+    rest = list(args[2:])
+    index = 0
+    while index < len(rest):
+        item = rest[index]
+        if item == "--grpc-service-name":
+            if index + 1 >= len(rest):
+                die("--grpc-service-name requires value")
+            grpc_service_name = rest[index + 1]
+            index += 2
+            continue
+        if item == "--xhttp-path":
+            if index + 1 >= len(rest):
+                die("--xhttp-path requires value")
+            xhttp_path = rest[index + 1]
+            index += 2
+            continue
+        if item == "--xhttp-mode":
+            if index + 1 >= len(rest):
+                die("--xhttp-mode requires value")
+            xhttp_mode = rest[index + 1]
+            index += 2
+            continue
+        die(f"Unknown option: {item}")
+    return identifier, transport, grpc_service_name, xhttp_path, xhttp_mode
+
+
 def cmd_link(name):
     validate_name(name)
     config = load_config()
@@ -1093,8 +1281,10 @@ def main():
         cmd_list()
     elif command == "connection-list":
         cmd_connection_list()
-    elif command == "add-connection" and len(sys.argv) in (5, 6):
-        cmd_connection_add(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5] if len(sys.argv) == 6 else "chrome")
+    elif command == "add-connection":
+        cmd_connection_add(*parse_connection_add_args(sys.argv[2:]))
+    elif command in ("connection-transport", "set-connection-transport"):
+        cmd_connection_transport(*parse_connection_transport_args(sys.argv[2:]))
     elif command in ("remove-connection", "delete-connection") and len(sys.argv) == 3:
         cmd_connection_remove(sys.argv[2])
     elif command == "add":

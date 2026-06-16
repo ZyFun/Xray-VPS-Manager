@@ -20,6 +20,8 @@ class SQLiteRepositoryTests(unittest.TestCase):
                 "fingerprint": "chrome",
                 "publicKey": "pub",
                 "shortId": "abcd",
+                "transport": "grpc",
+                "grpcServiceName": "vless-grpc",
             },
         )
         clients.upsert_client(
@@ -61,6 +63,8 @@ class SQLiteRepositoryTests(unittest.TestCase):
                 "fingerprint": "chrome",
                 "publicKey": "pub",
                 "shortId": "abcd",
+                "transport": "grpc",
+                "grpcServiceName": "vless-grpc",
             },
         )
 

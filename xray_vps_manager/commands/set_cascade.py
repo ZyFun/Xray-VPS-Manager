@@ -42,8 +42,8 @@ def parse_vless(uri, tag=None):
 
     params = parse_qs(parsed.query, keep_blank_values=True)
     port = parsed.port or 443
-    network = one(params, "type", "tcp") or "tcp"
-    security = one(params, "security", "none") or "none"
+    network = (one(params, "type", "tcp") or "tcp").lower()
+    security = (one(params, "security", "none") or "none").lower()
     encryption = one(params, "encryption", "none") or "none"
     flow = one(params, "flow", "")
 
@@ -124,8 +124,17 @@ def parse_vless(uri, tag=None):
         if service_name:
             grpc["serviceName"] = unquote(service_name)
         stream["grpcSettings"] = grpc
+    elif network == "xhttp":
+        path = one(params, "path")
+        mode = one(params, "mode")
+        xhttp = {}
+        if path:
+            xhttp["path"] = unquote(path)
+        if mode:
+            xhttp["mode"] = mode
+        stream["xhttpSettings"] = xhttp
     else:
-        die(f"Unsupported network type={network!r}; supported: tcp, ws, grpc.")
+        die(f"Unsupported network type={network!r}; supported: tcp, ws, grpc, xhttp.")
 
     label = unquote(parsed.fragment) if parsed.fragment else f"{parsed.hostname}:{port}"
     return outbound, label

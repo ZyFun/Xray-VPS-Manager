@@ -12,6 +12,8 @@ from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import (
     INBOUND_TAG,
+    apply_client_transport,
+    apply_reality_transport,
     clients,
     connection_name_from_tag,
     connection_settings_from_inbound,
@@ -34,6 +36,10 @@ class AddConnectionResult:
     fingerprint: str
     public_key: str
     short_id: str
+    transport: str
+    grpc_service_name: str = ""
+    xhttp_path: str = ""
+    xhttp_mode: str = ""
 
 
 @dataclass
@@ -43,6 +49,18 @@ class RemoveConnectionResult:
     removed_client_names: list[str]
     env_switch_tag: str = ""
     env_switch_name: str = ""
+    env_update: dict[str, str] | None = None
+
+
+@dataclass
+class UpdateConnectionTransportResult:
+    tag: str
+    display_name: str
+    transport: str
+    grpc_service_name: str = ""
+    xhttp_path: str = ""
+    xhttp_mode: str = ""
+    updated_clients: list[str] | None = None
     env_update: dict[str, str] | None = None
 
 
@@ -66,6 +84,15 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
         entry["port"] = settings["port"]
         entry["sni"] = settings["sni"]
         entry["dest"] = settings["dest"]
+        for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode"):
+            entry.pop(key, None)
+        entry.update(
+            {
+                key: value
+                for key, value in settings.items()
+                if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode")
+            }
+        )
         entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
 
     default_tag = default_connection_tag(config)
@@ -110,6 +137,7 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
                 tag,
                 entry.get("port", ""),
                 entry.get("sni", ""),
+                entry.get("transport", "tcp"),
                 entry.get("fingerprint", fallback_fingerprint),
                 entry.get("created", "unknown"),
             ]
@@ -138,7 +166,37 @@ def next_connection_tag(config: dict[str, Any]) -> str:
         index += 1
 
 
-def make_reality_inbound(tag: str, port: int, sni: str, private_key: str, short_id: str) -> dict[str, Any]:
+def make_reality_inbound(
+    tag: str,
+    port: int,
+    sni: str,
+    private_key: str,
+    short_id: str,
+    *,
+    transport: str = "tcp",
+    grpc_service_name: str = "",
+    xhttp_path: str = "",
+    xhttp_mode: str = "",
+) -> dict[str, Any]:
+    stream_settings = {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+            "show": False,
+            "dest": reality_dest(sni),
+            "xver": 0,
+            "serverNames": [sni],
+            "privateKey": private_key,
+            "shortIds": [short_id],
+        },
+    }
+    apply_reality_transport(
+        stream_settings,
+        transport,
+        grpc_service_name=grpc_service_name,
+        xhttp_path=xhttp_path,
+        xhttp_mode=xhttp_mode,
+    )
     return {
         "tag": tag,
         "listen": "0.0.0.0",
@@ -148,18 +206,7 @@ def make_reality_inbound(tag: str, port: int, sni: str, private_key: str, short_
             "clients": [],
             "decryption": "none",
         },
-        "streamSettings": {
-            "network": "tcp",
-            "security": "reality",
-            "realitySettings": {
-                "show": False,
-                "dest": reality_dest(sni),
-                "xver": 0,
-                "serverNames": [sni],
-                "privateKey": private_key,
-                "shortIds": [short_id],
-            },
-        },
+        "streamSettings": stream_settings,
         "sniffing": {
             "enabled": True,
             "destOverride": ["http", "tls", "quic"],
@@ -174,6 +221,10 @@ def add_connection(
     port: int,
     sni: str,
     fingerprint_value: str = "chrome",
+    transport: str = "tcp",
+    grpc_service_name: str = "",
+    xhttp_path: str = "",
+    xhttp_mode: str = "",
     key_pair_factory: Callable[[], tuple[str, str]] = xray_crypto.xray_x25519_keys,
     short_id_factory: Callable[[], str] = xray_crypto.random_short_id,
 ) -> AddConnectionResult:
@@ -193,12 +244,23 @@ def add_connection(
     tag = next_connection_tag(config)
     private_key, public_key = key_pair_factory()
     short_id = short_id_factory()
-    inbound = make_reality_inbound(tag, port, sni, private_key, short_id)
+    inbound = make_reality_inbound(
+        tag,
+        port,
+        sni,
+        private_key,
+        short_id,
+        transport=transport,
+        grpc_service_name=grpc_service_name,
+        xhttp_path=xhttp_path,
+        xhttp_mode=xhttp_mode,
+    )
     config.setdefault("inbounds", []).append(inbound)
 
     dest = reality_dest(sni)
+    transport_settings = connection_settings_from_inbound(inbound)
     created = utc_stamp()
-    db_connections(db)[tag] = {
+    record = {
         "tag": tag,
         "name": name,
         "created": created,
@@ -209,6 +271,14 @@ def add_connection(
         "publicKey": public_key,
         "shortId": short_id,
     }
+    record.update(
+        {
+            key: value
+            for key, value in transport_settings.items()
+            if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode")
+        }
+    )
+    db_connections(db)[tag] = record
 
     return AddConnectionResult(
         tag=tag,
@@ -219,6 +289,10 @@ def add_connection(
         fingerprint=fp,
         public_key=public_key,
         short_id=short_id,
+        transport=record.get("transport", "tcp"),
+        grpc_service_name=record.get("grpcServiceName", ""),
+        xhttp_path=record.get("xhttpPath", ""),
+        xhttp_mode=record.get("xhttpMode", ""),
     )
 
 
@@ -265,6 +339,59 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
     )
 
 
+def update_connection_transport(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    identifier: str,
+    transport: str,
+    *,
+    grpc_service_name: str = "",
+    xhttp_path: str = "",
+    xhttp_mode: str = "",
+) -> UpdateConnectionTransportResult:
+    ensure_connections(config, db)
+    tag = resolve_connection_identifier(config, db, identifier)
+    inbound = find_inbound_by_tag(config, tag)
+    stream = inbound.setdefault("streamSettings", {})
+    settings = apply_reality_transport(
+        stream,
+        transport,
+        grpc_service_name=grpc_service_name,
+        xhttp_path=xhttp_path,
+        xhttp_mode=xhttp_mode,
+    )
+    updated_clients = []
+    for item in clients(inbound):
+        apply_client_transport(item, settings["transport"])
+        name = client_name(item)
+        if name:
+            updated_clients.append(name)
+
+    connections = db_connections(db)
+    entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
+    for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode"):
+        entry.pop(key, None)
+    entry.update(settings)
+    for name, client_entry in db_clients(db).items():
+        if client_entry.get("connection") == tag:
+            client = dict(client_entry.get("client") or {})
+            if client:
+                apply_client_transport(client, settings["transport"])
+                client_entry["client"] = client
+
+    env_update = server_env_values_for_connection(config, db, tag) if tag == INBOUND_TAG else None
+    return UpdateConnectionTransportResult(
+        tag=tag,
+        display_name=connection_display_name(config, db, tag),
+        transport=settings["transport"],
+        grpc_service_name=settings.get("grpcServiceName", ""),
+        xhttp_path=settings.get("xhttpPath", ""),
+        xhttp_mode=settings.get("xhttpMode", ""),
+        updated_clients=sorted(updated_clients),
+        env_update=env_update,
+    )
+
+
 def connection_client_names(config: dict[str, Any], db: dict[str, Any], tag: str) -> list[str]:
     names = set()
     inbound = find_inbound_by_tag(config, tag)
@@ -287,6 +414,15 @@ def server_env_values_for_connection(config: dict[str, Any], db: dict[str, Any],
     values["REALITY_SNI"] = settings["sni"]
     values["REALITY_DEST"] = settings["dest"]
     values["FINGERPRINT"] = connection_fingerprint(config, db, tag)
+    values["REALITY_TRANSPORT"] = settings["transport"]
+    values.pop("GRPC_SERVICE_NAME", None)
+    values.pop("XHTTP_PATH", None)
+    values.pop("XHTTP_MODE", None)
+    if settings["transport"] == "grpc":
+        values["GRPC_SERVICE_NAME"] = settings["grpcServiceName"]
+    elif settings["transport"] == "xhttp":
+        values["XHTTP_PATH"] = settings["xhttpPath"]
+        values["XHTTP_MODE"] = settings["xhttpMode"]
     return values
 
 

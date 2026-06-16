@@ -26,6 +26,10 @@ from xray_vps_manager.xray.config import (
     find_inbound_by_tag,
     inbound_tag,
     load_config as load_xray_config,
+    normalize_grpc_service_name,
+    normalize_reality_transport,
+    normalize_xhttp_mode,
+    normalize_xhttp_path,
     reality_dest,
     reality_inbounds,
     save_config,
@@ -45,6 +49,7 @@ FINGERPRINTS = [
     "random",
     "randomized",
 ]
+TRANSPORTS = ["tcp", "grpc", "xhttp"]
 
 CommandRunner = Callable[[list[str]], None]
 ConfirmCallback = Callable[[str], bool]
@@ -87,6 +92,34 @@ def validate_fingerprint(value: str) -> str:
     return value
 
 
+def validate_transport(value: str) -> str:
+    try:
+        return normalize_reality_transport(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_grpc_service_name(value: str) -> str:
+    try:
+        return normalize_grpc_service_name(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_xhttp_path(value: str) -> str:
+    try:
+        return normalize_xhttp_path(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_xhttp_mode(value: str) -> str:
+    try:
+        return normalize_xhttp_mode(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def current_fingerprint() -> str:
     try:
         value = server_fingerprint().strip().lower()
@@ -108,13 +141,14 @@ def connection_rows() -> list[dict[str, str | int]]:
             "name": entry.get("name") or connection_name_from_tag(settings["tag"]),
             "port": entry.get("port") or settings["port"],
             "sni": entry.get("sni") or settings["sni"],
+            "transport": entry.get("transport") or settings["transport"],
             "fingerprint": entry.get("fingerprint") or current_fingerprint(),
         })
     return rows
 
 
 def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
-    headers = ("№", "NAME", "TAG", "PORT", "SNI", "FINGERPRINT")
+    headers = ("№", "NAME", "TAG", "PORT", "SNI", "TRANSPORT", "FINGERPRINT")
     values = [
         (
             str(index),
@@ -122,11 +156,12 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
             row["tag"],
             row["port"],
             row["sni"],
+            row["transport"],
             row["fingerprint"],
         )
         for index, row in enumerate(rows, start=1)
     ]
-    values.append(("0", "Назад", "", "", "", ""))
+    values.append(("0", "Назад", "", "", "", "", ""))
     widths = [
         max(len(headers[column]), *(len(str(row[column])) for row in values))
         for column in range(len(headers))
@@ -179,7 +214,17 @@ def current_settings(config: dict, connection_tag: str | None = None) -> tuple[d
     return inbound, reality, port, sni, dest
 
 
-def update_connection_db(tag: str, port=None, sni=None, dest=None, fingerprint=None) -> None:
+def update_connection_db(
+    tag: str,
+    port=None,
+    sni=None,
+    dest=None,
+    fingerprint=None,
+    transport=None,
+    grpc_service_name=None,
+    xhttp_path=None,
+    xhttp_mode=None,
+) -> None:
     db = load_db_sql()
     connections = db_connections(db)
     entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
@@ -191,15 +236,46 @@ def update_connection_db(tag: str, port=None, sni=None, dest=None, fingerprint=N
         entry["dest"] = dest
     if fingerprint is not None:
         entry["fingerprint"] = fingerprint
+    for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode"):
+        if key in entry and (
+            transport is not None or grpc_service_name is not None or xhttp_path is not None or xhttp_mode is not None
+        ):
+            entry.pop(key, None)
+    if transport is not None:
+        entry["transport"] = validate_transport(transport)
+        if entry["transport"] == "grpc":
+            entry["grpcServiceName"] = validate_grpc_service_name(grpc_service_name or "")
+        elif entry["transport"] == "xhttp":
+            entry["xhttpPath"] = validate_xhttp_path(xhttp_path or "")
+            entry["xhttpMode"] = validate_xhttp_mode(xhttp_mode or "")
     save_db(db)
 
 
-def write_server_env(port: int, sni: str, dest: str, fingerprint: str | None = None) -> None:
+def write_server_env(
+    port: int,
+    sni: str,
+    dest: str,
+    fingerprint: str | None = None,
+    transport: str | None = None,
+    grpc_service_name: str | None = None,
+    xhttp_path: str | None = None,
+    xhttp_mode: str | None = None,
+) -> None:
     values = server_env_values()
     values["PORT"] = str(port)
     values["REALITY_SNI"] = sni
     values["REALITY_DEST"] = dest
     values["FINGERPRINT"] = validate_fingerprint(fingerprint) if fingerprint is not None else current_fingerprint()
+    if transport is not None:
+        values["REALITY_TRANSPORT"] = validate_transport(transport)
+        values.pop("GRPC_SERVICE_NAME", None)
+        values.pop("XHTTP_PATH", None)
+        values.pop("XHTTP_MODE", None)
+        if values["REALITY_TRANSPORT"] == "grpc":
+            values["GRPC_SERVICE_NAME"] = validate_grpc_service_name(grpc_service_name or "")
+        elif values["REALITY_TRANSPORT"] == "xhttp":
+            values["XHTTP_PATH"] = validate_xhttp_path(xhttp_path or "")
+            values["XHTTP_MODE"] = validate_xhttp_mode(xhttp_mode or "")
     values.setdefault("SERVER_ADDR", "")
     save_server_env_values(values)
 
@@ -235,15 +311,18 @@ def refresh_initial_link() -> None:
     if result.returncode != 0:
         return
 
-    _, _, port, sni, dest = current_settings(config)
+    inbound, _, port, sni, dest = current_settings(config)
+    settings = connection_settings_from_inbound(inbound)
     fp = current_fingerprint()
     link = result.stdout.strip()
+    flow = "xtls-rprx-vision" if settings["transport"] == "tcp" else ""
     content = (
         f"CLIENT_URI={link}\n"
         f"PORT={port}\n"
         "PROTOCOL=VLESS\n"
         "SECURITY=REALITY\n"
-        "FLOW=xtls-rprx-vision\n"
+        f"TRANSPORT={settings['transport']}\n"
+        f"FLOW={flow}\n"
         f"SNI={sni}\n"
         f"DEST={dest}\n"
         f"FINGERPRINT={fp}\n"
@@ -255,6 +334,33 @@ def refresh_initial_link() -> None:
 def prompt(default, message: str) -> str:
     value = input(f"{message} [{default}]: ").strip()
     return value or str(default)
+
+
+def choose_transport(default: str = "tcp") -> dict[str, str]:
+    print()
+    print("TRANSPORT: транспорт VLESS Reality для этого подключения.")
+    print("  tcp   - TCP transport с Vision flow")
+    print("  grpc  - gRPC поверх HTTP/2")
+    print("  xhttp - XHTTP/XMUX")
+    for index, value in enumerate(TRANSPORTS, start=1):
+        print(f"  {index}) {value}")
+    raw = input(f"TRANSPORT [{default}] (номер или значение): ").strip().lower()
+    raw = raw or default
+    if raw.isdigit():
+        index = int(raw, 10)
+        if 1 <= index <= len(TRANSPORTS):
+            raw = TRANSPORTS[index - 1]
+    transport = validate_transport(raw)
+    settings = {"transport": transport}
+    if transport == "grpc":
+        service_name = prompt("vless-grpc", "GRPC serviceName")
+        settings["grpc_service_name"] = validate_grpc_service_name(service_name)
+    elif transport == "xhttp":
+        path = prompt("/vless-xhttp", "XHTTP path")
+        mode = prompt("auto", "XHTTP mode")
+        settings["xhttp_path"] = validate_xhttp_path(path)
+        settings["xhttp_mode"] = validate_xhttp_mode(mode)
+    return settings
 
 
 def show_settings(call: CommandRunner) -> None:
@@ -269,7 +375,13 @@ def create_connection(call: CommandRunner) -> None:
     print("REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
     sni = validate_host(input("REALITY_SNI: ").strip(), "REALITY_SNI")
     fp = choose_fingerprint(current_fingerprint())
-    call(["xray-client", "add-connection", name, port, sni, fp])
+    transport = choose_transport("tcp")
+    command = ["xray-client", "add-connection", name, port, sni, fp, "--transport", transport["transport"]]
+    if transport["transport"] == "grpc":
+        command.extend(["--grpc-service-name", transport["grpc_service_name"]])
+    elif transport["transport"] == "xhttp":
+        command.extend(["--xhttp-path", transport["xhttp_path"], "--xhttp-mode", transport["xhttp_mode"]])
+    call(command)
 
 
 def update_port() -> None:
@@ -380,6 +492,24 @@ def update_fingerprint() -> None:
     refresh_initial_link()
     print(f"FINGERPRINT обновлён: {fp}")
     print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
+
+
+def update_transport(call: CommandRunner) -> None:
+    config = load_config()
+    tag = choose_connection("обновления TRANSPORT")
+    if not tag:
+        print("Действие отменено.")
+        return
+    inbound = find_inbound_by_tag(config, tag)
+    current = connection_settings_from_inbound(inbound)
+    settings = choose_transport(str(current.get("transport") or "tcp"))
+    command = ["xray-client", "connection-transport", tag, settings["transport"]]
+    if settings["transport"] == "grpc":
+        command.extend(["--grpc-service-name", settings["grpc_service_name"]])
+    elif settings["transport"] == "xhttp":
+        command.extend(["--xhttp-path", settings["xhttp_path"], "--xhttp-mode", settings["xhttp_mode"]])
+    call(command)
+    refresh_initial_link()
 
 
 def delete_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:

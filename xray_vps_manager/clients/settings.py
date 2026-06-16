@@ -37,7 +37,19 @@ def server_env_value(key: str, default: str = "", path: Path = SERVER_ENV_PATH) 
 
 
 def save_server_env_values(values: dict[str, str], path: Path = SERVER_ENV_PATH) -> None:
-    ordered = ["SERVER_ADDR", "SERVER_NAME", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT", "MANAGER_TIMEZONE"]
+    ordered = [
+        "SERVER_ADDR",
+        "SERVER_NAME",
+        "PORT",
+        "REALITY_SNI",
+        "REALITY_DEST",
+        "FINGERPRINT",
+        "REALITY_TRANSPORT",
+        "GRPC_SERVICE_NAME",
+        "XHTTP_PATH",
+        "XHTTP_MODE",
+        "MANAGER_TIMEZONE",
+    ]
     updated = dict(values)
     for key in ordered:
         updated.setdefault(key, "")

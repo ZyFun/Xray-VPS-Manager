@@ -15,7 +15,15 @@ from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.traffic.repository import traffic_entry
 from xray_vps_manager.xray import crypto as xray_crypto
-from xray_vps_manager.xray.config import active_client_any, clients, find_inbound_by_tag, inbound_tag, reality_inbounds
+from xray_vps_manager.xray.config import (
+    active_client_any,
+    apply_client_transport,
+    clients,
+    find_inbound_by_tag,
+    inbound_tag,
+    reality_inbounds,
+    reality_transport_settings_from_inbound,
+)
 
 
 class EnableTrafficLimitExceeded(ValueError):
@@ -115,10 +123,10 @@ def add_client(
     client_id = uuid_factory()
     client = {
         "id": client_id,
-        "flow": "xtls-rprx-vision",
         "level": 0,
         "email": f"{name}|created={created}",
     }
+    apply_client_transport(client, reality_transport_settings_from_inbound(inbound)["transport"])
     current.append(client)
     entry = db_entry_from_client(client, created=created, enabled=True)
     entry["connection"] = selected_tag

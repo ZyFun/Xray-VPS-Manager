@@ -16,6 +16,10 @@ REALITY_DEST=""
 CLIENT_NAME="${CLIENT_NAME:-starter}"
 SERVER_NAME="${SERVER_NAME:-Xray}"
 FINGERPRINT="${FINGERPRINT:-chrome}"
+REALITY_TRANSPORT="${REALITY_TRANSPORT:-tcp}"
+GRPC_SERVICE_NAME="${GRPC_SERVICE_NAME:-vless-grpc}"
+XHTTP_PATH="${XHTTP_PATH:-/vless-xhttp}"
+XHTTP_MODE="${XHTTP_MODE:-auto}"
 MANAGER_TIMEZONE="${MANAGER_TIMEZONE:-}"
 TIMEZONE_SEARCH_LIMIT=30
 TIMEZONE_PRESETS=(
@@ -122,6 +126,46 @@ validate_fingerprint() {
   esac
 }
 
+validate_transport() {
+  local value="$1"
+  case "$value" in
+    tcp|grpc|xhttp)
+      ;;
+    *)
+      echo "REALITY_TRANSPORT must be one of: tcp, grpc, xhttp." >&2
+      exit 1
+      ;;
+  esac
+}
+
+validate_grpc_service_name() {
+  local value="$1"
+  if [[ ! "$value" =~ ^[A-Za-z0-9_.-]{1,128}$ ]]; then
+    echo "GRPC_SERVICE_NAME must be 1-128 chars: A-Z a-z 0-9 _ . -" >&2
+    exit 1
+  fi
+}
+
+validate_xhttp_path() {
+  local value="$1"
+  if [[ ! "$value" =~ ^/[A-Za-z0-9._~/-]{0,255}$ ]]; then
+    echo "XHTTP_PATH must start with / and contain only A-Z a-z 0-9 . _ ~ - / characters." >&2
+    exit 1
+  fi
+}
+
+validate_xhttp_mode() {
+  local value="$1"
+  case "$value" in
+    auto|packet-up|stream-up|stream-one)
+      ;;
+    *)
+      echo "XHTTP_MODE must be one of: auto, packet-up, stream-up, stream-one." >&2
+      exit 1
+      ;;
+  esac
+}
+
 validate_server_name() {
   local value="$1"
   if [[ ! "$value" =~ ^[A-Za-z0-9_.@-]{1,64}$ ]]; then
@@ -208,9 +252,18 @@ validate_xray_source() {
 
 validate_install_options() {
   FINGERPRINT="$(printf '%s' "$FINGERPRINT" | tr '[:upper:]' '[:lower:]')"
+  REALITY_TRANSPORT="$(printf '%s' "$REALITY_TRANSPORT" | tr '[:upper:]' '[:lower:]')"
+  XHTTP_MODE="$(printf '%s' "$XHTTP_MODE" | tr '[:upper:]' '[:lower:]')"
   validate_port "$PORT" "PORT"
   validate_host "$REALITY_SNI" "REALITY_SNI"
   validate_fingerprint "$FINGERPRINT"
+  validate_transport "$REALITY_TRANSPORT"
+  if [[ "$REALITY_TRANSPORT" == "grpc" ]]; then
+    validate_grpc_service_name "$GRPC_SERVICE_NAME"
+  elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
+    validate_xhttp_path "$XHTTP_PATH"
+    validate_xhttp_mode "$XHTTP_MODE"
+  fi
   validate_manager_timezone "$MANAGER_TIMEZONE"
 
   if [[ ! "$CLIENT_NAME" =~ ^[A-Za-z0-9_.@-]{1,64}$ ]]; then
@@ -260,6 +313,39 @@ prompt_fingerprint() {
         continue
         ;;
     esac
+    break
+  done
+}
+
+prompt_transport() {
+  while true; do
+    echo "REALITY_TRANSPORT: transport для первого VLESS Reality подключения."
+    echo "  1) tcp   - TCP transport с Vision flow"
+    echo "  2) grpc  - gRPC поверх HTTP/2"
+    echo "  3) xhttp - XHTTP/XMUX"
+    read -r -p "REALITY_TRANSPORT [${REALITY_TRANSPORT}] (номер или значение): " input
+    input="${input:-$REALITY_TRANSPORT}"
+    input="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+    case "$input" in
+      1) REALITY_TRANSPORT="tcp" ;;
+      2) REALITY_TRANSPORT="grpc" ;;
+      3) REALITY_TRANSPORT="xhttp" ;;
+      tcp|grpc|xhttp) REALITY_TRANSPORT="$input" ;;
+      *)
+        echo "Выбери номер 1-3 или значение tcp/grpc/xhttp."
+        continue
+        ;;
+    esac
+
+    if [[ "$REALITY_TRANSPORT" == "grpc" ]]; then
+      read -r -p "GRPC_SERVICE_NAME [${GRPC_SERVICE_NAME}]: " grpc_input
+      GRPC_SERVICE_NAME="${grpc_input:-$GRPC_SERVICE_NAME}"
+    elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
+      read -r -p "XHTTP_PATH [${XHTTP_PATH}]: " xhttp_path_input
+      XHTTP_PATH="${xhttp_path_input:-$XHTTP_PATH}"
+      read -r -p "XHTTP_MODE [${XHTTP_MODE}]: " xhttp_mode_input
+      XHTTP_MODE="${xhttp_mode_input:-$XHTTP_MODE}"
+    fi
     break
   done
 }
@@ -431,6 +517,8 @@ prompt_install_options() {
   prompt_manager_timezone
   echo
   prompt_fingerprint
+  echo
+  prompt_transport
 
   validate_install_options
   echo
@@ -441,6 +529,13 @@ prompt_install_options() {
   echo "  CLIENT_NAME=${CLIENT_NAME}"
   echo "  SERVER_NAME=${SERVER_NAME}"
   echo "  FINGERPRINT=${FINGERPRINT}"
+  echo "  REALITY_TRANSPORT=${REALITY_TRANSPORT}"
+  if [[ "$REALITY_TRANSPORT" == "grpc" ]]; then
+    echo "  GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME}"
+  elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
+    echo "  XHTTP_PATH=${XHTTP_PATH}"
+    echo "  XHTTP_MODE=${XHTTP_MODE}"
+  fi
   echo "  MANAGER_TIMEZONE=${MANAGER_TIMEZONE:-server local time}"
   echo "  XRAY_SOURCE=${XRAY_SOURCE} (альтернативу можно выбрать, если скачивание не удастся)"
   echo
@@ -614,6 +709,41 @@ if [[ -z "$uuid" || -z "$private_key" || -z "$public_key" || -z "$short_id" ]]; 
   exit 1
 fi
 
+client_flow_json=""
+client_flow_query=""
+starter_flow=""
+transport_settings_json=""
+transport_link_query=""
+case "$REALITY_TRANSPORT" in
+  tcp)
+    client_flow_json='              "flow": "xtls-rprx-vision",'
+    client_flow_query="&flow=xtls-rprx-vision"
+    starter_flow="xtls-rprx-vision"
+    ;;
+  grpc)
+    transport_settings_json=$(cat <<JSON
+,
+        "grpcSettings": {
+          "serviceName": "${GRPC_SERVICE_NAME}"
+        }
+JSON
+)
+    transport_link_query="&serviceName=${GRPC_SERVICE_NAME}"
+    ;;
+  xhttp)
+    xhttp_path_query="${XHTTP_PATH//\//%2F}"
+    transport_settings_json=$(cat <<JSON
+,
+        "xhttpSettings": {
+          "path": "${XHTTP_PATH}",
+          "mode": "${XHTTP_MODE}"
+        }
+JSON
+)
+    transport_link_query="&path=${xhttp_path_query}&mode=${XHTTP_MODE}"
+    ;;
+esac
+
 cat >/usr/local/etc/xray/config.json <<EOF
 {
   "log": {
@@ -653,7 +783,7 @@ cat >/usr/local/etc/xray/config.json <<EOF
         "clients": [
             {
               "id": "${uuid}",
-              "flow": "xtls-rprx-vision",
+${client_flow_json}
               "level": 0,
               "email": "${CLIENT_NAME}|created=${created}"
             }
@@ -661,7 +791,7 @@ cat >/usr/local/etc/xray/config.json <<EOF
         "decryption": "none"
       },
       "streamSettings": {
-        "network": "tcp",
+        "network": "${REALITY_TRANSPORT}",
         "security": "reality",
         "realitySettings": {
           "show": false,
@@ -674,7 +804,7 @@ cat >/usr/local/etc/xray/config.json <<EOF
           "shortIds": [
             "${short_id}"
           ]
-        }
+        }${transport_settings_json}
       },
       "sniffing": {
         "enabled": true,
@@ -741,6 +871,10 @@ PORT=${PORT}
 REALITY_SNI=${REALITY_SNI}
 REALITY_DEST=${REALITY_DEST}
 FINGERPRINT=${FINGERPRINT}
+REALITY_TRANSPORT=${REALITY_TRANSPORT}
+GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME}
+XHTTP_PATH=${XHTTP_PATH}
+XHTTP_MODE=${XHTTP_MODE}
 MANAGER_TIMEZONE=${MANAGER_TIMEZONE}
 ACTIVITY_LOGGING_ENABLED=false
 ACTIVITY_RETENTION_DAYS=365
@@ -779,6 +913,10 @@ INSTALL_PORT="$PORT" \
 INSTALL_REALITY_SNI="$REALITY_SNI" \
 INSTALL_REALITY_DEST="$REALITY_DEST" \
 INSTALL_FINGERPRINT="$FINGERPRINT" \
+INSTALL_REALITY_TRANSPORT="$REALITY_TRANSPORT" \
+INSTALL_GRPC_SERVICE_NAME="$GRPC_SERVICE_NAME" \
+INSTALL_XHTTP_PATH="$XHTTP_PATH" \
+INSTALL_XHTTP_MODE="$XHTTP_MODE" \
 INSTALL_PUBLIC_KEY="$public_key" \
 INSTALL_SHORT_ID="$short_id" \
 INSTALL_UUID="$uuid" \
@@ -794,6 +932,32 @@ client_name = os.environ["INSTALL_CLIENT_NAME"]
 created = os.environ["INSTALL_CREATED"]
 connection_tag = "vless-reality"
 client_uuid = os.environ["INSTALL_UUID"]
+transport = os.environ["INSTALL_REALITY_TRANSPORT"]
+connection_record = {
+    "tag": connection_tag,
+    "name": "default",
+    "created": created,
+    "port": int(os.environ["INSTALL_PORT"]),
+    "sni": os.environ["INSTALL_REALITY_SNI"],
+    "dest": os.environ["INSTALL_REALITY_DEST"],
+    "fingerprint": os.environ["INSTALL_FINGERPRINT"],
+    "publicKey": os.environ["INSTALL_PUBLIC_KEY"],
+    "shortId": os.environ["INSTALL_SHORT_ID"],
+    "transport": transport,
+}
+if transport == "grpc":
+    connection_record["grpcServiceName"] = os.environ["INSTALL_GRPC_SERVICE_NAME"]
+elif transport == "xhttp":
+    connection_record["xhttpPath"] = os.environ["INSTALL_XHTTP_PATH"]
+    connection_record["xhttpMode"] = os.environ["INSTALL_XHTTP_MODE"]
+
+client = {
+    "id": client_uuid,
+    "level": 0,
+    "email": f"{client_name}|created={created}",
+}
+if transport == "tcp":
+    client["flow"] = "xtls-rprx-vision"
 
 connection = database.open_database(MANAGER_DB_PATH)
 try:
@@ -801,17 +965,7 @@ try:
         connections.upsert_connection(
             connection,
             connection_tag,
-            {
-                "tag": connection_tag,
-                "name": "default",
-                "created": created,
-                "port": int(os.environ["INSTALL_PORT"]),
-                "sni": os.environ["INSTALL_REALITY_SNI"],
-                "dest": os.environ["INSTALL_REALITY_DEST"],
-                "fingerprint": os.environ["INSTALL_FINGERPRINT"],
-                "publicKey": os.environ["INSTALL_PUBLIC_KEY"],
-                "shortId": os.environ["INSTALL_SHORT_ID"],
-            },
+            connection_record,
         )
         clients.upsert_client(
             connection,
@@ -821,12 +975,7 @@ try:
                 "created": created,
                 "enabled": True,
                 "connection": connection_tag,
-                "client": {
-                    "id": client_uuid,
-                    "flow": "xtls-rprx-vision",
-                    "level": 0,
-                    "email": f"{client_name}|created={created}",
-                },
+                "client": client,
             },
         )
         settings.set_metadata(connection, "jsonImport.completed", "true")
@@ -836,7 +985,7 @@ PY
 chown root:xray /usr/local/etc/xray/manager.db
 chmod 0640 /usr/local/etc/xray/manager.db
 
-client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=tcp&flow=xtls-rprx-vision&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F#${SERVER_NAME}"
+client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=${REALITY_TRANSPORT}${client_flow_query}&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F${transport_link_query}#${SERVER_NAME}"
 
 cat >/root/xray-reality-client.txt <<EOF
 CLIENT_URI=${client_uri}
@@ -844,13 +993,17 @@ SERVER=${server_addr}
 PORT=${PORT}
 PROTOCOL=VLESS
 SECURITY=REALITY
-FLOW=xtls-rprx-vision
+TRANSPORT=${REALITY_TRANSPORT}
+FLOW=${starter_flow}
 UUID=${uuid}
 PUBLIC_KEY=${public_key}
 SHORT_ID=${short_id}
 SNI=${REALITY_SNI}
 DEST=${REALITY_DEST}
 FINGERPRINT=${FINGERPRINT}
+GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME}
+XHTTP_PATH=${XHTTP_PATH}
+XHTTP_MODE=${XHTTP_MODE}
 CREATED=${created}
 EOF
 chmod 0600 /root/xray-reality-client.txt

@@ -20,7 +20,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-16 22:31 UTC"
+MENU_UPDATED = "2026-06-16 23:34 UTC"
 
 
 def die(message):
@@ -111,7 +111,8 @@ def reality_menu_actions():
         ("4", "Обновить REALITY_SNI и REALITY_DEST"),
         ("5", "Обновить PORT, REALITY_SNI и REALITY_DEST"),
         ("6", "Обновить FINGERPRINT"),
-        ("7", "Удалить подключение"),
+        ("7", "Обновить TRANSPORT"),
+        ("8", "Удалить подключение"),
         ("0", "Назад"),
     ]
 
@@ -352,7 +353,8 @@ def reality_menu_handlers():
         "4": ("Обновить REALITY_SNI и REALITY_DEST", menu_reality_actions.update_sni),
         "5": ("Обновить PORT, REALITY_SNI и REALITY_DEST", menu_reality_actions.update_port_and_sni),
         "6": ("Обновить FINGERPRINT", menu_reality_actions.update_fingerprint),
-        "7": ("Удалить подключение", lambda: menu_reality_actions.delete_connection(call, confirm)),
+        "7": ("Обновить TRANSPORT", lambda: menu_reality_actions.update_transport(call)),
+        "8": ("Удалить подключение", lambda: menu_reality_actions.delete_connection(call, confirm)),
     }
 
 
