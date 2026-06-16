@@ -49,12 +49,24 @@ class CascadeManagementTests(unittest.TestCase):
         set_cascade.configure_cascade(config, cascade_outbound("backup"))
 
         self.assertEqual(set(cascade_config.cascade_tags(config)), {"cascade-main", "cascade-backup"})
-        self.assertEqual(cascade_config.active_cascade_tag(config), "cascade-backup")
-
-        set_cascade.set_active_cascade(config, "cascade-main")
-
         self.assertEqual(cascade_config.active_cascade_tag(config), "cascade-main")
-        self.assertEqual(cascade_config.cascade_tags(config)[0], "cascade-main")
+        self.assertEqual(cascade_config.cascade_tags(config), ["cascade-main", "cascade-backup"])
+
+        set_cascade.set_active_cascade(config, "cascade-backup")
+
+        self.assertEqual(cascade_config.active_cascade_tag(config), "cascade-backup")
+        self.assertEqual(cascade_config.cascade_tags(config)[0], "cascade-backup")
+
+    def test_adding_later_cascade_keeps_disabled_cascade_route_disabled(self) -> None:
+        config = base_config()
+        set_cascade.configure_cascade(config, cascade_outbound("main"))
+        set_cascade.disable_cascade(config)
+
+        set_cascade.configure_cascade(config, cascade_outbound("backup"))
+
+        self.assertEqual(set(cascade_config.cascade_tags(config)), {"cascade-main", "cascade-backup"})
+        self.assertEqual(cascade_config.active_cascade_tag(config), "")
+        self.assertEqual(cascade_config.current_catchall_tag(config), "")
 
     def test_selecting_cascade_updates_telegram_cascade_route(self) -> None:
         config = base_config()

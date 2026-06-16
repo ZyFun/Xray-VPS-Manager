@@ -227,13 +227,39 @@ def ensure_private_block_rule(config):
 
 def configure_cascade(config, outbound):
     tag = outbound["tag"]
+    had_cascades_before = bool(cascade_config.cascade_tags(config))
+    previous_index = next(
+        (
+            index
+            for index, item in enumerate(config.get("outbounds", []))
+            if item.get("tag") == tag
+        ),
+        None,
+    )
     cascade_config.ensure_base_outbounds(config)
     config["outbounds"] = remove_tag(config.get("outbounds", []), tag)
-    config["outbounds"].insert(0, outbound)
+    if previous_index is not None:
+        config["outbounds"].insert(min(previous_index, len(config["outbounds"])), outbound)
+    elif had_cascades_before:
+        insert_index = 0
+        for index, item in enumerate(config["outbounds"]):
+            if cascade_config.is_cascade_tag(item.get("tag")):
+                insert_index = index + 1
+        config["outbounds"].insert(insert_index, outbound)
+    else:
+        config["outbounds"].insert(0, outbound)
     ensure_private_block_rule(config)
-    cascade_config.activate_cascade_route(config, tag)
-    cascade_config.sync_telegram_cascade_rules(config, tag)
-    sync_geoip_warning_outbounds(config, outbound)
+    if not had_cascades_before:
+        cascade_config.activate_cascade_route(config, tag)
+        cascade_config.sync_telegram_cascade_rules(config, tag)
+        sync_geoip_warning_outbounds(config, outbound)
+        return True
+
+    active_tag = cascade_config.active_cascade_tag(config)
+    if active_tag:
+        cascade_config.sync_telegram_cascade_rules(config, active_tag)
+    sync_geoip_warning_outbounds(config)
+    return False
 
 
 def set_active_cascade(config, tag):
@@ -561,12 +587,16 @@ def cmd_add(args):
     backup = apply_config(config, before)
     save_client_db_optional(db)
 
-    print(f"Cascade enabled: {name} ({tag})")
+    print(f"Cascade configured: {name} ({tag})")
     print(f"Country: {country or 'not specified'}")
     print(f"Upstream: {label}")
     print(f"Backup: {backup}")
-    print(f"All non-private outbound traffic now goes through tag: {tag}")
-    print("To switch cascade: xray-set-cascade use NAME")
+    if cascade_config.active_cascade_tag(config) == tag:
+        print(f"Active cascade: {name} ({tag})")
+        print(f"All non-private outbound traffic now goes through tag: {tag}")
+    else:
+        print(f"Current catch-all route: {current_route_label(config)}")
+        print(f"New cascade was not activated. To switch: xray-set-cascade use {name}")
     print("To disable cascade routing: xray-set-cascade --disable")
 
 
@@ -738,7 +768,7 @@ def print_usage():
     print(
         """Usage:
   xray-set-cascade                 Add/replace cascade interactively
-  xray-set-cascade add [NAME]      Add/replace named cascade and make it active
+  xray-set-cascade add [NAME]      Add/replace named cascade; first cascade becomes active
   xray-set-cascade list            Show configured cascades
   xray-set-cascade use [NAME]      Select active cascade
   xray-set-cascade country NAME COUNTRY
