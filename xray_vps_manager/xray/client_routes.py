@@ -145,6 +145,10 @@ def client_balancer_tag(name: str, entry: dict[str, Any]) -> str:
     return (CLIENT_BALANCER_PREFIX + safe_name)[:63]
 
 
+def is_client_balancer_tag(tag: str | None) -> bool:
+    return str(tag or "").startswith(CLIENT_BALANCER_PREFIX)
+
+
 def client_email(name: str, entry: dict[str, Any]) -> str:
     client = entry.get("client") if isinstance(entry.get("client"), dict) else {}
     email = str(client.get("email") or "").strip()
@@ -222,7 +226,7 @@ def remove_stale_client_route_config(config: dict[str, Any], expected_balancers:
         rule
         for rule in cascade_config.routing_rules(config)
         if not (
-            str(rule.get("balancerTag") or "").startswith(CLIENT_BALANCER_PREFIX)
+            is_client_balancer_tag(rule.get("balancerTag"))
             and str(rule.get("balancerTag") or "") not in expected_balancers
         )
     ]
@@ -230,8 +234,58 @@ def remove_stale_client_route_config(config: dict[str, Any], expected_balancers:
         balancer
         for balancer in routing_balancers(config)
         if not (
-            str(balancer.get("tag") or "").startswith(CLIENT_BALANCER_PREFIX)
+            is_client_balancer_tag(balancer.get("tag"))
             and str(balancer.get("tag") or "") not in expected_balancers
+        )
+    ]
+    return before != repr(routing)
+
+
+def remove_all_client_route_config(config: dict[str, Any]) -> bool:
+    routing = config.setdefault("routing", {})
+    before = repr(routing)
+    routing["rules"] = [
+        rule
+        for rule in cascade_config.routing_rules(config)
+        if not is_client_balancer_tag(rule.get("balancerTag"))
+    ]
+    routing["balancers"] = [
+        balancer
+        for balancer in routing_balancers(config)
+        if not is_client_balancer_tag(balancer.get("tag"))
+    ]
+    return before != repr(routing)
+
+
+def remove_unavailable_client_route_config(config: dict[str, Any]) -> bool:
+    routing = config.setdefault("routing", {})
+    configured = set(cascade_config.cascade_tags(config))
+    before = repr(routing)
+    kept_balancer_tags = set()
+    kept_balancers = []
+    for balancer in routing_balancers(config):
+        tag = str(balancer.get("tag") or "")
+        if not is_client_balancer_tag(tag):
+            kept_balancers.append(balancer)
+            continue
+        selector = [
+            str(item)
+            for item in (balancer.get("selector") or [])
+            if str(item) in configured
+        ]
+        if not selector:
+            continue
+        next_balancer = dict(balancer)
+        next_balancer["selector"] = selector
+        kept_balancer_tags.add(tag)
+        kept_balancers.append(next_balancer)
+    routing["balancers"] = kept_balancers
+    routing["rules"] = [
+        rule
+        for rule in cascade_config.routing_rules(config)
+        if not (
+            is_client_balancer_tag(rule.get("balancerTag"))
+            and str(rule.get("balancerTag") or "") not in kept_balancer_tags
         )
     ]
     return before != repr(routing)

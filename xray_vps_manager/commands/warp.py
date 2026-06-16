@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import cascade as cascade_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -514,12 +515,15 @@ def configure_warp_outbound(config, endpoint_override=None):
 
 def enable_warp_route(config, endpoint_override=None):
     upsert_warp_outbound(config, endpoint_override=endpoint_override)
+    remove_temporary_warp_test_config(config)
+    client_routes.remove_all_client_route_config(config)
     remove_managed_catchall_routes(config)
     append_catchall_route(config, WARP_OUTBOUND_TAG)
 
 
 def disable_warp_route(config):
-    changed = remove_managed_catchall_routes(config)
+    changed = remove_temporary_warp_test_config(config)
+    changed = remove_managed_catchall_routes(config) or changed
     cascade_tag = cascade_config.first_cascade_tag(config)
     if cascade_tag:
         append_catchall_route(config, cascade_tag)
@@ -528,7 +532,8 @@ def disable_warp_route(config):
 
 
 def remove_warp(config):
-    changed = disable_warp_route(config)
+    changed = remove_temporary_warp_test_config(config)
+    changed = disable_warp_route(config) or changed
     if remove_outbound(config, WARP_OUTBOUND_TAG):
         changed = True
     return changed
@@ -635,6 +640,21 @@ def remove_inbound_routes(config, tag):
             continue
         kept.append(rule)
     config["routing"]["rules"] = kept
+
+
+def remove_inbound(config, tag):
+    inbounds = config.setdefault("inbounds", [])
+    kept = [inbound for inbound in inbounds if inbound.get("tag") != tag]
+    config["inbounds"] = kept
+    return len(kept) != len(inbounds)
+
+
+def remove_temporary_warp_test_config(config):
+    before = repr(config.get("inbounds", [])) + repr(config.get("routing", {}))
+    for tag in (TEST_INBOUND_TAG, VERIFY_INBOUND_TAG):
+        remove_inbound(config, tag)
+        remove_inbound_routes(config, tag)
+    return before != repr(config.get("inbounds", [])) + repr(config.get("routing", {}))
 
 
 def add_socks_inbound(config, tag, port):

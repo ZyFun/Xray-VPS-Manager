@@ -278,6 +278,7 @@ def disable_cascade(config):
         for rule in rules
         if not (cascade_config.is_cascade_tag(rule.get("outboundTag")) and cascade_config.is_catchall_rule(rule))
     ]
+    client_routes.remove_all_client_route_config(config)
     cascade_config.ensure_base_outbounds(config)
     sync_geoip_warning_outbounds(config)
 
@@ -287,6 +288,7 @@ def remove_cascade(config, tag):
         raise ValueError(f"Cascade outbound is not configured: {tag}")
     was_active = cascade_config.active_cascade_tag(config) == tag
     config["outbounds"] = remove_tag(config.get("outbounds", []), tag)
+    client_routes.remove_unavailable_client_route_config(config)
     replacement = cascade_config.first_cascade_tag(config)
     kept_rules = []
     for rule in cascade_config.routing_rules(config):

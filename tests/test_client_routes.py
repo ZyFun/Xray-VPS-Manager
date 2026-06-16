@@ -126,6 +126,27 @@ class ClientRouteTests(unittest.TestCase):
         self.assertFalse(any(rule.get("balancerTag") == "client-route-old" for rule in config["routing"]["rules"]))
         self.assertFalse(any(balancer.get("tag") == "client-route-old" for balancer in config["routing"]["balancers"]))
 
+    def test_remove_all_client_route_config_removes_client_rules_and_balancers(self) -> None:
+        config = route_config()
+        config["routing"]["rules"].insert(0, {"type": "field", "user": ["alice"], "balancerTag": "client-route-alice"})
+        config["routing"]["balancers"] = [{"tag": "client-route-alice", "selector": ["cascade-de"]}]
+
+        self.assertTrue(client_routes.remove_all_client_route_config(config))
+
+        self.assertFalse(any(rule.get("balancerTag") == "client-route-alice" for rule in config["routing"]["rules"]))
+        self.assertEqual(config["routing"]["balancers"], [])
+
+    def test_remove_unavailable_client_route_config_removes_balancer_without_configured_outbound(self) -> None:
+        config = route_config()
+        config["outbounds"] = [item for item in config["outbounds"] if item["tag"] != "cascade-us"]
+        config["routing"]["rules"].insert(0, {"type": "field", "user": ["alice"], "balancerTag": "client-route-alice"})
+        config["routing"]["balancers"] = [{"tag": "client-route-alice", "selector": ["cascade-us"]}]
+
+        self.assertTrue(client_routes.remove_unavailable_client_route_config(config))
+
+        self.assertFalse(any(rule.get("balancerTag") == "client-route-alice" for rule in config["routing"]["rules"]))
+        self.assertEqual(config["routing"]["balancers"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

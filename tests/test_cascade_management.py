@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from xray_vps_manager.commands import set_cascade
 from xray_vps_manager.commands import warp
@@ -26,6 +27,16 @@ def base_config() -> dict:
 def cascade_outbound(name: str) -> dict:
     outbound, _label = set_cascade.parse_vless(VLESS_LINK, cascade_config.cascade_tag(name))
     return outbound
+
+
+def add_client_route(config: dict, selector: str = "cascade-main") -> None:
+    config.setdefault("routing", {}).setdefault("rules", []).insert(
+        0,
+        {"type": "field", "user": ["alice|created=2026-06-12T08:00:00Z"], "balancerTag": "client-route-alice"},
+    )
+    config.setdefault("routing", {}).setdefault("balancers", []).append(
+        {"tag": "client-route-alice", "selector": [selector]},
+    )
 
 
 class CascadeManagementTests(unittest.TestCase):
@@ -94,6 +105,60 @@ class CascadeManagementTests(unittest.TestCase):
         warp.disable_warp_route(config)
 
         self.assertEqual(cascade_config.active_cascade_tag(config), "cascade-main")
+
+    def test_warp_enable_removes_per_client_cascade_routes(self) -> None:
+        config = base_config()
+        set_cascade.configure_cascade(config, cascade_outbound("main"))
+        add_client_route(config)
+
+        def add_warp_outbound(config, endpoint_override=None):
+            config.setdefault("outbounds", []).append({"tag": "warp-out", "protocol": "wireguard", "settings": {}})
+
+        with mock.patch.object(warp, "upsert_warp_outbound", side_effect=add_warp_outbound):
+            warp.enable_warp_route(config)
+
+        self.assertEqual(cascade_config.current_catchall_tag(config), "warp-out")
+        self.assertFalse(any(rule.get("balancerTag") == "client-route-alice" for rule in config["routing"]["rules"]))
+        self.assertEqual(config["routing"].get("balancers", []), [])
+
+    def test_warp_enable_removes_stale_warp_test_routes(self) -> None:
+        config = base_config()
+        config["inbounds"] = [{"tag": "warp-test-socks", "protocol": "socks"}]
+        config["routing"]["rules"].insert(
+            0,
+            {"type": "field", "inboundTag": ["warp-test-socks"], "outboundTag": "warp-out"},
+        )
+
+        def add_warp_outbound(config, endpoint_override=None):
+            config.setdefault("outbounds", []).append({"tag": "warp-out", "protocol": "wireguard", "settings": {}})
+
+        with mock.patch.object(warp, "upsert_warp_outbound", side_effect=add_warp_outbound):
+            warp.enable_warp_route(config)
+
+        self.assertFalse(any(inbound.get("tag") == "warp-test-socks" for inbound in config.get("inbounds", [])))
+        self.assertFalse(any("warp-test-socks" in cascade_config.rule_values(rule, "inboundTag") for rule in config["routing"]["rules"]))
+
+    def test_disable_cascade_removes_per_client_cascade_routes(self) -> None:
+        config = base_config()
+        set_cascade.configure_cascade(config, cascade_outbound("main"))
+        add_client_route(config)
+
+        set_cascade.disable_cascade(config)
+
+        self.assertEqual(cascade_config.current_catchall_tag(config), "")
+        self.assertFalse(any(rule.get("balancerTag") == "client-route-alice" for rule in config["routing"]["rules"]))
+        self.assertEqual(config["routing"].get("balancers", []), [])
+
+    def test_remove_cascade_removes_stale_client_balancer(self) -> None:
+        config = base_config()
+        set_cascade.configure_cascade(config, cascade_outbound("main"))
+        add_client_route(config)
+
+        set_cascade.remove_cascade(config, "cascade-main")
+
+        self.assertFalse(cascade_config.cascade_tags(config))
+        self.assertFalse(any(rule.get("balancerTag") == "client-route-alice" for rule in config["routing"]["rules"]))
+        self.assertEqual(config["routing"].get("balancers", []), [])
 
 
 if __name__ == "__main__":
