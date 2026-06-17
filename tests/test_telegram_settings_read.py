@@ -71,6 +71,7 @@ class TelegramSettingsReadTests(unittest.TestCase):
                     "connection": "sqlite-connection",
                     "linkSignature": {"linkHash": "sqlite-hash"},
                     "enabled": True,
+                    "activityNotificationsEnabled": True,
                     "createdAt": "2026-06-12T09:10:00Z",
                     "updatedAt": "2026-06-12T09:11:00Z",
                 },
@@ -106,6 +107,7 @@ class TelegramSettingsReadTests(unittest.TestCase):
                     "linkHash": "sqlite-hash",
                     "subscribedAt": "2026-06-12T09:10:00Z",
                     "enabled": True,
+                    "activityNotificationsEnabled": True,
                     "updatedAt": "2026-06-12T09:11:00Z",
                 },
             )

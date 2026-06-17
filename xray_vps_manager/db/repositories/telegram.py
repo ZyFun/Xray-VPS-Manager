@@ -61,15 +61,16 @@ def upsert_subscription(connection: sqlite3.Connection, subscription: dict[str, 
             """
             INSERT INTO telegram_subscriptions(
                 chat_id, chat_label, client_name, client_uuid, connection_tag,
-                link_signature_json, enabled, created_at, updated_at
+                link_signature_json, enabled, activity_notifications_enabled, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(chat_id, client_uuid) DO UPDATE SET
                 chat_label = excluded.chat_label,
                 client_name = excluded.client_name,
                 connection_tag = excluded.connection_tag,
                 link_signature_json = excluded.link_signature_json,
                 enabled = excluded.enabled,
+                activity_notifications_enabled = excluded.activity_notifications_enabled,
                 updated_at = excluded.updated_at
             """,
             (
@@ -80,6 +81,7 @@ def upsert_subscription(connection: sqlite3.Connection, subscription: dict[str, 
                 subscription.get("connection") or subscription.get("connection_tag") or None,
                 encode_json(subscription.get("linkSignature") or subscription.get("link_signature") or {}),
                 0 if subscription.get("enabled") is False else 1,
+                1 if subscription.get("activityNotificationsEnabled") is True else 0,
                 subscription.get("createdAt") or subscription.get("created_at") or "",
                 subscription.get("updatedAt") or subscription.get("updated_at") or "",
             ),
@@ -120,6 +122,7 @@ def _subscription_from_row(row) -> dict[str, Any]:
         "connection": row["connection_tag"] or "",
         "linkSignature": decode_json(row["link_signature_json"]),
         "enabled": bool(row["enabled"]),
+        "activityNotificationsEnabled": bool(row["activity_notifications_enabled"]),
         "createdAt": row["created_at"] or "",
         "updatedAt": row["updated_at"] or "",
     }

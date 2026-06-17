@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 from xray_vps_manager.xray import client_routes
 
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+ACTIVITY_EXCEPTION_LIMIT = 100
 
 
 def normalize_value(value):
@@ -169,6 +170,185 @@ def subscription_status_for_chat(db, chat_id, client_db, format_access_until):
     return "Текущая подписка:\n" + client_access_summary(entry, format_access_until, client_db)
 
 
+def activity_notifications_enabled(subscription):
+    return isinstance(subscription, dict) and subscription.get("activityNotificationsEnabled") is True
+
+
+def activity_notification_status_for_chat(db, chat_id, client_db, *, owner_chat=False):
+    subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
+    if not subscription:
+        return "Ты пока не подписан на бота. Сначала отправь свою VLESS-ссылку."
+    _name, _entry, error = subscription_entry_for_chat(db, chat_id, client_db)
+    if error:
+        return error
+    status = "включена" if activity_notifications_enabled(subscription) else "отключена"
+    exception_count = len(activity_exceptions_for_chat(db, chat_id))
+    lines = [
+        "Уведомления активности",
+        "",
+        f"Клиентская рассылка: {status}.",
+        f"Личных исключений: {exception_count}.",
+        "",
+        "Это личные GeoIP-предупреждения по твоему VPN-ключу.",
+        "Они помогают заметить, что через VPN пошло подключение к региону, который администратор пометил для проверки split tunneling.",
+        "",
+        "В сообщении будут только метаданные подключения: регион правила, адрес или домен, порт и время.",
+        "Бот не видит и не сохраняет содержимое сайтов, сообщений, файлов или запросов.",
+    ]
+    if owner_chat:
+        lines.extend(
+            [
+                "",
+                "Этот чат также настроен как владелец бота, поэтому админская рассылка активности приходит отдельно.",
+                "Клиентская копия в этот же чат не дублируется.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def set_activity_notifications(db, chat_id, enabled, timestamp=""):
+    subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
+    if not isinstance(subscription, dict):
+        return False
+    subscription["activityNotificationsEnabled"] = bool(enabled)
+    if timestamp:
+        subscription["activityNotificationsUpdatedAt"] = timestamp
+        subscription["updatedAt"] = timestamp
+    return True
+
+
+def client_subscription_state(db):
+    state = db.setdefault("clientSubscriptionState", {})
+    if not isinstance(state, dict):
+        state = {}
+        db["clientSubscriptionState"] = state
+    return state
+
+
+def normalize_activity_target_item(item):
+    if not isinstance(item, dict):
+        return {}
+    host = str(item.get("host") or "").strip().lower()
+    port = str(item.get("port") or "").strip()
+    regions = str(item.get("regions") or "").strip().upper()
+    client_id = normalize_value(item.get("clientId") or item.get("client_id") or "")
+    if not host or host == "-":
+        return {}
+    return {
+        "host": host,
+        "port": port,
+        "regions": regions,
+        "clientId": client_id,
+    }
+
+
+def activity_target_label(item):
+    normalized = normalize_activity_target_item(item)
+    if not normalized:
+        return "-"
+    port = normalized.get("port") or "-"
+    regions = normalized.get("regions") or "-"
+    return f"{normalized['host']}:{port} ({regions})"
+
+
+def set_activity_exception_candidates(db, chat_id, items, timestamp=""):
+    state = client_subscription_state(db)
+    candidates = state.setdefault("activityExceptionCandidates", {})
+    if not isinstance(candidates, dict):
+        candidates = {}
+        state["activityExceptionCandidates"] = candidates
+    normalized = []
+    seen = set()
+    for item in items:
+        target = normalize_activity_target_item(item)
+        if not target:
+            continue
+        key = (target["clientId"], target["host"], target["port"], target["regions"])
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(target)
+    candidates[str(chat_id)] = {"items": normalized, "updatedAt": timestamp}
+
+
+def activity_exception_candidates(db, chat_id):
+    state = client_subscription_state(db)
+    candidates = state.get("activityExceptionCandidates", {})
+    if not isinstance(candidates, dict):
+        return []
+    entry = candidates.get(str(chat_id), {})
+    if not isinstance(entry, dict):
+        return []
+    items = entry.get("items", [])
+    if not isinstance(items, list):
+        return []
+    return [item for item in (normalize_activity_target_item(item) for item in items) if item]
+
+
+def activity_exceptions_for_chat(db, chat_id):
+    state = client_subscription_state(db)
+    exceptions = state.get("activityNotificationExceptions", {})
+    if not isinstance(exceptions, dict):
+        return []
+    items = exceptions.get(str(chat_id), [])
+    if not isinstance(items, list):
+        return []
+    return [item for item in (normalize_activity_target_item(item) for item in items) if item]
+
+
+def add_activity_exception_for_chat(db, chat_id, item, timestamp=""):
+    target = normalize_activity_target_item(item)
+    if not target:
+        return None
+    state = client_subscription_state(db)
+    exceptions = state.setdefault("activityNotificationExceptions", {})
+    if not isinstance(exceptions, dict):
+        exceptions = {}
+        state["activityNotificationExceptions"] = exceptions
+    chat_key = str(chat_id)
+    items = activity_exceptions_for_chat(db, chat_id)
+    key = (target["clientId"], target["host"], target["port"], target["regions"])
+    for existing in items:
+        existing_key = (existing["clientId"], existing["host"], existing["port"], existing["regions"])
+        if existing_key == key:
+            return existing
+    target["addedAt"] = timestamp
+    items.append(target)
+    exceptions[chat_key] = items[-ACTIVITY_EXCEPTION_LIMIT:]
+    return target
+
+
+def remove_activity_exception_for_chat(db, chat_id, index):
+    items = activity_exceptions_for_chat(db, chat_id)
+    if index < 0 or index >= len(items):
+        return None
+    removed = items.pop(index)
+    state = client_subscription_state(db)
+    exceptions = state.setdefault("activityNotificationExceptions", {})
+    if not isinstance(exceptions, dict):
+        exceptions = {}
+        state["activityNotificationExceptions"] = exceptions
+    exceptions[str(chat_id)] = items
+    return removed
+
+
+def activity_exception_matches(db, chat_id, item):
+    target = normalize_activity_target_item(item)
+    if not target:
+        return False
+    for exception in activity_exceptions_for_chat(db, chat_id):
+        if exception.get("clientId") and exception.get("clientId") != target.get("clientId"):
+            continue
+        if exception.get("host") != target.get("host"):
+            continue
+        if exception.get("port") and exception.get("port") != target.get("port"):
+            continue
+        if exception.get("regions") and exception.get("regions") != target.get("regions"):
+            continue
+        return True
+    return False
+
+
 def neutral_vless_fragment(link, server_fragment):
     raw = str(link or "").strip()
     if not raw:
@@ -257,6 +437,7 @@ def subscribe_chat_to_client(db, chat, text, client_db, chat_label, timestamp):
         "linkHash": parsed_link["hash"],
         "subscribedAt": timestamp,
         "enabled": True,
+        "activityNotificationsEnabled": False,
     }
     return name, entry
 

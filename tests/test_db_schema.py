@@ -43,6 +43,7 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "idx_activity_event_risks_risk",
                     "idx_cascade_routes_country",
                     "idx_telegram_subscriptions_uuid",
+                    "idx_telegram_subscriptions_activity",
                 }.issubset(schema.index_names(connection))
             )
 
@@ -51,7 +52,14 @@ class SQLiteSchemaTests(unittest.TestCase):
             schema.ensure_schema(connection)
 
             rows = connection.execute("SELECT version, name FROM schema_migrations").fetchall()
-            self.assertEqual(rows, [(1, "initial_manager_schema"), (2, "cascade_client_routes")])
+            self.assertEqual(
+                rows,
+                [
+                    (1, "initial_manager_schema"),
+                    (2, "cascade_client_routes"),
+                    (3, "telegram_activity_subscriptions"),
+                ],
+            )
 
     def test_schema_rejects_newer_database_versions(self) -> None:
         connection = sqlite3.connect(":memory:")

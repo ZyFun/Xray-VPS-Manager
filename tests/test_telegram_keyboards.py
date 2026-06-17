@@ -11,6 +11,7 @@ class TelegramKeyboardTests(unittest.TestCase):
         self.assertIn({"text": "Статус подписки", "callback_data": "client:status"}, buttons)
         self.assertIn({"text": "Получить VLESS-ссылку", "callback_data": "client:link"}, buttons)
         self.assertIn({"text": "Страна подключения", "callback_data": "client:country"}, buttons)
+        self.assertIn({"text": "Уведомления активности", "callback_data": "client:activity"}, buttons)
 
     def test_subscribed_client_menu_uses_unsubscribe_button_label_and_places_it_last(self) -> None:
         buttons = [button for row in keyboards.client_menu_keyboard(subscribed=True) for button in row]
@@ -40,6 +41,7 @@ class TelegramKeyboardTests(unittest.TestCase):
         self.assertNotIn({"text": "Подключить уведомления", "callback_data": "client:subscribe"}, buttons)
         self.assertIn({"text": "Статус подписки", "callback_data": "client:status"}, buttons)
         self.assertIn({"text": "Страна подключения", "callback_data": "client:country"}, buttons)
+        self.assertIn({"text": "Уведомления активности", "callback_data": "client:activity"}, buttons)
         self.assertIn({"text": "Отписаться от бота", "callback_data": "client:unsubscribe"}, buttons)
         self.assertEqual(buttons[-1], {"text": "Отписаться от бота", "callback_data": "client:unsubscribe"})
 
@@ -68,6 +70,30 @@ class TelegramKeyboardTests(unittest.TestCase):
             ],
         )
         self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "client:menu"})
+
+    def test_client_activity_keyboard_toggles_current_state(self) -> None:
+        disabled_buttons = [button for row in keyboards.client_activity_keyboard(False)["inline_keyboard"] for button in row]
+        enabled_buttons = [button for row in keyboards.client_activity_keyboard(True)["inline_keyboard"] for button in row]
+
+        self.assertEqual(disabled_buttons[0], {"text": "Включить", "callback_data": "client:activity:on"})
+        self.assertEqual(enabled_buttons[0], {"text": "Отключить", "callback_data": "client:activity:off"})
+        self.assertIn({"text": "Исключения", "callback_data": "client:activity-exceptions"}, disabled_buttons)
+        self.assertEqual(disabled_buttons[-1], {"text": "Назад", "callback_data": "client:menu"})
+
+    def test_client_activity_exceptions_manage_keyboard_deletes_selected_item(self) -> None:
+        buttons = [
+            button
+            for row in keyboards.client_activity_exceptions_manage_keyboard(
+                [{"host": "video.example.ru", "port": "443", "regions": "RU"}]
+            )["inline_keyboard"]
+            for button in row
+        ]
+
+        self.assertEqual(
+            buttons[0],
+            {"text": "Удалить video.example.ru:443 · RU", "callback_data": "client:activity-exception:delete:0"},
+        )
+        self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "client:activity"})
 
     def test_client_country_keyboard_marks_current_route(self) -> None:
         rows = keyboards.client_country_keyboard(

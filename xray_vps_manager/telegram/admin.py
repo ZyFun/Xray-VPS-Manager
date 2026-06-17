@@ -277,7 +277,8 @@ def subscribers_text(ctx: AdminContext, db):
         entry = clients.get(name, {})
         access_until = ctx.format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else "")
         valid = "актуальна" if subscriptions.subscription_is_current(subscription, entry) else "требует проверки"
-        lines.append(f"- {name}: {valid}, до {access_until}, чат {subscription.get('chatLabel', chat_id)}")
+        activity = "активность вкл" if subscriptions.activity_notifications_enabled(subscription) else "активность выкл"
+        lines.append(f"- {name}: {valid}, до {access_until}, {activity}, чат {subscription.get('chatLabel', chat_id)}")
     if len(user_subscriptions) > 25:
         lines.append(f"...и ещё подписок: {len(user_subscriptions) - 25}")
     return "\n".join(lines)

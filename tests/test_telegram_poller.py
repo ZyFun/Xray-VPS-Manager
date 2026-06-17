@@ -728,6 +728,186 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertIn("Статус: включён", sent[2])
         self.assertNotIn("Отправь сюда свою VLESS", sent[2])
 
+    def test_client_can_enable_activity_notifications_from_menu(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 41, "expiryReminders": {}},
+            "clientSubscriptions": {
+                "222": {
+                    "client": "internal_alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                    "activityNotificationsEnabled": False,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 42,
+                "callback_query": {
+                    "id": "callback-activity-on",
+                    "data": "client:activity:on",
+                    "message": {"chat": {"id": "222", "type": "private"}},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"internal_alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        self.assertTrue(db["clientSubscriptions"]["222"]["activityNotificationsEnabled"])
+        self.assertIn(("save", ("clientSubscriptions",), 43), events)
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Клиентская рассылка: включена.", sent[2])
+        self.assertNotIn("internal_alice", sent[2])
+
+    def test_client_can_add_activity_exception_from_notification_candidate(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {
+                "userUpdateOffset": 41,
+                "expiryReminders": {},
+                "callbackGuards": {"222": {"activeMessageId": 90, "consumedMessageIds": []}},
+                "activityExceptionCandidates": {
+                    "222": {
+                        "items": [
+                            {
+                                "host": "video.example.ru",
+                                "port": "443",
+                                "regions": "RU",
+                                "clientId": "00000000-0000-0000-0000-000000000001",
+                            }
+                        ],
+                        "updatedAt": "2026-06-12T22:00:00Z",
+                    }
+                },
+            },
+            "clientSubscriptions": {
+                "222": {
+                    "client": "internal_alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                    "activityNotificationsEnabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 42,
+                "callback_query": {
+                    "id": "callback-exception-list",
+                    "data": "client:activity-exception:list",
+                    "message": {"message_id": 120, "chat": {"id": "222", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 43,
+                "callback_query": {
+                    "id": "callback-exception-add",
+                    "data": "client:activity-exception:add:0",
+                    "message": {"message_id": 121, "chat": {"id": "222", "type": "private"}},
+                },
+            },
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"internal_alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        exceptions = db["clientSubscriptionState"]["activityNotificationExceptions"]["222"]
+        self.assertEqual(exceptions[0]["host"], "video.example.ru")
+        self.assertEqual(exceptions[0]["port"], "443")
+        self.assertEqual(exceptions[0]["regions"], "RU")
+        sent = [event for event in events if event[0] == "send"]
+        self.assertIn("Что добавить в исключения?", sent[0][2])
+        self.assertIn("Больше не буду присылать личные предупреждения по video.example.ru:443 (RU).", sent[-1][2])
+        self.assertNotIn("internal_alice", sent[-1][2])
+
+    def test_client_can_remove_activity_exception_from_activity_menu(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {
+                "userUpdateOffset": 44,
+                "expiryReminders": {},
+                "activityNotificationExceptions": {
+                    "222": [
+                        {
+                            "host": "video.example.ru",
+                            "port": "443",
+                            "regions": "RU",
+                            "clientId": "00000000-0000-0000-0000-000000000001",
+                        },
+                        {
+                            "host": "cdn.example.ru",
+                            "port": "443",
+                            "regions": "RU",
+                            "clientId": "00000000-0000-0000-0000-000000000001",
+                        },
+                    ]
+                },
+            },
+            "clientSubscriptions": {
+                "222": {
+                    "client": "internal_alice",
+                    "clientId": "00000000-0000-0000-0000-000000000001",
+                    "enabled": True,
+                    "activityNotificationsEnabled": True,
+                }
+            },
+        }
+        updates = [
+            {
+                "update_id": 45,
+                "callback_query": {
+                    "id": "callback-exceptions",
+                    "data": "client:activity-exceptions",
+                    "message": {"message_id": 122, "chat": {"id": "222", "type": "private"}},
+                },
+            },
+            {
+                "update_id": 46,
+                "callback_query": {
+                    "id": "callback-exception-delete",
+                    "data": "client:activity-exception:delete:0",
+                    "message": {"message_id": 123, "chat": {"id": "222", "type": "private"}},
+                },
+            },
+        ]
+        events = []
+        ctx = self.make_context(
+            db,
+            updates,
+            events,
+            client_db={"clients": {"internal_alice": {"id": "00000000-0000-0000-0000-000000000001"}}},
+        )
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        remaining = db["clientSubscriptionState"]["activityNotificationExceptions"]["222"]
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["host"], "cdn.example.ru")
+        sent = [event for event in events if event[0] == "send"]
+        self.assertIn("Личные исключения активности", sent[0][2])
+        self.assertIn("Исключение удалено: video.example.ru:443 (RU).", sent[-1][2])
+        self.assertNotIn("internal_alice", sent[-1][2])
+
     def test_duplicate_client_callback_from_same_message_runs_once(self) -> None:
         db = {
             "enabled": True,

@@ -167,6 +167,7 @@ class SQLiteRepositoryTests(unittest.TestCase):
                 "connection": "vless-reality",
                 "linkSignature": {"sni": "example.com"},
                 "enabled": True,
+                "activityNotificationsEnabled": True,
                 "createdAt": "2026-06-12T08:06:00Z",
                 "updatedAt": "2026-06-12T08:06:00Z",
             },
@@ -176,7 +177,9 @@ class SQLiteRepositoryTests(unittest.TestCase):
 
         self.assertEqual(telegram.get_setting(self.connection, "botName"), "Vireika")
         self.assertEqual(telegram.get_state(self.connection, "dailySummaryState"), {"lastSentDay": "2026-06-11"})
-        self.assertEqual(telegram.list_subscriptions(self.connection, enabled_only=True)[0]["clientName"], "alice")
+        subscription = telegram.list_subscriptions(self.connection, enabled_only=True)[0]
+        self.assertEqual(subscription["clientName"], "alice")
+        self.assertTrue(subscription["activityNotificationsEnabled"])
         self.assertEqual(settings.get_metadata(self.connection, "schema-source"), "test")
         self.assertEqual(settings.get_payment_setting(self.connection, "currency"), "₽")
 

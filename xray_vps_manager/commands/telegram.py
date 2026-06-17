@@ -357,10 +357,11 @@ def list_client_subscribers():
                 chat_id,
                 format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else ""),
                 valid,
+                "yes" if telegram_subscriptions.activity_notifications_enabled(subscription) else "no",
                 subscription.get("subscribedAt", "-"),
             ]
         )
-    headers = ["CLIENT", "CHAT", "CHAT_ID", "ACCESS_UNTIL", "VALID", "SUBSCRIBED_AT"]
+    headers = ["CLIENT", "CHAT", "CHAT_ID", "ACCESS_UNTIL", "VALID", "ACTIVITY", "SUBSCRIBED_AT"]
     widths = [len(header) for header in headers]
     for row in rows:
         for index, value in enumerate(row):
@@ -393,6 +394,16 @@ def status():
         ("Payment rounding", telegram_payments.payment_rounding_label(db)),
         ("Payment details", telegram_payments.payment_transfer_label(db)),
         ("Client subscriptions", str(len(subscriptions))),
+        (
+            "Activity subscriptions",
+            str(
+                sum(
+                    1
+                    for subscription in subscriptions.values()
+                    if telegram_subscriptions.activity_notifications_enabled(subscription)
+                )
+            ),
+        ),
         ("Manager DB", str(MANAGER_DB_PATH)),
         ("Last GeoIP notification", db.get("geoipState", {}).get("lastGeoipNotification") or db.get("lastGeoipNotification") or "never"),
         ("Last user poll", subscription_state.get("lastUserPoll") or "never"),

@@ -14,11 +14,13 @@ from typing import Any
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
-from xray_vps_manager.telegram import messages, payments, subscriptions
+from xray_vps_manager.telegram import keyboards, messages, payments, subscriptions
 from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import history as traffic_history
 
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
+CLIENT_GEOIP_EXCEPTION_MAX_TARGETS = 5
+CLIENT_GEOIP_MANY_EVENTS_THRESHOLD = 20
 EXPIRY_REMINDER_DAYS = (5, 1)
 EXPIRY_REMINDER_HOUR = 8
 DAILY_SUMMARY_HOUR = 8
@@ -544,6 +546,137 @@ def build_geoip_message(ctx: NotificationContext, events):
     return "\n".join(lines).strip()
 
 
+def client_geoip_target(event, client_id=""):
+    return {
+        "host": str(event.get("host") or "").strip().lower(),
+        "port": str(event.get("port") or "").strip(),
+        "regions": ",".join(geoip_regions(event)) or "-",
+        "clientId": subscriptions.normalize_value(client_id),
+    }
+
+
+def client_geoip_rows(events):
+    grouped = {}
+    for event in events:
+        regions = ",".join(geoip_regions(event)) or "-"
+        host = event.get("host") or "-"
+        port = str(event.get("port") or "-")
+        key = (regions, host, port)
+        row = grouped.setdefault(
+            key,
+            {
+                "regions": regions,
+                "host": host,
+                "port": port,
+                "count": 0,
+                "last": event.get("time") or "",
+            },
+        )
+        row["count"] += 1
+        if event.get("time", "") >= row["last"]:
+            row["last"] = event.get("time") or row["last"]
+    return sorted(grouped.values(), key=lambda item: (item["count"], item["last"]), reverse=True)
+
+
+def client_geoip_warning_is_large(events, rows):
+    return len(events) > CLIENT_GEOIP_MANY_EVENTS_THRESHOLD or len(rows) > CLIENT_GEOIP_EXCEPTION_MAX_TARGETS
+
+
+def build_client_geoip_message(ctx: NotificationContext, db, events):
+    rows = client_geoip_rows(events)
+    is_large = client_geoip_warning_is_large(events, rows)
+    lines = [
+        f"{ctx.bot_name(db)}: активность VPN",
+        f"Новых GeoIP-предупреждений: {len(events)}",
+        "",
+        "Что это значит:",
+        "часть подключений через VPN попала в регион, который администратор включил для проверки split tunneling.",
+        "",
+    ]
+    for row in rows[:10]:
+        lines.extend(
+            [
+                f"Регион: {row['regions']}",
+                f"Цель: {row['host']}:{row['port']}",
+                f"Событий: {row['count']}",
+                f"Последнее: {ctx.format_event_time(row['last'])}",
+                "",
+            ]
+        )
+    if len(rows) > 10:
+        lines.append(f"И ещё целей: {len(rows) - 10}")
+        lines.append("")
+    if is_large:
+        lines.extend(
+            [
+                "Предупреждений много.",
+                "Похоже, через VPN регулярно идёт трафик к целому региону, а не к одному случайному сервису.",
+                "Лучше настроить раздельное туннелирование в своём VPN-клиенте: добавь нужный GeoIP-регион, например geoip:RU, или нужные домены/IP в Direct/Bypass/Исключения.",
+                "Названия разделов отличаются в разных клиентах: Routing, Rules, Split tunneling, Bypass или Direct.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "Если это знакомый иностранный сервис, у которого сервер оказался в этом регионе, можно скрыть такие уведомления кнопкой ниже.",
+                "Исключение в боте только отключит предупреждения для тебя; маршрут VPN оно не меняет.",
+                "Если сервис должен идти мимо VPN, добавь адрес или домен в правила split tunneling своего приложения: обычно это Direct, Bypass, Routing или Rules.",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def client_geoip_exception_candidates(events, client_id):
+    rows = client_geoip_rows(events)
+    candidates = []
+    for row in rows[:CLIENT_GEOIP_EXCEPTION_MAX_TARGETS]:
+        candidates.append(
+            {
+                "host": row["host"],
+                "port": row["port"],
+                "regions": row["regions"],
+                "clientId": client_id,
+            }
+        )
+    return candidates
+
+
+def normalized_sent_ids(value, limit=500):
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item or "").strip()][-limit:]
+
+
+def client_sent_ids_state(state):
+    sent = state.setdefault("clientSentIds", {})
+    if not isinstance(sent, dict):
+        sent = {}
+        state["clientSentIds"] = sent
+    return sent
+
+
+def client_activity_recipients(db, client_db):
+    clients = subscriptions.client_db_clients(client_db)
+    owner_chat_id = str(db.get("chatId") or "").strip()
+    recipients = []
+    for chat_id, subscription in sorted(db.get("clientSubscriptions", {}).items()):
+        chat_id = str(chat_id or "").strip()
+        if not chat_id or chat_id == owner_chat_id:
+            continue
+        if not isinstance(subscription, dict) or subscription.get("enabled") is False:
+            continue
+        if not subscriptions.activity_notifications_enabled(subscription):
+            continue
+        name = subscription.get("client", "")
+        entry = clients.get(name)
+        if not isinstance(entry, dict):
+            continue
+        if not subscriptions.subscription_matches_entry(subscription, entry):
+            continue
+        recipients.append((chat_id, name, subscriptions.client_entry_id(entry)))
+    return recipients
+
+
 def notify_geoip(ctx: NotificationContext, quiet=False):
     db = ctx.load_db()
     if not db.get("enabled") or not db.get("token") or not db.get("chatId"):
@@ -552,40 +685,112 @@ def notify_geoip(ctx: NotificationContext, quiet=False):
         return 0
 
     state = db.setdefault("geoipState", {})
-    sent_ids = list(state.get("sentIds", []))[-500:]
+    sent_ids = normalized_sent_ids(state.get("sentIds", []))
     sent_set = set(sent_ids)
+    client_sent = client_sent_ids_state(state)
     exceptions = activity_exceptions.exception_items(db_path=ctx.manager_db_path)
-    candidates = []
+    events_with_ids = []
     for event in iter_new_events(ctx, db):
         if not geoip_regions(event):
             continue
         if activity_exceptions.event_exception(event, exceptions):
             continue
         item_id = event_id(event)
-        if item_id in sent_set:
-            continue
-        candidates.append(event)
-        sent_ids.append(item_id)
-        sent_set.add(item_id)
+        events_with_ids.append((item_id, event))
 
-    if not candidates:
+    admin_pairs = [(item_id, event) for item_id, event in events_with_ids if item_id not in sent_set]
+    client_batches = []
+    if events_with_ids:
+        client_db = ctx.load_client_db()
+        for chat_id, name, client_id in client_activity_recipients(db, client_db):
+            chat_sent_ids = normalized_sent_ids(client_sent.get(chat_id, []))
+            chat_sent_set = set(chat_sent_ids)
+            pairs = [
+                (item_id, event)
+                for item_id, event in events_with_ids
+                if event.get("client") == name
+                and item_id not in chat_sent_set
+                and not subscriptions.activity_exception_matches(
+                    db,
+                    chat_id,
+                    client_geoip_target(event, client_id),
+                )
+            ]
+            if pairs:
+                client_batches.append((chat_id, chat_sent_ids, client_id, pairs))
+
+    if not admin_pairs and not client_batches:
         state["sentIds"] = sent_ids[-500:]
+        state["clientSentIds"] = {
+            str(chat_id): normalized_sent_ids(ids)
+            for chat_id, ids in client_sent.items()
+            if normalized_sent_ids(ids)
+        }
         ctx.save_db_sections(db, ("geoipState",))
         if not quiet:
             print("No new GeoIP events for Telegram notification.")
         return 0
 
-    message = build_geoip_message(ctx, candidates)
-    try:
-        ctx.send_message(db, message)
-    except Exception as exc:
-        if not quiet:
-            print(f"ERROR: Telegram notification failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
+    admin_sent_count = 0
+    if admin_pairs:
+        admin_events = [event for _item_id, event in admin_pairs]
+        message = build_geoip_message(ctx, admin_events)
+        try:
+            ctx.send_message(db, message)
+        except Exception as exc:
+            if not quiet:
+                print(f"ERROR: Telegram notification failed: {exc}", file=sys.stderr)
+                return 1
+            return 0
+        for item_id, _event in admin_pairs:
+            sent_ids.append(item_id)
+            sent_set.add(item_id)
+        admin_sent_count = len(admin_events)
+
+    client_message_count = 0
+    failed_count = 0
+    client_state_touched = False
+    for chat_id, chat_sent_ids, client_id, pairs in client_batches:
+        client_events = [event for _item_id, event in pairs]
+        message = build_client_geoip_message(ctx, db, client_events)
+        rows = client_geoip_rows(client_events)
+        is_large = client_geoip_warning_is_large(client_events, rows)
+        reply_markup = None
+        if is_large:
+            subscriptions.set_activity_exception_candidates(db, chat_id, [], ctx.utc_stamp())
+            client_state_touched = True
+        else:
+            candidates = client_geoip_exception_candidates(client_events, client_id)
+            subscriptions.set_activity_exception_candidates(db, chat_id, candidates, ctx.utc_stamp())
+            client_state_touched = True
+            if candidates:
+                reply_markup = keyboards.client_activity_notification_keyboard()
+        try:
+            ctx.send_chat_message(db, chat_id, message, reply_markup=reply_markup)
+        except Exception as exc:
+            failed_count += 1
+            if not quiet:
+                print(f"ERROR: client GeoIP notification failed for {chat_id}: {exc}", file=sys.stderr)
+            continue
+        for item_id, _event in pairs:
+            chat_sent_ids.append(item_id)
+        client_sent[chat_id] = chat_sent_ids[-500:]
+        client_message_count += 1
+
     state["sentIds"] = sent_ids[-500:]
+    state["clientSentIds"] = {
+        str(chat_id): normalized_sent_ids(ids)
+        for chat_id, ids in client_sent.items()
+        if normalized_sent_ids(ids)
+    }
     state["lastGeoipNotification"] = ctx.utc_stamp()
-    ctx.save_db_sections(db, ("geoipState",))
+    sections = ("geoipState", "clientSubscriptionState") if client_state_touched else ("geoipState",)
+    ctx.save_db_sections(db, sections)
     if not quiet:
-        print(f"Telegram GeoIP notification sent: {len(candidates)} events.")
-    return 0
+        print(
+            "Telegram GeoIP notification sent: "
+            f"admin events {admin_sent_count}, client chats {client_message_count}."
+        )
+        if failed_count:
+            print(f"Telegram GeoIP client notification failures: {failed_count}")
+    return 1 if failed_count and not quiet else 0

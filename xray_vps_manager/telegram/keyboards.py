@@ -18,6 +18,7 @@ def subscribed_client_menu_keyboard():
         [{"text": "Получить VLESS-ссылку", "callback_data": "client:link"}],
         [{"text": "Страна подключения", "callback_data": "client:country"}],
         [{"text": "Статистика трафика", "callback_data": "client:traffic"}],
+        [{"text": "Уведомления активности", "callback_data": "client:activity"}],
         [{"text": "Помощь", "callback_data": "client:help"}],
         [{"text": "Отписаться от бота", "callback_data": "client:unsubscribe"}],
     ]
@@ -45,6 +46,57 @@ def client_traffic_keyboard():
             [{"text": "Назад", "callback_data": "client:menu"}],
         ]
     }
+
+
+def client_activity_keyboard(enabled=False):
+    action = (
+        {"text": "Отключить", "callback_data": "client:activity:off"}
+        if enabled
+        else {"text": "Включить", "callback_data": "client:activity:on"}
+    )
+    return {
+        "inline_keyboard": [
+            [action],
+            [{"text": "Исключения", "callback_data": "client:activity-exceptions"}],
+            [{"text": "Назад", "callback_data": "client:menu"}],
+        ]
+    }
+
+
+def client_activity_notification_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Добавить в исключения", "callback_data": "client:activity-exception:list"}],
+        ]
+    }
+
+
+def client_activity_exception_keyboard(items):
+    rows = []
+    for index, item in enumerate(items):
+        host = str(item.get("host") or "-")
+        port = str(item.get("port") or "-")
+        regions = str(item.get("regions") or "-")
+        label = f"{host}:{port} · {regions}"
+        if len(label) > 58:
+            label = label[:55].rstrip() + "..."
+        rows.append([{"text": label, "callback_data": f"client:activity-exception:add:{index}"}])
+    rows.append([{"text": "Назад", "callback_data": "client:activity"}])
+    return {"inline_keyboard": rows}
+
+
+def client_activity_exceptions_manage_keyboard(items):
+    rows = []
+    for index, item in enumerate(items):
+        host = str(item.get("host") or "-")
+        port = str(item.get("port") or "-")
+        regions = str(item.get("regions") or "-")
+        label = f"Удалить {host}:{port} · {regions}"
+        if len(label) > 58:
+            label = label[:55].rstrip() + "..."
+        rows.append([{"text": label, "callback_data": f"client:activity-exception:delete:{index}"}])
+    rows.append([{"text": "Назад", "callback_data": "client:activity"}])
+    return {"inline_keyboard": rows}
 
 
 def client_country_keyboard(options, current_tag=""):

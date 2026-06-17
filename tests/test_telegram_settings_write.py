@@ -42,6 +42,7 @@ def telegram_db() -> dict:
                 "linkHash": "hash-1",
                 "subscribedAt": "2026-06-12T08:00:00Z",
                 "enabled": True,
+                "activityNotificationsEnabled": True,
             },
             "222": {
                 "client": "missing_client",
@@ -51,6 +52,7 @@ def telegram_db() -> dict:
                 "linkHash": "hash-2",
                 "subscribedAt": "2026-06-12T09:00:00Z",
                 "enabled": False,
+                "activityNotificationsEnabled": False,
             },
         },
     }
@@ -135,8 +137,10 @@ class TelegramSettingsWriteTests(unittest.TestCase):
             by_chat = {item["chatId"]: item for item in subscriptions}
             self.assertEqual(by_chat["111"]["clientName"], "sqlite_client")
             self.assertEqual(by_chat["111"]["linkSignature"], {"linkHash": "hash-1"})
+            self.assertTrue(by_chat["111"]["activityNotificationsEnabled"])
             self.assertEqual(by_chat["222"]["clientName"], "")
             self.assertFalse(by_chat["222"]["enabled"])
+            self.assertFalse(by_chat["222"]["activityNotificationsEnabled"])
             self.assertFalse(json_path.exists())
 
     def test_save_fails_when_sqlite_database_is_missing(self) -> None:

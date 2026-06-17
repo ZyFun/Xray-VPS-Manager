@@ -20,6 +20,7 @@ CLIENT_CALLBACK_GUARDS_KEY = "callbackGuards"
 CLIENT_CONSUMED_CALLBACK_LIMIT = 40
 CLIENT_CALLBACK_STALE_TEXT = "Эта кнопка уже устарела. Используй последнее сообщение бота."
 CLIENT_CALLBACK_CROSS_MENU_ACTIONS = ("client:menu",)
+CLIENT_CALLBACK_CROSS_MENU_PREFIXES = ("client:activity-exception:",)
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,7 @@ def accept_client_callback(ctx: PollerContext, db, chat_id, data, message_id):
     guard = client_callback_guard(db, chat_id)
     active_message_id = admin.normalize_message_id(guard.get("activeMessageId"))
     consumed = client_consumed_message_ids(guard)
-    if data not in CLIENT_CALLBACK_CROSS_MENU_ACTIONS and active_message_id is not None and message_id != active_message_id:
+    if not is_client_cross_menu_action(data) and active_message_id is not None and message_id != active_message_id:
         return False
     if message_id in consumed:
         return False
@@ -117,6 +118,12 @@ def accept_client_callback(ctx: PollerContext, db, chat_id, data, message_id):
     guard["activeMessageId"] = ""
     ctx.save_db_sections(db, ("clientSubscriptionState",))
     return True
+
+
+def is_client_cross_menu_action(data):
+    if data in CLIENT_CALLBACK_CROSS_MENU_ACTIONS:
+        return True
+    return any(str(data or "").startswith(prefix) for prefix in CLIENT_CALLBACK_CROSS_MENU_PREFIXES)
 
 
 def send_client_menu(ctx: PollerContext, db, chat_id, text=None, parse_mode=None):
@@ -137,6 +144,85 @@ def send_client_traffic_menu(ctx: PollerContext, db, chat_id, text=None, parse_m
         text or traffic.traffic_menu_text(),
         reply_markup=keyboards.client_traffic_keyboard(),
         parse_mode=parse_mode,
+    )
+    register_client_message(ctx, db, chat_id, response)
+
+
+def send_client_activity_menu(ctx: PollerContext, db, chat_id, text=None):
+    subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
+    enabled = subscriptions.activity_notifications_enabled(subscription)
+    response = ctx.send_chat_message(
+        db,
+        chat_id,
+        text
+        or subscriptions.activity_notification_status_for_chat(
+            db,
+            chat_id,
+            ctx.load_client_db(),
+            owner_chat=keyboards.is_owner_chat(db, chat_id),
+        ),
+        reply_markup=keyboards.client_activity_keyboard(enabled),
+    )
+    register_client_message(ctx, db, chat_id, response)
+
+
+def send_client_activity_exception_list(ctx: PollerContext, db, chat_id):
+    items = subscriptions.activity_exception_candidates(db, chat_id)
+    if not items:
+        response = ctx.send_chat_message(
+            db,
+            chat_id,
+            "Список целей для исключения пуст или устарел.\n\n"
+            "Дождись следующего уведомления активности или вернись в меню активности.",
+            reply_markup=keyboards.client_activity_exception_keyboard([]),
+        )
+        register_client_message(ctx, db, chat_id, response)
+        return
+    text = "\n".join(
+        [
+            "Что добавить в исключения?",
+            "",
+            "Выбери адрес, по которому больше не нужно присылать личные предупреждения.",
+            "Это исключение действует только для твоего Telegram-чата и не меняет маршрут VPN.",
+            "",
+            "Если сервис должен идти мимо VPN, добавь этот домен или IP в правила split tunneling своего VPN-клиента: Direct, Bypass, Routing или Rules.",
+        ]
+    )
+    response = ctx.send_chat_message(
+        db,
+        chat_id,
+        text,
+        reply_markup=keyboards.client_activity_exception_keyboard(items),
+    )
+    register_client_message(ctx, db, chat_id, response)
+
+
+def send_client_activity_exceptions_menu(ctx: PollerContext, db, chat_id, text=None):
+    items = subscriptions.activity_exceptions_for_chat(db, chat_id)
+    if not items:
+        message = text or (
+            "Личных исключений активности пока нет.\n\n"
+            "Их можно добавить из следующего небольшого предупреждения активности кнопкой "
+            "`Добавить в исключения`."
+        )
+    else:
+        labels = [f"{index}. {subscriptions.activity_target_label(item)}" for index, item in enumerate(items, start=1)]
+        message = text or "\n".join(
+            [
+                "Личные исключения активности",
+                "",
+                "Выбери запись, которую нужно удалить.",
+                "После удаления предупреждения по этой цели снова будут приходить, если событие повторится.",
+                "",
+                *labels,
+            ]
+        )
+    response = ctx.send_chat_message(
+        db,
+        chat_id,
+        message,
+        reply_markup=keyboards.client_activity_exceptions_manage_keyboard(items),
+        parse_mode=None,
     )
     register_client_message(ctx, db, chat_id, response)
 
@@ -337,6 +423,89 @@ def handle_callback_query(ctx: PollerContext, db, update):
     if data == "client:traffic":
         ctx.answer_callback_query(db, callback_id)
         send_client_traffic_menu(ctx, db, chat_id)
+        return True
+    if data == "client:activity":
+        ctx.answer_callback_query(db, callback_id)
+        send_client_activity_menu(ctx, db, chat_id)
+        return True
+    if data in ("client:activity:on", "client:activity:off"):
+        enabled = data.endswith(":on")
+        if not subscriptions.set_activity_notifications(db, chat_id, enabled, ctx.utc_stamp()):
+            ctx.answer_callback_query(db, callback_id, "Подписка не найдена", show_alert=True)
+            send_client_menu(ctx, db, chat_id, subscribe_prompt_for_chat(ctx, db, chat_id))
+            return True
+        ctx.save_db_sections(db, ("clientSubscriptions",))
+        ctx.answer_callback_query(db, callback_id, "Готово")
+        status = subscriptions.activity_notification_status_for_chat(
+            db,
+            chat_id,
+            ctx.load_client_db(),
+            owner_chat=keyboards.is_owner_chat(db, chat_id),
+        )
+        send_client_activity_menu(ctx, db, chat_id, status)
+        return True
+    if data == "client:activity-exception:list":
+        ctx.answer_callback_query(db, callback_id)
+        send_client_activity_exception_list(ctx, db, chat_id)
+        return True
+    if data == "client:activity-exceptions":
+        ctx.answer_callback_query(db, callback_id)
+        send_client_activity_exceptions_menu(ctx, db, chat_id)
+        return True
+    if data.startswith("client:activity-exception:delete:"):
+        raw_index = data.rsplit(":", 1)[-1]
+        try:
+            index = int(raw_index)
+        except ValueError:
+            index = -1
+        removed = subscriptions.remove_activity_exception_for_chat(db, chat_id, index)
+        if not removed:
+            ctx.answer_callback_query(db, callback_id, "Список устарел", show_alert=True)
+            send_client_activity_exceptions_menu(ctx, db, chat_id)
+            return True
+        ctx.save_db_sections(db, ("clientSubscriptionState",))
+        ctx.answer_callback_query(db, callback_id, "Удалено")
+        label = subscriptions.activity_target_label(removed)
+        send_client_activity_exceptions_menu(
+            ctx,
+            db,
+            chat_id,
+            f"Исключение удалено: {label}.\n\n"
+            "Если такое предупреждение повторится, я снова покажу его в личной рассылке.",
+        )
+        return True
+    if data.startswith("client:activity-exception:add:"):
+        raw_index = data.rsplit(":", 1)[-1]
+        try:
+            index = int(raw_index)
+        except ValueError:
+            index = -1
+        items = subscriptions.activity_exception_candidates(db, chat_id)
+        if index < 0 or index >= len(items):
+            ctx.answer_callback_query(db, callback_id, "Список устарел", show_alert=True)
+            send_client_activity_exception_list(ctx, db, chat_id)
+            return True
+        client_db = ctx.load_client_db()
+        _name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
+        if error:
+            ctx.answer_callback_query(db, callback_id, "Подписка недоступна", show_alert=True)
+            send_client_menu(ctx, db, chat_id, error)
+            return True
+        item = dict(items[index])
+        item["clientId"] = subscriptions.client_entry_id(entry)
+        added = subscriptions.add_activity_exception_for_chat(db, chat_id, item, ctx.utc_stamp())
+        ctx.save_db_sections(db, ("clientSubscriptionState",))
+        ctx.answer_callback_query(db, callback_id, "Добавлено")
+        label = subscriptions.activity_target_label(added or item)
+        response = ctx.send_chat_message(
+            db,
+            chat_id,
+            "Готово.\n\n"
+            f"Больше не буду присылать личные предупреждения по {label}.\n\n"
+            "Если этот сервис должен идти мимо VPN, добавь его домен или IP в split tunneling своего VPN-клиента.",
+            reply_markup=keyboards.client_activity_exception_keyboard([]),
+        )
+        register_client_message(ctx, db, chat_id, response)
         return True
     if data == "client:country":
         ctx.answer_callback_query(db, callback_id)

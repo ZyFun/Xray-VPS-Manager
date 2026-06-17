@@ -8,7 +8,7 @@ from pathlib import Path
 
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -257,6 +257,17 @@ MIGRATIONS: tuple[Migration, ...] = (
             "ALTER TABLE clients ADD COLUMN selected_cascade_tag TEXT",
             "CREATE INDEX IF NOT EXISTS idx_clients_selected_cascade ON clients(selected_cascade_tag)",
             "CREATE INDEX IF NOT EXISTS idx_cascade_routes_country ON cascade_routes(country)",
+        ),
+    ),
+    Migration(
+        version=3,
+        name="telegram_activity_subscriptions",
+        statements=(
+            """
+            ALTER TABLE telegram_subscriptions
+            ADD COLUMN activity_notifications_enabled INTEGER NOT NULL DEFAULT 0 CHECK (activity_notifications_enabled IN (0, 1))
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_telegram_subscriptions_activity ON telegram_subscriptions(activity_notifications_enabled)",
         ),
     ),
 )

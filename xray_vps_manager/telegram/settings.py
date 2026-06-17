@@ -193,6 +193,7 @@ def load_db_from_sqlite(connection) -> dict:
             "linkHash": link_signature.get("linkHash", ""),
             "subscribedAt": item.get("createdAt") or "",
             "enabled": item.get("enabled") is not False,
+            "activityNotificationsEnabled": item.get("activityNotificationsEnabled") is True,
         }
         if item.get("updatedAt"):
             subscriptions[chat_id]["updatedAt"] = item["updatedAt"]
@@ -313,6 +314,7 @@ def replace_subscriptions_in_sqlite(connection, normalized: dict) -> None:
                 "connection": subscription.get("connection") or "",
                 "linkSignature": {"linkHash": subscription.get("linkHash") or ""},
                 "enabled": subscription.get("enabled") is not False,
+                "activityNotificationsEnabled": subscription.get("activityNotificationsEnabled") is True,
                 "createdAt": subscription.get("subscribedAt") or subscription.get("createdAt") or "",
                 "updatedAt": subscription.get("updatedAt") or subscription.get("subscribedAt") or "",
             },
