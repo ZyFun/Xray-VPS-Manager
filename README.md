@@ -1,28 +1,167 @@
 # xray-vps-manager
 
-Набор скриптов для управления VPS с Xray VLESS Reality: установка, клиенты, каскад, обновления и базовая настройка сервера.
+Xray VPS Manager - интерактивный менеджер VPS с Xray VLESS Reality. Основной сценарий работы проходит через `xray-menu`: в одном меню можно управлять клиентами, Reality-подключениями, каскадами, WARP, трафиком, журналом активности, резервными копиями, обновлениями Xray, SSH-безопасностью и Telegram-ботом.
 
-При каждом запуске `install.sh` создаётся новый конфиг:
+CLI-команды остаются доступными для автоматизации и ручного запуска отдельных операций, но пользовательский вход по умолчанию - это меню.
 
-- новый VLESS Reality inbound
-- новый UUID
-- новый Reality key
-- новый shortId
-- стартовый клиент `starter`
-- новая ссылка в `/root/xray-reality-client.txt`
-- статистика трафика через локальный Xray API
-- основная база менеджера в `/usr/local/etc/xray/manager.db`
-- сохранение накопительной статистики в SQLite
-- почасовая и подневная история трафика за последние 6 месяцев
-- опциональный журнал метаданных активности по клиентам с хранением 365 дней
-- дневные и месячные лимиты трафика клиентов с автоотключением
-- автоматическое отключение клиентов с истёкшим сроком доступа через `xray-client-expire.timer`
-- запрет BitTorrent-трафика через routing rule `protocol=bittorrent -> blocked`
-- часовой пояс менеджера для сроков доступа, лимитов, отчётов и отображения времени
+## Содержание
 
-Сохранённого `config.json` в папке нет. Каскадный outbound тоже заранее не сохранён.
+- Возможности
+- Быстрый старт
+- Установка
+- Состав проекта
+- Меню
+- Подключения
+- Клиенты
+- Журнал активности
+- Telegram-бот
+- Часовой пояс и лимиты трафика
+- Каскад и WARP
+- Обновление Xray и диагностика
+- Безопасность SSH
+- Резервные копии, SQLite и технические бэкапы
 
-## Что Внутри
+## Возможности
+
+- установка и обновление Xray Core из официальных релизов XTLS/Xray-core;
+- создание одного или нескольких VLESS Reality-подключений с transport `tcp`, `grpc` или `xhttp`;
+- добавление клиентов, выпуск VLESS-ссылок, временное отключение, удаление и продление доступа;
+- бессрочный доступ или срок до конкретного календарного дня в часовом поясе менеджера;
+- дневные и месячные лимиты трафика с автоотключением и авторазблокировкой после нового периода;
+- постоянная SQLite-база `manager.db` для клиентов, трафика, активности, Telegram-настроек, подписок и оплаты;
+- статистика трафика через локальный Xray API, online/offline-статус и история по часам/дням за 6 месяцев;
+- каскадные outbound-серверы, выбор страны/маршрута для отдельного клиента и проверка split tunneling через GeoIP warning rules;
+- WARP как Xray `wireguard` outbound без изменения системного default route;
+- журнал активности по метаданным access log без чтения содержимого HTTPS, сообщений, файлов или тела запросов;
+- Telegram-бот для клиентских подписок, актуальных ссылок, статуса, трафика, напоминаний об оплате и ограниченной админ-панели владельца;
+- резервные копии `config.json`, переносимого `server.env` и `manager.db` с pre-restore backup перед восстановлением;
+- диагностика сервера, проверка Xray config, timers, SQLite, routing, torrent-блокировки и SSH password login.
+
+## Быстрый Старт
+
+С компьютера, где лежит папка проекта:
+
+```bash
+scp -r ./xray_server root@SERVER_HOST:/root/
+```
+
+На сервере:
+
+```bash
+ssh root@SERVER_HOST
+cd /root/xray_server
+bash install.sh
+xray-menu
+```
+
+Стартовая ссылка выводится в конце установки и сохраняется здесь:
+
+```text
+/root/xray-reality-client.txt
+```
+
+Повторно вывести ссылку стартового клиента:
+
+```bash
+xray-client link starter
+```
+
+## Установка
+
+`install.sh` предназначен для новой установки менеджера на сервер. При запуске на уже настроенном сервере он создаёт новый Reality-конфиг, новые ключи, новый UUID и стартового клиента, поэтому для обычного обновления установленного сервера нужно использовать меню, `xray-update` или точечный деплой изменённых служебных команд.
+
+Новая установка создаёт:
+
+- VLESS Reality inbound;
+- UUID стартового клиента `starter`;
+- Reality private/public key и `shortId`;
+- ссылку стартового клиента в `/root/xray-reality-client.txt`;
+- основную SQLite-базу `/usr/local/etc/xray/manager.db`;
+- systemd timers для синхронизации трафика и проверки сроков доступа;
+- запрет BitTorrent-трафика через routing rule `protocol=bittorrent -> blocked`;
+- локальные служебные команды в `/usr/local/sbin`;
+- Python-пакет менеджера в `/usr/local/lib/xray-vps-manager`.
+
+Сохранённого `config.json` в репозитории нет: конфиг генерируется на сервере во время установки. Каскадный outbound также не хранится заранее и добавляется только после явной настройки.
+
+По умолчанию Xray скачивается из официального источника Xray: XTLS/Xray-core GitHub Releases.
+Используется последняя стабильная версия. Если доступен digest-файл, установщик проверяет SHA256.
+Если архив не скачался после нескольких попыток, интерактивная установка покажет, сколько retry осталось, а затем предложит повторить попытку, ввести свой URL или использовать локальный zip-архив Xray.
+После копирования папки установщик очищает служебные `._*` файлы, которые могут появиться при переносе проекта с некоторых desktop-систем.
+Если на сервере уже была прежняя `manager.db`, установщик сохраняет её как `.bak.<timestamp>` и создаёт новую базу.
+
+Перед установкой Xray можно изменить базовые параметры:
+
+```text
+PORT
+REALITY_SNI
+CLIENT_NAME
+SERVER_NAME
+FINGERPRINT
+REALITY_TRANSPORT
+MANAGER_TIMEZONE
+```
+
+Нажми Enter на любом вопросе, чтобы оставить значение по умолчанию.
+
+Значения по умолчанию:
+
+```text
+PORT=443
+REALITY_SNI=www.microsoft.com
+CLIENT_NAME=starter
+SERVER_NAME=Xray
+FINGERPRINT=chrome
+REALITY_TRANSPORT=tcp
+MANAGER_TIMEZONE=server local time
+```
+
+`REALITY_DEST` создаётся автоматически из SNI и стандартного HTTPS-порта 443:
+
+```text
+REALITY_DEST=REALITY_SNI:443
+```
+
+`FINGERPRINT` задаёт маскировку браузера/uTLS в клиентской ссылке `vless://`.
+Доступные варианты: `chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`.
+
+`REALITY_TRANSPORT` задаёт transport первого VLESS Reality-подключения. По умолчанию используется `tcp` с Vision flow `xtls-rprx-vision`. Также доступны `grpc` и `xhttp`; для `grpc` используется `GRPC_SERVICE_NAME` (по умолчанию `vless-grpc`), для `xhttp` используются `XHTTP_PATH` (по умолчанию `/vless-xhttp`) и `XHTTP_MODE` (по умолчанию `auto`).
+
+`MANAGER_TIMEZONE` можно оставить пустым, тогда будет использоваться системное время сервера.
+В интерактивной установке часовой пояс выбирается из списка. Для редкой зоны можно выбрать поиск по IANA-списку, например по слову `Moscow`, `Europe` или `Novosibirsk`.
+
+Во время установки появится вопрос:
+
+```text
+Add cascade upstream VLESS link now? [y/N]:
+```
+
+Нажми Enter или введи `n`, чтобы продолжить без каскада.
+Введи `y`, чтобы сразу вставить ссылку исходящего/root-сервера вида `vless://...`.
+
+### Альтернативный Источник Xray
+
+Свой URL:
+
+```bash
+XRAY_SOURCE=custom \
+XRAY_ZIP_URL=https://DOWNLOAD_HOST/Xray-linux-64.zip \
+XRAY_DGST_URL=https://DOWNLOAD_HOST/Xray-linux-64.zip.dgst \
+bash install.sh
+```
+
+Локальный архив, заранее скопированный на сервер:
+
+```bash
+XRAY_SOURCE=local \
+XRAY_LOCAL_ZIP=/root/xray_server/Xray-linux-64.zip \
+XRAY_LOCAL_DGST=/root/xray_server/Xray-linux-64.zip.dgst \
+bash install.sh
+```
+
+`XRAY_LOCAL_DGST` и `XRAY_DGST_URL` можно не указывать, если digest-файла нет.
+
+## Состав Проекта
 
 ```text
 install.sh
@@ -51,115 +190,7 @@ xray_vps_manager/
 README.md
 ```
 
-Корневые команды `xray-menu`, `xray-client`, `xray-telegram` и остальные оставлены для совместимости как тонкие wrapper-скрипты. Основной Python-код команд теперь лежит в `xray_vps_manager/commands`, общие инфраструктурные, `server.env` и terminal/table helpers находятся в `xray_vps_manager/core`, логика клиентов постепенно выносится в `xray_vps_manager/clients`, хранение и агрегация трафика - в `xray_vps_manager/traffic`, настройки, управление, синхронизация access log, парсинг, отчёты, исключения и экспорт журнала активности - в `xray_vps_manager/activity`, работа с Xray config и Reality-ключами - в `xray_vps_manager/xray`, а базовый слой Telegram-бота - в `xray_vps_manager/telegram`. Команды `xray-menu`, `xray-client`, `xray-activity` и `xray-backup` используют общий terminal/table слой.
-
-## Установка
-
-С компьютера, где лежит папка проекта:
-
-```bash
-scp -r ./xray_server root@SERVER_HOST:/root/
-```
-
-На сервере:
-
-```bash
-ssh root@SERVER_HOST
-cd /root/xray_server
-bash install.sh
-```
-
-По умолчанию Xray скачивается из официального источника Xray: XTLS/Xray-core GitHub Releases.
-Используется последняя стабильная версия. Если доступен digest-файл, установщик проверяет SHA256.
-Если архив не скачался после нескольких попыток, интерактивная установка покажет, сколько retry осталось, а затем предложит повторить попытку, ввести свой URL или использовать локальный zip-архив Xray.
-После копирования папки установщик очищает служебные `._*` файлы, которые могут появиться при переносе проекта с некоторых desktop-систем.
-Новая установка сразу создаёт `/usr/local/etc/xray/manager.db`. Если на сервере уже была прежняя `manager.db`, установщик сохраняет её как `.bak.<timestamp>` и создаёт новую базу.
-
-Перед установкой Xray можно изменить базовые параметры:
-
-```text
-PORT
-REALITY_SNI
-CLIENT_NAME
-SERVER_NAME
-FINGERPRINT
-REALITY_TRANSPORT
-MANAGER_TIMEZONE
-```
-
-Нажми Enter на любом вопросе, чтобы оставить значение по умолчанию.
-
-Значения по умолчанию:
-
-```text
-PORT=443
-REALITY_SNI=www.microsoft.com
-CLIENT_NAME=starter
-SERVER_NAME=Xray
-FINGERPRINT=chrome
-REALITY_TRANSPORT=tcp
-MANAGER_TIMEZONE=server local time
-```
-
-Альтернативный источник Xray можно задать заранее для неинтерактивной установки.
-
-Свой URL:
-
-```bash
-XRAY_SOURCE=custom \
-XRAY_ZIP_URL=https://DOWNLOAD_HOST/Xray-linux-64.zip \
-XRAY_DGST_URL=https://DOWNLOAD_HOST/Xray-linux-64.zip.dgst \
-bash install.sh
-```
-
-Локальный архив, заранее скопированный на сервер:
-
-```bash
-XRAY_SOURCE=local \
-XRAY_LOCAL_ZIP=/root/xray_server/Xray-linux-64.zip \
-XRAY_LOCAL_DGST=/root/xray_server/Xray-linux-64.zip.dgst \
-bash install.sh
-```
-
-`XRAY_LOCAL_DGST` и `XRAY_DGST_URL` можно не указывать, если digest-файла нет.
-
-`MANAGER_TIMEZONE` можно оставить пустым, тогда будет использоваться системное время сервера.
-В интерактивной установке часовой пояс выбирается из списка. Для редкой зоны можно выбрать поиск по IANA-списку, например по слову `Moscow`, `Europe` или `Novosibirsk`.
-
-`REALITY_DEST` создаётся автоматически из SNI и стандартного HTTPS-порта 443:
-
-```text
-REALITY_DEST=REALITY_SNI:443
-```
-
-`FINGERPRINT` задаёт маскировку браузера/uTLS в клиентской ссылке `vless://`.
-Доступные варианты: `chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`.
-
-`REALITY_TRANSPORT` задаёт transport первого VLESS Reality-подключения. По умолчанию используется `tcp` с Vision flow `xtls-rprx-vision`. Также доступны `grpc` и `xhttp`; для `grpc` используется `GRPC_SERVICE_NAME` (по умолчанию `vless-grpc`), для `xhttp` используются `XHTTP_PATH` (по умолчанию `/vless-xhttp`) и `XHTTP_MODE` (по умолчанию `auto`).
-
-Во время установки появится вопрос:
-
-```text
-Add cascade upstream VLESS link now? [y/N]:
-```
-
-Нажми Enter или введи `n`, чтобы продолжить без каскада.
-
-Введи `y`, чтобы сразу вставить ссылку исходящего/root-сервера вида `vless://...`.
-
-## После Установки
-
-Стартовая ссылка выводится в конце установки и сохраняется здесь:
-
-```bash
-/root/xray-reality-client.txt
-```
-
-Повторно вывести ссылку стартового клиента:
-
-```bash
-xray-client link starter
-```
+Корневые команды - это тонкие совместимые точки входа для ручного запуска и автоматизации. Основной код находится в Python-пакете `xray_vps_manager`: команды в `commands`, общая инфраструктура в `core`, логика клиентов в `clients`, трафик в `traffic`, активность в `activity`, работа с Xray config в `xray`, Telegram-бот в `telegram`, SQLite-слой в `db`.
 
 ## Меню
 
@@ -893,16 +924,16 @@ xray-telegram payment-rounding step 10
 Telegram бот -> Настроить реквизиты оплаты
 ```
 
-По умолчанию реквизиты не указываются, и сообщение остаётся в базовом виде. Можно выбрать перевод по номеру карты, на банковский счёт или по номеру телефона. Для телефона меню предложит банк из списка: `Т-Банк (Тинькофф)`, `Сбербанк`, `ВТБ`, `Альфа-Банк`, `Газпромбанк`, либо ручной ввод названия. Телефон сохраняется в нормализованном виде, например `+79991234567`, чтобы Telegram показывал его как номер.
+По умолчанию реквизиты не указываются, и сообщение остаётся в базовом виде. Можно выбрать перевод по номеру карты, на банковский счёт или по номеру телефона. Для телефона меню предложит банк из списка: `Т-Банк (Тинькофф)`, `Сбербанк`, `ВТБ`, `Альфа-Банк`, `Газпромбанк`, либо ручной ввод названия. Телефон сохраняется в нормализованном виде, например `+70000000000`, чтобы Telegram показывал его как номер.
 
 То же через команду:
 
 ```bash
 xray-telegram payment-details
 xray-telegram payment-details none
-xray-telegram payment-details phone "+79991234567" "Т-Банк (Тинькофф)"
-xray-telegram payment-details card "2200 0000 0000 0000"
-xray-telegram payment-details bank-account "40817810000000000000"
+xray-telegram payment-details phone "+70000000000" "BANK_NAME"
+xray-telegram payment-details card "CARD_NUMBER"
+xray-telegram payment-details bank-account "BANK_ACCOUNT_NUMBER"
 ```
 
 Обновить стандартное меню команд Telegram:
@@ -999,8 +1030,8 @@ Telegram бот -> Обновить меню команд Telegram
 
 ```text
 Перевод нужно выполнить по номеру телефона:
-+79991234567
-Банк: Т-Банк (Тинькофф)
++70000000000
+Банк: BANK_NAME
 ```
 
 После успешного изменения или продления срока доступа подписанный клиент получает сообщение:
@@ -1216,7 +1247,7 @@ WARP настраивается как `wireguard` outbound внутри Xray с
 xray-warp create
 ```
 
-Если первый A-record `api.cloudflareclient.com` зависает на TLS handshake, скрипт попробует другие известные IPv4 и добавит managed-строку в `/etc/hosts` с backup исходного файла.
+Если первый A-record `api.cloudflareclient.com` зависает на TLS handshake, менеджер попробует другие известные IPv4 и добавит managed-строку в `/etc/hosts` с backup исходного файла.
 Endpoint `engage.cloudflareclient.com:2408` из профиля сначала тестируется как есть. IPv4 fallback записывается в `config.json` только если доменный endpoint не прошёл WARP-тест.
 
 Включить WARP для всего управляемого исходящего tcp/udp-трафика Xray:
@@ -1243,7 +1274,7 @@ xray-warp disable
 ```
 
 Если в `config.json` ещё есть cascade outbounds, отключение WARP возвращает общий catch-all маршрут на первый доступный `cascade-*`; если каскадов нет, обычный маршрут становится direct.
-После отключения скрипт временно добавляет отдельный локальный SOCKS inbound без принудительного маршрута на `warp-out`, проверяет обычный Xray-маршрут через Cloudflare trace и завершится ошибкой, если увидит `warp=on`.
+После отключения менеджер временно добавляет отдельный локальный SOCKS inbound без принудительного маршрута на `warp-out`, проверяет обычный Xray-маршрут через Cloudflare trace и завершится ошибкой, если увидит `warp=on`.
 Успешная строка `OK normal Xray route does not use WARP` выводится зелёным цветом в интерактивном терминале.
 
 Отдельно проверить, что обычный Xray-маршрут не использует WARP:
@@ -1280,8 +1311,8 @@ xray-update --test-latest
 xray-update --update
 ```
 
-Если установленная версия уже совпадает с official latest или новее, скрипт выведет зелёное сообщение, что обновление не требуется.
-Перед обновлением и после установки новой версии `xray-update --update` запускает `xray-test`. Если диагностика или обновление не проходит, скрипт выводит красное сообщение с причиной.
+Если установленная версия уже совпадает с official latest или новее, команда выведет зелёное сообщение, что обновление не требуется.
+Перед обновлением и после установки новой версии `xray-update --update` запускает `xray-test`. Если диагностика или обновление не проходит, команда выводит красное сообщение с причиной.
 Перед заменой бинарника создаётся backup предыдущей версии в `/usr/local/lib/xray-backups`.
 
 Обновить `geoip.dat` и `geosite.dat` из official latest Xray Release:
@@ -1331,7 +1362,7 @@ xray-update --rollback ИМЯ_БЭКАПА
 xray-test
 ```
 
-`xray-test` проверяет Xray, config.json, все Reality-подключения и локальные порты, Stats API, SQLite-базу менеджера, `server.env`, таймзону, helper-скрипты, timers, сервис сбора трафика, torrent-правило и каскадную конфигурацию.
+`xray-test` проверяет Xray, config.json, все Reality-подключения и локальные порты, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило и каскадную конфигурацию.
 При проверке установленного Python-пакета служебные `._*` файлы не считаются исходниками менеджера.
 Глубокий сетевой тест каскада остаётся отдельной командой `xray-set-cascade --test` или `xray-set-cascade test NAME`, потому что он временно меняет конфиг и перезапускает Xray.
 
@@ -1486,9 +1517,9 @@ scp BACKUP_ARCHIVE_PATH root@SERVER_HOST:/root/xray_backups/
 xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 ```
 
-Перед восстановлением скрипт автоматически создаёт pre-restore бэкап текущего состояния.
+Перед восстановлением менеджер автоматически создаёт pre-restore бэкап текущего состояния.
 Если на сервере уже есть `/usr/local/etc/xray/manager.db`, дополнительно создаётся отдельная pre-restore копия SQLite-базы в каталоге резервных копий.
-После восстановления скрипт проверяет `config.json`, перезапускает Xray и включает timers.
+После восстановления менеджер проверяет `config.json`, перезапускает Xray и включает timers.
 Если архив переносится на сервер с новым IP или доменом, сначала установи менеджер на новом сервере, затем восстанови архив. `SERVER_ADDR` из нового `server.env` будет сохранён, а старый адрес из архива не перезапишет новый.
 
 ## SQLite Данные
@@ -1513,9 +1544,9 @@ xray-vps-manager sqlite status
 SQLite: статус базы
 ```
 
-## Бэкапы
+## Автоматические Технические Бэкапы
 
-Скрипты создают бэкап конфига перед постоянными изменениями.
+Перед постоянными изменениями Xray config менеджер создаёт технический бэкап текущего конфига.
 
 Бэкапы конфига лежат рядом с основным конфигом:
 
@@ -1529,4 +1560,4 @@ SQLite: статус базы
 /usr/local/lib/xray-backups
 ```
 
-Если новый конфиг не проходит проверку, скрипт восстанавливает предыдущий конфиг и перезапускает Xray.
+Если новый конфиг не проходит проверку, менеджер восстанавливает предыдущий конфиг и перезапускает Xray.
