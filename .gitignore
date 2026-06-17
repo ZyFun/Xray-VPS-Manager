@@ -1,0 +1,48 @@
+# macOS
+.DS_Store
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Local environment and runtime state
+.env
+.env.*
+!.env.example
+/server.env
+/config.json
+/manager.db
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+
+# Local backup/export artifacts
+/xray_backups/
+/xray_activity_exports/
+*.bak
+*.backup
+*.tmp
+
+# Editor settings
+.idea/
+.vscode/
