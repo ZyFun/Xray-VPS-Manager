@@ -20,7 +20,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-17 13:35 UTC"
+MENU_UPDATED = "2026-06-17 14:36 UTC"
 
 
 def die(message):
@@ -60,6 +60,7 @@ def main_menu_actions():
         ("3", "Безопасность"),
         ("4", "Резервные копии"),
         ("5", "Telegram бот"),
+        ("6", "Обновление менеджера"),
         ("0", "Выход"),
     ]
 
@@ -172,6 +173,17 @@ def update_menu_actions():
         ("7", "Обновить geoip/geosite из Loyalsoldier"),
         ("8", "Обновить geoip.dat из v2fly"),
         ("9", "SQLite: статус базы"),
+        ("0", "Назад"),
+    ]
+
+
+def manager_update_menu_actions():
+    return [
+        ("1", "Проверить обновление менеджера"),
+        ("2", "Обновить менеджер до latest release"),
+        ("3", "Обновить менеджер до конкретного тега"),
+        ("4", "Показать бэкапы менеджера"),
+        ("5", "Откатить менеджер к предыдущей версии"),
         ("0", "Назад"),
     ]
 
@@ -432,6 +444,16 @@ def update_menu_handlers():
     }
 
 
+def manager_update_menu_handlers():
+    return {
+        "1": ("Проверить обновление менеджера", lambda: menu_xray_actions.check_manager_update(call)),
+        "2": ("Обновить менеджер до latest release", lambda: menu_xray_actions.update_manager(call)),
+        "3": ("Обновить менеджер до конкретного тега", lambda: menu_xray_actions.update_manager_tag(call)),
+        "4": ("Показать бэкапы менеджера", lambda: menu_xray_actions.show_manager_update_backups(call)),
+        "5": ("Откатить менеджер к предыдущей версии", lambda: menu_xray_actions.rollback_manager(call, confirm)),
+    }
+
+
 def traffic_menu_handlers():
     return {
         "1": ("Просмотр трафика", open_traffic_menu),
@@ -603,6 +625,10 @@ def open_update_menu():
     menu_loop("Обновление Xray", update_menu_actions(), update_menu_handlers())
 
 
+def open_manager_update_menu():
+    menu_loop("Обновление менеджера", manager_update_menu_actions(), manager_update_menu_handlers())
+
+
 def open_backup_menu():
     menu_loop("Резервные копии", backup_menu_actions(), backup_menu_handlers())
 
@@ -651,6 +677,7 @@ def main_menu_handlers():
         "3": ("Безопасность", open_security_menu),
         "4": ("Резервные копии", open_backup_menu),
         "5": ("Telegram бот", open_telegram_menu),
+        "6": ("Обновление менеджера", open_manager_update_menu),
     }
 
 

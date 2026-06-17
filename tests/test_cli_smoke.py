@@ -16,6 +16,7 @@ class CliSmokeTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertIn("Usage: xray-vps-manager COMMAND", output)
+        self.assertIn("manager-update", output)
         self.assertIn("telegram", output)
 
     def test_unknown_command_exits_with_error(self) -> None:

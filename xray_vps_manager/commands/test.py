@@ -44,6 +44,7 @@ HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-warp",
     "/usr/local/sbin/xray-telegram",
     "/usr/local/sbin/xray-vps-manager",
+    "/usr/local/sbin/xray-manager-update",
 ]
 MANAGER_PACKAGE_DIR = Path("/usr/local/lib/xray-vps-manager/xray_vps_manager")
 TRAFFIC_SERVICE_COMMANDS = [

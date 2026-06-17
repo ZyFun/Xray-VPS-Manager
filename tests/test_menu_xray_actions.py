@@ -11,6 +11,24 @@ class MenuXrayActionsTests(unittest.TestCase):
 
         self.assertEqual(calls, [["xray-vps-manager", "sqlite", "status"]])
 
+    def test_manager_update_actions_call_manager_update_command(self) -> None:
+        calls = []
+
+        menu_xray_actions.check_manager_update(calls.append)
+        menu_xray_actions.update_manager(calls.append)
+        menu_xray_actions.show_manager_update_backups(calls.append)
+        menu_xray_actions.rollback_manager(calls.append, lambda _message: True)
+
+        self.assertEqual(
+            calls,
+            [
+                ["xray-manager-update", "--check"],
+                ["xray-manager-update", "--update"],
+                ["xray-manager-update", "--backups"],
+                ["xray-manager-update", "--rollback"],
+            ],
+        )
+
     def test_cascade_menu_actions_call_named_cascade_commands(self) -> None:
         calls = []
 

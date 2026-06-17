@@ -17,7 +17,7 @@ CLI-команды остаются доступными для автомати
 - Telegram-бот
 - Часовой пояс и лимиты трафика
 - Каскад и WARP
-- Обновление Xray и диагностика
+- Обновление менеджера, Xray и диагностика
 - Безопасность SSH
 - Резервные копии, SQLite и технические бэкапы
 
@@ -34,12 +34,26 @@ CLI-команды остаются доступными для автомати
 - WARP как Xray `wireguard` outbound без изменения системного default route;
 - журнал активности по метаданным access log без чтения содержимого HTTPS, сообщений, файлов или тела запросов;
 - Telegram-бот для клиентских подписок, актуальных ссылок, статуса, трафика, напоминаний об оплате и ограниченной админ-панели владельца;
+- обновление самого менеджера из GitHub Releases без повторного запуска `install.sh`;
 - резервные копии `config.json`, переносимого `server.env` и `manager.db` с pre-restore backup перед восстановлением;
 - диагностика сервера, проверка Xray config, timers, SQLite, routing, torrent-блокировки и SSH password login.
 
 ## Быстрый Старт
 
-С компьютера, где лежит папка проекта:
+Установка последнего релиза на новый сервер:
+
+```bash
+apt update && apt install -y curl ca-certificates
+TAG="$(curl -fsSL https://api.github.com/repos/ZyFun/Xray-VPS-Manager/releases/latest \
+  | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
+  | head -n 1)"
+test -n "$TAG"
+curl -fsSL "https://raw.githubusercontent.com/ZyFun/Xray-VPS-Manager/${TAG}/bootstrap.sh" | bash -s -- "$TAG"
+```
+
+GitHub автоматически создаёт архив `Source code (tar.gz)` для каждого тега релиза; отдельные binaries прикреплять не нужно.
+
+Если нужно установить локальную рабочую копию проекта, можно по-прежнему скопировать папку на сервер:
 
 ```bash
 scp -r ./xray_server root@SERVER_HOST:/root/
@@ -68,7 +82,9 @@ xray-client link starter
 
 ## Установка
 
-`install.sh` предназначен для новой установки менеджера на сервер. При запуске на уже настроенном сервере он создаёт новый Reality-конфиг, новые ключи, новый UUID и стартового клиента, поэтому для обычного обновления установленного сервера нужно использовать меню, `xray-update` или точечный деплой изменённых служебных команд.
+`install.sh` предназначен для новой установки менеджера на сервер. При запуске на уже настроенном сервере он создаёт новый Reality-конфиг, новые ключи, новый UUID и стартового клиента, поэтому для обновления установленного сервера нужно использовать меню: `xray-manager-update` обновляет сам менеджер, а `xray-update` обновляет Xray Core и geo assets.
+
+`bootstrap.sh` - это первый вход для чистого сервера. Он ставит минимальные зависимости `curl`, `ca-certificates` и `tar`, скачивает release-архив `ZyFun/Xray-VPS-Manager`, переносит старую папку `/root/xray_server` в backup-папку при необходимости и запускает `install.sh`. Если на сервере уже есть `/usr/local/etc/xray/config.json` или `/usr/local/etc/xray/manager.db`, bootstrap останавливается и предлагает использовать `xray-manager-update`, чтобы не пересоздать рабочий конфиг.
 
 Новая установка создаёт:
 
@@ -164,6 +180,7 @@ bash install.sh
 ## Состав Проекта
 
 ```text
+bootstrap.sh
 install.sh
 pyproject.toml
 xray-vps-manager
@@ -174,6 +191,7 @@ xray-traffic-sync
 xray-update
 xray-backup
 xray-test
+xray-manager-update
 xray-activity
 xray-telegram
 xray-warp
@@ -219,16 +237,17 @@ xray-menu
 Главное меню разделено на подменю:
 
 ```text
-+---+-------------------+
-| № | Действие          |
-+---+-------------------+
-| 1 | Клиенты           |
-| 2 | Настройки Xray    |
-| 3 | Безопасность      |
-| 4 | Резервные копии   |
-| 5 | Telegram бот      |
-| 0 | Выход             |
-+---+-------------------+
++---+----------------------+
+| № | Действие             |
++---+----------------------+
+| 1 | Клиенты              |
+| 2 | Настройки Xray       |
+| 3 | Безопасность         |
+| 4 | Резервные копии      |
+| 5 | Telegram бот         |
+| 6 | Обновление менеджера |
+| 0 | Выход                |
++---+----------------------+
 ```
 
 В каждом подменю есть пункт:
@@ -322,6 +341,13 @@ xray-menu
 7 Обновить geoip/geosite из Loyalsoldier
 8 Обновить geoip.dat из v2fly
 9 SQLite: статус базы
+
+Обновление менеджера:
+1 Проверить обновление менеджера
+2 Обновить менеджер до latest release
+3 Обновить менеджер до конкретного тега
+4 Показать бэкапы менеджера
+5 Откатить менеджер к предыдущей версии
 
 Клиенты -> Трафик -> Просмотр трафика:
 1 За день по часам
@@ -1354,6 +1380,78 @@ xray-update --rollback
 xray-update --rollback ИМЯ_БЭКАПА
 ```
 
+## Обновление Менеджера
+
+Код меню, клиентских команд, Telegram-бота и Python-пакета менеджера обновляется отдельно от Xray Core. Для этого используется `xray-manager-update`, который скачивает архив конкретного GitHub Release из репозитория `ZyFun/Xray-VPS-Manager`.
+
+Проверить latest release:
+
+```bash
+xray-manager-update --check
+```
+
+Обновиться до latest release:
+
+```bash
+xray-manager-update --update
+```
+
+Обновиться до конкретного тега:
+
+```bash
+xray-manager-update --update v1.0.1
+```
+
+Показать бэкапы менеджера:
+
+```bash
+xray-manager-update --backups
+```
+
+Откатиться к последнему backup:
+
+```bash
+xray-manager-update --rollback
+```
+
+Откатиться к конкретному backup:
+
+```bash
+xray-manager-update --rollback ИМЯ_БЭКАПА
+```
+
+Переустановить тот же тег или явно поставить тег старее текущей версии:
+
+```bash
+xray-manager-update --update v1.0.0 --force
+```
+
+Команда обновляет только файлы менеджера:
+
+```text
+/root/xray_server
+/usr/local/sbin/xray-*
+/usr/local/lib/xray-vps-manager/xray_vps_manager
+```
+
+Она не запускает `install.sh` и не трогает runtime-данные:
+
+```text
+/usr/local/etc/xray/config.json
+/usr/local/etc/xray/server.env
+/usr/local/etc/xray/manager.db
+Reality keys
+clients
+traffic history
+Telegram settings
+```
+
+Перед заменой файлов создаётся backup в `/usr/local/lib/xray-vps-manager-backups`. После update или rollback выполняется `systemctl daemon-reload`, затем `try-restart` для manager-owned units: `xray-traffic-sync.timer`, `xray-client-expire.timer`, `xray-traffic-sync.service`, `xray-client-expire.service` и `xray-telegram-poller.service`. Xray Core при этом не перезапускается, чтобы не рвать клиентские соединения без необходимости.
+
+После обновления проверяется запуск `xray-vps-manager --help`, `xray-manager-update --help` и, если не передан `--no-test`, выполняется `xray-test`. Если проверка не проходит, менеджер пытается восстановить предыдущую версию из backup.
+
+Эти действия доступны через корневой пункт `Обновление менеджера` в `xray-menu`.
+
 ## Проверка Сервиса
 
 Прогнать все безопасные тесты сервера:
@@ -1421,15 +1519,18 @@ systemctl status xray-client-expire.timer --no-pager
 /usr/local/sbin/xray-warp                управление WARP outbound
 /usr/local/sbin/xray-traffic-sync        сохранение статистики
 /usr/local/sbin/xray-update              обновление и откат Xray
+/usr/local/sbin/xray-manager-update      обновление и откат Xray VPS Manager
 /usr/local/sbin/xray-backup              резервное копирование и восстановление данных
 /usr/local/sbin/xray-test                безопасная диагностика сервера
 /usr/local/sbin/xray-activity            журнал активности и отчёты по метаданным
 /usr/local/sbin/xray-telegram            Telegram-уведомления о GeoIP-событиях
 /usr/local/sbin/xray-vps-manager         единая CLI-точка входа в команды менеджера
 /usr/local/lib/xray-vps-manager          Python-пакет менеджера
+/root/xray_server/bootstrap.sh           установка чистого сервера из GitHub Releases
 /root/xray-reality-client.txt            стартовая ссылка
 /root/xray_backups                       архивы резервных копий данных
 /root/xray_activity_exports              экспортированные отчёты активности
+/usr/local/lib/xray-vps-manager-backups  архивы отката менеджера
 /etc/ssh/sshd_config.d/00-xray-vps-manager.conf  managed-настройка SSH password login
 /etc/systemd/system/xray-telegram-poller.service  быстрые ответы Telegram-бота через long polling
 /etc/systemd/system/xray-client-expire.timer  ежедневное отключение клиентов с истёкшим сроком

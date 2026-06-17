@@ -228,6 +228,33 @@ def sqlite_status(call: CommandRunner) -> None:
     call(["xray-vps-manager", "sqlite", "status"])
 
 
+def check_manager_update(call: CommandRunner) -> None:
+    call(["xray-manager-update", "--check"])
+
+
+def update_manager(call: CommandRunner) -> None:
+    call(["xray-manager-update", "--update"])
+
+
+def update_manager_tag(call: CommandRunner) -> None:
+    tag = input("Тег релиза, например v1.0.1: ").strip()
+    if not tag:
+        print("Тег не указан.")
+        return
+    call(["xray-manager-update", "--update", tag])
+
+
+def show_manager_update_backups(call: CommandRunner) -> None:
+    call(["xray-manager-update", "--backups"])
+
+
+def rollback_manager(call: CommandRunner, confirm: ConfirmCallback) -> None:
+    if confirm("Откатить Xray VPS Manager к последнему backup?"):
+        call(["xray-manager-update", "--rollback"])
+    else:
+        print("Откат отменён.")
+
+
 def warp_status(call: CommandRunner) -> None:
     call(["xray-warp", "status"])
 

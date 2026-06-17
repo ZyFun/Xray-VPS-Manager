@@ -62,6 +62,7 @@ need_file xray-test
 need_file xray-warp
 need_file xray-telegram
 need_file xray-vps-manager
+need_file xray-manager-update
 if [[ ! -d "$SCRIPT_DIR/xray_vps_manager" ]]; then
   echo "Missing required directory: $SCRIPT_DIR/xray_vps_manager" >&2
   exit 1
@@ -899,6 +900,7 @@ install -o root -g root -m 0755 "$SCRIPT_DIR/xray-test" /usr/local/sbin/xray-tes
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-warp" /usr/local/sbin/xray-warp
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-telegram" /usr/local/sbin/xray-telegram
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-vps-manager" /usr/local/sbin/xray-vps-manager
+install -o root -g root -m 0755 "$SCRIPT_DIR/xray-manager-update" /usr/local/sbin/xray-manager-update
 install -d -o root -g root -m 0755 /usr/local/lib/xray-vps-manager
 rm -rf /usr/local/lib/xray-vps-manager/xray_vps_manager
 cp -a "$SCRIPT_DIR/xray_vps_manager" /usr/local/lib/xray-vps-manager/
