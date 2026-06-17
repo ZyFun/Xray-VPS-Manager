@@ -44,14 +44,10 @@ CLI-команды остаются доступными для автомати
 
 ```bash
 apt update && apt install -y curl ca-certificates
-TAG="$(curl -fsSL https://api.github.com/repos/ZyFun/Xray-VPS-Manager/releases/latest \
-  | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
-  | head -n 1)"
-test -n "$TAG"
-curl -fsSL "https://raw.githubusercontent.com/ZyFun/Xray-VPS-Manager/${TAG}/bootstrap.sh" | bash -s -- "$TAG"
+curl -fsSL https://github.com/ZyFun/Xray-VPS-Manager/releases/latest/download/bootstrap.sh | bash
 ```
 
-GitHub автоматически создаёт архив `Source code (tar.gz)` для каждого тега релиза; отдельные binaries прикреплять не нужно.
+Команда скачивает `bootstrap.sh` из последнего GitHub Release, а bootstrap сам подтягивает архив этого же релиза.
 
 Если нужно установить локальную рабочую копию проекта, можно по-прежнему скопировать папку на сервер:
 
