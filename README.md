@@ -6,11 +6,19 @@ CLI-команды остаются доступными для автомати
 
 ## Быстрый старт
 
-Установка последнего релиза на новый сервер:
+Быстрая установка последнего релиза на новый сервер без вопросов, со значениями по умолчанию:
 
 ```bash
 apt update && apt install -y curl ca-certificates
 curl -fsSL https://github.com/ZyFun/Xray-VPS-Manager/releases/latest/download/bootstrap.sh | bash
+```
+
+Интерактивная установка с вопросами по базовым настройкам:
+
+```bash
+apt update && apt install -y curl ca-certificates
+curl -fsSL -o /tmp/xray-bootstrap.sh https://github.com/ZyFun/Xray-VPS-Manager/releases/latest/download/bootstrap.sh
+bash /tmp/xray-bootstrap.sh
 ```
 
 После установки открой меню:

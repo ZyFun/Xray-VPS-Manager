@@ -4,10 +4,24 @@
 
 ## Установка последнего релиза
 
+Быстрая установка без вопросов, со значениями по умолчанию:
+
 ```bash
 apt update && apt install -y curl ca-certificates
 curl -fsSL https://github.com/ZyFun/Xray-VPS-Manager/releases/latest/download/bootstrap.sh | bash
 ```
+
+При таком запуске через pipe установщик работает без интерактивного stdin и принимает значения по умолчанию.
+
+Интерактивная установка с вопросами по базовым настройкам:
+
+```bash
+apt update && apt install -y curl ca-certificates
+curl -fsSL -o /tmp/xray-bootstrap.sh https://github.com/ZyFun/Xray-VPS-Manager/releases/latest/download/bootstrap.sh
+bash /tmp/xray-bootstrap.sh
+```
+
+Этот вариант запускает установщик в интерактивном режиме: `install.sh` увидит обычный терминальный ввод и задаст вопросы по `PORT`, `REALITY_SNI`, `CLIENT_NAME`, `SERVER_NAME`, `MANAGER_TIMEZONE`, `FINGERPRINT` и `REALITY_TRANSPORT`.
 
 После установки открой меню:
 
