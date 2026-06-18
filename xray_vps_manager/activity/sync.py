@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from xray_vps_manager.activity import blocklist as activity_blocklist
 from xray_vps_manager.activity import parser
 from xray_vps_manager.activity import repository
 from xray_vps_manager.activity import settings
@@ -101,5 +102,12 @@ def sync_activity(log: LogFunc) -> int:
     db["retentionDays"] = settings.retention_days()
     db["lastSync"] = stamp
     repository.save_activity_db(db)
+    try:
+        backup = activity_blocklist.reconcile_xray_config()
+        if backup:
+            log(f"Activity blocklist routing synced. Backup: {backup}")
+    except Exception as exc:
+        log(f"Activity blocklist routing sync failed: {exc}")
+        return 1
     log(f"Activity sync saved: {processed} events, {skipped} skipped, {removed} pruned.")
     return 0

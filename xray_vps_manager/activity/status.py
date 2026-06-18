@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from xray_vps_manager.activity import blocklist as activity_blocklist
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import parser as activity_parser
 from xray_vps_manager.activity import repository
@@ -24,6 +25,8 @@ def status_rows() -> tuple[list[list[object]], list[str]]:
     config = repository.load_json(CONFIG_PATH, {})
     access = config.get("log", {}).get("access", "")
     exceptions = activity_exceptions.exception_items_for_read()
+    block_items = activity_blocklist.block_items()
+    active_block_items = activity_blocklist.active_block_items()
     limits = settings.risk_limits()
     geoip_code = settings.xray_geoip_warning_code()
     geoip_path = activity_parser.geoip_path()
@@ -34,6 +37,7 @@ def status_rows() -> tuple[list[list[object]], list[str]]:
         ["Suspicious hosts", limits["uniqueHosts"]],
         ["Suspicious ports", limits["uniquePorts"]],
         ["Suspicious exceptions", len(exceptions)],
+        ["Global blocklist", f"{len(active_block_items)} active / {len(block_items)} total"],
         ["Xray route GeoIP warnings", geoip_code or "disabled"],
         ["Access log", access or "not configured"],
         ["GeoIP data", str(geoip_path) if geoip_path else "geoip.dat not available"],

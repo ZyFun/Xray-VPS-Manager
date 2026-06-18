@@ -40,14 +40,14 @@ xray-client link starter
 - установка и обновление Xray Core из официальных релизов XTLS/Xray-core;
 - создание одного или нескольких VLESS Reality-подключений с transport `tcp`, `grpc` или `xhttp`;
 - управление клиентами, VLESS-ссылками, сроками доступа, статусом оплаты и traffic limits;
-- постоянная SQLite-база `manager.db` для клиентов, трафика, активности, Telegram-настроек, подписок и оплаты;
+- постоянная SQLite-база `manager.db` для клиентов, трафика, активности, глобальных блокировок, Telegram-настроек, подписок и оплаты;
 - статистика трафика через локальный Xray API, online/offline-статус и история по часам/дням за 6 месяцев;
-- каскадные outbound-серверы, выбор маршрута для отдельного клиента и GeoIP warning rules для проверки split tunneling;
+- каскадные outbound-серверы, выбор маршрута для отдельного клиента, GeoIP warning rules для проверки split tunneling и глобальная блокировка доменов/IP через `blocked`;
 - WARP как Xray `wireguard` outbound без изменения системного default route;
 - журнал активности по метаданным access log без чтения содержимого HTTPS, сообщений, файлов или тела запросов;
 - Telegram-бот для клиентских подписок, актуальных ссылок, статуса, трафика, напоминаний об оплате и ограниченной админ-панели владельца;
 - резервные копии `config.json`, переносимого `server.env` и `manager.db` с pre-restore backup перед восстановлением;
-- диагностика сервера, проверка Xray config, timers, SQLite, routing, torrent-блокировки и SSH password login.
+- диагностика сервера, проверка Xray config, timers, SQLite, routing, blocklist/torrent-блокировок и SSH password login.
 
 ## Документация
 

@@ -16,6 +16,8 @@ COUNT_TABLES = {
     "traffic": "traffic_totals",
     "activity_events": "activity_events",
     "activity_exceptions": "activity_exceptions",
+    "activity_blocklist": "activity_blocklist",
+    "activity_blocklist_hits": "activity_blocklist_hits",
     "telegram_subscriptions": "telegram_subscriptions",
 }
 

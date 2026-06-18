@@ -281,6 +281,9 @@ def write_event_to_sqlite_for_write(
                 raise RuntimeError(f"Activity event client is missing from SQLite clients: {client_name}")
             return False
         sqlite_activity.add_event(connection, event)
+        from xray_vps_manager.activity import blocklist as activity_blocklist
+
+        activity_blocklist.record_blocked_event_hit(connection, event)
         return True
     except Exception:
         if strict:

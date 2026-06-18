@@ -8,7 +8,7 @@ from pathlib import Path
 
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -268,6 +268,55 @@ MIGRATIONS: tuple[Migration, ...] = (
             ADD COLUMN activity_notifications_enabled INTEGER NOT NULL DEFAULT 0 CHECK (activity_notifications_enabled IN (0, 1))
             """,
             "CREATE INDEX IF NOT EXISTS idx_telegram_subscriptions_activity ON telegram_subscriptions(activity_notifications_enabled)",
+        ),
+    ),
+    Migration(
+        version=4,
+        name="activity_global_blocklist",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS activity_blocklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                value TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL CHECK (kind IN ('domain', 'ip', 'cidr', 'mask')),
+                source_client_name TEXT,
+                source_event_id INTEGER,
+                source TEXT NOT NULL DEFAULT 'manual',
+                comment TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                FOREIGN KEY (source_client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE SET NULL,
+                FOREIGN KEY (source_event_id)
+                    REFERENCES activity_events(id)
+                    ON DELETE SET NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS activity_blocklist_hits (
+                blocklist_id INTEGER NOT NULL,
+                client_name TEXT NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 0 CHECK (hits >= 0),
+                first_seen_at TEXT,
+                last_seen_at TEXT,
+                PRIMARY KEY (blocklist_id, client_name),
+                FOREIGN KEY (blocklist_id)
+                    REFERENCES activity_blocklist(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_client ON activity_blocklist(source_client_name)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_value ON activity_blocklist(value)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_expires ON activity_blocklist(expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_enabled ON activity_blocklist(enabled)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_hits_client ON activity_blocklist_hits(client_name)",
         ),
     ),
 )

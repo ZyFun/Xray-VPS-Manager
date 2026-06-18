@@ -11,7 +11,7 @@ SQLite-база менеджера хранится на сервере здес
 Текущая версия схемы:
 
 ```text
-schema version = 3
+schema version = 4
 ```
 
 Актуальное определение схемы находится в `xray_vps_manager/db/schema.py`.
@@ -146,6 +146,27 @@ erDiagram
         TEXT created_at
     }
 
+    activity_blocklist {
+        INTEGER id PK
+        TEXT value UK
+        TEXT kind
+        TEXT source_client_name FK
+        INTEGER source_event_id FK
+        TEXT source
+        TEXT comment
+        TEXT created_at
+        TEXT expires_at
+        INTEGER enabled
+    }
+
+    activity_blocklist_hits {
+        INTEGER blocklist_id PK,FK
+        TEXT client_name PK,FK
+        INTEGER hits
+        TEXT first_seen_at
+        TEXT last_seen_at
+    }
+
     telegram_settings {
         TEXT key PK
         TEXT value
@@ -185,6 +206,10 @@ erDiagram
     clients ||--o{ traffic_history : "client_name"
     clients ||--o{ activity_events : "client_name"
     activity_events ||--o{ activity_event_risks : "event_id"
+    clients ||--o{ activity_blocklist : "source_client_name"
+    activity_events ||--o{ activity_blocklist : "source_event_id"
+    activity_blocklist ||--o{ activity_blocklist_hits : "blocklist_id"
+    clients ||--o{ activity_blocklist_hits : "client_name"
     clients ||--o{ telegram_subscriptions : "client_name"
 ```
 
@@ -239,15 +264,22 @@ clients.name -> client_traffic_limit_state.client_name
 | `activity_events` | Детальные metadata-события из Xray access log. |
 | `activity_event_risks` | Риски события: GeoIP, admin-port, smtp-port и другие признаки. |
 | `activity_exceptions` | Исключения для suspicious/GeoIP отчётов: домены, IP, CIDR, wildcard-маски. |
+| `activity_blocklist` | Глобальные домены/IP/CIDR для блокировки через Xray `blocked`, включая источник-клиента, комментарий, срок и статус. |
+| `activity_blocklist_hits` | Счётчики срабатываний blocklist по клиентам: hits, first_seen_at и last_seen_at. |
 
 Связи:
 
 ```text
 clients.name -> activity_events.client_name
 activity_events.id -> activity_event_risks.event_id
+clients.name -> activity_blocklist.source_client_name
+activity_events.id -> activity_blocklist.source_event_id
+activity_blocklist.id -> activity_blocklist_hits.blocklist_id
+clients.name -> activity_blocklist_hits.client_name
 ```
 
 `activity_events.raw_json` хранит исходное metadata-событие для внутренних отчётов и экспорта. Журнал активности не хранит содержимое HTTPS, сообщений, файлов или тела запросов.
+`activity_blocklist` задаёт глобальные Xray routing rules, а не клиентские ограничения: `source_client_name` нужен для истории и сортировки, но блокировка применяется ко всему трафику. `activity_blocklist_hits.last_seen_at` используется для отображения времени последнего срабатывания.
 
 ### Telegram и оплата
 
