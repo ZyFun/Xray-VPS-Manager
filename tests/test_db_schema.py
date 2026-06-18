@@ -27,6 +27,8 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "activity_events",
                     "activity_event_risks",
                     "activity_exceptions",
+                    "activity_blocklist",
+                    "activity_blocklist_hits",
                     "cascade_routes",
                     "telegram_settings",
                     "telegram_subscriptions",
@@ -41,6 +43,8 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "idx_traffic_history_client_date",
                     "idx_activity_events_client_time",
                     "idx_activity_event_risks_risk",
+                    "idx_activity_blocklist_client",
+                    "idx_activity_blocklist_hits_client",
                     "idx_cascade_routes_country",
                     "idx_telegram_subscriptions_uuid",
                     "idx_telegram_subscriptions_activity",
@@ -58,6 +62,7 @@ class SQLiteSchemaTests(unittest.TestCase):
                     (1, "initial_manager_schema"),
                     (2, "cascade_client_routes"),
                     (3, "telegram_activity_subscriptions"),
+                    (4, "activity_global_blocklist"),
                 ],
             )
 

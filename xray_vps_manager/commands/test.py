@@ -12,14 +12,17 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db import schema as sqlite_schema
 from xray_vps_manager.db.repositories import activity as sqlite_activity
+from xray_vps_manager.db.repositories import activity_blocklist as sqlite_blocklist
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import sqlite_read_ready
+from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray import cascade as cascade_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -297,6 +300,17 @@ def check_activity_exceptions_db(diag):
     return f"{MANAGER_DB_PATH} activity exceptions loaded from SQLite"
 
 
+def check_activity_blocklist_db(diag):
+    connection = sqlite_ready_connection()
+    try:
+        items = sqlite_blocklist.list_blocks(connection)
+        stats = sqlite_blocklist.list_hit_stats(connection)
+    finally:
+        connection.close()
+    diag.context["activity_blocklist_db"] = {"items": items, "stats": stats}
+    return f"{MANAGER_DB_PATH} activity blocklist loaded from SQLite: entries={len(items)}, stats={len(stats)}"
+
+
 def check_telegram_bot_db(diag):
     connection = sqlite_ready_connection()
     try:
@@ -414,6 +428,8 @@ def check_sqlite_database(diag):
             "traffic": table_count(connection, "traffic_totals"),
             "activityEvents": table_count(connection, "activity_events"),
             "activityExceptions": table_count(connection, "activity_exceptions"),
+            "activityBlocklist": table_count(connection, "activity_blocklist"),
+            "activityBlocklistHits": table_count(connection, "activity_blocklist_hits"),
             "telegramSubscriptions": table_count(connection, "telegram_subscriptions"),
         }
         diag.context["sqlite_counts"] = counts
@@ -887,6 +903,41 @@ def check_geoip_warning_routing(diag):
     return f"GeoIP routing warnings enabled for {code}"
 
 
+def blocked_rule_index_before_geoip(config, key, value):
+    rules = routing_rules(config)
+    geoip_indexes = [index for index, rule in enumerate(rules) if is_geoip_warning_tag(rule.get("outboundTag"))]
+    first_geoip = min(geoip_indexes) if geoip_indexes else len(rules)
+    for index, rule in enumerate(rules):
+        if index >= first_geoip:
+            break
+        if rule.get("outboundTag") == BLOCKED_TAG and value in rule_values(rule, key):
+            return index
+    return None
+
+
+def check_activity_blocklist_routing(diag):
+    config = diag.context["config"]
+    connection = sqlite_ready_connection()
+    try:
+        active_items = sqlite_blocklist.active_blocks(connection, activity_time.utc_stamp())
+    finally:
+        connection.close()
+    if not active_items:
+        return "Activity global blocklist is empty"
+
+    domains, ips = xray_blocklist.split_rule_values(active_items)
+    missing = []
+    for value in domains:
+        if blocked_rule_index_before_geoip(config, "domain", value) is None:
+            missing.append(f"domain {value}")
+    for value in ips:
+        if blocked_rule_index_before_geoip(config, "ip", value) is None:
+            missing.append(f"ip {value}")
+    if missing:
+        raise RuntimeError("active blocklist entries are missing before GeoIP warning routing: " + ", ".join(missing[:8]))
+    return f"Activity global blocklist routing is active: entries={len(active_items)}"
+
+
 def check_file_permissions():
     checked = []
     for path in (
@@ -915,6 +966,7 @@ def run_diagnostics():
     diag.check("Clients DB", lambda: check_client_db(diag))
     diag.check("Traffic DB", lambda: check_traffic_db(diag))
     diag.check("Activity exceptions DB", lambda: check_activity_exceptions_db(diag))
+    diag.check("Activity blocklist DB", lambda: check_activity_blocklist_db(diag))
     diag.check("Telegram bot DB", lambda: check_telegram_bot_db(diag))
     diag.check("Manager SQLite DB", lambda: check_sqlite_database(diag), fatal=False)
     diag.check("server.env", lambda: check_server_env(diag))
@@ -939,6 +991,7 @@ def run_diagnostics():
     diag.check("Cascade config", lambda: check_cascade_config(diag))
     diag.check("WARP config", lambda: check_warp_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
+    diag.check("Activity blocklist routing", lambda: check_activity_blocklist_routing(diag), fatal=False)
     diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
     return diag.summary()
 

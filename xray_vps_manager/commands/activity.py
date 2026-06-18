@@ -7,6 +7,7 @@ import sys
 from datetime import date
 
 from xray_vps_manager.activity.constants import EXPORT_DIR, LOCK_PATH
+from xray_vps_manager.activity import blocklist as activity_blocklist
 from xray_vps_manager.activity import client_reports as activity_client_reports
 from xray_vps_manager.activity import controls as activity_controls
 from xray_vps_manager.activity import exception_reports as activity_exception_reports
@@ -194,6 +195,152 @@ def print_exception_candidates(days_value="7", plain=False):
     )
 
 
+def list_blocklist(plain=False):
+    rows = activity_blocklist.list_block_rows()
+    if plain:
+        for item in rows:
+            print("\t".join([
+                str(item.get("id", "")),
+                item.get("value", ""),
+                item.get("kind", ""),
+                item.get("sourceClient", ""),
+                item.get("createdAt", ""),
+                item.get("expiresAt", ""),
+                item.get("status", ""),
+                item.get("lastHitAt", ""),
+                item.get("comment", ""),
+            ]))
+        return
+    if not rows:
+        print("No activity blocklist entries configured.")
+        return
+    print_table(
+        ["ID", "CLIENT", "VALUE", "KIND", "STATUS", "EXPIRES", "LAST HIT", "COMMENT"],
+        [
+            [
+                item.get("id", ""),
+                item.get("sourceClient") or "-",
+                item.get("value", ""),
+                item.get("kind", ""),
+                item.get("status", ""),
+                item.get("expiresAt", ""),
+                item.get("lastHitAt") or "-",
+                item.get("comment", ""),
+            ]
+            for item in rows
+        ],
+    )
+
+
+def print_block_candidates(client_name, days_value="7", region="RU", plain=False):
+    rows = activity_blocklist.block_candidate_rows(client_name, days_value, region)
+    if plain:
+        for row in rows:
+            print("\t".join([
+                row["value"],
+                row["kind"],
+                str(row["events"]),
+                activity_reports.top_items(row["ports"], limit=5),
+                row["lastSeen"],
+                row["sampleTarget"],
+                str(row["sourceEventId"]),
+            ]))
+        return
+    if not rows:
+        print(f"No GeoIP {region.upper()} candidates found for client: {client_name}")
+        return
+    print_table(
+        ["VALUE", "KIND", "EVENTS", "PORTS", "LAST SEEN"],
+        [
+            [
+                row["value"],
+                row["kind"],
+                row["events"],
+                activity_reports.top_items(row["ports"], limit=5),
+                row["lastSeen"],
+            ]
+            for row in rows
+        ],
+    )
+
+
+def add_block(value, source_client="", duration="forever", comment="", source_event_id=""):
+    event_id = int(source_event_id) if str(source_event_id or "").isdigit() else None
+    try:
+        item = activity_blocklist.add_block(
+            value,
+            source_client=source_client,
+            duration=duration,
+            comment=comment,
+            source_event_id=event_id,
+            source="geoip-menu" if source_client else "manual",
+        )
+        backup = activity_blocklist.reconcile_xray_config()
+    except ValueError as exc:
+        die(str(exc))
+    except RuntimeError as exc:
+        die(str(exc))
+    print(f"Added activity block: {item['value']}")
+    print(f"Kind: {item['kind']}")
+    print(f"Source client: {item.get('sourceClient') or '-'}")
+    print(f"Expires: {item.get('expiresAt') or 'forever'}")
+    print(f"Backup: {backup}" if backup else "Xray routing already up to date.")
+
+
+def delete_block(value_or_id):
+    try:
+        item = activity_blocklist.delete_block(value_or_id)
+        backup = activity_blocklist.reconcile_xray_config(removed_items=[item])
+    except KeyError:
+        die(f"Activity blocklist entry not found: {value_or_id}")
+    except RuntimeError as exc:
+        die(str(exc))
+    print(f"Deleted activity block: {item['value']}")
+    print(f"Backup: {backup}" if backup else "Xray routing already up to date.")
+
+
+def sync_blocklist():
+    try:
+        backup = activity_blocklist.reconcile_xray_config()
+    except RuntimeError as exc:
+        die(str(exc))
+    print(f"Backup: {backup}" if backup else "Activity blocklist routing already up to date.")
+
+
+def block_stats(plain=False):
+    rows = activity_blocklist.block_stats_rows()
+    if plain:
+        for row in rows:
+            print("\t".join([
+                row["value"],
+                row["kind"],
+                str(row["totalHits"]),
+                activity_reports.top_items(row["clients"], limit=20),
+                row["firstSeen"],
+                row["lastSeen"],
+                row["comment"],
+            ]))
+        return
+    if not rows:
+        print("No activity blocklist entries configured.")
+        return
+    print_table(
+        ["VALUE", "KIND", "HITS", "CLIENTS", "FIRST SEEN", "LAST SEEN", "COMMENT"],
+        [
+            [
+                row["value"],
+                row["kind"],
+                row["totalHits"],
+                activity_reports.top_items(row["clients"], limit=10),
+                row["firstSeen"] or "-",
+                row["lastSeen"] or "-",
+                row["comment"],
+            ]
+            for row in rows
+        ],
+    )
+
+
 def export_client(name, start_value, end_value, path_only=False):
     start = parse_date(start_value, "START_DATE")
     end = parse_date(end_value, "END_DATE")
@@ -293,6 +440,12 @@ def usage():
   xray-activity exception-add VALUE [SOURCE]
   xray-activity exception-delete VALUE
   xray-activity exception-delete-all --yes
+  xray-activity blocklist [--plain]
+  xray-activity block-candidates CLIENT [DAYS] [REGION] [--plain]
+  xray-activity block-add VALUE SOURCE_CLIENT DURATION COMMENT [SOURCE_EVENT_ID]
+  xray-activity block-delete VALUE_OR_ID
+  xray-activity block-sync
+  xray-activity block-stats [--plain]
   xray-activity export NAME START_DATE END_DATE [--path-only]
   xray-activity export-list [--plain]
   xray-activity export-delete ARCHIVE_PATH_OR_NAME
@@ -341,6 +494,31 @@ def main():
             delete_exception(args[1])
         elif command == "exception-delete-all" and len(args) in (1, 2):
             delete_all_exceptions(confirmed=len(args) == 2 and args[1] == "--yes")
+        elif command == "blocklist" and len(args) in (1, 2):
+            if len(args) == 2 and args[1] != "--plain":
+                usage()
+                sys.exit(1)
+            list_blocklist(plain=len(args) == 2)
+        elif command == "block-candidates" and len(args) in (2, 3, 4, 5):
+            plain = "--plain" in args
+            values = [arg for arg in args[1:] if arg != "--plain"]
+            print_block_candidates(
+                values[0],
+                values[1] if len(values) >= 2 else "7",
+                values[2] if len(values) >= 3 else "RU",
+                plain=plain,
+            )
+        elif command == "block-add" and len(args) in (5, 6):
+            add_block(args[1], args[2], args[3], args[4], args[5] if len(args) == 6 else "")
+        elif command == "block-delete" and len(args) == 2:
+            delete_block(args[1])
+        elif command == "block-sync" and len(args) == 1:
+            sync_blocklist()
+        elif command == "block-stats" and len(args) in (1, 2):
+            if len(args) == 2 and args[1] != "--plain":
+                usage()
+                sys.exit(1)
+            block_stats(plain=len(args) == 2)
         elif command == "export" and len(args) in (4, 5):
             if len(args) == 5 and args[4] != "--path-only":
                 usage()

@@ -6,7 +6,7 @@
 
 ```text
 /usr/local/etc/xray/config.json          основной конфиг Xray
-/usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, Telegram и настроек оплаты
+/usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, blocklist, Telegram и настроек оплаты
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /usr/local/sbin/xray-client              управление клиентами
@@ -50,7 +50,7 @@ xray-backup create
 ```
 
 Архивы хранятся на сервере в `/root/xray_backups`.
-Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
+Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, глобальные блокировки, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
 
 `server.env` сохраняется как переносимая конфигурация. Host-specific значения, например `SERVER_ADDR` и `SECURITY_AUDIT_LAST_RUN`, в новый архив не записываются. При восстановлении `xray-backup restore` сохраняет текущий `SERVER_ADDR` нового сервера, чтобы новые VLESS-ссылки генерировались с актуальным адресом.
 
@@ -116,7 +116,7 @@ SQLite-база менеджера хранится в:
 xray-vps-manager sqlite status
 ```
 
-Эта команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check`, готовность SQLite и количество строк в основных таблицах. То же доступно через меню `Настройки Xray` -> `Обновление Xray`:
+Эта команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check`, готовность SQLite и количество строк в основных таблицах, включая activity blocklist и hit-счётчики. То же доступно через меню `Настройки Xray` -> `Обновление Xray`:
 
 ```text
 SQLite: статус базы

@@ -5,6 +5,7 @@ import sys
 
 from xray_vps_manager.commands import (
     menu_activity_actions,
+    menu_activity_blocklist_actions,
     menu_activity_exception_actions,
     menu_activity_export_actions,
     menu_backup_actions,
@@ -20,7 +21,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-17 14:36 UTC"
+MENU_UPDATED = "2026-06-18 19:53 UTC"
 
 
 def die(message):
@@ -243,6 +244,18 @@ def activity_exception_menu_actions():
     ]
 
 
+def activity_blocklist_menu_actions():
+    return [
+        ("1", "Показать блокировки"),
+        ("2", "Добавить из GeoIP RU"),
+        ("3", "Добавить вручную"),
+        ("4", "Удалить блокировку"),
+        ("5", "Статистика срабатываний"),
+        ("6", "Синхронизировать routing"),
+        ("0", "Назад"),
+    ]
+
+
 def backup_menu_actions():
     return [
         ("1", "Создать бэкап на сервере"),
@@ -271,6 +284,7 @@ def activity_menu_actions():
         ("12", "Настроить лимиты suspicious"),
         ("13", "GeoIP routing: выбрать регион"),
         ("14", "GeoIP routing: отключить"),
+        ("15", "Блокировки IP/доменов"),
         ("0", "Назад"),
     ]
 
@@ -541,6 +555,24 @@ def activity_exception_menu_handlers():
     }
 
 
+def activity_blocklist_menu_handlers():
+    return {
+        "1": ("Показать блокировки", lambda: menu_activity_blocklist_actions.show_activity_blocklist(call)),
+        "2": (
+            "Добавить из GeoIP RU",
+            lambda: menu_activity_blocklist_actions.add_block_from_geoip_ru(
+                menu_client_actions.choose_client,
+                call,
+                menu_activity_actions.ask_activity_days,
+            ),
+        ),
+        "3": ("Добавить вручную", lambda: menu_activity_blocklist_actions.add_block_manual(call)),
+        "4": ("Удалить блокировку", lambda: menu_activity_blocklist_actions.delete_block_from_menu(call)),
+        "5": ("Статистика срабатываний", lambda: menu_activity_blocklist_actions.show_activity_block_stats(call)),
+        "6": ("Синхронизировать routing", lambda: menu_activity_blocklist_actions.sync_activity_blocklist(call)),
+    }
+
+
 def activity_menu_handlers():
     return {
         "1": ("Статус журнала активности", lambda: menu_activity_actions.show_activity_status(call)),
@@ -569,6 +601,7 @@ def activity_menu_handlers():
         "12": ("Настроить лимиты suspicious", lambda: menu_activity_actions.update_activity_risk_limits(call)),
         "13": ("GeoIP routing: выбрать регион", menu_activity_actions.set_xray_geoip_routing_region),
         "14": ("GeoIP routing: отключить", menu_activity_actions.disable_xray_geoip_routing_region),
+        "15": ("Блокировки IP/доменов", open_activity_blocklist_menu),
     }
 
 
@@ -643,6 +676,10 @@ def open_activity_suspicious_menu():
 
 def open_activity_exception_menu():
     menu_loop("Настройки исключений", activity_exception_menu_actions(), activity_exception_menu_handlers())
+
+
+def open_activity_blocklist_menu():
+    menu_loop("Блокировки IP/доменов", activity_blocklist_menu_actions(), activity_blocklist_menu_handlers())
 
 
 def open_activity_menu():

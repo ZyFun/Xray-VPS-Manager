@@ -1,7 +1,7 @@
 import unittest
 
 from xray_vps_manager.db import database
-from xray_vps_manager.db.repositories import activity, clients, connections, settings, telegram, traffic
+from xray_vps_manager.db.repositories import activity, activity_blocklist, clients, connections, settings, telegram, traffic
 
 
 class SQLiteRepositoryTests(unittest.TestCase):
@@ -153,6 +153,32 @@ class SQLiteRepositoryTests(unittest.TestCase):
             activity.list_exceptions(self.connection),
             [{"value": "*.example.com", "kind": "mask", "source": "manual", "createdAt": "2026-06-12T08:05:00Z"}],
         )
+
+    def test_activity_blocklist_repository_roundtrip_and_stats(self) -> None:
+        item = activity_blocklist.upsert_block(
+            self.connection,
+            {
+                "value": "example.com",
+                "kind": "domain",
+                "sourceClient": "alice",
+                "sourceEventId": None,
+                "source": "geoip-menu",
+                "comment": "test block",
+                "createdAt": "2026-06-12T08:08:00Z",
+                "expiresAt": "",
+                "enabled": True,
+            },
+        )
+        activity_blocklist.record_hit(self.connection, item["id"], "alice", "2026-06-12T08:09:00Z")
+        activity_blocklist.record_hit(self.connection, item["id"], "alice", "2026-06-12T08:10:00Z")
+
+        self.assertEqual(activity_blocklist.active_blocks(self.connection, "2026-06-12T08:11:00Z")[0]["value"], "example.com")
+        stats = activity_blocklist.list_hit_stats(self.connection)
+
+        self.assertEqual(stats[0]["totalHits"], 2)
+        self.assertEqual(stats[0]["clients"], {"alice": 2})
+        self.assertEqual(stats[0]["firstSeen"], "2026-06-12T08:09:00Z")
+        self.assertEqual(stats[0]["lastSeen"], "2026-06-12T08:10:00Z")
 
     def test_telegram_and_settings_repositories(self) -> None:
         telegram.set_setting(self.connection, "botName", "Vireika")
