@@ -17,12 +17,33 @@ from pathlib import Path
 CADDYFILE_PATH = Path("/etc/caddy/Caddyfile")
 CADDY_CONF_DIR = Path("/etc/caddy/conf.d")
 CADDY_BACKUP_DIR = Path("/root/xray_caddy_backups")
+CADDY_SITE_BACKUP_DIR = Path("/root/xray_caddy_site_backups")
 CADDYFILE_ARCNAME = "etc/caddy/Caddyfile"
 CADDY_CONF_DIR_ARCNAME = "etc/caddy/conf.d"
+CADDY_SITE_ARCNAME = "site"
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 TLS_VERSIONS = {"default", "tls1.2", "tls1.3"}
 REVERSE_PROXY_RE = re.compile(r"reverse_proxy\s+h2c://127\.0\.0\.1:(?P<port>[0-9]+)")
 PROTOCOLS_RE = re.compile(r"protocols\s+(?P<min>tls1\.[23])\s+(?P<max>tls1\.[23])")
+ROOT_DIRECTIVE_RE = re.compile(r"(?m)^\s*root\s+(?:\*\s+)?(?P<path>/\S+)")
+DANGEROUS_SITE_ROOTS = {
+    Path("/"),
+    Path("/bin"),
+    Path("/boot"),
+    Path("/dev"),
+    Path("/etc"),
+    Path("/home"),
+    Path("/lib"),
+    Path("/lib64"),
+    Path("/proc"),
+    Path("/root"),
+    Path("/run"),
+    Path("/sbin"),
+    Path("/sys"),
+    Path("/tmp"),
+    Path("/usr"),
+    Path("/var"),
+}
 
 
 @dataclass(frozen=True)
@@ -126,6 +147,10 @@ def tree_size(path: Path) -> int:
     if path.is_file():
         return path.stat().st_size
     return sum(child.stat().st_size for child in path.rglob("*") if child.is_file())
+
+
+def safe_backup_label(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip("/ ") or "root").strip("_") or "site"
 
 
 def create_config_backup(
@@ -323,6 +348,205 @@ def restore_config_backup(
 
 def delete_config_backup(value: str, backup_dir: Path = CADDY_BACKUP_DIR) -> Path:
     archive = resolve_config_backup_for_delete(value, backup_dir)
+    archive.unlink()
+    return archive
+
+
+def site_root_candidates(
+    *,
+    caddyfile_path: Path = CADDYFILE_PATH,
+    conf_dir: Path = CADDY_CONF_DIR,
+) -> list[Path]:
+    candidates: list[Path] = []
+    sources = [caddyfile_path]
+    sources.extend(list_site_config_paths(conf_dir))
+    for source in sources:
+        if not source.exists():
+            continue
+        text = source.read_text()
+        for match in ROOT_DIRECTIVE_RE.finditer(text):
+            path = Path(match.group("path")).expanduser()
+            if path not in candidates:
+                candidates.append(path)
+    for fallback in (Path("/usr/share/caddy"), Path("/var/www"), Path("/var/www/html"), Path("/srv/www")):
+        if fallback.exists() and fallback not in candidates:
+            candidates.append(fallback)
+    return candidates
+
+
+def validate_site_root(value: str | Path, *, must_exist: bool = True) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError("Site root must be an absolute path.")
+    try:
+        resolved = path.resolve(strict=must_exist)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Site root not found: {path}") from exc
+    if resolved in DANGEROUS_SITE_ROOTS:
+        raise ValueError(f"Refusing to use dangerous site root: {resolved}")
+    if must_exist and not resolved.is_dir():
+        raise ValueError(f"Site root must be a directory: {resolved}")
+    if not must_exist and resolved.exists() and not resolved.is_dir():
+        raise ValueError(f"Site root must be a directory: {resolved}")
+    return resolved
+
+
+def create_site_backup(
+    site_root: str | Path,
+    *,
+    backup_dir: Path = CADDY_SITE_BACKUP_DIR,
+    quiet: bool = False,
+) -> Path:
+    root = validate_site_root(site_root)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(backup_dir, 0o700)
+
+    archive = backup_dir / f"caddy-site-backup-{safe_backup_label(str(root))}-{archive_stamp()}.tar.gz"
+    if archive.exists():
+        archive = backup_dir / f"caddy-site-backup-{safe_backup_label(str(root))}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S%fZ')}.tar.gz"
+
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(root, arcname=CADDY_SITE_ARCNAME, recursive=True)
+        add_json(
+            tar,
+            "manifest.json",
+            {
+                "createdAt": utc_stamp(),
+                "siteRoot": str(root),
+                "size": tree_size(root),
+                "warning": "This archive contains Caddy static site files only, not Caddy configuration or certificate cache files.",
+            },
+        )
+
+    os.chmod(archive, 0o600)
+    if not quiet:
+        print(f"Caddy site backup created: {archive}")
+        print(f"Site root: {root}")
+        print(f"Size: {format_size(archive.stat().st_size)}")
+        print("Contains: static site files from the selected site root.")
+    return archive
+
+
+def site_backup_paths(backup_dir: Path = CADDY_SITE_BACKUP_DIR) -> list[Path]:
+    if not backup_dir.exists():
+        return []
+    return sorted(backup_dir.glob("caddy-site-backup-*.tar.gz"), reverse=True)
+
+
+def backup_manifest(archive: Path) -> dict:
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            member = tar.getmember("manifest.json")
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                return {}
+            return json.loads(extracted.read().decode())
+    except (KeyError, OSError, tarfile.TarError, json.JSONDecodeError):
+        return {}
+
+
+def site_backup_rows(backup_dir: Path = CADDY_SITE_BACKUP_DIR) -> list[list[str]]:
+    rows = []
+    for path in site_backup_paths(backup_dir):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        manifest = backup_manifest(path)
+        created = datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        rows.append([str(path), manifest.get("siteRoot") or "-", created, format_size(stat.st_size)])
+    return rows
+
+
+def resolve_site_backup(value: str, backup_dir: Path = CADDY_SITE_BACKUP_DIR) -> Path:
+    path = Path(value).expanduser()
+    if path.exists():
+        return path
+    path = backup_dir / value
+    if path.exists():
+        return path
+    raise FileNotFoundError(f"Caddy site backup archive not found: {value}")
+
+
+def resolve_site_backup_for_delete(value: str, backup_dir: Path = CADDY_SITE_BACKUP_DIR) -> Path:
+    archive = resolve_site_backup(value, backup_dir)
+    backup_root = backup_dir.resolve()
+    if archive.resolve().parent != backup_root:
+        raise ValueError(f"Refusing to delete a file outside {backup_dir}: {archive}")
+    if not archive.name.endswith(".tar.gz"):
+        raise ValueError("Refusing to delete a file that does not look like a .tar.gz backup archive.")
+    return archive
+
+
+def validate_site_archive_member(member: tarfile.TarInfo) -> None:
+    name = member.name
+    if name.startswith("/") or ".." in Path(name).parts:
+        raise ValueError(f"Unsafe archive member: {name}")
+    if member.issym() or member.islnk() or member.isdev():
+        raise ValueError(f"Unsupported archive member type: {name}")
+    allowed = name == "manifest.json" or name == CADDY_SITE_ARCNAME or name.startswith(CADDY_SITE_ARCNAME + "/")
+    if not allowed:
+        raise ValueError(f"Unexpected archive member: {name}")
+
+
+def extract_site_backup(archive: Path) -> Path:
+    temp_dir = Path(tempfile.mkdtemp(prefix="caddy-site-restore-"))
+    with tarfile.open(archive, "r:gz") as tar:
+        members = tar.getmembers()
+        for member in members:
+            validate_site_archive_member(member)
+        tar.extractall(temp_dir)
+    return temp_dir
+
+
+def set_site_tree_permissions(path: Path) -> None:
+    chown_root(path)
+    os.chmod(path, 0o755)
+    for child in path.rglob("*"):
+        chown_root(child)
+        os.chmod(child, 0o755 if child.is_dir() else 0o644)
+
+
+def restore_site_dir(source: Path, target: Path) -> None:
+    if not source.exists() or not source.is_dir():
+        raise FileNotFoundError("Caddy site backup does not contain site files.")
+    if target.exists():
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target)
+    set_site_tree_permissions(target)
+
+
+def restore_site_backup(
+    value: str,
+    *,
+    target_root: str | Path | None = None,
+    backup_dir: Path = CADDY_SITE_BACKUP_DIR,
+) -> tuple[Path, Path | None, Path]:
+    archive = resolve_site_backup(value, backup_dir)
+    manifest = backup_manifest(archive)
+    target = validate_site_root(target_root or manifest.get("siteRoot") or "", must_exist=False)
+    pre_backup = create_site_backup(target, backup_dir=backup_dir, quiet=True) if target.exists() else None
+    temp_dir = extract_site_backup(archive)
+    try:
+        restore_site_dir(temp_dir / CADDY_SITE_ARCNAME, target)
+    except Exception:
+        if pre_backup is not None:
+            rollback_dir = extract_site_backup(pre_backup)
+            try:
+                restore_site_dir(rollback_dir / CADDY_SITE_ARCNAME, target)
+            finally:
+                shutil.rmtree(rollback_dir, ignore_errors=True)
+        elif target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    return archive, pre_backup, target
+
+
+def delete_site_backup(value: str, backup_dir: Path = CADDY_SITE_BACKUP_DIR) -> Path:
+    archive = resolve_site_backup_for_delete(value, backup_dir)
     archive.unlink()
     return archive
 

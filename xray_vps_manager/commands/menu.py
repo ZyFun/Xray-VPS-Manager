@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-19 22:26 UTC"
+MENU_UPDATED = "2026-06-19 23:05 UTC"
 
 
 def die(message):
@@ -176,10 +176,21 @@ def caddy_menu_actions():
         ("15", "Показать логи Caddy"),
         ("16", "Reload Caddy"),
         ("17", "Restart Caddy"),
-        ("18", "Создать backup Caddy config"),
-        ("19", "Показать backups Caddy config"),
-        ("20", "Восстановить Caddy config из backup"),
-        ("21", "Удалить backup Caddy config"),
+        ("18", "Бэкапы"),
+        ("0", "Назад"),
+    ]
+
+
+def caddy_backup_menu_actions():
+    return [
+        ("1", "Создать backup Caddy config"),
+        ("2", "Показать backups Caddy config"),
+        ("3", "Восстановить Caddy config из backup"),
+        ("4", "Удалить backup Caddy config"),
+        ("5", "Создать backup сайта"),
+        ("6", "Показать backups сайта"),
+        ("7", "Восстановить сайт из backup"),
+        ("8", "Удалить backup сайта"),
         ("0", "Назад"),
     ]
 
@@ -482,10 +493,20 @@ def caddy_menu_handlers():
         "15": ("Показать логи Caddy", menu_caddy_actions.show_logs),
         "16": ("Reload Caddy", menu_caddy_actions.reload_caddy),
         "17": ("Restart Caddy", menu_caddy_actions.restart_caddy),
-        "18": ("Создать backup Caddy config", menu_caddy_actions.create_backup),
-        "19": ("Показать backups Caddy config", menu_caddy_actions.list_backups),
-        "20": ("Восстановить Caddy config из backup", lambda: menu_caddy_actions.restore_backup(confirm)),
-        "21": ("Удалить backup Caddy config", lambda: menu_caddy_actions.delete_backup(confirm)),
+        "18": ("Бэкапы", open_caddy_backup_menu),
+    }
+
+
+def caddy_backup_menu_handlers():
+    return {
+        "1": ("Создать backup Caddy config", menu_caddy_actions.create_config_backup),
+        "2": ("Показать backups Caddy config", menu_caddy_actions.list_config_backups),
+        "3": ("Восстановить Caddy config из backup", lambda: menu_caddy_actions.restore_config_backup(confirm)),
+        "4": ("Удалить backup Caddy config", lambda: menu_caddy_actions.delete_config_backup(confirm)),
+        "5": ("Создать backup сайта", menu_caddy_actions.create_site_backup),
+        "6": ("Показать backups сайта", menu_caddy_actions.list_site_backups),
+        "7": ("Восстановить сайт из backup", lambda: menu_caddy_actions.restore_site_backup(confirm)),
+        "8": ("Удалить backup сайта", lambda: menu_caddy_actions.delete_site_backup(confirm)),
     }
 
 
@@ -708,6 +729,10 @@ def open_warp_menu():
 
 def open_caddy_menu():
     menu_loop("Caddy / TLS", caddy_menu_actions(), caddy_menu_handlers())
+
+
+def open_caddy_backup_menu():
+    menu_loop("Caddy / TLS -> Бэкапы", caddy_backup_menu_actions(), caddy_backup_menu_handlers())
 
 
 def open_xray_settings_menu():

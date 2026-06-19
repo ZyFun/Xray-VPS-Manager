@@ -87,11 +87,11 @@ def show_sites() -> None:
     print_table(["DOMAIN", "FILE", "UPSTREAM", "TLS MIN", "TLS MAX"], rows, empty_message="Caddy site configs not found.")
 
 
-def list_backups() -> None:
+def list_config_backups() -> None:
     print_table(["PATH", "CREATED", "SIZE"], caddy.config_backup_rows(), empty_message="Caddy backups not found.")
 
 
-def choose_backup(action: str) -> str | None:
+def choose_config_backup(action: str) -> str | None:
     rows = caddy.config_backup_rows()
     if not rows:
         print("Caddy backups not found.")
@@ -111,15 +111,15 @@ def choose_backup(action: str) -> str | None:
         print("Неизвестный backup. Выбери номер из списка или 0 для возврата.")
 
 
-def create_backup() -> None:
+def create_config_backup() -> None:
     try:
         caddy.create_config_backup()
     except FileNotFoundError as exc:
         die(str(exc))
 
 
-def restore_backup(confirm: ConfirmCallback) -> None:
-    archive = choose_backup("восстановления")
+def restore_config_backup(confirm: ConfirmCallback) -> None:
+    archive = choose_config_backup("восстановления")
     if not archive:
         return
     print("Будут восстановлены настройки Caddy из backup.")
@@ -140,8 +140,8 @@ def restore_backup(confirm: ConfirmCallback) -> None:
     print("Caddy config validated and reloaded.")
 
 
-def delete_backup(confirm: ConfirmCallback) -> None:
-    archive = choose_backup("удаления")
+def delete_config_backup(confirm: ConfirmCallback) -> None:
+    archive = choose_config_backup("удаления")
     if not archive:
         return
     if not confirm(f"Удалить Caddy backup {archive}"):
@@ -152,6 +152,116 @@ def delete_backup(confirm: ConfirmCallback) -> None:
     except (FileNotFoundError, ValueError) as exc:
         die(str(exc))
     print(f"Deleted Caddy backup: {removed}")
+
+
+def choose_site_root(action: str, default: str = "") -> str:
+    candidates = caddy.site_root_candidates()
+    print(f"Выбери папку сайта для действия: {action}.")
+    if candidates:
+        rows = [[str(index), str(path), caddy.format_size(caddy.tree_size(path))] for index, path in enumerate(candidates, start=1)]
+        rows.append(["M", "Ввести путь вручную", ""])
+        rows.append(["0", "Назад", ""])
+        print_table(["№", "SITE ROOT", "SIZE"], rows, empty_message=None)
+    else:
+        print("Автоматически найденных site root нет. Можно ввести путь вручную.")
+    while True:
+        prompt_text = "Site root"
+        if default:
+            prompt_text += f" [{default}]"
+        prompt_text += ": "
+        choice = input(prompt_text).strip()
+        if not choice and default:
+            return default
+        if choice == "0":
+            return ""
+        if choice.lower() == "m" or (choice and not choice.isdigit()):
+            manual = input("Абсолютный путь к папке сайта: ").strip() if choice.lower() == "m" else choice
+            if not manual:
+                print("Путь не указан.")
+                continue
+            return manual
+        if choice.isdigit() and candidates:
+            index = int(choice, 10)
+            if 1 <= index <= len(candidates):
+                return str(candidates[index - 1])
+        print("Неизвестный выбор. Выбери номер, M для ручного ввода или 0 для возврата.")
+
+
+def create_site_backup() -> None:
+    site_root = choose_site_root("backup")
+    if not site_root:
+        print("Действие отменено.")
+        return
+    try:
+        caddy.create_site_backup(site_root)
+    except (FileNotFoundError, ValueError) as exc:
+        die(str(exc))
+
+
+def list_site_backups() -> None:
+    print_table(["PATH", "SITE ROOT", "CREATED", "SIZE"], caddy.site_backup_rows(), empty_message="Caddy site backups not found.")
+
+
+def choose_site_backup(action: str) -> str | None:
+    rows = caddy.site_backup_rows()
+    if not rows:
+        print("Caddy site backups not found.")
+        return None
+    table_rows = [[str(index), *row] for index, row in enumerate(rows, start=1)]
+    table_rows.append(["0", "Назад", "", "", ""])
+    print(f"Выбери Caddy site backup для действия: {action}.")
+    print_table(["№", "PATH", "SITE ROOT", "CREATED", "SIZE"], table_rows, empty_message=None)
+    while True:
+        choice = input("Backup: ").strip()
+        if choice == "0":
+            return None
+        if choice.isdigit():
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return rows[index - 1][0]
+        print("Неизвестный backup. Выбери номер из списка или 0 для возврата.")
+
+
+def restore_site_backup(confirm: ConfirmCallback) -> None:
+    archive = choose_site_backup("восстановления")
+    if not archive:
+        return
+    manifest = caddy.backup_manifest(caddy.resolve_site_backup(archive))
+    default_root = str(manifest.get("siteRoot") or "")
+    target_root = choose_site_root("restore", default=default_root)
+    if not target_root:
+        print("Восстановление отменено.")
+        return
+    print("Будут восстановлены файлы сайта из backup.")
+    print(f"Target root: {target_root}")
+    print("Перед заменой существующей папки сайта будет создан pre-restore backup, если папка уже существует.")
+    if not confirm("Восстановить сайт Caddy"):
+        print("Восстановление отменено.")
+        return
+    try:
+        restored_from, pre_backup, restored_root = caddy.restore_site_backup(archive, target_root=target_root)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        die(f"Caddy site restore failed. Previous site files were restored from pre-restore backup if possible. Detail: {exc}")
+    print(f"Restored from: {restored_from}")
+    if pre_backup:
+        print(f"Pre-restore site backup: {pre_backup}")
+    else:
+        print("Pre-restore site backup: none, target root did not exist")
+    print(f"Restored site root: {restored_root}")
+
+
+def delete_site_backup(confirm: ConfirmCallback) -> None:
+    archive = choose_site_backup("удаления")
+    if not archive:
+        return
+    if not confirm(f"Удалить Caddy site backup {archive}"):
+        print("Удаление отменено.")
+        return
+    try:
+        removed = caddy.delete_site_backup(archive)
+    except (FileNotFoundError, ValueError) as exc:
+        die(str(exc))
+    print(f"Deleted Caddy site backup: {removed}")
 
 
 def choose_site(action: str, auto_single: bool = False) -> caddy.SiteConfig | None:
