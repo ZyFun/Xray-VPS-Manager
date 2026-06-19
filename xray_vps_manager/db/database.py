@@ -15,7 +15,7 @@ from xray_vps_manager.core.json_store import chown_xray
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 from xray_vps_manager.db import schema
 
-DEFAULT_BUSY_TIMEOUT_MS = 5000
+DEFAULT_BUSY_TIMEOUT_MS = 30000
 _SAVEPOINT_IDS = count(1)
 
 

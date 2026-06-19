@@ -9,6 +9,7 @@ from xray_vps_manager.commands import (
     menu_activity_exception_actions,
     menu_activity_export_actions,
     menu_backup_actions,
+    menu_caddy_actions,
     menu_client_actions,
     menu_reality_actions,
     menu_security_actions,
@@ -21,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-18 19:53 UTC"
+MENU_UPDATED = "2026-06-19 22:09 UTC"
 
 
 def die(message):
@@ -108,13 +109,14 @@ def client_menu_actions():
 def reality_menu_actions():
     return [
         ("1", "Показать подключения"),
-        ("2", "Создать подключение"),
+        ("2", "Создать Reality/TLS подключение"),
         ("3", "Обновить PORT"),
         ("4", "Обновить REALITY_SNI и REALITY_DEST"),
         ("5", "Обновить PORT, REALITY_SNI и REALITY_DEST"),
         ("6", "Обновить FINGERPRINT"),
         ("7", "Обновить TRANSPORT"),
         ("8", "Удалить подключение"),
+        ("9", "Переименовать подключение"),
         ("0", "Назад"),
     ]
 
@@ -139,7 +141,7 @@ def xray_settings_menu_actions():
         ("3", "Проверить config.json"),
         ("4", "Проверить timers"),
         ("5", "Прогнать все тесты сервера"),
-        ("6", "Настройки Reality"),
+        ("6", "Подключения VLESS"),
         ("7", "Каскад"),
         ("8", "Обновление Xray"),
         ("9", "Стартовая ссылка"),
@@ -149,6 +151,34 @@ def xray_settings_menu_actions():
         ("13", "Разрешить торренты"),
         ("14", "Показать часовой пояс"),
         ("15", "Изменить часовой пояс"),
+        ("16", "Caddy / TLS"),
+        ("0", "Назад"),
+    ]
+
+
+def caddy_menu_actions():
+    return [
+        ("1", "Статус Caddy"),
+        ("2", "Установить Caddy"),
+        ("3", "Проверить Caddy config"),
+        ("4", "Показать Caddyfile"),
+        ("5", "Показать TLS/XHTTP site configs"),
+        ("6", "Показать site config"),
+        ("7", "Создать/обновить site из TLS-подключения"),
+        ("8", "Создать/обновить site вручную"),
+        ("9", "Изменить TLS version site"),
+        ("10", "Изменить upstream local port"),
+        ("11", "Изменить домен site"),
+        ("12", "Удалить site config"),
+        ("13", "Убрать дефолтный site :80"),
+        ("14", "Проверить TLS handshake"),
+        ("15", "Показать логи Caddy"),
+        ("16", "Reload Caddy"),
+        ("17", "Restart Caddy"),
+        ("18", "Создать backup Caddy config"),
+        ("19", "Показать backups Caddy config"),
+        ("20", "Восстановить Caddy config из backup"),
+        ("21", "Удалить backup Caddy config"),
         ("0", "Назад"),
     ]
 
@@ -381,6 +411,7 @@ def reality_menu_handlers():
         "6": ("Обновить FINGERPRINT", menu_reality_actions.update_fingerprint),
         "7": ("Обновить TRANSPORT", lambda: menu_reality_actions.update_transport(call)),
         "8": ("Удалить подключение", lambda: menu_reality_actions.delete_connection(call, confirm)),
+        "9": ("Переименовать подключение", lambda: menu_reality_actions.rename_connection(call)),
     }
 
 
@@ -416,7 +447,7 @@ def xray_settings_menu_handlers():
         "3": ("Проверить config.json", lambda: menu_xray_actions.check_config(call)),
         "4": ("Проверить timers", lambda: menu_xray_actions.check_timers(call)),
         "5": ("Прогнать все тесты сервера", lambda: menu_xray_actions.run_all_tests(call)),
-        "6": ("Настройки Reality", open_reality_menu),
+        "6": ("Подключения VLESS", open_reality_menu),
         "7": ("Каскад", open_cascade_menu),
         "8": ("Обновление Xray", open_update_menu),
         "9": ("Вывести стартовую ссылку", menu_xray_actions.print_initial_link),
@@ -426,6 +457,33 @@ def xray_settings_menu_handlers():
         "13": ("Разрешить торренты", menu_xray_actions.allow_torrents),
         "14": ("Показать часовой пояс", lambda: menu_timezone_actions.show_timezone(call)),
         "15": ("Изменить часовой пояс", lambda: menu_timezone_actions.update_timezone(call)),
+        "16": ("Caddy / TLS", open_caddy_menu),
+    }
+
+
+def caddy_menu_handlers():
+    return {
+        "1": ("Статус Caddy", menu_caddy_actions.caddy_status),
+        "2": ("Установить Caddy", menu_caddy_actions.install_caddy),
+        "3": ("Проверить Caddy config", menu_caddy_actions.validate_config),
+        "4": ("Показать Caddyfile", menu_caddy_actions.show_caddyfile),
+        "5": ("Показать TLS/XHTTP site configs", menu_caddy_actions.show_sites),
+        "6": ("Показать site config", menu_caddy_actions.show_site_config),
+        "7": ("Создать/обновить site из TLS-подключения", menu_caddy_actions.create_site_from_tls_connection),
+        "8": ("Создать/обновить site вручную", menu_caddy_actions.create_site_manual),
+        "9": ("Изменить TLS version site", menu_caddy_actions.update_site_tls),
+        "10": ("Изменить upstream local port", menu_caddy_actions.update_site_upstream),
+        "11": ("Изменить домен site", menu_caddy_actions.update_site_domain),
+        "12": ("Удалить site config", lambda: menu_caddy_actions.delete_site(confirm)),
+        "13": ("Убрать дефолтный site :80", lambda: menu_caddy_actions.remove_default_http_site(confirm)),
+        "14": ("Проверить TLS handshake", menu_caddy_actions.tls_handshake_check),
+        "15": ("Показать логи Caddy", menu_caddy_actions.show_logs),
+        "16": ("Reload Caddy", menu_caddy_actions.reload_caddy),
+        "17": ("Restart Caddy", menu_caddy_actions.restart_caddy),
+        "18": ("Создать backup Caddy config", menu_caddy_actions.create_backup),
+        "19": ("Показать backups Caddy config", menu_caddy_actions.list_backups),
+        "20": ("Восстановить Caddy config из backup", lambda: menu_caddy_actions.restore_backup(confirm)),
+        "21": ("Удалить backup Caddy config", lambda: menu_caddy_actions.delete_backup(confirm)),
     }
 
 
@@ -635,7 +693,7 @@ def open_clients_menu():
 
 
 def open_reality_menu():
-    menu_loop("Настройки Reality", reality_menu_actions(), reality_menu_handlers())
+    menu_loop("Подключения VLESS", reality_menu_actions(), reality_menu_handlers())
 
 
 def open_cascade_menu():
@@ -644,6 +702,10 @@ def open_cascade_menu():
 
 def open_warp_menu():
     menu_loop("WARP", warp_menu_actions(), warp_menu_handlers())
+
+
+def open_caddy_menu():
+    menu_loop("Caddy / TLS", caddy_menu_actions(), caddy_menu_handlers())
 
 
 def open_xray_settings_menu():

@@ -42,11 +42,18 @@ def parse_vless_link(text):
     if not port:
         raise ValueError("В ссылке не указан порт подключения.")
     params = {key.lower(): value for key, value in parse_qsl(parsed.query, keep_blank_values=True)}
-    for key in ("security", "pbk", "sni", "sid"):
-        if not params.get(key):
-            raise ValueError(f"В ссылке нет обязательного Reality-параметра: {key}")
-    if normalize_value(params.get("security")) != "reality":
-        raise ValueError("Поддерживаются только VLESS Reality-ссылки.")
+    security = normalize_value(params.get("security"))
+    if not security:
+        raise ValueError("В ссылке нет обязательного параметра: security")
+    if security == "reality":
+        for key in ("pbk", "sni", "sid"):
+            if not params.get(key):
+                raise ValueError(f"В ссылке нет обязательного Reality-параметра: {key}")
+    elif security == "tls":
+        if not params.get("sni"):
+            raise ValueError("В ссылке нет обязательного TLS-параметра: sni")
+    else:
+        raise ValueError("Поддерживаются только VLESS Reality и TLS-ссылки.")
     return {
         "raw": link,
         "id": client_id,
@@ -75,16 +82,28 @@ def expected_connection_params(client_db, entry):
     connection_tag = entry.get("connection", "")
     connection = client_db_connections(client_db).get(connection_tag, {})
     transport = normalize_value(connection.get("transport") or "tcp")
-    expected = {
-        "port": str(connection.get("port", "")),
-        "pbk": connection.get("publicKey", ""),
-        "sni": connection.get("sni", ""),
-        "sid": connection.get("shortId", ""),
-        "fp": connection.get("fingerprint", ""),
-        "security": "reality",
-        "encryption": "none",
-        "type": transport,
-    }
+    security = normalize_value(connection.get("security") or "reality")
+    expected = {"port": str(connection.get("port", "")), "security": security, "encryption": "none", "type": transport}
+    if security == "tls":
+        public_host = connection.get("publicHost") or connection.get("sni", "")
+        expected.update(
+            {
+                "host": public_host,
+                "sni": public_host,
+                "path": connection.get("xhttpPath", ""),
+                "mode": connection.get("xhttpMode", ""),
+            }
+        )
+        return expected
+
+    expected.update(
+        {
+            "pbk": connection.get("publicKey", ""),
+            "sni": connection.get("sni", ""),
+            "sid": connection.get("shortId", ""),
+            "fp": connection.get("fingerprint", ""),
+        }
+    )
     if transport == "tcp":
         expected["flow"] = (entry.get("client") or {}).get("flow", "xtls-rprx-vision")
     elif transport == "grpc":
@@ -112,7 +131,12 @@ def match_vless_to_client(parsed_link, client_db):
         for key, expected_value in expected.items():
             if not expected_value:
                 continue
-            actual_value = parsed_link["port"] if key == "port" else parsed_link["params"].get(key, "")
+            if key == "port":
+                actual_value = parsed_link["port"]
+            elif key == "host":
+                actual_value = parsed_link["host"]
+            else:
+                actual_value = parsed_link["params"].get(key, "")
             if actual_value and normalize_value(actual_value) != normalize_value(expected_value):
                 mismatches.append(key)
         if mismatches:
@@ -125,7 +149,7 @@ def match_vless_to_client(parsed_link, client_db):
     if len(matches) > 1:
         return None, "По ссылке найдено несколько клиентов. Обратись к администратору."
     detail = "; ".join(mismatch_notes) if mismatch_notes else "параметры подключения не совпали"
-    return None, "UUID найден, но Reality-параметры ссылки не совпадают с текущей базой: " + detail
+    return None, "UUID найден, но параметры VLESS-ссылки не совпадают с текущей базой: " + detail
 
 
 def client_access_summary(entry, format_access_until, client_db=None):
@@ -388,7 +412,7 @@ def current_vless_link_for_chat(db, chat_id, client_db, xray_client, run_capture
         return error
     return "\n".join(
         [
-            "Актуальная VLESS Reality-ссылка:",
+            "Актуальная VLESS-ссылка:",
             "",
             link,
             "",
@@ -404,7 +428,7 @@ def current_vless_link_code_for_chat(db, chat_id, client_db, xray_client, run_ca
     return (
         "\n".join(
             [
-                "Актуальная VLESS Reality-ссылка:",
+                "Актуальная VLESS-ссылка:",
                 "",
                 f"<pre><code>{telegram_html_escape(link)}</code></pre>",
                 "",

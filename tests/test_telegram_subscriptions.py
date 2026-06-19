@@ -75,6 +75,39 @@ class TelegramSubscriptionTests(unittest.TestCase):
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0]["host"], "second.example.ru")
 
+    def test_tls_xhttp_link_matches_client_subscription(self) -> None:
+        link = (
+            "vless://00000000-0000-0000-0000-000000000001@api.example.com:443?"
+            "security=tls&encryption=none&type=xhttp&sni=api.example.com"
+            "&path=%2Fprivate-xhttp&mode=auto#Xray"
+        )
+        client_db = {
+            "connections": {
+                "vless-tls": {
+                    "tag": "vless-tls",
+                    "security": "tls",
+                    "port": 443,
+                    "publicHost": "api.example.com",
+                    "sni": "api.example.com",
+                    "transport": "xhttp",
+                    "xhttpPath": "/private-xhttp",
+                    "xhttpMode": "auto",
+                }
+            },
+            "clients": {
+                "internal_alice": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "connection": "vless-tls",
+                },
+            },
+        }
+
+        parsed = subscriptions.parse_vless_link(link)
+        match, reason = subscriptions.match_vless_to_client(parsed, client_db)
+
+        self.assertEqual(reason, "")
+        self.assertEqual(match[0], "internal_alice")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,7 +18,7 @@ class TelegramMessageTests(unittest.TestCase):
         text = messages.subscription_intro_text({}, bot_name)
 
         self.assertIn("Привет. Я бот Vireika.", text)
-        self.assertIn("VLESS Reality-ссылку", text)
+        self.assertIn("VLESS-ссылку", text)
 
     def test_client_help_text_uses_configured_bot_name(self) -> None:
         text = messages.client_help_text({}, bot_name)

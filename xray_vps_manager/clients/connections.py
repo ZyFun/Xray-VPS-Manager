@@ -11,17 +11,25 @@ from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import (
+    DEFAULT_XHTTP_MODE,
+    DEFAULT_XHTTP_PATH,
+    DEFAULT_XHTTP_TLS_LOCAL_PORT,
+    DEFAULT_XHTTP_TLS_PUBLIC_PORT,
     INBOUND_TAG,
+    TLS_INBOUND_TAG,
     apply_client_transport,
     apply_reality_transport,
     clients,
     connection_name_from_tag,
     connection_settings_from_inbound,
+    connection_transport_settings_from_inbound,
     default_connection_tag,
     find_inbound_by_tag,
     inbound_tag,
     reality_dest,
     reality_inbounds,
+    tls_xhttp_inbounds,
+    vless_connection_inbounds,
 )
 from xray_vps_manager.clients.models import client_name
 
@@ -37,6 +45,13 @@ class AddConnectionResult:
     public_key: str
     short_id: str
     transport: str
+    security: str = "reality"
+    public_host: str = ""
+    public_port: int = 0
+    local_port: int = 0
+    caddy_enabled: bool = False
+    tls_min_version: str = ""
+    tls_max_version: str = ""
     grpc_service_name: str = ""
     xhttp_path: str = ""
     xhttp_mode: str = ""
@@ -62,6 +77,13 @@ class UpdateConnectionTransportResult:
     xhttp_mode: str = ""
     updated_clients: list[str] | None = None
     env_update: dict[str, str] | None = None
+
+
+@dataclass
+class RenameConnectionResult:
+    tag: str
+    old_name: str
+    new_name: str
 
 
 def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
@@ -94,9 +116,44 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
             }
         )
         entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry["security"] = "reality"
+
+    for inbound in tls_xhttp_inbounds(config):
+        tag = inbound_tag(inbound)
+        entry = connections.get(tag)
+        if not isinstance(entry, dict):
+            entry = {
+                "tag": tag,
+                "name": connection_name_from_tag(tag),
+                "created": now_stamp,
+                "security": "tls",
+                "port": DEFAULT_XHTTP_TLS_PUBLIC_PORT,
+                "sni": "",
+                "dest": "",
+                "transport": "xhttp",
+                "xhttpPath": DEFAULT_XHTTP_PATH,
+                "xhttpMode": DEFAULT_XHTTP_MODE,
+                "localPort": int(inbound.get("port", 0) or 0),
+                "publicHost": "",
+                "publicPort": DEFAULT_XHTTP_TLS_PUBLIC_PORT,
+                "caddy": True,
+            }
+            connections[tag] = entry
+        entry.setdefault("tag", tag)
+        entry.setdefault("name", connection_name_from_tag(tag))
+        entry.setdefault("created", now_stamp)
+        entry["security"] = "tls"
+        entry["localPort"] = int(inbound.get("port", 0) or 0)
+        entry.setdefault("publicHost", entry.get("sni") or "")
+        entry.setdefault("publicPort", int(entry.get("port") or DEFAULT_XHTTP_TLS_PUBLIC_PORT))
+        entry["port"] = int(entry.get("publicPort") or DEFAULT_XHTTP_TLS_PUBLIC_PORT)
+        entry["sni"] = entry.get("publicHost") or entry.get("sni") or ""
+        entry.setdefault("dest", "")
+        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry.update(connection_transport_settings_from_inbound(inbound))
 
     default_tag = default_connection_tag(config)
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         tag = inbound_tag(inbound)
         for item in inbound.setdefault("settings", {}).setdefault("clients", []):
             name = client_name(item)
@@ -131,14 +188,16 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
     fallback_fingerprint = fingerprint()
     rows = []
     for tag, entry in db_connections(db).items():
+        security = entry.get("security") or "reality"
         rows.append(
             [
                 entry.get("name", connection_name_from_tag(tag)),
                 tag,
+                security,
                 entry.get("port", ""),
                 entry.get("sni", ""),
                 entry.get("transport", "tcp"),
-                entry.get("fingerprint", fallback_fingerprint),
+                entry.get("fingerprint", fallback_fingerprint) if security == "reality" else "-",
                 entry.get("created", "unknown"),
             ]
         )
@@ -154,13 +213,47 @@ def used_ports(config: dict[str, Any]) -> set[int]:
     return ports
 
 
+def next_local_port(config: dict[str, Any], start: int = DEFAULT_XHTTP_TLS_LOCAL_PORT) -> int:
+    ports = used_ports(config)
+    port = start
+    while port in ports:
+        port += 1
+        if port > 65535:
+            raise ValueError("No free local port found.")
+    return port
+
+
+def public_port_conflicts(config: dict[str, Any], public_port: int) -> list[dict[str, Any]]:
+    conflicts = []
+    for inbound in config.get("inbounds", []):
+        if inbound.get("port") != public_port:
+            continue
+        listen = str(inbound.get("listen") or "0.0.0.0").strip().lower()
+        if listen in ("127.0.0.1", "localhost", "::1"):
+            continue
+        conflicts.append(inbound)
+    return conflicts
+
+
 def next_connection_tag(config: dict[str, Any]) -> str:
-    existing = {inbound_tag(inbound) for inbound in reality_inbounds(config)}
+    existing = {inbound_tag(inbound) for inbound in vless_connection_inbounds(config)}
     if INBOUND_TAG not in existing:
         return INBOUND_TAG
     index = 2
     while True:
         tag = f"{INBOUND_TAG}-{index}"
+        if tag not in existing:
+            return tag
+        index += 1
+
+
+def next_tls_connection_tag(config: dict[str, Any]) -> str:
+    existing = {inbound_tag(inbound) for inbound in vless_connection_inbounds(config)}
+    if TLS_INBOUND_TAG not in existing:
+        return TLS_INBOUND_TAG
+    index = 2
+    while True:
+        tag = f"{TLS_INBOUND_TAG}-{index}"
         if tag not in existing:
             return tag
         index += 1
@@ -201,6 +294,40 @@ def make_reality_inbound(
         "tag": tag,
         "listen": "0.0.0.0",
         "port": port,
+        "protocol": "vless",
+        "settings": {
+            "clients": [],
+            "decryption": "none",
+        },
+        "streamSettings": stream_settings,
+        "sniffing": {
+            "enabled": True,
+            "destOverride": ["http", "tls", "quic"],
+        },
+    }
+
+
+def make_tls_xhttp_inbound(
+    tag: str,
+    local_port: int,
+    *,
+    xhttp_path: str = "",
+    xhttp_mode: str = "",
+) -> dict[str, Any]:
+    stream_settings = {
+        "network": "xhttp",
+        "security": "none",
+    }
+    apply_reality_transport(
+        stream_settings,
+        "xhttp",
+        xhttp_path=xhttp_path,
+        xhttp_mode=xhttp_mode,
+    )
+    return {
+        "tag": tag,
+        "listen": "127.0.0.1",
+        "port": local_port,
         "protocol": "vless",
         "settings": {
             "clients": [],
@@ -296,11 +423,98 @@ def add_connection(
     )
 
 
+def add_tls_xhttp_connection(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    domain: str,
+    *,
+    local_port: int,
+    public_port: int = DEFAULT_XHTTP_TLS_PUBLIC_PORT,
+    xhttp_path: str = "",
+    xhttp_mode: str = "",
+    tls_min_version: str = "tls1.2",
+    tls_max_version: str = "tls1.2",
+    caddy_enabled: bool = True,
+) -> AddConnectionResult:
+    ensure_connections(config, db)
+
+    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
+    if name in existing_connection_names:
+        raise ValueError(f"Connection already exists: {name}")
+
+    if local_port in used_ports(config):
+        raise ValueError(f"LOCAL_PORT is already used by another inbound: {local_port}")
+
+    tag = next_tls_connection_tag(config)
+    inbound = make_tls_xhttp_inbound(
+        tag,
+        local_port,
+        xhttp_path=xhttp_path,
+        xhttp_mode=xhttp_mode,
+    )
+    config.setdefault("inbounds", []).append(inbound)
+
+    transport_settings = connection_transport_settings_from_inbound(inbound)
+    created = utc_stamp()
+    record = {
+        "tag": tag,
+        "name": name,
+        "created": created,
+        "security": "tls",
+        "port": public_port,
+        "publicPort": public_port,
+        "localPort": local_port,
+        "publicHost": domain,
+        "sni": domain,
+        "dest": "",
+        "fingerprint": "",
+        "publicKey": "",
+        "shortId": "",
+        "caddy": bool(caddy_enabled),
+        "tlsMinVersion": tls_min_version,
+        "tlsMaxVersion": tls_max_version,
+    }
+    record.update(
+        {
+            key: value
+            for key, value in transport_settings.items()
+            if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode")
+        }
+    )
+    db_connections(db)[tag] = record
+
+    return AddConnectionResult(
+        tag=tag,
+        name=name,
+        port=public_port,
+        sni=domain,
+        dest="",
+        fingerprint="",
+        public_key="",
+        short_id="",
+        transport=record.get("transport", "xhttp"),
+        security="tls",
+        public_host=domain,
+        public_port=public_port,
+        local_port=local_port,
+        caddy_enabled=bool(caddy_enabled),
+        tls_min_version=tls_min_version,
+        tls_max_version=tls_max_version,
+        xhttp_path=record.get("xhttpPath", ""),
+        xhttp_mode=record.get("xhttpMode", ""),
+    )
+
+
 def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: str) -> RemoveConnectionResult:
     ensure_connections(config, db)
     tag = resolve_connection_identifier(config, db, identifier)
+    inbound = find_inbound_by_tag(config, tag)
+    security = db_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
 
-    if len(reality_inbounds(config)) <= 1:
+    if len(vless_connection_inbounds(config)) <= 1:
+        raise ValueError("Cannot remove the last VLESS connection.")
+    if security == "reality" and len(reality_inbounds(config)) <= 1:
         raise ValueError("Cannot remove the last Reality connection.")
 
     display_name = connection_display_name(config, db, tag)
@@ -308,11 +522,7 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
     config["inbounds"] = [
         inbound
         for inbound in config.get("inbounds", [])
-        if not (
-            inbound.get("protocol") == "vless"
-            and inbound.get("streamSettings", {}).get("security") == "reality"
-            and inbound_tag(inbound) == tag
-        )
+        if not (inbound.get("protocol") == "vless" and inbound_tag(inbound) == tag)
     ]
 
     db_connections(db).pop(tag, None)
@@ -352,6 +562,9 @@ def update_connection_transport(
     ensure_connections(config, db)
     tag = resolve_connection_identifier(config, db, identifier)
     inbound = find_inbound_by_tag(config, tag)
+    security = db_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
+    if security == "tls" and transport != "xhttp":
+        raise ValueError("TLS connections support only xhttp transport.")
     stream = inbound.setdefault("streamSettings", {})
     settings = apply_reality_transport(
         stream,
@@ -390,6 +603,22 @@ def update_connection_transport(
         updated_clients=sorted(updated_clients),
         env_update=env_update,
     )
+
+
+def rename_connection(config: dict[str, Any], db: dict[str, Any], identifier: str, new_name: str) -> RenameConnectionResult:
+    ensure_connections(config, db)
+    name = (new_name or "").strip()
+    if not name:
+        raise ValueError("Connection name is required.")
+    tag = resolve_connection_identifier(config, db, identifier)
+    connections = db_connections(db)
+    for existing_tag, entry in connections.items():
+        if existing_tag != tag and (entry.get("name") or connection_name_from_tag(existing_tag)) == name:
+            raise ValueError(f"Connection already exists: {name}")
+    entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
+    old_name = entry.get("name") or connection_name_from_tag(tag)
+    entry["name"] = name
+    return RenameConnectionResult(tag=tag, old_name=old_name, new_name=name)
 
 
 def connection_client_names(config: dict[str, Any], db: dict[str, Any], tag: str) -> list[str]:

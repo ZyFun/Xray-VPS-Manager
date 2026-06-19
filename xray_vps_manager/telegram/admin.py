@@ -756,7 +756,7 @@ def handle_add_client_payment(ctx: AdminContext, db, chat_id, payment_type):
             ctx,
             db,
             chat_id,
-            "Выбери Reality-подключение для нового клиента.",
+            "Выбери VLESS-подключение для нового клиента.",
             keyboards.admin_client_add_connection_keyboard(connections),
         )
         return True

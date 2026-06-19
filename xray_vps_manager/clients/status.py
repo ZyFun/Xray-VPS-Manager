@@ -18,11 +18,11 @@ from xray_vps_manager.xray.config import (
     active_client_any,
     apply_client_transport,
     clients,
+    connection_transport_settings_from_inbound,
     default_connection_tag,
     find_inbound_by_tag,
     inbound_tag,
-    reality_inbounds,
-    reality_transport_settings_from_inbound,
+    vless_connection_inbounds,
 )
 
 
@@ -77,7 +77,7 @@ def enable_db_client(config: dict[str, Any], name: str, entry: dict[str, Any]) -
     client = client_from_db_entry(name, entry)
     connection_tag = entry.get("connection") or default_connection_tag(config)
     inbound = find_inbound_by_tag(config, connection_tag)
-    apply_client_transport(client, reality_transport_settings_from_inbound(inbound)["transport"])
+    apply_client_transport(client, connection_transport_settings_from_inbound(inbound)["transport"])
     clients(inbound).append(client)
     entry["client"] = client
     entry["connection"] = connection_tag
@@ -88,7 +88,7 @@ def remove_active_client(config: dict[str, Any], name: str) -> tuple[bool, str, 
     removed_tag = ""
     removed_item = None
     changed = False
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         before = clients(inbound)
         after = []
         for item in before:
@@ -242,7 +242,7 @@ def enforce_traffic_limits(
         db_clients(db)[name] = entry
         reactivated_names.append(name)
 
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         tag = inbound_tag(inbound)
         for item in clients(inbound):
             name = client_name(item)
@@ -269,7 +269,7 @@ def enforce_traffic_limits(
         db_clients(db)[name] = entry
 
     due_set = set(due_names)
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
 
     return TrafficLimitEnforcementResult(
@@ -289,7 +289,7 @@ def expire_due_clients(
     due_names: list[str] = []
     due_clients: dict[str, tuple[str, dict[str, Any]]] = {}
 
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         tag = inbound_tag(inbound)
         for item in clients(inbound):
             name = client_name(item)
@@ -310,7 +310,7 @@ def expire_due_clients(
         db_clients(db)[name] = entry
 
     due_set = set(due_names)
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
 
     return ExpireDueResult(due_names=due_names)

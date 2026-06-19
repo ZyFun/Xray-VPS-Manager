@@ -19,6 +19,7 @@ from xray_vps_manager.clients.settings import (
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray.config import (
+    DEFAULT_XHTTP_TLS_PUBLIC_PORT,
     INBOUND_TAG,
     connection_name_from_tag,
     connection_settings_from_inbound,
@@ -32,6 +33,7 @@ from xray_vps_manager.xray.config import (
     normalize_xhttp_path,
     reality_dest,
     reality_inbounds,
+    vless_connection_inbounds,
     save_config,
 )
 
@@ -128,32 +130,37 @@ def current_fingerprint() -> str:
     return value if value in FINGERPRINTS else "chrome"
 
 
-def connection_rows() -> list[dict[str, str | int]]:
+def connection_rows(security_filter: str | None = None) -> list[dict[str, str | int]]:
     config = load_config()
     db = load_db_sql()
     connection_store.ensure_connections(config, db)
     rows = []
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         settings = connection_settings_from_inbound(inbound)
         entry = db_connections(db).get(settings["tag"], {})
+        security = entry.get("security") or ("reality" if settings.get("security") == "reality" else "tls")
+        if security_filter and security != security_filter:
+            continue
         rows.append({
             "tag": settings["tag"],
             "name": entry.get("name") or connection_name_from_tag(settings["tag"]),
+            "security": security,
             "port": entry.get("port") or settings["port"],
             "sni": entry.get("sni") or settings["sni"],
             "transport": entry.get("transport") or settings["transport"],
-            "fingerprint": entry.get("fingerprint") or current_fingerprint(),
+            "fingerprint": (entry.get("fingerprint") or current_fingerprint()) if security == "reality" else "-",
         })
     return rows
 
 
 def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
-    headers = ("№", "NAME", "TAG", "PORT", "SNI", "TRANSPORT", "FINGERPRINT")
+    headers = ("№", "NAME", "TAG", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT")
     values = [
         (
             str(index),
             row["name"],
             row["tag"],
+            row["security"],
             row["port"],
             row["sni"],
             row["transport"],
@@ -161,7 +168,7 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
         )
         for index, row in enumerate(rows, start=1)
     ]
-    values.append(("0", "Назад", "", "", "", "", ""))
+    values.append(("0", "Назад", "", "", "", "", "", ""))
     widths = [
         max(len(headers[column]), *(len(str(row[column])) for row in values))
         for column in range(len(headers))
@@ -175,10 +182,10 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
     print(border)
 
 
-def choose_connection(action: str, auto_single: bool = True) -> str:
-    rows = connection_rows()
+def choose_connection(action: str, auto_single: bool = True, security_filter: str | None = None) -> str:
+    rows = connection_rows(security_filter=security_filter)
     if not rows:
-        die("No Reality connections found.")
+        die("No matching VLESS connections found.")
     if len(rows) == 1 and auto_single:
         return str(rows[0]["tag"])
     print(f"Выбери подключение для действия: {action}.")
@@ -336,6 +343,29 @@ def prompt(default, message: str) -> str:
     return value or str(default)
 
 
+def ask_yes_no(message: str, default: bool = True) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    value = input(f"{message} [{suffix}]: ").strip().lower()
+    if not value:
+        return default
+    return value in ("y", "yes", "д", "да")
+
+
+def choose_security(default: str = "reality") -> str:
+    print()
+    print("SECURITY: тип входящего подключения.")
+    print("  1) reality - текущая схема без своего домена и сертификата")
+    print("  2) tls     - XHTTP через Caddy с доменом и автоматическим сертификатом")
+    raw = input(f"SECURITY [{default}] (номер или значение): ").strip().lower() or default
+    if raw == "1":
+        return "reality"
+    if raw == "2":
+        return "tls"
+    if raw in ("reality", "tls"):
+        return raw
+    die("SECURITY must be reality or tls.")
+
+
 def choose_transport(default: str = "tcp") -> dict[str, str]:
     print()
     print("TRANSPORT: транспорт VLESS Reality для этого подключения.")
@@ -368,8 +398,12 @@ def show_settings(call: CommandRunner) -> None:
 
 
 def create_connection(call: CommandRunner) -> None:
-    print("Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом и SNI.")
+    security = choose_security("reality")
     name = input("Имя подключения: ").strip()
+    if security == "tls":
+        create_tls_xhttp_connection(call, name)
+        return
+    print("Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом и SNI.")
     print("PORT: публичный TCP-порт для подключения клиентов. Он не должен совпадать с уже занятыми портами.")
     port = str(validate_port(input("PORT: ").strip()))
     print("REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
@@ -384,9 +418,54 @@ def create_connection(call: CommandRunner) -> None:
     call(command)
 
 
+def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
+    config = load_config()
+    print("TLS-XHTTP подключение работает через Caddy: публично api.domain:443, внутри Xray слушает 127.0.0.1:LOCAL_PORT.")
+    domain = validate_host(input("TLS domain/SNI: ").strip(), "TLS_DOMAIN")
+    default_local_port = connection_store.next_local_port(config)
+    local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
+    public_port = str(validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
+    path = validate_xhttp_path(prompt("/vless-xhttp", "XHTTP path"))
+    mode = validate_xhttp_mode(prompt("auto", "XHTTP mode"))
+    tls_min = prompt("tls1.2", "TLS min version (tls1.2/tls1.3/default)")
+    tls_max = prompt("tls1.2", "TLS max version (tls1.2/tls1.3/default)")
+    install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
+    if install_caddy:
+        conflicts = connection_store.public_port_conflicts(config, int(public_port))
+        if conflicts:
+            tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+            print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
+            print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
+            return
+    command = [
+        "xray-client",
+        "add-connection",
+        name,
+        local_port,
+        domain,
+        "--security",
+        "tls",
+        "--transport",
+        "xhttp",
+        "--xhttp-path",
+        path,
+        "--xhttp-mode",
+        mode,
+        "--public-port",
+        public_port,
+        "--tls-min-version",
+        tls_min,
+        "--tls-max-version",
+        tls_max,
+    ]
+    if install_caddy:
+        command.append("--install-caddy")
+    call(command)
+
+
 def update_port() -> None:
     config = load_config()
-    tag = choose_connection("обновления PORT")
+    tag = choose_connection("обновления PORT", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
@@ -412,7 +491,7 @@ def update_port() -> None:
 
 def update_sni() -> None:
     config = load_config()
-    tag = choose_connection("обновления REALITY_SNI")
+    tag = choose_connection("обновления REALITY_SNI", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
@@ -436,7 +515,7 @@ def update_sni() -> None:
 
 def update_port_and_sni() -> None:
     config = load_config()
-    tag = choose_connection("обновления PORT и REALITY_SNI")
+    tag = choose_connection("обновления PORT и REALITY_SNI", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
@@ -480,7 +559,7 @@ def choose_fingerprint(default: str) -> str:
 
 def update_fingerprint() -> None:
     config = load_config()
-    tag = choose_connection("обновления FINGERPRINT")
+    tag = choose_connection("обновления FINGERPRINT", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
@@ -515,7 +594,7 @@ def update_transport(call: CommandRunner) -> None:
 def delete_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
     rows = connection_rows()
     if len(rows) <= 1:
-        print("Нельзя удалить последнее Reality-подключение. Сначала создай другое подключение.")
+        print("Нельзя удалить последнее VLESS-подключение. Сначала создай другое подключение.")
         return
     tag = choose_connection("удаления подключения", auto_single=False)
     if not tag:
@@ -531,3 +610,18 @@ def delete_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
         return
     call(["xray-client", "remove-connection", tag])
     refresh_initial_link()
+
+
+def rename_connection(call: CommandRunner) -> None:
+    tag = choose_connection("переименования подключения", auto_single=False)
+    if not tag:
+        print("Действие отменено.")
+        return
+    rows = connection_rows()
+    row = next((item for item in rows if item["tag"] == tag), None)
+    current_name = row["name"] if row else tag
+    new_name = input(f"Новое имя подключения [{current_name}]: ").strip()
+    if not new_name or new_name == current_name:
+        print("Имя не изменено.")
+        return
+    call(["xray-client", "connection-rename", tag, new_name])

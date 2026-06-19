@@ -25,6 +25,7 @@ from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import reports as traffic_reports
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
 
@@ -285,6 +286,20 @@ def validate_reality_transport(value):
         die(str(exc))
 
 
+def validate_connection_security(value):
+    security = (value or "reality").strip().lower()
+    if security not in ("reality", "tls"):
+        die("SECURITY must be reality or tls.")
+    return security
+
+
+def validate_tls_version(value, default="tls1.2"):
+    try:
+        return xray_caddy.normalize_tls_version(value, default)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def validate_grpc_service_name(value):
     try:
         return xray_config.normalize_grpc_service_name(value)
@@ -477,8 +492,9 @@ def print_connection_title(config, db, tag):
     name = entry.get("name") or xray_config.connection_name_from_tag(tag)
     port = entry.get("port", "")
     sni = entry.get("sni", "")
+    security = entry.get("security") or "reality"
     print()
-    print(f"Connection: {name}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
+    print(f"Connection: {name}  |  SECURITY={security}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
 
 
 def cmd_connection_list():
@@ -488,7 +504,7 @@ def cmd_connection_list():
     ensure_connections(config, db)
     if read_result.source == "json":
         save_db(db)
-    headers = ["NAME", "TAG", "PORT", "SNI", "TRANSPORT", "FINGERPRINT", "CREATED"]
+    headers = ["NAME", "TAG", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT", "CREATED"]
     print_table(headers, connection_rows(config, db), empty_message=None)
 
 
@@ -501,41 +517,99 @@ def cmd_connection_add(
     grpc_service_name="",
     xhttp_path="",
     xhttp_mode="",
+    security_value="reality",
+    public_port_value="",
+    install_caddy=False,
+    tls_min_version="tls1.2",
+    tls_max_version="tls1.2",
 ):
     name = validate_connection_name(name)
+    security = validate_connection_security(security_value)
     port = validate_port(port_value)
-    sni = validate_host(sni_value, "REALITY_SNI")
-    fp = validate_fingerprint(fingerprint_value or "chrome")
-    transport = validate_reality_transport(transport_value)
+    sni = validate_host(sni_value, "REALITY_SNI" if security == "reality" else "TLS_DOMAIN")
+    fp = validate_fingerprint(fingerprint_value or "chrome") if security == "reality" else ""
+    transport = validate_reality_transport(transport_value or ("xhttp" if security == "tls" else "tcp"))
+    if security == "tls" and transport != "xhttp":
+        die("TLS connections support only xhttp transport.")
     grpc_service_name = validate_grpc_service_name(grpc_service_name) if transport == "grpc" else ""
     xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
     xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
+    public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_XHTTP_TLS_PUBLIC_PORT
+    tls_min_version = validate_tls_version(tls_min_version, "tls1.2")
+    tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
     config = load_config()
     db = load_db()
     try:
-        result = client_connections.add_connection(
-            config,
-            db,
-            name,
-            port,
-            sni,
-            fp,
-            transport=transport,
-            grpc_service_name=grpc_service_name,
-            xhttp_path=xhttp_path,
-            xhttp_mode=xhttp_mode,
-        )
+        if security == "tls":
+            if install_caddy:
+                conflicts = client_connections.public_port_conflicts(config, public_port)
+                if conflicts:
+                    tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+                    die(
+                        f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
+                        "Move those connections to another port before installing Caddy."
+                    )
+            result = client_connections.add_tls_xhttp_connection(
+                config,
+                db,
+                name,
+                xray_caddy.validate_domain(sni),
+                local_port=port,
+                public_port=public_port,
+                xhttp_path=xhttp_path,
+                xhttp_mode=xhttp_mode,
+                tls_min_version=tls_min_version,
+                tls_max_version=tls_max_version,
+                caddy_enabled=install_caddy,
+            )
+        else:
+            result = client_connections.add_connection(
+                config,
+                db,
+                name,
+                port,
+                sni,
+                fp,
+                transport=transport,
+                grpc_service_name=grpc_service_name,
+                xhttp_path=xhttp_path,
+                xhttp_mode=xhttp_mode,
+            )
     except (ValueError, RuntimeError) as exc:
         die(str(exc))
 
     backup = save_config_restart_xray_and_db(config, db)
+    caddy_site = None
+    if result.security == "tls" and install_caddy:
+        try:
+            caddy_site = xray_caddy.setup_caddy_for_xhttp(
+                result.public_host,
+                result.local_port,
+                tls_min_version=result.tls_min_version,
+                tls_max_version=result.tls_max_version,
+            )
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            die(
+                "TLS-XHTTP connection was added, but Caddy setup failed. "
+                f"Config backup: {backup}. Detail: {exc}"
+            )
 
     print(f"Added connection: {result.name}")
     print(f"Tag: {result.tag}")
-    print(f"PORT: {result.port}")
-    print(f"REALITY_SNI: {result.sni}")
-    print(f"REALITY_DEST: {result.dest}")
-    print(f"FINGERPRINT: {result.fingerprint}")
+    print(f"SECURITY: {result.security}")
+    if result.security == "tls":
+        print(f"PUBLIC_HOST: {result.public_host}")
+        print(f"PUBLIC_PORT: {result.public_port}")
+        print(f"LOCAL_PORT: {result.local_port}")
+        print(f"TLS_MIN_VERSION: {result.tls_min_version}")
+        print(f"TLS_MAX_VERSION: {result.tls_max_version}")
+        if caddy_site:
+            print(f"CADDY_SITE: {caddy_site}")
+    else:
+        print(f"PORT: {result.port}")
+        print(f"REALITY_SNI: {result.sni}")
+        print(f"REALITY_DEST: {result.dest}")
+        print(f"FINGERPRINT: {result.fingerprint}")
     print(f"TRANSPORT: {result.transport}")
     if result.transport == "grpc":
         print(f"GRPC_SERVICE_NAME: {result.grpc_service_name}")
@@ -579,6 +653,20 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
     print("Updated clients: " + (", ".join(result.updated_clients or []) if result.updated_clients else "none"))
     print(f"Backup: {backup}")
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
+
+
+def cmd_connection_rename(identifier, new_name):
+    new_name = validate_connection_name(new_name)
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_connections.rename_connection(config, db, identifier, new_name)
+    except ValueError as exc:
+        die(str(exc))
+    save_db(db)
+    print(f"Connection renamed: {result.old_name} -> {result.new_name}")
+    print(f"Tag: {result.tag}")
+    print("Xray restart is not required.")
 
 
 def cmd_connection_remove(identifier):
@@ -1110,6 +1198,8 @@ def usage():
   xray-client list
   xray-client connection-list
   xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE]
+  xray-client add-connection NAME LOCAL_PORT DOMAIN --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client connection-rename NAME_OR_TAG NEW_NAME
   xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE]
   xray-client remove-connection NAME_OR_TAG
   xray-client add NAME [DAYS] [--connection TAG] [--payment paid|free]
@@ -1170,11 +1260,22 @@ def parse_connection_add_args(args):
     xhttp_path = ""
     xhttp_mode = ""
     transport = ""
+    security = "reality"
+    public_port = ""
+    install_caddy = False
+    tls_min_version = "tls1.2"
+    tls_max_version = "tls1.2"
     rest = list(args)
     index = 0
     positional = []
     while index < len(rest):
         item = rest[index]
+        if item == "--security":
+            if index + 1 >= len(rest):
+                die("--security requires reality or tls")
+            security = rest[index + 1]
+            index += 2
+            continue
         if item == "--transport":
             if index + 1 >= len(rest):
                 die("--transport requires tcp, grpc, or xhttp")
@@ -1199,6 +1300,28 @@ def parse_connection_add_args(args):
             xhttp_mode = rest[index + 1]
             index += 2
             continue
+        if item == "--public-port":
+            if index + 1 >= len(rest):
+                die("--public-port requires PORT")
+            public_port = rest[index + 1]
+            index += 2
+            continue
+        if item == "--install-caddy":
+            install_caddy = True
+            index += 1
+            continue
+        if item == "--tls-min-version":
+            if index + 1 >= len(rest):
+                die("--tls-min-version requires tls1.2, tls1.3, or default")
+            tls_min_version = rest[index + 1]
+            index += 2
+            continue
+        if item == "--tls-max-version":
+            if index + 1 >= len(rest):
+                die("--tls-max-version requires tls1.2, tls1.3, or default")
+            tls_max_version = rest[index + 1]
+            index += 2
+            continue
         if item.startswith("--"):
             die(f"Unknown option: {item}")
         positional.append(item)
@@ -1219,8 +1342,22 @@ def parse_connection_add_args(args):
     if len(positional) == 5:
         transport = positional[4]
 
-    transport = transport or "tcp"
-    return name, port, sni, fingerprint_value, transport, grpc_service_name, xhttp_path, xhttp_mode
+    transport = transport or ("xhttp" if validate_connection_security(security) == "tls" else "tcp")
+    return (
+        name,
+        port,
+        sni,
+        fingerprint_value,
+        transport,
+        grpc_service_name,
+        xhttp_path,
+        xhttp_mode,
+        security,
+        public_port,
+        install_caddy,
+        tls_min_version,
+        tls_max_version,
+    )
 
 
 def parse_connection_transport_args(args):
@@ -1285,6 +1422,8 @@ def main():
         cmd_connection_add(*parse_connection_add_args(sys.argv[2:]))
     elif command in ("connection-transport", "set-connection-transport"):
         cmd_connection_transport(*parse_connection_transport_args(sys.argv[2:]))
+    elif command in ("connection-rename", "rename-connection") and len(sys.argv) == 4:
+        cmd_connection_rename(sys.argv[2], sys.argv[3])
     elif command in ("remove-connection", "delete-connection") and len(sys.argv) == 3:
         cmd_connection_remove(sys.argv[2])
     elif command == "add":

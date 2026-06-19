@@ -114,6 +114,53 @@ class RealityTransportTests(unittest.TestCase):
         self.assertEqual(params["mode"], ["auto"])
         self.assertNotIn("flow", params)
 
+    def test_tls_xhttp_connection_uses_local_inbound_and_public_tls_link(self) -> None:
+        config = {"inbounds": [base_inbound()], "outbounds": []}
+        db = {
+            "connections": {},
+            "clients": {},
+        }
+
+        connection = client_connections.add_tls_xhttp_connection(
+            config,
+            db,
+            "api",
+            "api.example.com",
+            local_port=10000,
+            xhttp_path="/private-xhttp",
+            xhttp_mode="auto",
+        )
+        result = client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag=connection.tag,
+            uuid_factory=lambda: CLIENT_ID,
+        )
+
+        inbound = config["inbounds"][1]
+        self.assertEqual(inbound["listen"], "127.0.0.1")
+        self.assertEqual(inbound["port"], 10000)
+        self.assertEqual(inbound["streamSettings"]["security"], "none")
+        self.assertEqual(inbound["streamSettings"]["network"], "xhttp")
+        self.assertNotIn("flow", result.entry["client"])
+        self.assertEqual(db["connections"][connection.tag]["security"], "tls")
+        self.assertEqual(db["connections"][connection.tag]["publicHost"], "api.example.com")
+
+        with mock.patch.object(client_links, "server_name", return_value="Xray"):
+            link = client_links.link_for(config, CLIENT_ID, "alice", connection.tag, db)
+
+        parsed = urlsplit(link)
+        params = parse_qs(parsed.query)
+        self.assertEqual(parsed.hostname, "api.example.com")
+        self.assertEqual(parsed.port, 443)
+        self.assertEqual(params["security"], ["tls"])
+        self.assertEqual(params["type"], ["xhttp"])
+        self.assertEqual(params["sni"], ["api.example.com"])
+        self.assertEqual(params["path"], ["/private-xhttp"])
+        self.assertNotIn("pbk", params)
+
     def test_cascade_parser_accepts_xhttp_links(self) -> None:
         link = (
             "vless://11111111-1111-1111-1111-111111111111@example.com:443?"
@@ -127,6 +174,22 @@ class RealityTransportTests(unittest.TestCase):
         self.assertEqual(outbound["streamSettings"]["network"], "xhttp")
         self.assertEqual(outbound["streamSettings"]["xhttpSettings"], {"path": "/vless-xhttp", "mode": "auto"})
         self.assertNotIn("flow", outbound["settings"]["vnext"][0]["users"][0])
+
+    def test_rename_connection_changes_display_name_only(self) -> None:
+        config = {"inbounds": [base_inbound("xhttp")]}
+        db = {
+            "connections": {},
+            "clients": {},
+        }
+        client_connections.ensure_connections(config, db)
+
+        result = client_connections.rename_connection(config, db, "vless-reality", "Apple")
+
+        self.assertEqual(result.tag, "vless-reality")
+        self.assertEqual(result.old_name, "default")
+        self.assertEqual(result.new_name, "Apple")
+        self.assertEqual(db["connections"]["vless-reality"]["name"], "Apple")
+        self.assertEqual(config["inbounds"][0]["tag"], "vless-reality")
 
 
 if __name__ == "__main__":

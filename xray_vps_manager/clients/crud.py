@@ -21,8 +21,8 @@ from xray_vps_manager.xray.config import (
     clients,
     find_inbound_by_tag,
     inbound_tag,
-    reality_inbounds,
-    reality_transport_settings_from_inbound,
+    connection_transport_settings_from_inbound,
+    vless_connection_inbounds,
 )
 
 
@@ -78,7 +78,7 @@ def resolve_connection_for_add(config: dict[str, Any], db: dict[str, Any], conne
 
 def all_client_names(config: dict[str, Any], db: dict[str, Any]) -> set[str]:
     names = set(db_clients(db))
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         names.update(client_name(item) for item in clients(inbound) if client_name(item))
     return names
 
@@ -126,7 +126,7 @@ def add_client(
         "level": 0,
         "email": f"{name}|created={created}",
     }
-    apply_client_transport(client, reality_transport_settings_from_inbound(inbound)["transport"])
+    apply_client_transport(client, connection_transport_settings_from_inbound(inbound)["transport"])
     current.append(client)
     entry = db_entry_from_client(client, created=created, enabled=True)
     entry["connection"] = selected_tag
@@ -146,7 +146,7 @@ def add_client(
 def remove_client(config: dict[str, Any], db: dict[str, Any], name: str) -> RemoveClientResult:
     connections.ensure_connections(config, db)
     found_active = False
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         before = clients(inbound)
         after = [item for item in before if client_name(item) != name]
         if len(after) != len(before):
