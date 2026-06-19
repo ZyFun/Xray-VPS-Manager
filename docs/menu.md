@@ -118,10 +118,17 @@ xray-menu
 15 Показать логи Caddy
 16 Reload Caddy
 17 Restart Caddy
-18 Создать backup Caddy config
-19 Показать backups Caddy config
-20 Восстановить Caddy config из backup
-21 Удалить backup Caddy config
+18 Бэкапы
+
+Настройки Xray -> Caddy / TLS -> Бэкапы:
+1 Создать backup Caddy config
+2 Показать backups Caddy config
+3 Восстановить Caddy config из backup
+4 Удалить backup Caddy config
+5 Создать backup сайта
+6 Показать backups сайта
+7 Восстановить сайт из backup
+8 Удалить backup сайта
 
 Настройки Xray -> Каскад:
 1 Показать каскады

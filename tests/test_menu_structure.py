@@ -13,10 +13,14 @@ class MenuStructureTests(unittest.TestCase):
     def test_caddy_and_connection_rename_actions_are_exposed(self) -> None:
         self.assertIn(("16", "Caddy / TLS"), menu.xray_settings_menu_actions())
         self.assertIn("16", menu.xray_settings_menu_handlers())
-        self.assertIn(("18", "Создать backup Caddy config"), menu.caddy_menu_actions())
-        self.assertIn(("20", "Восстановить Caddy config из backup"), menu.caddy_menu_actions())
+        self.assertIn(("18", "Бэкапы"), menu.caddy_menu_actions())
         self.assertIn("18", menu.caddy_menu_handlers())
-        self.assertIn("20", menu.caddy_menu_handlers())
+        self.assertIn(("1", "Создать backup Caddy config"), menu.caddy_backup_menu_actions())
+        self.assertIn(("5", "Создать backup сайта"), menu.caddy_backup_menu_actions())
+        self.assertIn(("7", "Восстановить сайт из backup"), menu.caddy_backup_menu_actions())
+        self.assertIn("1", menu.caddy_backup_menu_handlers())
+        self.assertIn("5", menu.caddy_backup_menu_handlers())
+        self.assertIn("7", menu.caddy_backup_menu_handlers())
         self.assertIn(("9", "Переименовать подключение"), menu.reality_menu_actions())
         self.assertIn("9", menu.reality_menu_handlers())
 

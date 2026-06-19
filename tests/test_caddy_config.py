@@ -105,6 +105,64 @@ class CaddyConfigTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 caddy.delete_config_backup(str(outside), backup_dir)
 
+    def test_site_root_candidates_include_root_directives_and_fallbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            caddyfile = root / "Caddyfile"
+            conf_dir = root / "conf.d"
+            static_root = root / "www"
+            fallback = root / "usr-share-caddy"
+            conf_dir.mkdir()
+            static_root.mkdir()
+            fallback.mkdir()
+            caddyfile.write_text(
+                "example.com {\n"
+                f"    root * {static_root}\n"
+                "    file_server\n"
+                "}\n"
+            )
+
+            candidates = caddy.site_root_candidates(caddyfile_path=caddyfile, conf_dir=conf_dir)
+
+        self.assertEqual(candidates[0], static_root)
+
+    def test_site_backup_and_restore_site_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backup_dir = root / "backups"
+            site_root = root / "site"
+            nested = site_root / "assets"
+            nested.mkdir(parents=True)
+            (site_root / "index.html").write_text("before")
+            (nested / "app.css").write_text("body{}")
+
+            archive = caddy.create_site_backup(site_root, backup_dir=backup_dir, quiet=True)
+            (site_root / "index.html").write_text("after")
+            (nested / "app.css").unlink()
+
+            restored_from, pre_backup, restored_root = caddy.restore_site_backup(
+                archive.name,
+                backup_dir=backup_dir,
+                target_root=site_root,
+            )
+
+            self.assertEqual(restored_from, archive)
+            self.assertTrue(pre_backup.exists())
+            self.assertEqual(restored_root, site_root.resolve())
+            self.assertEqual((site_root / "index.html").read_text(), "before")
+            self.assertEqual((nested / "app.css").read_text(), "body{}")
+
+    def test_delete_site_backup_refuses_outside_backup_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backup_dir = root / "backups"
+            backup_dir.mkdir()
+            outside = root / "outside.tar.gz"
+            outside.write_text("not really an archive")
+
+            with self.assertRaises(ValueError):
+                caddy.delete_site_backup(str(outside), backup_dir)
+
 
 if __name__ == "__main__":
     unittest.main()

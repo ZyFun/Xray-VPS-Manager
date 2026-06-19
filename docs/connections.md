@@ -90,9 +90,9 @@ api.example.com {
 Настройки Xray -> Caddy / TLS
 ```
 
-В этом разделе можно установить Caddy, проверить config, посмотреть `Caddyfile` и site configs, создать или обновить site config из существующего TLS/XHTTP-подключения, создать site вручную, изменить TLS version, upstream local port или домен site, удалить site config, убрать дефолтный site `:80`, проверить TLS handshake, посмотреть логи, выполнить reload/restart Caddy, а также создать, посмотреть, восстановить и удалить отдельные backup-архивы Caddy config. Изменения site config валидируются через `caddy validate`; при ошибке менеджер откатывает изменённый файл из backup.
+В этом разделе можно установить Caddy, проверить config, посмотреть `Caddyfile` и site configs, создать или обновить site config из существующего TLS/XHTTP-подключения, создать site вручную, изменить TLS version, upstream local port или домен site, удалить site config, убрать дефолтный site `:80`, проверить TLS handshake, посмотреть логи, выполнить reload/restart Caddy, а также открыть подменю backup для Caddy config и файлов сайта. Изменения site config валидируются через `caddy validate`; при ошибке менеджер откатывает изменённый файл из backup.
 
-Обычный `xray-backup` не включает Caddy config. Для `/etc/caddy/Caddyfile` и `/etc/caddy/conf.d` используй пункты backup/restore в `Настройки Xray -> Caddy / TLS`.
+Обычный `xray-backup` не включает Caddy config и файлы сайта. Для `/etc/caddy/Caddyfile`, `/etc/caddy/conf.d` и папки сайта используй `Настройки Xray -> Caddy / TLS -> Бэкапы`.
 
 Сменить transport существующего подключения:
 
