@@ -25,6 +25,20 @@ def base_inbound(transport: str = "tcp") -> dict:
     )
 
 
+def extra_inbound(tag: str = "vless-reality-2", transport: str = "xhttp") -> dict:
+    return client_connections.make_reality_inbound(
+        tag,
+        8443,
+        "backup.example.com",
+        "private-key-2",
+        "bcde",
+        transport=transport,
+        grpc_service_name="backup-grpc",
+        xhttp_path="/backup-xhttp",
+        xhttp_mode="auto",
+    )
+
+
 class RealityTransportTests(unittest.TestCase):
     def test_update_existing_connection_to_grpc_removes_client_flow(self) -> None:
         item = {
@@ -190,6 +204,69 @@ class RealityTransportTests(unittest.TestCase):
         self.assertEqual(result.new_name, "Apple")
         self.assertEqual(db["connections"]["vless-reality"]["name"], "Apple")
         self.assertEqual(config["inbounds"][0]["tag"], "vless-reality")
+
+    def test_move_enabled_client_to_another_connection_updates_config_and_link_settings(self) -> None:
+        config = {"inbounds": [base_inbound("tcp"), extra_inbound("vless-reality-2", "xhttp")], "outbounds": []}
+        db = {
+            "connections": {},
+            "clients": {},
+        }
+        added = client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag="vless-reality",
+            uuid_factory=lambda: CLIENT_ID,
+        )
+        self.assertIn("flow", added.entry["client"])
+
+        result = client_crud.move_client_to_connection(config, db, "alice", "vless-reality-2")
+
+        self.assertTrue(result.config_changed)
+        self.assertTrue(result.enabled)
+        self.assertEqual(result.source_connection_tag, "vless-reality")
+        self.assertEqual(result.target_connection_tag, "vless-reality-2")
+        self.assertEqual(config["inbounds"][0]["settings"]["clients"], [])
+        self.assertEqual(len(config["inbounds"][1]["settings"]["clients"]), 1)
+        self.assertNotIn("flow", config["inbounds"][1]["settings"]["clients"][0])
+        self.assertNotIn("flow", db["clients"]["alice"]["client"])
+        self.assertEqual(db["clients"]["alice"]["connection"], "vless-reality-2")
+
+        with mock.patch.object(client_links, "server_addr", return_value="vpn.example"), \
+            mock.patch.object(client_links, "server_name", return_value="Xray"), \
+            mock.patch.object(client_links, "reality_public_key", return_value="public-key"):
+            link = client_links.link_for(config, CLIENT_ID, "alice", db=db)
+
+        params = parse_qs(urlsplit(link).query)
+        self.assertEqual(params["type"], ["xhttp"])
+        self.assertEqual(params["path"], ["/backup-xhttp"])
+        self.assertNotIn("flow", params)
+
+    def test_move_disabled_client_updates_saved_connection_without_config_change(self) -> None:
+        config = {"inbounds": [base_inbound("tcp"), extra_inbound("vless-reality-2", "xhttp")], "outbounds": []}
+        db = {
+            "connections": {},
+            "clients": {},
+        }
+        client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag="vless-reality",
+            uuid_factory=lambda: CLIENT_ID,
+        )
+        client_crud.disable_client(config, db, "alice")
+
+        result = client_crud.move_client_to_connection(config, db, "alice", "vless-reality-2")
+
+        self.assertFalse(result.config_changed)
+        self.assertFalse(result.enabled)
+        self.assertEqual(config["inbounds"][0]["settings"]["clients"], [])
+        self.assertEqual(config["inbounds"][1]["settings"]["clients"], [])
+        self.assertEqual(db["clients"]["alice"]["connection"], "vless-reality-2")
+        self.assertNotIn("flow", db["clients"]["alice"]["client"])
 
 
 if __name__ == "__main__":

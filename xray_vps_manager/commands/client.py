@@ -1000,6 +1000,40 @@ def cmd_enable(name):
     print(link_for(config, result.client_id, result.name, result.connection_tag, db))
 
 
+def cmd_move_connection(name, target_connection_identifier):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_crud.move_client_to_connection(config, db, name, target_connection_identifier)
+    except ValueError as exc:
+        die(str(exc))
+
+    backup = None
+    if result.config_changed:
+        backup = save_config_restart_xray_and_db(config, db)
+    else:
+        save_db(db)
+
+    print(f"Moved client: {result.name}")
+    print(
+        "From: "
+        f"{connection_display_name(config, db, result.source_connection_tag)} ({result.source_connection_tag})"
+    )
+    print(
+        "To: "
+        f"{connection_display_name(config, db, result.target_connection_tag)} ({result.target_connection_tag})"
+    )
+    print("Status: " + ("enabled" if result.enabled else "disabled"))
+    if backup:
+        print(f"Backup: {backup}")
+    else:
+        print("Xray restart is not required for disabled client.")
+    print("New link:")
+    print(link_for(config, result.client_id, result.name, result.target_connection_tag, db))
+    print("Выдай клиенту новую ссылку: после переноса параметры подключения меняются.")
+
+
 def run_access_update(name, result_factory):
     validate_name(name)
     sync_traffic()
@@ -1205,6 +1239,7 @@ def usage():
   xray-client add NAME [DAYS] [--connection TAG] [--payment paid|free]
   xray-client disable NAME
   xray-client enable NAME
+  xray-client move-connection NAME CONNECTION_NAME_OR_TAG
   xray-client remove NAME
   xray-client link NAME
   xray-client set-days NAME DAYS
@@ -1439,6 +1474,8 @@ def main():
         cmd_disable(sys.argv[2])
     elif command in ("enable", "on") and len(sys.argv) == 3:
         cmd_enable(sys.argv[2])
+    elif command in ("move-connection", "move-client", "move") and len(sys.argv) == 4:
+        cmd_move_connection(sys.argv[2], sys.argv[3])
     elif command in ("remove", "delete", "del", "rm") and len(sys.argv) == 3:
         cmd_remove(sys.argv[2])
     elif command == "link" and len(sys.argv) == 3:

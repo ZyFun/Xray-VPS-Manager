@@ -265,3 +265,15 @@ def update_selected_client_payment(call: CommandRunner) -> None:
     if not payment_type:
         return
     call(["xray-client", "set-payment", name, payment_type])
+
+
+def move_selected_client(call: CommandRunner) -> None:
+    name = choose_client("переноса в другое подключение", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    tag = menu_reality_actions.choose_connection("переноса клиента", auto_single=False)
+    if not tag:
+        print("Действие отменено.")
+        return
+    call(["xray-client", "move-connection", name, tag])
