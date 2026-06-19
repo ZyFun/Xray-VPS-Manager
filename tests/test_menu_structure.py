@@ -20,6 +20,10 @@ class MenuStructureTests(unittest.TestCase):
         self.assertIn(("9", "Переименовать подключение"), menu.reality_menu_actions())
         self.assertIn("9", menu.reality_menu_handlers())
 
+    def test_client_move_connection_action_is_exposed(self) -> None:
+        self.assertIn(("12", "Перенести клиента в другое подключение"), menu.client_menu_actions())
+        self.assertIn("12", menu.client_menu_handlers())
+
 
 if __name__ == "__main__":
     unittest.main()

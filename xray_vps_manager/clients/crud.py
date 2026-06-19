@@ -10,7 +10,7 @@ from xray_vps_manager.clients import access
 from xray_vps_manager.clients import connections
 from xray_vps_manager.clients import limits as client_limits
 from xray_vps_manager.clients import status as client_status
-from xray_vps_manager.clients.models import client_name, db_entry_from_client, normalize_payment_type, split_email
+from xray_vps_manager.clients.models import client_from_db_entry, client_name, db_entry_from_client, normalize_payment_type, split_email
 from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.traffic.repository import traffic_entry
@@ -61,6 +61,17 @@ class EnableClientResult:
     name: str
     client_id: str
     connection_tag: str
+    entry: dict[str, Any]
+
+
+@dataclass
+class MoveClientResult:
+    name: str
+    client_id: str
+    source_connection_tag: str
+    target_connection_tag: str
+    enabled: bool
+    config_changed: bool
     entry: dict[str, Any]
 
 
@@ -210,5 +221,60 @@ def enable_client(config: dict[str, Any], db: dict[str, Any], traffic_db: dict[s
         name=name,
         client_id=client["id"],
         connection_tag=connection_tag,
+        entry=entry,
+    )
+
+
+def move_client_to_connection(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    target_connection_identifier: str,
+) -> MoveClientResult:
+    connections.ensure_connections(config, db)
+    target_tag = connections.resolve_connection_identifier(config, db, target_connection_identifier)
+    target_inbound = find_inbound_by_tag(config, target_tag)
+    target_transport = connection_transport_settings_from_inbound(target_inbound)["transport"]
+    entry = db_entry_for_existing_client(config, db, name)
+
+    source_inbound, active_item = active_client_any(config, name)
+    source_tag = inbound_tag(source_inbound) if source_inbound is not None else str(entry.get("connection") or "")
+    if not source_tag:
+        raise ValueError(f"Client connection not found: {name}")
+    if source_tag == target_tag:
+        raise ValueError(f"Client is already in connection: {target_tag}")
+
+    entry = dict(entry)
+    config_changed = False
+    enabled = active_item is not None
+    if active_item is not None:
+        if any(client_name(item) == name for item in clients(target_inbound)):
+            raise ValueError(f"Target connection already has client: {name}")
+        moved_client = dict(active_item)
+        apply_client_transport(moved_client, target_transport)
+        source_inbound["settings"]["clients"] = [
+            item for item in clients(source_inbound) if client_name(item) != name
+        ]
+        clients(target_inbound).append(moved_client)
+        entry["enabled"] = True
+        config_changed = True
+    else:
+        if entry.get("enabled") is not False:
+            raise ValueError(f"Enabled client config not found: {name}")
+        moved_client = client_from_db_entry(name, entry)
+        apply_client_transport(moved_client, target_transport)
+
+    entry["id"] = moved_client.get("id", entry.get("id", ""))
+    entry["client"] = dict(moved_client)
+    entry["connection"] = target_tag
+    db_clients(db)[name] = entry
+
+    return MoveClientResult(
+        name=name,
+        client_id=str(entry.get("id") or moved_client.get("id") or ""),
+        source_connection_tag=source_tag,
+        target_connection_tag=target_tag,
+        enabled=enabled,
+        config_changed=config_changed,
         entry=entry,
     )
