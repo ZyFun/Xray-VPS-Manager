@@ -9,6 +9,8 @@
 /usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, blocklist, Telegram и настроек оплаты
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
+/etc/caddy/Caddyfile                     основной Caddy config
+/etc/caddy/conf.d                        TLS/XHTTP site configs Caddy
 /usr/local/sbin/xray-client              управление клиентами
 /usr/local/sbin/xray-menu                интерактивное меню
 /usr/local/sbin/xray-set-cascade         управление каскадом
@@ -25,6 +27,7 @@
 /root/xray_server/bootstrap.sh           установка чистого сервера из GitHub Releases
 /root/xray-reality-client.txt            стартовая ссылка
 /root/xray_backups                       архивы резервных копий данных
+/root/xray_caddy_backups                 архивы резервных копий Caddy config
 /root/xray_activity_exports              экспортированные отчёты активности
 /usr/local/lib/xray-vps-manager-backups  архивы отката менеджера
 /etc/ssh/sshd_config.d/00-xray-vps-manager.conf  managed-настройка SSH password login
@@ -51,6 +54,8 @@ xray-backup create
 
 Архивы хранятся на сервере в `/root/xray_backups`.
 Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, глобальные блокировки, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
+
+Обычный `xray-backup` не включает настройки Caddy. Для Caddy config используется отдельный backup в меню `Настройки Xray` -> `Caddy / TLS`, чтобы восстановление Xray-данных не перезаписывало TLS site configs неожиданно.
 
 `server.env` сохраняется как переносимая конфигурация. Host-specific значения, например `SERVER_ADDR` и `SECURITY_AUDIT_LAST_RUN`, в новый архив не записываются. При восстановлении `xray-backup restore` сохраняет текущий `SERVER_ADDR` нового сервера, чтобы новые VLESS-ссылки генерировались с актуальным адресом.
 
@@ -98,6 +103,31 @@ xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 Если архив переносится на сервер с новым IP или доменом, сначала установи менеджер на новом сервере, затем восстанови архив. `SERVER_ADDR` из нового `server.env` будет сохранён, а старый адрес из архива не перезапишет новый.
 
 
+## Резервные Копии Caddy Config
+
+Настройки Caddy сохраняются отдельно от `xray-backup`.
+В backup Caddy входят:
+
+```text
+/etc/caddy/Caddyfile
+/etc/caddy/conf.d
+```
+
+Архивы Caddy config хранятся в `/root/xray_caddy_backups`.
+Сертификатный кеш Caddy не копируется: Caddy может выпустить сертификаты заново после восстановления.
+
+Операции доступны через меню:
+
+```text
+Настройки Xray -> Caddy / TLS -> Создать backup Caddy config
+Настройки Xray -> Caddy / TLS -> Показать backups Caddy config
+Настройки Xray -> Caddy / TLS -> Восстановить Caddy config из backup
+Настройки Xray -> Caddy / TLS -> Удалить backup Caddy config
+```
+
+Перед восстановлением Caddy config менеджер автоматически создаёт pre-restore backup текущих настроек Caddy, затем применяет выбранный архив, выполняет `caddy validate` и reload Caddy. Если проверка не проходит, менеджер пытается вернуть предыдущие настройки из pre-restore backup.
+
+
 ## SQLite Данные
 
 SQLite-база менеджера хранится в:
@@ -106,7 +136,7 @@ SQLite-база менеджера хранится в:
 /usr/local/etc/xray/manager.db
 ```
 
-`install.sh` создаёт эту базу сразу. Клиенты, Reality-подключения, трафик, журнал активности, исключения suspicious, Telegram-настройки, подписки, флаг личных уведомлений активности и настройки оплаты хранятся в `manager.db`.
+`install.sh` создаёт эту базу сразу. Клиенты, VLESS-подключения, трафик, журнал активности, исключения suspicious, Telegram-настройки, подписки, флаг личных уведомлений активности и настройки оплаты хранятся в `manager.db`.
 
 Подробная схема таблиц и индексов описана отдельно: [Схема базы данных](database-schema.md).
 

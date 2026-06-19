@@ -1,0 +1,110 @@
+import unittest
+from pathlib import Path
+import tempfile
+
+from xray_vps_manager.xray import caddy
+
+
+class CaddyConfigTests(unittest.TestCase):
+    def test_site_block_terminates_tls_and_proxies_h2c_to_local_xhttp(self) -> None:
+        block = caddy.caddy_site_block(
+            "api.example.com",
+            10000,
+            tls_min_version="tls1.2",
+            tls_max_version="tls1.2",
+        )
+
+        self.assertIn("api.example.com {", block)
+        self.assertIn("protocols tls1.2 tls1.2", block)
+        self.assertIn("reverse_proxy h2c://127.0.0.1:10000", block)
+
+    def test_default_tls_versions_omit_protocol_override(self) -> None:
+        block = caddy.caddy_site_block(
+            "api.example.com",
+            10000,
+            tls_min_version="default",
+            tls_max_version="default",
+        )
+
+        self.assertNotIn("protocols", block)
+        self.assertIn("reverse_proxy h2c://127.0.0.1:10000", block)
+
+    def test_parse_site_config_reads_domain_tls_and_upstream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "api.example.com.caddy"
+            path.write_text(caddy.caddy_site_block("api.example.com", 10300))
+
+            item = caddy.parse_site_config(path)
+
+        self.assertEqual(item.domain, "api.example.com")
+        self.assertEqual(item.local_port, 10300)
+        self.assertEqual(item.tls_min_version, "tls1.2")
+        self.assertEqual(item.tls_max_version, "tls1.2")
+
+    def test_remove_default_http_site_block_preserves_import(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "Caddyfile"
+            path.write_text(
+                ":80 {\n"
+                "    root * /usr/share/caddy\n"
+                "    file_server\n"
+                "}\n\n"
+                "# Managed by Xray VPS Manager\n"
+                "import /etc/caddy/conf.d/*.caddy\n"
+            )
+
+            self.assertTrue(caddy.remove_site_block_from_caddyfile(":80", path))
+
+            content = path.read_text()
+        self.assertNotIn(":80 {", content)
+        self.assertIn("import /etc/caddy/conf.d/*.caddy", content)
+
+    def test_config_backup_and_restore_caddy_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backup_dir = root / "backups"
+            caddyfile = root / "etc" / "caddy" / "Caddyfile"
+            conf_dir = root / "etc" / "caddy" / "conf.d"
+            site = conf_dir / "api.example.com.caddy"
+            caddyfile.parent.mkdir(parents=True)
+            conf_dir.mkdir()
+            caddyfile.write_text("import /etc/caddy/conf.d/*.caddy\n")
+            site.write_text(caddy.caddy_site_block("api.example.com", 10300))
+
+            archive = caddy.create_config_backup(
+                backup_dir=backup_dir,
+                caddyfile_path=caddyfile,
+                conf_dir=conf_dir,
+                quiet=True,
+            )
+            caddyfile.write_text(":80 {\n    file_server\n}\n")
+            site.write_text(caddy.caddy_site_block("api.example.com", 10400))
+
+            restored_from, pre_backup, restored = caddy.restore_config_backup(
+                archive.name,
+                backup_dir=backup_dir,
+                caddyfile_path=caddyfile,
+                conf_dir=conf_dir,
+                validator=lambda: None,
+            )
+
+            self.assertEqual(restored_from, archive)
+            self.assertTrue(pre_backup.exists())
+            self.assertEqual(caddyfile.read_text(), "import /etc/caddy/conf.d/*.caddy\n")
+            self.assertIn("reverse_proxy h2c://127.0.0.1:10300", site.read_text())
+            self.assertEqual(restored, [caddyfile, conf_dir])
+
+    def test_delete_config_backup_refuses_outside_backup_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backup_dir = root / "backups"
+            backup_dir.mkdir()
+            outside = root / "outside.tar.gz"
+            outside.write_text("not really an archive")
+
+            with self.assertRaises(ValueError):
+                caddy.delete_config_backup(str(outside), backup_dir)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -3,7 +3,7 @@
 [← README](../README.md)
 
 
-Показать доступные Reality-подключения:
+Показать доступные VLESS-подключения:
 
 ```bash
 xray-client connection-list
@@ -28,6 +28,72 @@ xray-client add-connection backup443 8443 www.microsoft.com chrome
 Transport по умолчанию - `tcp`; для него используется Vision flow `xtls-rprx-vision`. Для `grpc` и `xhttp` flow в клиентский config и VLESS-ссылку не добавляется.
 При добавлении клиента через меню, если подключений больше одного, появится выбор подключения.
 
+Переименовать подключение без изменения tag, порта, ключей и клиентских ссылок:
+
+```bash
+xray-client connection-rename ИМЯ_ИЛИ_TAG НОВОЕ_ИМЯ
+```
+
+## XHTTP через TLS и Caddy
+
+Для XHTTP с обычным TLS можно создать отдельное TLS-подключение. В этой схеме Caddy слушает публичный домен на `443`, автоматически выпускает сертификат и проксирует HTTP/2 cleartext на локальный Xray inbound:
+
+```text
+client -> api.example.com:443 -> Caddy -> 127.0.0.1:10000 -> Xray XHTTP
+```
+
+DNS-запись домена должна заранее указывать на сервер:
+
+```text
+A api.example.com -> SERVER_PUBLIC_IP
+```
+
+Команда создаёт локальный XHTTP inbound и, если указан `--install-caddy`, устанавливает/настраивает Caddy:
+
+```bash
+xray-client add-connection web-api 10000 api.example.com \
+  --security tls \
+  --transport xhttp \
+  --xhttp-path /vless-xhttp \
+  --xhttp-mode auto \
+  --public-port 443 \
+  --tls-min-version tls1.2 \
+  --tls-max-version tls1.2 \
+  --install-caddy
+```
+
+Для TLS 1.2+1.3 вместо жёсткого TLS 1.2 можно передать:
+
+```bash
+--tls-min-version default --tls-max-version default
+```
+
+Важно: Caddy должен занять публичный `443`. Если существующий Reality inbound уже слушает `443`, сначала перенеси его на другой публичный порт или не запускай `--install-caddy`. Менеджер не переносит существующие подключения автоматически, чтобы не сломать рабочие клиентские ссылки.
+
+Если `--install-caddy` не указан, менеджер только добавит локальный Xray inbound. Caddy можно настроить вручную:
+
+```caddyfile
+api.example.com {
+    tls {
+        protocols tls1.2 tls1.2
+    }
+
+    reverse_proxy h2c://127.0.0.1:10000
+}
+```
+
+Клиентская ссылка для такого подключения будет использовать `security=tls`, `type=xhttp`, `sni=api.example.com`, публичный порт `443` и тот же `path`.
+
+Управление Caddy доступно через меню:
+
+```text
+Настройки Xray -> Caddy / TLS
+```
+
+В этом разделе можно установить Caddy, проверить config, посмотреть `Caddyfile` и site configs, создать или обновить site config из существующего TLS/XHTTP-подключения, создать site вручную, изменить TLS version, upstream local port или домен site, удалить site config, убрать дефолтный site `:80`, проверить TLS handshake, посмотреть логи, выполнить reload/restart Caddy, а также создать, посмотреть, восстановить и удалить отдельные backup-архивы Caddy config. Изменения site config валидируются через `caddy validate`; при ошибке менеджер откатывает изменённый файл из backup.
+
+Обычный `xray-backup` не включает Caddy config. Для `/etc/caddy/Caddyfile` и `/etc/caddy/conf.d` используй пункты backup/restore в `Настройки Xray -> Caddy / TLS`.
+
 Сменить transport существующего подключения:
 
 ```bash
@@ -44,6 +110,6 @@ xray-client connection-transport ИМЯ_ИЛИ_TAG xhttp --xhttp-path /vless-xht
 xray-client remove-connection ИМЯ_ИЛИ_TAG
 ```
 
-Удаление убирает Reality inbound из `config.json`, запись подключения из `manager.db`, всех клиентов этого подключения и их историю трафика.
+Удаление убирает VLESS inbound из `config.json`, запись подключения из `manager.db`, всех клиентов этого подключения и их историю трафика.
+Последнее VLESS-подключение удалить нельзя.
 Последнее Reality-подключение удалить нельзя.
-

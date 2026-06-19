@@ -6,10 +6,11 @@ from typing import Any
 from urllib.parse import quote
 
 from xray_vps_manager.clients.connections import connection_fingerprint, ensure_connections
-from xray_vps_manager.clients.repository import db_clients
+from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.clients.settings import server_addr, server_name
 from xray_vps_manager.xray.config import (
     client_flow_for_transport,
+    connection_transport_settings_from_inbound,
     default_connection_tag,
     find_inbound_by_tag,
     reality_transport_settings_from_inbound,
@@ -35,6 +36,31 @@ def link_for(
     connection_tag = connection_tag or db_clients(db).get(name, {}).get("connection") or default_connection_tag(config)
     inbound = find_inbound_by_tag(config, connection_tag)
     stream = inbound.get("streamSettings", {})
+    entry = db_connections(db).get(connection_tag, {})
+    security = entry.get("security") or stream.get("security") or "reality"
+    if security == "tls":
+        transport_settings = connection_transport_settings_from_inbound(inbound)
+        transport = transport_settings["transport"]
+        if transport != "xhttp":
+            raise ValueError("TLS connections support only xhttp links.")
+        host = entry.get("publicHost") or entry.get("sni")
+        if not host:
+            raise ValueError("TLS publicHost/SNI not found in connection.")
+        port = int(entry.get("publicPort") or entry.get("port") or 443)
+        params = {
+            "security": "tls",
+            "encryption": "none",
+            "type": "xhttp",
+            "sni": host,
+            "path": transport_settings["xhttpPath"],
+            "mode": transport_settings["xhttpMode"],
+        }
+        fingerprint = (entry.get("fingerprint") or "").strip()
+        if fingerprint:
+            params["fp"] = fingerprint
+        query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params.items())
+        return f"vless://{client_id}@{host}:{port}?{query}#{quote(server_name(), safe='')}"
+
     reality = stream.get("realitySettings", {})
     port = inbound.get("port", 443)
     sni = reality.get("serverNames", [""])[0]

@@ -227,9 +227,9 @@ erDiagram
 
 | Таблица | Назначение |
 |---|---|
-| `reality_connections` | Reality/VLESS подключения: порт, SNI, fingerprint, public key, short id. |
+| `reality_connections` | VLESS-подключения. Для Reality хранятся порт, SNI, fingerprint, public key и short id; для TLS/XHTTP через Caddy дополнительные поля (`security`, `publicHost`, `publicPort`, `localPort`, `xhttpPath`, `xhttpMode`, TLS version) лежат в `extra_json`. |
 | `cascade_routes` | Метаданные cascade outbounds: tag, отображаемая страна, label и timestamps. |
-| `clients` | Клиенты, UUID, статус, срок доступа, платежный тип, выбранный cascade route и связанное Reality-подключение. |
+| `clients` | Клиенты, UUID, статус, срок доступа, платежный тип, выбранный cascade route и связанное VLESS-подключение. |
 
 Основная связь:
 

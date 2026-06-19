@@ -76,7 +76,7 @@ xray-menu
 3 Проверить config.json
 4 Проверить timers
 5 Прогнать все тесты сервера
-6 Настройки Reality
+6 Подключения VLESS
 7 Каскад
 8 Обновление Xray
 9 Стартовая ссылка
@@ -86,16 +86,41 @@ xray-menu
 13 Разрешить торренты
 14 Показать часовой пояс
 15 Изменить часовой пояс
+16 Caddy / TLS
 
-Настройки Xray -> Настройки Reality:
+Настройки Xray -> Подключения VLESS:
 1 Показать подключения
-2 Создать подключение
+2 Создать Reality/TLS подключение
 3 Обновить PORT
 4 Обновить REALITY_SNI и REALITY_DEST
 5 Обновить PORT, REALITY_SNI и REALITY_DEST
 6 Обновить FINGERPRINT
 7 Обновить TRANSPORT
 8 Удалить подключение
+9 Переименовать подключение
+
+Настройки Xray -> Caddy / TLS:
+1 Статус Caddy
+2 Установить Caddy
+3 Проверить Caddy config
+4 Показать Caddyfile
+5 Показать TLS/XHTTP site configs
+6 Показать site config
+7 Создать/обновить site из TLS-подключения
+8 Создать/обновить site вручную
+9 Изменить TLS version site
+10 Изменить upstream local port
+11 Изменить домен site
+12 Удалить site config
+13 Убрать дефолтный site :80
+14 Проверить TLS handshake
+15 Показать логи Caddy
+16 Reload Caddy
+17 Restart Caddy
+18 Создать backup Caddy config
+19 Показать backups Caddy config
+20 Восстановить Caddy config из backup
+21 Удалить backup Caddy config
 
 Настройки Xray -> Каскад:
 1 Показать каскады

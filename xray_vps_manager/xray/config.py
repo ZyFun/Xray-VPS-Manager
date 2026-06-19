@@ -14,12 +14,15 @@ from xray_vps_manager.clients.models import client_name
 from xray_vps_manager.core.paths import CONFIG_PATH
 
 INBOUND_TAG = "vless-reality"
+TLS_INBOUND_TAG = "vless-tls"
 DEFAULT_CONNECTION_NAME = "default"
 REALITY_TRANSPORTS = ("tcp", "grpc", "xhttp")
 DEFAULT_REALITY_TRANSPORT = "tcp"
 DEFAULT_GRPC_SERVICE_NAME = "vless-grpc"
 DEFAULT_XHTTP_PATH = "/vless-xhttp"
 DEFAULT_XHTTP_MODE = "auto"
+DEFAULT_XHTTP_TLS_LOCAL_PORT = 10000
+DEFAULT_XHTTP_TLS_PUBLIC_PORT = 443
 XHTTP_MODES = ("auto", "packet-up", "stream-up", "stream-one")
 VISION_FLOW = "xtls-rprx-vision"
 GRPC_SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
@@ -52,6 +55,24 @@ def reality_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def tls_xhttp_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if inbound.get("protocol") == "vless"
+        and inbound_tag(inbound).startswith(TLS_INBOUND_TAG)
+        and inbound.get("streamSettings", {}).get("network") == "xhttp"
+    ]
+
+
+def vless_connection_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:
+    return reality_inbounds(config) + [
+        inbound
+        for inbound in tls_xhttp_inbounds(config)
+        if inbound not in reality_inbounds(config)
+    ]
+
+
 def inbound_tag(inbound: dict[str, Any]) -> str:
     return inbound.get("tag") or INBOUND_TAG
 
@@ -62,28 +83,38 @@ def find_inbound(config: dict[str, Any]) -> dict[str, Any]:
             return inbound
     for inbound in reality_inbounds(config):
         return inbound
-    raise ValueError("VLESS Reality inbound not found.")
+    for inbound in vless_connection_inbounds(config):
+        return inbound
+    raise ValueError("VLESS connection inbound not found.")
 
 
 def find_inbound_by_tag(config: dict[str, Any], tag: str) -> dict[str, Any]:
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         if inbound_tag(inbound) == tag:
             return inbound
-    raise ValueError(f"Reality connection not found: {tag}")
+    raise ValueError(f"VLESS connection not found: {tag}")
 
 
 def default_connection_tag(config: dict[str, Any]) -> str:
     for inbound in reality_inbounds(config):
         if inbound_tag(inbound) == INBOUND_TAG:
             return INBOUND_TAG
-    inbounds = reality_inbounds(config)
+    inbounds = vless_connection_inbounds(config)
     if inbounds:
         return inbound_tag(inbounds[0])
-    raise ValueError("VLESS Reality inbound not found.")
+    raise ValueError("VLESS connection inbound not found.")
 
 
 def connection_name_from_tag(tag: str) -> str:
-    return DEFAULT_CONNECTION_NAME if tag == INBOUND_TAG else tag.replace("vless-reality-", "")
+    if tag == INBOUND_TAG:
+        return DEFAULT_CONNECTION_NAME
+    if tag == TLS_INBOUND_TAG:
+        return "tls"
+    if tag.startswith("vless-reality-"):
+        return tag.replace("vless-reality-", "")
+    if tag.startswith("vless-tls-"):
+        return tag.replace("vless-tls-", "")
+    return tag
 
 
 def reality_dest(sni: str) -> str:
@@ -131,8 +162,16 @@ def reality_transport_settings_from_stream(stream: dict[str, Any]) -> dict[str, 
     return settings
 
 
+def connection_transport_settings_from_stream(stream: dict[str, Any]) -> dict[str, str]:
+    return reality_transport_settings_from_stream(stream)
+
+
 def reality_transport_settings_from_inbound(inbound: dict[str, Any]) -> dict[str, str]:
     return reality_transport_settings_from_stream(inbound.get("streamSettings", {}))
+
+
+def connection_transport_settings_from_inbound(inbound: dict[str, Any]) -> dict[str, str]:
+    return connection_transport_settings_from_stream(inbound.get("streamSettings", {}))
 
 
 def apply_reality_transport(
@@ -175,16 +214,19 @@ def apply_client_transport(client: dict[str, Any], transport: str | None) -> dic
 
 def connection_settings_from_inbound(inbound: dict[str, Any]) -> dict[str, Any]:
     stream = inbound.get("streamSettings", {})
-    reality = stream.get("realitySettings", {})
-    sni = (reality.get("serverNames") or [""])[0]
     port = int(inbound.get("port", 443))
-    settings = {
-        "tag": inbound_tag(inbound),
-        "port": port,
-        "sni": sni,
-        "dest": reality.get("dest", reality_dest(sni)),
-    }
-    settings.update(reality_transport_settings_from_stream(stream))
+    security = stream.get("security") or "none"
+    settings = {"tag": inbound_tag(inbound), "security": security, "port": port, "sni": "", "dest": ""}
+    if security == "reality":
+        reality = stream.get("realitySettings", {})
+        sni = (reality.get("serverNames") or [""])[0]
+        settings.update(
+            {
+                "sni": sni,
+                "dest": reality.get("dest", reality_dest(sni)),
+            }
+        )
+    settings.update(connection_transport_settings_from_stream(stream))
     return settings
 
 
@@ -201,7 +243,7 @@ def active_client(inbound: dict[str, Any], name: str) -> dict[str, Any] | None:
 
 
 def active_client_any(config: dict[str, Any], name: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    for inbound in reality_inbounds(config):
+    for inbound in vless_connection_inbounds(config):
         item = active_client(inbound, name)
         if item is not None:
             return inbound, item
