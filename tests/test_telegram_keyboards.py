@@ -158,9 +158,18 @@ class TelegramKeyboardTests(unittest.TestCase):
         buttons = [button for row in rows for button in row]
 
         self.assertEqual(buttons[0], {"text": "Добавить клиента", "callback_data": "admin:client-add"})
-        self.assertEqual(buttons[1], {"text": "Подписки клиентов", "callback_data": "admin:subscribers"})
-        self.assertEqual(buttons[2], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
+        self.assertEqual(buttons[1], {"text": "Получить VLESS-ссылку", "callback_data": "admin:client-link"})
+        self.assertEqual(buttons[2], {"text": "Подписки клиентов", "callback_data": "admin:subscribers"})
+        self.assertEqual(buttons[3], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
         self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:menu"})
+
+    def test_admin_client_link_keyboard_uses_client_indexes(self) -> None:
+        rows = keyboards.admin_client_link_keyboard(["alice", "bob"])["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(buttons[0], {"text": "alice", "callback_data": "admin:client-link:0"})
+        self.assertEqual(buttons[1], {"text": "bob", "callback_data": "admin:client-link:1"})
+        self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:clients"})
 
     def test_admin_payments_keyboard_contains_read_only_payment_sections(self) -> None:
         rows = keyboards.admin_payments_keyboard()["inline_keyboard"]

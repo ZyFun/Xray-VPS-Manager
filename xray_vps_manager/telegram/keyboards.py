@@ -155,11 +155,21 @@ def admin_clients_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "Добавить клиента", "callback_data": "admin:client-add"}],
+            [{"text": "Получить VLESS-ссылку", "callback_data": "admin:client-link"}],
             [{"text": "Подписки клиентов", "callback_data": "admin:subscribers"}],
             [{"text": "Продлить подписку", "callback_data": "admin:client-extend"}],
             [{"text": "Назад", "callback_data": "admin:menu"}],
         ]
     }
+
+
+def admin_client_link_keyboard(client_names):
+    rows = [
+        [{"text": str(name), "callback_data": f"admin:client-link:{index}"}]
+        for index, name in enumerate(client_names)
+    ]
+    rows.append([{"text": "Назад", "callback_data": "admin:clients"}])
+    return {"inline_keyboard": rows}
 
 
 def admin_client_extend_keyboard(client_names):

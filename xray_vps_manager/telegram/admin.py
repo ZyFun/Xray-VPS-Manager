@@ -16,6 +16,10 @@ ADMIN_CONSUMED_CALLBACK_LIMIT = 40
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 
 
+def default_server_name_fragment() -> str:
+    return "Xray"
+
+
 @dataclass(frozen=True)
 class AdminContext:
     load_client_db: Callable[[], dict]
@@ -26,6 +30,7 @@ class AdminContext:
     bot_name: Callable[[dict | None], str]
     notification_context: notifications.NotificationContext
     xray_client: Path = Path("/usr/local/sbin/xray-client")
+    server_name_fragment: Callable[[], str] = default_server_name_fragment
 
 
 def normalize_message_id(value):
@@ -243,6 +248,22 @@ def send_admin_client_extend_list(ctx: AdminContext, db, chat_id):
     )
 
 
+def send_admin_client_link_list(ctx: AdminContext, db, chat_id):
+    names = admin_client_names(ctx)
+    if not names:
+        clear_client_flow_state_if_pending(ctx, db, chat_id)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиентов пока нет.")
+        return
+    set_client_link_selection(ctx, db, chat_id, names)
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        "Выбери клиента, для которого нужно получить актуальную VLESS-ссылку.",
+        keyboards.admin_client_link_keyboard(names),
+    )
+
+
 def status_text(ctx: AdminContext, db):
     user_subscriptions = db.get("clientSubscriptions", {})
     subscription_state = db.get("clientSubscriptionState", {})
@@ -450,6 +471,15 @@ def set_client_extend_selection(ctx: AdminContext, db, chat_id, names):
     ctx.save_db_sections(db, ("adminState",))
 
 
+def set_client_link_selection(ctx: AdminContext, db, chat_id, names):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "client-link-select",
+        "clients": list(names),
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
 def set_client_add_input_waiting(ctx: AdminContext, db, chat_id):
     db.setdefault("adminState", {})[str(chat_id)] = {
         "action": "add-client-input",
@@ -496,6 +526,7 @@ def clear_client_extend_state_if_pending(ctx: AdminContext, db, chat_id):
 def clear_client_flow_state_if_pending(ctx: AdminContext, db, chat_id):
     pending = db.get("adminState", {}).get(str(chat_id), {})
     if pending.get("action") in (
+        "client-link-select",
         "extend-subscription-select",
         "extend-subscription-days",
         "add-client-input",
@@ -567,6 +598,18 @@ def selected_client_name(db, chat_id, index_value):
         return ""
     pending = db.get("adminState", {}).get(str(chat_id), {})
     names = pending.get("clients", []) if pending.get("action") == "extend-subscription-select" else []
+    if index < 0 or index >= len(names):
+        return ""
+    return str(names[index])
+
+
+def selected_client_link_name(db, chat_id, index_value):
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return ""
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    names = pending.get("clients", []) if pending.get("action") == "client-link-select" else []
     if index < 0 or index >= len(names):
         return ""
     return str(names[index])
@@ -799,6 +842,49 @@ def extend_subscription_text(ctx: AdminContext, name, days, result):
     return messages.truncate_telegram_text("\n".join(lines))
 
 
+def client_link_text(ctx: AdminContext, name, result):
+    if getattr(result, "returncode", 1) != 0:
+        output = command_output(result)
+        details = f"\n\n{output}" if output else ""
+        return messages.truncate_telegram_text(f"Не удалось получить VLESS-ссылку для {name}, exit {getattr(result, 'returncode', 1)}.{details}"), None
+
+    link = first_vless_link(command_output(result))
+    if not link:
+        return "Не удалось получить VLESS-ссылку: xray-client не вернул ссылку.", None
+
+    link = subscriptions.neutral_vless_fragment(link, ctx.server_name_fragment())
+    return (
+        "\n".join(
+            [
+                "Можно переслать это сообщение пользователю:",
+                "",
+                "Актуальная VLESS-ссылка:",
+                "",
+                f"<pre><code>{subscriptions.telegram_html_escape(link)}</code></pre>",
+                "",
+                "Если настройки подключения менялись, импортируй эту ссылку заново.",
+            ]
+        ),
+        "HTML",
+    )
+
+
+def handle_client_link_selection(ctx: AdminContext, db, chat_id, index_value):
+    name = selected_client_link_name(db, chat_id, index_value)
+    if not name:
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент не найден. Открой список заново.")
+        return True
+    if name not in admin_client_names(ctx):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент больше не найден. Выбери клиента заново.")
+        return True
+    result = ctx.run_capture([str(ctx.xray_client), "link", name], timeout=20)
+    clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+    text, parse_mode = client_link_text(ctx, name, result)
+    send_admin_clients_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
+    return True
+
+
 def handle_extend_subscription_days(ctx: AdminContext, db, chat_id, text):
     pending = db.get("adminState", {}).get(str(chat_id), {})
     if pending.get("action") != "extend-subscription-days":
@@ -899,6 +985,11 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
         clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
         send_admin_clients_menu(ctx, db, chat_id, "Добавление клиента отменено.")
         return True
+    if data == "admin:client-link":
+        send_admin_client_link_list(ctx, db, chat_id)
+        return True
+    if data.startswith("admin:client-link:"):
+        return handle_client_link_selection(ctx, db, chat_id, data.rsplit(":", 1)[1])
     if data == "admin:client-extend":
         send_admin_client_extend_list(ctx, db, chat_id)
         return True

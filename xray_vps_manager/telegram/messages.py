@@ -100,7 +100,7 @@ def admin_status_intro_text():
 def admin_clients_intro_text():
     return (
         "Xray VPS Manager: клиенты\n\n"
-        "Здесь можно посмотреть Telegram-подписки клиентов и продлить доступ."
+        "Здесь можно добавить клиента, получить актуальную VLESS-ссылку, посмотреть Telegram-подписки и продлить доступ."
     )
 
 
