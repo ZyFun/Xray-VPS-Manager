@@ -149,7 +149,7 @@ Telegram settings
 xray-test
 ```
 
-`xray-test` проверяет Xray, config.json, Reality-подключения и локальные порты, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило, глобальный blocklist routing и каскадную конфигурацию.
+`xray-test` проверяет Xray, config.json, Reality-подключения и локальные порты, согласованность клиентов SQLite со всеми активными VLESS inbounds включая TLS/Caddy, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило, глобальный blocklist routing и каскадную конфигурацию.
 При проверке установленного Python-пакета служебные `._*` файлы не считаются исходниками менеджера.
 Глубокий сетевой тест каскада остаётся отдельной командой `xray-set-cascade --test` или `xray-set-cascade test NAME`, потому что он временно меняет конфиг и перезапускает Xray.
 

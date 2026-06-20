@@ -141,6 +141,10 @@ def reality_inbounds(config):
     ]
 
 
+def vless_inbounds(config):
+    return [inbound for inbound in config.get("inbounds", []) if inbound.get("protocol") == "vless"]
+
+
 def inbound_tag(inbound):
     return inbound.get("tag") or "vless-reality"
 
@@ -674,9 +678,10 @@ def check_client_list_runtime():
 
 def check_client_db_alignment(diag):
     db = diag.context.get("client_db", {})
-    known_tags = diag.context.get("reality_tags", set())
+    inbounds = vless_inbounds(diag.context.get("config", {}))
+    known_tags = {inbound_tag(inbound) for inbound in inbounds}
     active_names = set()
-    for inbound in diag.context.get("reality_inbounds", []):
+    for inbound in inbounds:
         for client in clients(inbound):
             active_names.add(client_name(client.get("email", "")))
 
@@ -690,7 +695,7 @@ def check_client_db_alignment(diag):
     if problems:
         raise RuntimeError("; ".join(problems[:8]))
     source = diag.context.get("client_db_source", "SQLite")
-    return f"{source} matches active Reality connections"
+    return f"{source} matches active VLESS connections"
 
 
 def check_traffic_db_alignment(diag):
