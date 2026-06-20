@@ -55,13 +55,13 @@ def online_state(
     display_timezone: tzinfo,
     now_utc: datetime | None = None,
 ) -> tuple[str, str]:
-    if row["status"] != "enabled":
-        return "offline", "never"
     entry = traffic_entry(traffic_db, row["name"])
     last_online = entry.get("lastOnline", "")
     parsed = parse_time(last_online)
     if parsed is None:
         return "offline", "never"
+    if row["status"] != "enabled":
+        return "offline", format_time(last_online, display_timezone)
     now = now_utc or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
