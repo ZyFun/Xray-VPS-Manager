@@ -6,11 +6,13 @@ from xray_vps_manager.telegram import admin
 
 
 class TelegramAdminTests(unittest.TestCase):
-    def make_context(self, events, client_db=None, send_response=None, run_capture=None):
+    def make_context(self, events, client_db=None, send_response=None, run_capture=None, server_name_fragment=None):
         if client_db is None:
             client_db = {"clients": {}}
         if run_capture is None:
             run_capture = lambda *_args, **_kwargs: None
+        if server_name_fragment is None:
+            server_name_fragment = lambda: "Xray"
 
         def send_chat_message(_db, chat_id, text, reply_markup=None, parse_mode=None):
             events.append(
@@ -32,6 +34,7 @@ class TelegramAdminTests(unittest.TestCase):
             bot_name=lambda current_db=None: "Vireika",
             notification_context=None,
             xray_client=Path("/usr/local/sbin/xray-client"),
+            server_name_fragment=server_name_fragment,
         )
 
     def test_payment_share_callback_sends_payments_submenu(self) -> None:
@@ -113,6 +116,41 @@ class TelegramAdminTests(unittest.TestCase):
         admin.register_admin_message(ctx, db, "111", {"ok": True, "result": {"message_id": 43}})
 
         self.assertTrue(admin.accept_admin_callback(ctx, db, "111", "admin:menu", 42))
+
+    def test_admin_client_link_selection_sends_current_link_as_html_code_block(self) -> None:
+        db = {"adminState": {}}
+        client_db = {
+            "clients": {
+                "alice": {},
+                "bob": {},
+            }
+        }
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append({"run": command, "timeout": timeout})
+            return SimpleNamespace(
+                returncode=0,
+                stdout="vless://bob@example.com:443?type=tcp&security=reality#InternalBob",
+                stderr="",
+            )
+
+        ctx = self.make_context(events, client_db=client_db, run_capture=run_capture, server_name_fragment=lambda: "Demo")
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link:1"))
+
+        self.assertIn({"run": ["/usr/local/sbin/xray-client", "link", "bob"], "timeout": 20}, events)
+        self.assertNotIn("111", db.get("adminState", {}))
+        message = [event for event in events if "text" in event][-1]
+        self.assertEqual(message["parse_mode"], "HTML")
+        self.assertIn("Можно переслать это сообщение пользователю:", message["text"])
+        self.assertIn(
+            "<pre><code>vless://bob@example.com:443?type=tcp&amp;security=reality#Demo</code></pre>",
+            message["text"],
+        )
+        self.assertNotIn("InternalBob", message["text"])
+        self.assertNotIn("Клиент: bob", message["text"])
 
     def test_add_client_success_sends_key_as_html_code_block(self) -> None:
         db = {"botUsername": "ExampleVpnBot", "adminState": {}}

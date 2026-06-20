@@ -199,6 +199,7 @@ def admin_context():
         bot_name=bot_name,
         notification_context=notification_context(),
         xray_client=XRAY_CLIENT,
+        server_name_fragment=server_name_fragment,
     )
 
 
