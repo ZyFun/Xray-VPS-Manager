@@ -37,6 +37,7 @@ DEFAULT_DB = {
     "routeMode": "direct",
     "paymentAmount": "",
     "paymentTotalAmount": "",
+    "paymentDomainAnnualAmount": "",
     "paymentCurrency": "₽",
     "paymentRoundingMode": "none",
     "paymentRoundingStep": "10",
@@ -115,6 +116,16 @@ def normalize_db(db):
             merged["paymentCurrency"] = currency
         except ValueError:
             pass
+    if merged.get("paymentCurrency") not in ("₽", "$", "€"):
+        merged["paymentCurrency"] = "₽"
+    try:
+        domain_amount, _currency = parse_payment_value(
+            str(merged.get("paymentDomainAnnualAmount", "")),
+            merged.get("paymentCurrency", "₽"),
+        )
+        merged["paymentDomainAnnualAmount"] = domain_amount
+    except ValueError:
+        merged["paymentDomainAnnualAmount"] = ""
     if merged.get("paymentRoundingMode") not in ("none", "step"):
         merged["paymentRoundingMode"] = "none"
     try:

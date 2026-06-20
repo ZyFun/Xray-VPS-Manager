@@ -263,7 +263,10 @@ def payment_amount_label(db, client_db=None):
 
 def print_payment_summary(db, client_db=None):
     summary = telegram_payments.payment_summary(db, client_db or load_client_db())
-    print(f"Total rent amount: {summary['total']}")
+    print(f"Server monthly rent: {summary['serverMonthly']}")
+    print(f"Domain annual rent: {summary['domainAnnual']}")
+    print(f"Domain monthly rent: {summary['domainMonthly']}")
+    print(f"Total monthly rent: {summary['total']}")
     print(f"Paid clients: {summary['paidCount']}")
     print(f"Rounding: {summary['rounding']}")
     print(f"Amount per paid client: {summary['share']}")
@@ -280,6 +283,16 @@ def set_payment_amount(value):
         print_payment_summary(db)
     else:
         print("Payment amount cleared.")
+
+
+def set_domain_annual_amount(value):
+    db = load_db()
+    amount, _currency = telegram_payments.apply_domain_annual_amount(db, value)
+    save_db(db)
+    if amount:
+        print_payment_summary(db)
+    else:
+        print("Domain annual rent cleared.")
 
 
 def set_payment_rounding(mode_value, step_value=None):
@@ -382,6 +395,8 @@ def notify_geoip(quiet=False):
 
 def status():
     db = load_db_readonly()
+    client_db = load_client_db()
+    payment_summary = telegram_payments.payment_summary(db, client_db)
     subscriptions = db.get("clientSubscriptions", {})
     subscription_state = db.get("clientSubscriptionState", {})
     rows = [
@@ -391,7 +406,11 @@ def status():
         ("Bot username", "@" + db.get("botUsername", "") if db.get("botUsername") else "-"),
         ("Chat", f"{db.get('chatLabel') or '-'} ({db.get('chatId') or '-'})"),
         ("Route mode", db.get("routeMode", "direct")),
-        ("Payment amount", payment_amount_label(db)),
+        ("Server monthly rent", payment_summary["serverMonthly"]),
+        ("Domain annual rent", payment_summary["domainAnnual"]),
+        ("Domain monthly rent", payment_summary["domainMonthly"]),
+        ("Total monthly rent", payment_summary["total"]),
+        ("Payment per paid client", payment_summary["share"]),
         ("Payment rounding", telegram_payments.payment_rounding_label(db)),
         ("Payment details", telegram_payments.payment_transfer_label(db)),
         ("Client subscriptions", str(len(subscriptions))),
@@ -437,6 +456,7 @@ def usage():
   xray-telegram maintenance-notice [start|done] [--dry-run|--yes]
   xray-telegram subscribers
   xray-telegram payment-amount [VALUE]
+  xray-telegram payment-domain-rent [VALUE]
   xray-telegram payment-rounding [none|step VALUE]
   xray-telegram payment-details [none|phone PHONE BANK|card CARD_NUMBER|bank-account ACCOUNT]
 """
@@ -518,6 +538,11 @@ def main():
                 show_payment_amount()
             else:
                 set_payment_amount(args[1])
+        elif command == "payment-domain-rent" and len(args) in (1, 2):
+            if len(args) == 1:
+                show_payment_amount()
+            else:
+                set_domain_annual_amount(args[1])
         elif command == "payment-rounding" and len(args) in (1, 2, 3):
             if len(args) == 1:
                 show_payment_amount()

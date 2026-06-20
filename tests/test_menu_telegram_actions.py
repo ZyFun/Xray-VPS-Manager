@@ -22,12 +22,27 @@ class MenuTelegramActionsTests(unittest.TestCase):
 
     def test_update_payment_amount_does_not_configure_payment_details(self) -> None:
         calls = []
-        inputs = iter(["", "1"])
+        inputs = iter(["", "", "1"])
 
         with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
             menu_telegram_actions.update_payment_amount(calls.append)
 
         self.assertEqual(calls, [["xray-telegram", "payment-amount"]])
+
+    def test_update_payment_amount_can_set_domain_annual_rent(self) -> None:
+        calls = []
+        inputs = iter(["", "1200", "1"])
+
+        with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
+            menu_telegram_actions.update_payment_amount(calls.append)
+
+        self.assertEqual(
+            calls,
+            [
+                ["xray-telegram", "payment-amount"],
+                ["xray-telegram", "payment-domain-rent", "1200"],
+            ],
+        )
 
 
 if __name__ == "__main__":
