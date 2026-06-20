@@ -318,6 +318,37 @@ prompt_fingerprint() {
   done
 }
 
+prompt_xhttp_mode() {
+  local default_mode input
+  default_mode="${1:-$XHTTP_MODE}"
+  default_mode="$(printf '%s' "$default_mode" | tr '[:upper:]' '[:lower:]')"
+  validate_xhttp_mode "$default_mode"
+  while true; do
+    echo "XHTTP_MODE: режим XHTTP/XMUX."
+    echo "  1) auto"
+    echo "  2) packet-up"
+    echo "  3) stream-up"
+    echo "  4) stream-one"
+    read -r -p "XHTTP_MODE [${default_mode}] (номер из списка): " input
+    input="${input:-$default_mode}"
+    input="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+    case "$input" in
+      1) XHTTP_MODE="auto" ;;
+      2) XHTTP_MODE="packet-up" ;;
+      3) XHTTP_MODE="stream-up" ;;
+      4) XHTTP_MODE="stream-one" ;;
+      auto|packet-up|stream-up|stream-one)
+        XHTTP_MODE="$input"
+        ;;
+      *)
+        echo "Выбери номер 1-4 или нажми Enter для ${default_mode}."
+        continue
+        ;;
+    esac
+    break
+  done
+}
+
 prompt_transport() {
   while true; do
     echo "REALITY_TRANSPORT: transport для первого VLESS Reality подключения."
@@ -344,8 +375,7 @@ prompt_transport() {
     elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
       read -r -p "XHTTP_PATH [${XHTTP_PATH}]: " xhttp_path_input
       XHTTP_PATH="${xhttp_path_input:-$XHTTP_PATH}"
-      read -r -p "XHTTP_MODE [${XHTTP_MODE}]: " xhttp_mode_input
-      XHTTP_MODE="${xhttp_mode_input:-$XHTTP_MODE}"
+      prompt_xhttp_mode "$XHTTP_MODE"
     fi
     break
   done

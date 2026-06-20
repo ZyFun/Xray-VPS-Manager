@@ -19,8 +19,11 @@ from xray_vps_manager.clients.settings import (
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray.config import (
+    DEFAULT_XHTTP_MODE,
+    DEFAULT_XHTTP_PATH,
     DEFAULT_XHTTP_TLS_PUBLIC_PORT,
     INBOUND_TAG,
+    XHTTP_MODES,
     connection_name_from_tag,
     connection_settings_from_inbound,
     find_inbound,
@@ -366,7 +369,11 @@ def choose_security(default: str = "reality") -> str:
     die("SECURITY must be reality or tls.")
 
 
-def choose_transport(default: str = "tcp") -> dict[str, str]:
+def choose_transport(
+    default: str = "tcp",
+    default_xhttp_path: str = DEFAULT_XHTTP_PATH,
+    default_xhttp_mode: str = DEFAULT_XHTTP_MODE,
+) -> dict[str, str]:
     print()
     print("TRANSPORT: транспорт VLESS Reality для этого подключения.")
     print("  tcp   - TCP transport с Vision flow")
@@ -386,10 +393,10 @@ def choose_transport(default: str = "tcp") -> dict[str, str]:
         service_name = prompt("vless-grpc", "GRPC serviceName")
         settings["grpc_service_name"] = validate_grpc_service_name(service_name)
     elif transport == "xhttp":
-        path = prompt("/vless-xhttp", "XHTTP path")
-        mode = prompt("auto", "XHTTP mode")
+        path = prompt(default_xhttp_path, "XHTTP path")
+        mode = choose_xhttp_mode(default_xhttp_mode)
         settings["xhttp_path"] = validate_xhttp_path(path)
-        settings["xhttp_mode"] = validate_xhttp_mode(mode)
+        settings["xhttp_mode"] = mode
     return settings
 
 
@@ -425,8 +432,8 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
     default_local_port = connection_store.next_local_port(config)
     local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
     public_port = str(validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
-    path = validate_xhttp_path(prompt("/vless-xhttp", "XHTTP path"))
-    mode = validate_xhttp_mode(prompt("auto", "XHTTP mode"))
+    path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
+    mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
     tls_min = prompt("tls1.2", "TLS min version (tls1.2/tls1.3/default)")
     tls_max = prompt("tls1.2", "TLS max version (tls1.2/tls1.3/default)")
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
@@ -557,6 +564,23 @@ def choose_fingerprint(default: str) -> str:
     return validate_fingerprint(value)
 
 
+def choose_xhttp_mode(default: str = DEFAULT_XHTTP_MODE) -> str:
+    default = validate_xhttp_mode(default)
+    print()
+    print("XHTTP_MODE: режим XHTTP/XMUX.")
+    for index, value in enumerate(XHTTP_MODES, start=1):
+        print(f"  {index}) {value}")
+    while True:
+        value = input(f"XHTTP_MODE [{default}] (номер из списка): ").strip().lower()
+        if not value:
+            return default
+        if value.isdigit():
+            index = int(value, 10)
+            if 1 <= index <= len(XHTTP_MODES):
+                return XHTTP_MODES[index - 1]
+        print(f"Выбери номер 1-{len(XHTTP_MODES)} или нажми Enter для {default}.")
+
+
 def update_fingerprint() -> None:
     config = load_config()
     tag = choose_connection("обновления FINGERPRINT", security_filter="reality")
@@ -581,7 +605,11 @@ def update_transport(call: CommandRunner) -> None:
         return
     inbound = find_inbound_by_tag(config, tag)
     current = connection_settings_from_inbound(inbound)
-    settings = choose_transport(str(current.get("transport") or "tcp"))
+    settings = choose_transport(
+        str(current.get("transport") or "tcp"),
+        str(current.get("xhttpPath") or DEFAULT_XHTTP_PATH),
+        str(current.get("xhttpMode") or DEFAULT_XHTTP_MODE),
+    )
     command = ["xray-client", "connection-transport", tag, settings["transport"]]
     if settings["transport"] == "grpc":
         command.extend(["--grpc-service-name", settings["grpc_service_name"]])
