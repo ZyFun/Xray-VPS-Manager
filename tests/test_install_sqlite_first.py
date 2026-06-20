@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 import unittest
 
 
@@ -7,6 +8,17 @@ INSTALL_SH = ROOT / "install.sh"
 
 
 class InstallSQLiteFirstTests(unittest.TestCase):
+    def test_install_script_shell_syntax(self) -> None:
+        result = subprocess.run(
+            ["bash", "-n", str(INSTALL_SH)],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_install_script_initializes_sqlite_as_primary_state(self) -> None:
         content = INSTALL_SH.read_text()
 
@@ -47,6 +59,18 @@ class InstallSQLiteFirstTests(unittest.TestCase):
         self.assertIn("Xray archive download failed with exit code ${status}. Retries left: 0.", content)
         self.assertIn('curl -fL --connect-timeout 20 --max-time 240 -o "$target_dir/Xray-linux-64.zip" "$XRAY_ZIP_URL"', content)
         self.assertIn('cp -f "$XRAY_LOCAL_ZIP" "$target_dir/Xray-linux-64.zip"', content)
+
+    def test_install_script_prompts_xhttp_mode_from_numbered_list(self) -> None:
+        content = INSTALL_SH.read_text()
+
+        self.assertIn("prompt_xhttp_mode()", content)
+        self.assertIn('echo "  1) auto"', content)
+        self.assertIn('echo "  2) packet-up"', content)
+        self.assertIn('echo "  3) stream-up"', content)
+        self.assertIn('echo "  4) stream-one"', content)
+        self.assertIn('read -r -p "XHTTP_MODE [${default_mode}] (номер из списка): " input', content)
+        self.assertIn('prompt_xhttp_mode "$XHTTP_MODE"', content)
+        self.assertNotIn('read -r -p "XHTTP_MODE [${XHTTP_MODE}]: " xhttp_mode_input', content)
 
 
 if __name__ == "__main__":

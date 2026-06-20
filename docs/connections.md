@@ -27,6 +27,7 @@ xray-client add-connection backup443 8443 www.microsoft.com chrome
 `REALITY_DEST` создаётся автоматически как `REALITY_SNI:443`.
 Transport по умолчанию - `tcp`; для него используется Vision flow `xtls-rprx-vision`. Для `grpc` и `xhttp` flow в клиентский config и VLESS-ссылку не добавляется.
 При добавлении клиента через меню, если подключений больше одного, появится выбор подключения.
+При создании Reality/TLS-подключения или смене transport через меню `XHTTP_MODE` для `xhttp` выбирается из списка: `auto`, `packet-up`, `stream-up`, `stream-one`. В CLI то же значение передаётся через `--xhttp-mode`.
 
 Переименовать подключение без изменения tag, порта, ключей и клиентских ссылок:
 

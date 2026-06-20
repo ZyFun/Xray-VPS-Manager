@@ -89,6 +89,7 @@ REALITY_DEST=REALITY_SNI:443
 Доступные варианты: `chrome`, `firefox`, `safari`, `ios`, `android`, `edge`, `360`, `qq`, `random`, `randomized`.
 
 `REALITY_TRANSPORT` задаёт transport первого VLESS Reality-подключения. По умолчанию используется `tcp` с Vision flow `xtls-rprx-vision`. Также доступны `grpc` и `xhttp`; для `grpc` используется `GRPC_SERVICE_NAME` (по умолчанию `vless-grpc`), для `xhttp` используются `XHTTP_PATH` (по умолчанию `/vless-xhttp`) и `XHTTP_MODE` (по умолчанию `auto`).
+В интерактивной установке `XHTTP_MODE` выбирается из нумерованного списка: `auto`, `packet-up`, `stream-up`, `stream-one`.
 
 `MANAGER_TIMEZONE` можно оставить пустым, тогда будет использоваться системное время сервера.
 В интерактивной установке часовой пояс выбирается из списка. Для редкой зоны можно выбрать поиск по IANA-списку, например по слову `Moscow`, `Europe` или `Novosibirsk`.

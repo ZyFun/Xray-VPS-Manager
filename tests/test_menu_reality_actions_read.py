@@ -1,4 +1,6 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest import mock
 
 from xray_vps_manager.commands import menu_reality_actions
@@ -28,6 +30,29 @@ class MenuRealityActionsReadTests(unittest.TestCase):
                 "sni": "example.com",
                 "dest": "example.com:443",
                 "fingerprint": "chrome",
+            },
+        )
+
+    def test_choose_xhttp_mode_selects_mode_by_number(self) -> None:
+        inputs = iter(["3"])
+
+        with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
+            mode = menu_reality_actions.choose_xhttp_mode("auto")
+
+        self.assertEqual(mode, "stream-up")
+
+    def test_choose_transport_uses_xhttp_mode_list(self) -> None:
+        inputs = iter(["3", "/private-xhttp", "4"])
+
+        with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
+            settings = menu_reality_actions.choose_transport("tcp")
+
+        self.assertEqual(
+            settings,
+            {
+                "transport": "xhttp",
+                "xhttp_path": "/private-xhttp",
+                "xhttp_mode": "stream-one",
             },
         )
 
