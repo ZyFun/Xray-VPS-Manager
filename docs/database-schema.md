@@ -288,7 +288,7 @@ clients.name -> activity_blocklist_hits.client_name
 | `telegram_settings` | Простые настройки бота: token, botName, routeMode и другие key/value. |
 | `telegram_state` | Состояние фоновых уведомлений и подавления дублей. |
 | `telegram_subscriptions` | Подписки Telegram-чатов на клиентские уведомления, включая флаг личной activity-рассылки. |
-| `payment_settings` | Общая сумма аренды, валюта, способ перевода и правила округления оплаты. |
+| `payment_settings` | Месячная аренда сервера, годовая аренда домена, валюта, способ перевода и правила округления оплаты. |
 
 Связь:
 
@@ -303,7 +303,8 @@ clients.name -> telegram_subscriptions.client_name
 | Ключ | Назначение |
 |---|---|
 | `paymentAmount` | Старое совместимое поле отображаемой суммы. |
-| `paymentTotalAmount` | Общая сумма аренды до деления между платными клиентами. |
+| `paymentTotalAmount` | Месячная аренда сервера до деления между платными клиентами. |
+| `paymentDomainAnnualAmount` | Годовая аренда домена; в расчёте оплаты делится на 12 и прибавляется к месячной аренде сервера. |
 | `paymentCurrency` | Валюта оплаты: `₽`, `$` или `€`. |
 | `paymentRoundingMode` | Режим округления суммы на клиента: `none` или `step`. |
 | `paymentRoundingStep` | Шаг округления, если включён режим `step`. |

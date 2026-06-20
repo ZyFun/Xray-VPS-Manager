@@ -57,8 +57,22 @@ class TelegramDailySummaryTests(unittest.TestCase):
         with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
             text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
 
-        self.assertIn("Общая аренда сервера: 1123.12 ₽", text)
+        self.assertIn("Месячная аренда сервера: 1123.12 ₽", text)
+        self.assertIn("Общая месячная аренда: 1123.12 ₽", text)
         self.assertNotIn("570 ₽", text)
+
+    def test_daily_summary_adds_domain_annual_rent_to_monthly_total(self) -> None:
+        ctx = self.make_context({
+            "paymentTotalAmount": "1000",
+            "paymentDomainAnnualAmount": "1200",
+            "paymentCurrency": "₽",
+        })
+
+        with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
+            text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
+
+        self.assertIn("Годовая аренда домена: 1200 ₽ (в месяц: 100 ₽)", text)
+        self.assertIn("Общая месячная аренда: 1100 ₽", text)
 
     def test_daily_summary_marks_missing_total_rent_amount(self) -> None:
         ctx = self.make_context({"paymentTotalAmount": "", "paymentCurrency": "₽"})
@@ -66,7 +80,7 @@ class TelegramDailySummaryTests(unittest.TestCase):
         with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
             text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
 
-        self.assertIn("Общая аренда сервера: не указана", text)
+        self.assertIn("Общая месячная аренда: не указана", text)
 
     def test_daily_summary_includes_sqlite_database_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

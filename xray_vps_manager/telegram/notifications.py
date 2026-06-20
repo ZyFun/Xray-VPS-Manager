@@ -159,10 +159,7 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
     enabled_count = sum(1 for entry in clients.values() if client_enabled(entry))
     rows, total_in, total_out = daily_traffic_rows(client_db, traffic_db, day_key)
     total = total_in + total_out
-    total_rent = payments.format_payment_amount(
-        str(db.get("paymentTotalAmount") or "").strip(),
-        db.get("paymentCurrency") or "₽",
-    )
+    payment_summary = payments.payment_summary(db, client_db)
 
     lines = [
         "Xray VPS Manager: ежедневная сводка",
@@ -172,7 +169,9 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
         f"Telegram poller: {systemd_state(ctx, 'xray-telegram-poller.service')}",
         f"Система: {system_reboot_label()}",
         f"Клиенты: включено {enabled_count} из {len(clients)}, online сейчас: {online_clients_count(ctx, client_db, traffic_db)}",
-        f"Общая аренда сервера: {total_rent}",
+        f"Месячная аренда сервера: {payment_summary['serverMonthly']}",
+        f"Годовая аренда домена: {payment_summary['domainAnnual']} (в месяц: {payment_summary['domainMonthly']})",
+        f"Общая месячная аренда: {payment_summary['total']}",
         f"База данных: {database_usage_label(ctx.manager_db_path)}",
         f"Диск /: {disk_usage_label('/')}",
         "",

@@ -328,6 +328,8 @@ def check_telegram_bot_db(diag):
         raise RuntimeError("Telegram paymentAmount must be a string")
     if not isinstance(db.get("paymentTotalAmount", ""), str):
         raise RuntimeError("Telegram paymentTotalAmount must be a string")
+    if not isinstance(db.get("paymentDomainAnnualAmount", ""), str):
+        raise RuntimeError("Telegram paymentDomainAnnualAmount must be a string")
     if db.get("paymentCurrency", "₽") not in ("₽", "$", "€"):
         raise RuntimeError("Telegram paymentCurrency must be ₽, $, or €")
     if db.get("paymentRoundingMode", "none") not in ("none", "step"):
@@ -370,6 +372,7 @@ def sqlite_telegram_settings_db(connection):
         "botName": "Vireika",
         "paymentAmount": "",
         "paymentTotalAmount": "",
+        "paymentDomainAnnualAmount": "",
         "paymentCurrency": "₽",
         "paymentRoundingMode": "none",
         "paymentRoundingStep": "10",

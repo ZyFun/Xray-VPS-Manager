@@ -307,12 +307,15 @@ def subscribers_text(ctx: AdminContext, db):
 
 def payment_total_text(ctx: AdminContext, db):
     client_db = ctx.load_client_db()
-    total = payments.format_payment_amount(str(db.get("paymentTotalAmount") or "").strip(), db.get("paymentCurrency") or "₽")
+    summary = payments.payment_summary(db, client_db)
     return "\n".join(
         [
             "Xray VPS Manager: текущая сумма",
             "",
-            f"Общая аренда: {total}",
+            f"Месячная аренда сервера: {summary['serverMonthly']}",
+            f"Годовая аренда домена: {summary['domainAnnual']}",
+            f"Аренда домена в месяц: {summary['domainMonthly']}",
+            f"Общая месячная аренда: {summary['total']}",
             f"Платных клиентов: {payments.paid_client_count(client_db)}",
             f"Реквизиты: {payments.payment_transfer_label(db)}",
         ]
