@@ -1097,6 +1097,34 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
+cat >/etc/systemd/system/xray-caddy-random-tls.service <<'EOF'
+[Unit]
+Description=Randomize Caddy TLS protocol profile for Xray VPS Manager
+After=network-online.target caddy.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/etc/xray/caddy-random-tls.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/usr/local/etc/xray/caddy-random-tls.env
+ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --quiet
+EOF
+
+cat >/etc/systemd/system/xray-caddy-random-tls.timer <<'EOF'
+[Unit]
+Description=Randomize Caddy TLS protocol profile every 15-60 minutes
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=15min
+RandomizedDelaySec=45min
+AccuracySec=1min
+Unit=xray-caddy-random-tls.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat >/etc/systemd/system/xray-traffic-sync.timer <<'EOF'
 [Unit]
 Description=Persist Xray user traffic counters every minute

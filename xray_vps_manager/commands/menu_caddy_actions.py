@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import time
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -25,6 +27,10 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 def run_no_check(command: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
     return subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+
+
+def compact_output(result: subprocess.CompletedProcess) -> str:
+    return (result.stdout or result.stderr or f"exit {result.returncode}").strip()
 
 
 def installed() -> bool:
@@ -549,3 +555,226 @@ def tls_handshake_check() -> None:
         )
         output = (result.stdout or "") + (result.stderr or "")
         print(output.strip() or f"exit {result.returncode}")
+
+
+def systemctl_value(*args: str) -> str:
+    try:
+        result = run_no_check(["systemctl", *args], timeout=10)
+    except FileNotFoundError:
+        return "systemctl not found"
+    value = compact_output(result)
+    if result.returncode != 0 and value:
+        return f"{value} (exit {result.returncode})"
+    return value or "-"
+
+
+def random_tls_current_label(domain: str) -> str:
+    try:
+        site = caddy.site_config_for_domain(domain)
+    except (FileNotFoundError, ValueError):
+        return "-"
+    return caddy.tls_version_label(site.tls_min_version, site.tls_max_version)
+
+
+def random_tls_next_label(domain: str) -> str:
+    try:
+        site = caddy.site_config_for_domain(domain)
+    except (FileNotFoundError, ValueError):
+        return "-"
+    return caddy.next_random_tls_label(site.tls_min_version, site.tls_max_version)
+
+
+def format_timer_eta(seconds: int) -> str:
+    if seconds <= 0:
+        return "сейчас"
+    minutes = max(1, int(round(seconds / 60)))
+    if minutes < 60:
+        return f"через {minutes} мин"
+    hours, rest = divmod(minutes, 60)
+    if rest == 0:
+        return f"через {hours} ч"
+    return f"через {hours} ч {rest} мин"
+
+
+def format_systemd_left(value: str) -> str:
+    text = (value or "").strip()
+    if not text or text.lower() == "n/a":
+        return "-"
+    units = {
+        "ms": "мс",
+        "s": "с",
+        "sec": "с",
+        "min": "мин",
+        "h": "ч",
+        "day": "д",
+        "days": "д",
+        "month": "мес",
+        "months": "мес",
+    }
+    parts = []
+    for amount, unit in re.findall(r"(\d+)\s*([A-Za-z]+)", text):
+        parts.append(f"{amount} {units.get(unit, unit)}")
+    if parts:
+        return "через " + " ".join(parts)
+    return f"через {text}"
+
+
+def timer_line_next_and_left(line: str) -> tuple[str, str]:
+    tokens = line.split()
+    if not tokens:
+        return "-", "-"
+    if tokens[0].lower() == "n/a":
+        next_run = "n/a"
+        left_start = 1
+    elif len(tokens) >= 4:
+        next_run = " ".join(tokens[:4])
+        left_start = 4
+    else:
+        return line.strip(), "-"
+
+    weekdays = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+    last_start = None
+    for index in range(left_start, len(tokens)):
+        token = tokens[index]
+        if token.lower() == "n/a":
+            last_start = index
+            break
+        if token in weekdays and index + 2 < len(tokens):
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", tokens[index + 1]) and re.fullmatch(r"\d{2}:\d{2}:\d{2}", tokens[index + 2]):
+                last_start = index
+                break
+    if last_start is None:
+        return next_run, "-"
+    return next_run, " ".join(tokens[left_start:last_start]) or "-"
+
+
+def random_tls_timer_left_rows() -> list[list[str]]:
+    try:
+        result = run_no_check(["systemctl", "list-timers", "--all", "--no-legend", "--no-pager", caddy.RANDOM_TLS_TIMER], timeout=10)
+    except FileNotFoundError:
+        return [["NEXT RUN", "systemctl not found"], ["NEXT RUN IN", "-"]]
+    if result.returncode != 0:
+        return [["NEXT RUN", compact_output(result)], ["NEXT RUN IN", "-"]]
+    line = (result.stdout or "").strip().splitlines()
+    if not line:
+        return [["NEXT RUN", "-"], ["NEXT RUN IN", "-"]]
+    next_run, left = timer_line_next_and_left(line[0])
+    return [["NEXT RUN", next_run], ["NEXT RUN IN", format_systemd_left(left)]]
+
+
+def random_tls_next_timer_rows() -> list[list[str]]:
+    try:
+        result = run_no_check(
+            ["systemctl", "show", caddy.RANDOM_TLS_TIMER, "--property=NextElapseUSecRealtime", "--value"],
+            timeout=10,
+        )
+    except FileNotFoundError:
+        return [["NEXT RUN", "systemctl not found"], ["NEXT RUN IN", "-"]]
+    if result.returncode != 0:
+        return [["NEXT RUN", compact_output(result)], ["NEXT RUN IN", "-"]]
+
+    next_run = (result.stdout or "").strip()
+    if not next_run or next_run.lower() in {"n/a", "never"}:
+        return random_tls_timer_left_rows()
+
+    try:
+        parsed = run_no_check(["date", "-d", next_run, "+%s"], timeout=5)
+    except FileNotFoundError:
+        return [["NEXT RUN", next_run], ["NEXT RUN IN", "-"]]
+    if parsed.returncode != 0:
+        return [["NEXT RUN", next_run], ["NEXT RUN IN", "-"]]
+    try:
+        delta_seconds = int(parsed.stdout.strip()) - int(time.time())
+    except ValueError:
+        return [["NEXT RUN", next_run], ["NEXT RUN IN", "-"]]
+    return [["NEXT RUN", next_run], ["NEXT RUN IN", format_timer_eta(delta_seconds)]]
+
+
+def print_random_tls_result(result: caddy.RandomTlsApplyResult) -> None:
+    previous = caddy.tls_version_label(result.previous_tls_min_version, result.previous_tls_max_version)
+    current = caddy.tls_version_label(result.tls_min_version, result.tls_max_version)
+    print(f"Caddy TLS randomized for {result.domain}: {previous} -> {current}")
+    print(f"Site config: {result.path}")
+    if result.backup:
+        print(f"Backup: {result.backup}")
+
+
+def random_tls_status() -> None:
+    rows = [
+        ["ENV", str(caddy.CADDY_RANDOM_TLS_ENV_PATH if caddy.CADDY_RANDOM_TLS_ENV_PATH.exists() else "missing")],
+        ["TIMER ACTIVE", systemctl_value("is-active", caddy.RANDOM_TLS_TIMER)],
+        ["TIMER ENABLED", systemctl_value("is-enabled", caddy.RANDOM_TLS_TIMER)],
+        ["SERVICE ACTIVE", systemctl_value("is-active", caddy.RANDOM_TLS_SERVICE)],
+    ]
+    try:
+        config = caddy.read_random_tls_config()
+    except (RuntimeError, ValueError) as exc:
+        rows.append(["CONFIG", str(exc)])
+    else:
+        rows.extend(
+            [
+                ["DOMAIN", config.domain],
+                ["LOCAL PORT", str(config.local_port)],
+                ["CURRENT TLS", random_tls_current_label(config.domain)],
+                ["NEXT TLS", random_tls_next_label(config.domain)],
+            ]
+        )
+        rows.extend(random_tls_next_timer_rows())
+    print_table(["ITEM", "VALUE"], rows)
+    print()
+    print("Next timer event:")
+    print(systemctl_value("list-timers", "--all", "--no-pager", caddy.RANDOM_TLS_TIMER))
+
+
+def enable_random_tls(confirm: ConfirmCallback) -> None:
+    site = choose_site("включения TLS randomizer", auto_single=True)
+    if not site:
+        return
+    if site.local_port is None:
+        print("Не удалось определить upstream local port в site config.")
+        return
+    print("TLS randomizer будет менять Caddy site между строгими TLS 1.2 и TLS 1.3.")
+    print("Интервал задаёт systemd timer: 15 минут + случайная задержка до 45 минут.")
+    print("Если клиент или сеть не принимает одну из версий TLS, этот site может временно стать недоступным.")
+    if not confirm(f"Включить TLS randomizer для {site.domain}"):
+        print("Действие отменено.")
+        return
+    try:
+        config = caddy.write_random_tls_config(site.domain, site.local_port)
+        units = caddy.write_random_tls_systemd_units()
+        run(["systemctl", "daemon-reload"])
+        run(["systemctl", "enable", "--now", caddy.RANDOM_TLS_TIMER])
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        die(f"Не удалось включить TLS randomizer: {exc}")
+    print(f"TLS randomizer enabled for {config.domain}:{config.local_port}.")
+    print(f"Service unit: {units['service']}")
+    print(f"Timer unit: {units['timer']}")
+    print("Первое автоматическое переключение будет через случайные 15-60 минут.")
+
+
+def disable_random_tls(confirm: ConfirmCallback) -> None:
+    print("TLS randomizer будет остановлен. Текущая TLS-версия site config останется как есть.")
+    if not confirm("Отключить TLS randomizer"):
+        print("Действие отменено.")
+        return
+    for command in (
+        ["systemctl", "disable", "--now", caddy.RANDOM_TLS_TIMER],
+        ["systemctl", "stop", caddy.RANDOM_TLS_SERVICE],
+    ):
+        try:
+            result = run_no_check(command, timeout=20)
+        except FileNotFoundError:
+            print("systemctl not found.")
+            return
+        if result.returncode != 0:
+            print(f"{' '.join(command)}: {compact_output(result)}")
+    print("TLS randomizer disabled.")
+    print(f"Config left in place: {caddy.CADDY_RANDOM_TLS_ENV_PATH}")
+
+
+def random_tls_run_now() -> None:
+    try:
+        result = caddy.apply_random_tls_switch()
+    except (FileNotFoundError, RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
+        die(f"TLS randomizer failed: {exc}")
+    print_random_tls_result(result)

@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 import tempfile
+from unittest import mock
 
 from xray_vps_manager.xray import caddy
 
@@ -37,6 +38,73 @@ class CaddyConfigTests(unittest.TestCase):
     def test_tls_version_pair_rejects_reversed_range(self) -> None:
         with self.assertRaises(ValueError):
             caddy.caddy_site_block("api.example.com", 10000, tls_min_version="tls1.3", tls_max_version="tls1.2")
+
+    def test_random_tls_pair_moves_away_from_current_strict_version(self) -> None:
+        self.assertEqual(
+            caddy.choose_random_tls_pair("tls1.2", "tls1.2", chooser=lambda options: options[0]),
+            ("tls1.3", "tls1.3"),
+        )
+        self.assertEqual(
+            caddy.choose_random_tls_pair("tls1.3", "tls1.3", chooser=lambda options: options[0]),
+            ("tls1.2", "tls1.2"),
+        )
+
+    def test_random_tls_pair_randomizes_non_strict_current_profile(self) -> None:
+        self.assertEqual(
+            caddy.choose_random_tls_pair("default", "default", chooser=lambda options: options[-1]),
+            ("tls1.3", "tls1.3"),
+        )
+
+    def test_next_random_tls_label_describes_next_strict_switch(self) -> None:
+        self.assertEqual(caddy.next_random_tls_label("tls1.2", "tls1.2"), "TLS 1.3")
+        self.assertEqual(caddy.next_random_tls_label("tls1.3", "tls1.3"), "TLS 1.2")
+        self.assertEqual(caddy.next_random_tls_label("tls1.2", "tls1.3"), "Случайно: TLS 1.2 или TLS 1.3")
+
+    def test_random_tls_env_and_systemd_units_are_written(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_path = root / "caddy-random-tls.env"
+            systemd_dir = root / "systemd"
+
+            config = caddy.write_random_tls_config("api.example.com", 10300, env_path)
+            units = caddy.write_random_tls_systemd_units(systemd_dir)
+
+            self.assertEqual(config.domain, "api.example.com")
+            self.assertEqual(config.local_port, 10300)
+            self.assertEqual(caddy.read_random_tls_config(env_path), config)
+            self.assertIn("TLS_RANDOM_DOMAIN=api.example.com", env_path.read_text())
+            service = units["service"].read_text()
+            timer = units["timer"].read_text()
+            self.assertIn("ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --quiet", service)
+            self.assertIn("OnUnitActiveSec=15min", timer)
+            self.assertIn("RandomizedDelaySec=45min", timer)
+
+    def test_apply_random_tls_switch_updates_selected_site(self) -> None:
+        site = caddy.SiteConfig(
+            path=Path("/etc/caddy/conf.d/api.example.com.caddy"),
+            domain="api.example.com",
+            local_port=10300,
+            tls_min_version="tls1.2",
+            tls_max_version="tls1.2",
+        )
+        write_result = caddy.SiteWriteResult(site.path, Path("/tmp/site.bak"))
+
+        with mock.patch.object(caddy, "site_config_for_domain", return_value=site):
+            with mock.patch.object(caddy, "update_site_config", return_value=write_result) as update_site:
+                result = caddy.apply_random_tls_switch(
+                    caddy.RandomTlsConfig("api.example.com", 10300),
+                    chooser=lambda options: options[0],
+                )
+
+        update_site.assert_called_once_with(
+            "api.example.com",
+            10300,
+            tls_min_version="tls1.3",
+            tls_max_version="tls1.3",
+            runner=caddy.subprocess.run,
+        )
+        self.assertEqual(result.previous_tls_min_version, "tls1.2")
+        self.assertEqual(result.tls_min_version, "tls1.3")
 
     def test_parse_site_config_reads_domain_tls_and_upstream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
