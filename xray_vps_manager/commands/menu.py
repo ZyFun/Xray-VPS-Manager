@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-21 11:05 UTC"
+MENU_UPDATED = "2026-06-21 17:32 UTC"
 
 
 def die(message):
@@ -58,11 +58,14 @@ def print_menu_header():
 def main_menu_actions():
     return [
         ("1", "Клиенты"),
-        ("2", "Настройки Xray"),
-        ("3", "Безопасность"),
-        ("4", "Резервные копии"),
-        ("5", "Telegram бот"),
-        ("6", "Обновление менеджера"),
+        ("2", "Подключения и TLS"),
+        ("3", "Маршрутизация"),
+        ("4", "Трафик и активность"),
+        ("5", "Сервис и диагностика"),
+        ("6", "Безопасность"),
+        ("7", "Резервные копии"),
+        ("8", "Telegram бот"),
+        ("9", "Обновления"),
         ("0", "Выход"),
     ]
 
@@ -97,12 +100,30 @@ def client_menu_actions():
         ("4", "Изменить статус оплаты"),
         ("5", "Отключить клиента"),
         ("6", "Включить клиента"),
-        ("7", "Удалить клиента"),
-        ("8", "Вывести ссылку клиента"),
-        ("9", "Проверить просроченных клиентов"),
-        ("10", "Трафик"),
-        ("11", "Журнал активности"),
-        ("12", "Перенести клиента в другое подключение"),
+        ("7", "Вывести ссылку клиента"),
+        ("8", "Перенести клиента в другое подключение"),
+        ("9", "Удалить клиента"),
+        ("10", "Проверить просроченных клиентов"),
+        ("11", "Лимиты трафика"),
+        ("0", "Назад"),
+    ]
+
+
+def client_traffic_limit_menu_actions():
+    return [
+        ("1", "Показать лимиты трафика"),
+        ("2", "Установить лимит трафика"),
+        ("3", "Убрать лимит трафика"),
+        ("4", "Проверить лимиты трафика"),
+        ("0", "Назад"),
+    ]
+
+
+def connection_tls_menu_actions():
+    return [
+        ("1", "Подключения VLESS / Reality"),
+        ("2", "Стартовая ссылка"),
+        ("3", "Caddy / TLS"),
         ("0", "Назад"),
     ]
 
@@ -135,48 +156,75 @@ def cascade_menu_actions():
     ]
 
 
-def xray_settings_menu_actions():
+def routing_menu_actions():
     return [
-        ("1", "Статус Xray"),
-        ("2", "Перезапустить Xray"),
-        ("3", "Проверить config.json"),
-        ("4", "Проверить timers"),
-        ("5", "Прогнать все тесты сервера"),
-        ("6", "Подключения VLESS"),
-        ("7", "Каскад"),
-        ("8", "Обновление Xray"),
-        ("9", "Стартовая ссылка"),
-        ("10", "WARP"),
-        ("11", "Показать доступ к торрентам"),
-        ("12", "Запретить торренты"),
-        ("13", "Разрешить торренты"),
-        ("14", "Показать часовой пояс"),
-        ("15", "Изменить часовой пояс"),
-        ("16", "Caddy / TLS"),
+        ("1", "Каскад"),
+        ("2", "WARP"),
+        ("3", "Торренты"),
+        ("4", "GeoIP routing"),
+        ("5", "Блокировки IP/доменов"),
+        ("0", "Назад"),
+    ]
+
+
+def torrent_menu_actions():
+    return [
+        ("1", "Показать доступ к торрентам"),
+        ("2", "Запретить торренты"),
+        ("3", "Разрешить торренты"),
+        ("0", "Назад"),
+    ]
+
+
+def geoip_routing_menu_actions():
+    return [
+        ("1", "GeoIP routing: выбрать регион"),
+        ("2", "GeoIP routing: отключить"),
         ("0", "Назад"),
     ]
 
 
 def caddy_menu_actions():
     return [
+        ("1", "Состояние и проверка"),
+        ("2", "Site configs"),
+        ("3", "Управление сервисом"),
+        ("4", "Бэкапы"),
+        ("0", "Назад"),
+    ]
+
+
+def caddy_status_menu_actions():
+    return [
         ("1", "Статус Caddy"),
         ("2", "Установить Caddy"),
         ("3", "Проверить Caddy config"),
         ("4", "Показать Caddyfile"),
-        ("5", "Показать TLS/XHTTP site configs"),
-        ("6", "Показать site config"),
-        ("7", "Создать/обновить site из TLS-подключения"),
-        ("8", "Создать/обновить site вручную"),
-        ("9", "Изменить TLS version site"),
-        ("10", "Изменить upstream local port"),
-        ("11", "Изменить домен site"),
-        ("12", "Удалить site config"),
-        ("13", "Убрать дефолтный site :80"),
-        ("14", "Проверить TLS handshake"),
-        ("15", "Показать логи Caddy"),
-        ("16", "Reload Caddy"),
-        ("17", "Restart Caddy"),
-        ("18", "Бэкапы"),
+        ("5", "Проверить TLS handshake"),
+        ("6", "Показать логи Caddy"),
+        ("0", "Назад"),
+    ]
+
+
+def caddy_sites_menu_actions():
+    return [
+        ("1", "Показать TLS/XHTTP site configs"),
+        ("2", "Показать site config"),
+        ("3", "Создать/обновить site из TLS-подключения"),
+        ("4", "Создать/обновить site вручную"),
+        ("5", "Изменить TLS version site"),
+        ("6", "Изменить upstream local port"),
+        ("7", "Изменить домен site"),
+        ("8", "Удалить site config"),
+        ("9", "Убрать дефолтный site :80"),
+        ("0", "Назад"),
+    ]
+
+
+def caddy_service_menu_actions():
+    return [
+        ("1", "Reload Caddy"),
+        ("2", "Restart Caddy"),
         ("0", "Назад"),
     ]
 
@@ -205,6 +253,29 @@ def security_menu_actions():
     ]
 
 
+def service_diagnostics_menu_actions():
+    return [
+        ("1", "Статус Xray"),
+        ("2", "Перезапустить Xray"),
+        ("3", "Проверить config.json"),
+        ("4", "Проверить timers"),
+        ("5", "Прогнать все тесты сервера"),
+        ("6", "SQLite: статус базы"),
+        ("7", "Показать часовой пояс"),
+        ("8", "Изменить часовой пояс"),
+        ("0", "Назад"),
+    ]
+
+
+def updates_menu_actions():
+    return [
+        ("1", "Xray"),
+        ("2", "Geo assets"),
+        ("3", "Менеджер"),
+        ("0", "Назад"),
+    ]
+
+
 def update_menu_actions():
     return [
         ("1", "Проверить доступность обновления"),
@@ -212,10 +283,15 @@ def update_menu_actions():
         ("3", "Обновить Xray"),
         ("4", "Показать бэкапы Xray"),
         ("5", "Откатить Xray к предыдущей версии"),
-        ("6", "Обновить geoip/geosite из Xray release"),
-        ("7", "Обновить geoip/geosite из Loyalsoldier"),
-        ("8", "Обновить geoip.dat из v2fly"),
-        ("9", "SQLite: статус базы"),
+        ("0", "Назад"),
+    ]
+
+
+def geo_assets_menu_actions():
+    return [
+        ("1", "Обновить geoip/geosite из Xray release"),
+        ("2", "Обновить geoip/geosite из Loyalsoldier"),
+        ("3", "Обновить geoip.dat из v2fly"),
         ("0", "Назад"),
     ]
 
@@ -248,10 +324,11 @@ def warp_menu_actions():
 def traffic_menu_actions():
     return [
         ("1", "Просмотр трафика"),
-        ("2", "Показать лимиты трафика"),
-        ("3", "Установить лимит трафика"),
-        ("4", "Убрать лимит трафика"),
-        ("5", "Проверить лимиты трафика"),
+        ("2", "Отчёт activity по клиенту"),
+        ("3", "Подозрительная активность"),
+        ("4", "Экспорт activity по клиенту"),
+        ("5", "Архивы экспорта activity"),
+        ("6", "Настройки журнала активности"),
         ("0", "Назад"),
     ]
 
@@ -310,23 +387,24 @@ def backup_menu_actions():
     ]
 
 
-def activity_menu_actions():
+def activity_export_menu_actions():
+    return [
+        ("1", "Экспорт отчёта по клиенту"),
+        ("2", "Показать архивы экспорта"),
+        ("3", "Удалить архив экспорта"),
+        ("4", "Удалить все архивы экспорта"),
+        ("0", "Назад"),
+    ]
+
+
+def activity_settings_menu_actions():
     return [
         ("1", "Статус журнала активности"),
         ("2", "Включить парсинг activity log"),
         ("3", "Отключить парсинг activity log"),
         ("4", "Синхронизировать сейчас"),
-        ("5", "Отчёт по клиенту"),
-        ("6", "Подозрительная активность"),
-        ("7", "Экспорт отчёта по клиенту"),
-        ("8", "Показать архивы экспорта"),
-        ("9", "Удалить архив экспорта"),
-        ("10", "Удалить все архивы экспорта"),
-        ("11", "Изменить срок хранения журнала"),
-        ("12", "Настроить лимиты suspicious"),
-        ("13", "GeoIP routing: выбрать регион"),
-        ("14", "GeoIP routing: отключить"),
-        ("15", "Блокировки IP/доменов"),
+        ("5", "Изменить срок хранения журнала"),
+        ("6", "Настроить лимиты suspicious"),
         ("0", "Назад"),
     ]
 
@@ -400,17 +478,33 @@ def client_menu_handlers():
             lambda: menu_client_actions.call_client_command(call, "enable", "включения", "disabled"),
         ),
         "7": (
-            "Удалить клиента",
-            lambda: menu_client_actions.call_client_command(call, "remove", "удаления", "all"),
-        ),
-        "8": (
             "Вывести ссылку клиента",
             lambda: menu_client_actions.call_client_command(call, "link", "вывода ссылки", "all"),
         ),
-        "9": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
-        "10": ("Трафик", open_traffic_tools_menu),
-        "11": ("Журнал активности", open_activity_menu),
-        "12": ("Перенести клиента в другое подключение", lambda: menu_client_actions.move_selected_client(call)),
+        "8": ("Перенести клиента в другое подключение", lambda: menu_client_actions.move_selected_client(call)),
+        "9": (
+            "Удалить клиента",
+            lambda: menu_client_actions.call_client_command(call, "remove", "удаления", "all"),
+        ),
+        "10": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
+        "11": ("Лимиты трафика", open_client_traffic_limit_menu),
+    }
+
+
+def client_traffic_limit_menu_handlers():
+    return {
+        "1": ("Показать лимиты трафика", lambda: menu_client_actions.show_traffic_limits(call)),
+        "2": ("Установить лимит трафика", lambda: menu_client_actions.update_selected_client_limit(call)),
+        "3": ("Убрать лимит трафика", lambda: menu_client_actions.clear_selected_client_limit(call)),
+        "4": ("Проверить лимиты трафика", lambda: menu_client_actions.enforce_traffic_limits(call)),
+    }
+
+
+def connection_tls_menu_handlers():
+    return {
+        "1": ("Подключения VLESS / Reality", open_reality_menu),
+        "2": ("Вывести стартовую ссылку", menu_xray_actions.print_initial_link),
+        "3": ("Caddy / TLS", open_caddy_menu),
     }
 
 
@@ -453,47 +547,82 @@ def warp_menu_handlers():
     }
 
 
-def xray_settings_menu_handlers():
+def routing_menu_handlers():
+    return {
+        "1": ("Каскад", open_cascade_menu),
+        "2": ("WARP", open_warp_menu),
+        "3": ("Торренты", open_torrent_menu),
+        "4": ("GeoIP routing", open_geoip_routing_menu),
+        "5": ("Блокировки IP/доменов", open_activity_blocklist_menu),
+    }
+
+
+def torrent_menu_handlers():
+    return {
+        "1": ("Показать доступ к торрентам", menu_xray_actions.print_torrent_status),
+        "2": ("Запретить торренты", menu_xray_actions.block_torrents),
+        "3": ("Разрешить торренты", menu_xray_actions.allow_torrents),
+    }
+
+
+def geoip_routing_menu_handlers():
+    return {
+        "1": ("GeoIP routing: выбрать регион", menu_activity_actions.set_xray_geoip_routing_region),
+        "2": ("GeoIP routing: отключить", menu_activity_actions.disable_xray_geoip_routing_region),
+    }
+
+
+def service_diagnostics_menu_handlers():
     return {
         "1": ("Статус Xray", lambda: menu_xray_actions.show_xray_status(call)),
         "2": ("Перезапустить Xray", lambda: menu_xray_actions.restart_xray(call)),
         "3": ("Проверить config.json", lambda: menu_xray_actions.check_config(call)),
         "4": ("Проверить timers", lambda: menu_xray_actions.check_timers(call)),
         "5": ("Прогнать все тесты сервера", lambda: menu_xray_actions.run_all_tests(call)),
-        "6": ("Подключения VLESS", open_reality_menu),
-        "7": ("Каскад", open_cascade_menu),
-        "8": ("Обновление Xray", open_update_menu),
-        "9": ("Вывести стартовую ссылку", menu_xray_actions.print_initial_link),
-        "10": ("WARP", open_warp_menu),
-        "11": ("Показать доступ к торрентам", menu_xray_actions.print_torrent_status),
-        "12": ("Запретить торренты", menu_xray_actions.block_torrents),
-        "13": ("Разрешить торренты", menu_xray_actions.allow_torrents),
-        "14": ("Показать часовой пояс", lambda: menu_timezone_actions.show_timezone(call)),
-        "15": ("Изменить часовой пояс", lambda: menu_timezone_actions.update_timezone(call)),
-        "16": ("Caddy / TLS", open_caddy_menu),
+        "6": ("SQLite: статус базы", lambda: menu_xray_actions.sqlite_status(call)),
+        "7": ("Показать часовой пояс", lambda: menu_timezone_actions.show_timezone(call)),
+        "8": ("Изменить часовой пояс", lambda: menu_timezone_actions.update_timezone(call)),
     }
 
 
 def caddy_menu_handlers():
     return {
+        "1": ("Состояние и проверка", open_caddy_status_menu),
+        "2": ("Site configs", open_caddy_sites_menu),
+        "3": ("Управление сервисом", open_caddy_service_menu),
+        "4": ("Бэкапы", open_caddy_backup_menu),
+    }
+
+
+def caddy_status_menu_handlers():
+    return {
         "1": ("Статус Caddy", menu_caddy_actions.caddy_status),
         "2": ("Установить Caddy", menu_caddy_actions.install_caddy),
         "3": ("Проверить Caddy config", menu_caddy_actions.validate_config),
         "4": ("Показать Caddyfile", menu_caddy_actions.show_caddyfile),
-        "5": ("Показать TLS/XHTTP site configs", menu_caddy_actions.show_sites),
-        "6": ("Показать site config", menu_caddy_actions.show_site_config),
-        "7": ("Создать/обновить site из TLS-подключения", menu_caddy_actions.create_site_from_tls_connection),
-        "8": ("Создать/обновить site вручную", menu_caddy_actions.create_site_manual),
-        "9": ("Изменить TLS version site", menu_caddy_actions.update_site_tls),
-        "10": ("Изменить upstream local port", menu_caddy_actions.update_site_upstream),
-        "11": ("Изменить домен site", menu_caddy_actions.update_site_domain),
-        "12": ("Удалить site config", lambda: menu_caddy_actions.delete_site(confirm)),
-        "13": ("Убрать дефолтный site :80", lambda: menu_caddy_actions.remove_default_http_site(confirm)),
-        "14": ("Проверить TLS handshake", menu_caddy_actions.tls_handshake_check),
-        "15": ("Показать логи Caddy", menu_caddy_actions.show_logs),
-        "16": ("Reload Caddy", menu_caddy_actions.reload_caddy),
-        "17": ("Restart Caddy", menu_caddy_actions.restart_caddy),
-        "18": ("Бэкапы", open_caddy_backup_menu),
+        "5": ("Проверить TLS handshake", menu_caddy_actions.tls_handshake_check),
+        "6": ("Показать логи Caddy", menu_caddy_actions.show_logs),
+    }
+
+
+def caddy_sites_menu_handlers():
+    return {
+        "1": ("Показать TLS/XHTTP site configs", menu_caddy_actions.show_sites),
+        "2": ("Показать site config", menu_caddy_actions.show_site_config),
+        "3": ("Создать/обновить site из TLS-подключения", menu_caddy_actions.create_site_from_tls_connection),
+        "4": ("Создать/обновить site вручную", menu_caddy_actions.create_site_manual),
+        "5": ("Изменить TLS version site", menu_caddy_actions.update_site_tls),
+        "6": ("Изменить upstream local port", menu_caddy_actions.update_site_upstream),
+        "7": ("Изменить домен site", menu_caddy_actions.update_site_domain),
+        "8": ("Удалить site config", lambda: menu_caddy_actions.delete_site(confirm)),
+        "9": ("Убрать дефолтный site :80", lambda: menu_caddy_actions.remove_default_http_site(confirm)),
+    }
+
+
+def caddy_service_menu_handlers():
+    return {
+        "1": ("Reload Caddy", menu_caddy_actions.reload_caddy),
+        "2": ("Restart Caddy", menu_caddy_actions.restart_caddy),
     }
 
 
@@ -532,10 +661,14 @@ def update_menu_handlers():
         "3": ("Обновить Xray", lambda: menu_xray_actions.update_xray(call)),
         "4": ("Показать бэкапы Xray", lambda: menu_xray_actions.show_update_backups(call)),
         "5": ("Откатить Xray к предыдущей версии", lambda: menu_xray_actions.rollback_xray(call, confirm)),
-        "6": ("Обновить geoip/geosite из Xray release", lambda: menu_xray_actions.update_assets(call, "xray")),
-        "7": ("Обновить geoip/geosite из Loyalsoldier", lambda: menu_xray_actions.update_assets(call, "loyalsoldier")),
-        "8": ("Обновить geoip.dat из v2fly", lambda: menu_xray_actions.update_assets(call, "v2fly")),
-        "9": ("SQLite: статус базы", lambda: menu_xray_actions.sqlite_status(call)),
+    }
+
+
+def geo_assets_menu_handlers():
+    return {
+        "1": ("Обновить geoip/geosite из Xray release", lambda: menu_xray_actions.update_assets(call, "xray")),
+        "2": ("Обновить geoip/geosite из Loyalsoldier", lambda: menu_xray_actions.update_assets(call, "loyalsoldier")),
+        "3": ("Обновить geoip.dat из v2fly", lambda: menu_xray_actions.update_assets(call, "v2fly")),
     }
 
 
@@ -549,13 +682,28 @@ def manager_update_menu_handlers():
     }
 
 
+def updates_menu_handlers():
+    return {
+        "1": ("Xray", open_update_menu),
+        "2": ("Geo assets", open_geo_assets_menu),
+        "3": ("Менеджер", open_manager_update_menu),
+    }
+
+
 def traffic_menu_handlers():
     return {
         "1": ("Просмотр трафика", open_traffic_menu),
-        "2": ("Показать лимиты трафика", lambda: menu_client_actions.show_traffic_limits(call)),
-        "3": ("Установить лимит трафика", lambda: menu_client_actions.update_selected_client_limit(call)),
-        "4": ("Убрать лимит трафика", lambda: menu_client_actions.clear_selected_client_limit(call)),
-        "5": ("Проверить лимиты трафика", lambda: menu_client_actions.enforce_traffic_limits(call)),
+        "2": (
+            "Отчёт activity по клиенту",
+            lambda: menu_activity_actions.activity_client_report(menu_client_actions.choose_client, call),
+        ),
+        "3": ("Подозрительная активность", open_activity_suspicious_menu),
+        "4": (
+            "Экспорт activity по клиенту",
+            lambda: menu_activity_export_actions.activity_export_report(menu_client_actions.choose_client, call),
+        ),
+        "5": ("Архивы экспорта activity", open_activity_export_menu),
+        "6": ("Настройки журнала активности", open_activity_settings_menu),
     }
 
 
@@ -654,35 +802,32 @@ def activity_blocklist_menu_handlers():
     }
 
 
-def activity_menu_handlers():
+def activity_export_menu_handlers():
+    return {
+        "1": (
+            "Экспорт отчёта по клиенту",
+            lambda: menu_activity_export_actions.activity_export_report(menu_client_actions.choose_client, call),
+        ),
+        "2": ("Показать архивы экспорта", lambda: menu_activity_export_actions.list_activity_exports(call)),
+        "3": (
+            "Удалить архив экспорта",
+            lambda: menu_activity_export_actions.delete_activity_export_from_menu(call, confirm),
+        ),
+        "4": (
+            "Удалить все архивы экспорта",
+            lambda: menu_activity_export_actions.delete_all_activity_exports_from_menu(call, confirm),
+        ),
+    }
+
+
+def activity_settings_menu_handlers():
     return {
         "1": ("Статус журнала активности", lambda: menu_activity_actions.show_activity_status(call)),
         "2": ("Включить парсинг activity log", lambda: menu_activity_actions.enable_activity_parser(call)),
         "3": ("Отключить парсинг activity log", lambda: menu_activity_actions.disable_activity_parser(call)),
         "4": ("Синхронизировать сейчас", lambda: menu_activity_actions.sync_activity_now(call)),
-        "5": (
-            "Отчёт по клиенту",
-            lambda: menu_activity_actions.activity_client_report(menu_client_actions.choose_client, call),
-        ),
-        "6": ("Подозрительная активность", open_activity_suspicious_menu),
-        "7": (
-            "Экспорт отчёта по клиенту",
-            lambda: menu_activity_export_actions.activity_export_report(menu_client_actions.choose_client, call),
-        ),
-        "8": ("Показать архивы экспорта", lambda: menu_activity_export_actions.list_activity_exports(call)),
-        "9": (
-            "Удалить архив экспорта",
-            lambda: menu_activity_export_actions.delete_activity_export_from_menu(call, confirm),
-        ),
-        "10": (
-            "Удалить все архивы экспорта",
-            lambda: menu_activity_export_actions.delete_all_activity_exports_from_menu(call, confirm),
-        ),
-        "11": ("Изменить срок хранения журнала", lambda: menu_activity_actions.update_activity_retention(call)),
-        "12": ("Настроить лимиты suspicious", lambda: menu_activity_actions.update_activity_risk_limits(call)),
-        "13": ("GeoIP routing: выбрать регион", menu_activity_actions.set_xray_geoip_routing_region),
-        "14": ("GeoIP routing: отключить", menu_activity_actions.disable_xray_geoip_routing_region),
-        "15": ("Блокировки IP/доменов", open_activity_blocklist_menu),
+        "5": ("Изменить срок хранения журнала", lambda: menu_activity_actions.update_activity_retention(call)),
+        "6": ("Настроить лимиты suspicious", lambda: menu_activity_actions.update_activity_risk_limits(call)),
     }
 
 
@@ -715,12 +860,32 @@ def open_clients_menu():
     menu_loop("Клиенты", client_menu_actions(), client_menu_handlers())
 
 
+def open_client_traffic_limit_menu():
+    menu_loop("Клиенты -> Лимиты трафика", client_traffic_limit_menu_actions(), client_traffic_limit_menu_handlers())
+
+
+def open_connection_tls_menu():
+    menu_loop("Подключения и TLS", connection_tls_menu_actions(), connection_tls_menu_handlers())
+
+
 def open_reality_menu():
-    menu_loop("Подключения VLESS", reality_menu_actions(), reality_menu_handlers())
+    menu_loop("Подключения VLESS / Reality", reality_menu_actions(), reality_menu_handlers())
 
 
 def open_cascade_menu():
     menu_loop("Каскад", cascade_menu_actions(), cascade_menu_handlers())
+
+
+def open_routing_menu():
+    menu_loop("Маршрутизация", routing_menu_actions(), routing_menu_handlers())
+
+
+def open_torrent_menu():
+    menu_loop("Торренты", torrent_menu_actions(), torrent_menu_handlers())
+
+
+def open_geoip_routing_menu():
+    menu_loop("GeoIP routing", geoip_routing_menu_actions(), geoip_routing_menu_handlers())
 
 
 def open_warp_menu():
@@ -731,24 +896,44 @@ def open_caddy_menu():
     menu_loop("Caddy / TLS", caddy_menu_actions(), caddy_menu_handlers())
 
 
+def open_caddy_status_menu():
+    menu_loop("Caddy / TLS -> Состояние и проверка", caddy_status_menu_actions(), caddy_status_menu_handlers())
+
+
+def open_caddy_sites_menu():
+    menu_loop("Caddy / TLS -> Site configs", caddy_sites_menu_actions(), caddy_sites_menu_handlers())
+
+
+def open_caddy_service_menu():
+    menu_loop("Caddy / TLS -> Управление сервисом", caddy_service_menu_actions(), caddy_service_menu_handlers())
+
+
 def open_caddy_backup_menu():
     menu_loop("Caddy / TLS -> Бэкапы", caddy_backup_menu_actions(), caddy_backup_menu_handlers())
 
 
-def open_xray_settings_menu():
-    menu_loop("Настройки Xray", xray_settings_menu_actions(), xray_settings_menu_handlers())
+def open_service_diagnostics_menu():
+    menu_loop("Сервис и диагностика", service_diagnostics_menu_actions(), service_diagnostics_menu_handlers())
 
 
 def open_security_menu():
     menu_loop("Безопасность", security_menu_actions(), security_menu_handlers())
 
 
+def open_updates_menu():
+    menu_loop("Обновления", updates_menu_actions(), updates_menu_handlers())
+
+
 def open_update_menu():
-    menu_loop("Обновление Xray", update_menu_actions(), update_menu_handlers())
+    menu_loop("Обновления -> Xray", update_menu_actions(), update_menu_handlers())
+
+
+def open_geo_assets_menu():
+    menu_loop("Обновления -> Geo assets", geo_assets_menu_actions(), geo_assets_menu_handlers())
 
 
 def open_manager_update_menu():
-    menu_loop("Обновление менеджера", manager_update_menu_actions(), manager_update_menu_handlers())
+    menu_loop("Обновления -> Менеджер", manager_update_menu_actions(), manager_update_menu_handlers())
 
 
 def open_backup_menu():
@@ -771,8 +956,16 @@ def open_activity_blocklist_menu():
     menu_loop("Блокировки IP/доменов", activity_blocklist_menu_actions(), activity_blocklist_menu_handlers())
 
 
-def open_activity_menu():
-    menu_loop("Журнал активности", activity_menu_actions(), activity_menu_handlers())
+def open_activity_export_menu():
+    menu_loop("Архивы экспорта activity", activity_export_menu_actions(), activity_export_menu_handlers())
+
+
+def open_activity_settings_menu():
+    menu_loop(
+        "Настройки журнала активности",
+        activity_settings_menu_actions(),
+        activity_settings_menu_handlers(),
+    )
 
 
 def open_client_traffic_menu(name):
@@ -780,7 +973,7 @@ def open_client_traffic_menu(name):
 
 
 def open_traffic_tools_menu():
-    menu_loop("Трафик", traffic_menu_actions(), traffic_menu_handlers())
+    menu_loop("Трафик и активность", traffic_menu_actions(), traffic_menu_handlers())
 
 
 def open_traffic_menu():
@@ -799,11 +992,14 @@ def open_traffic_menu():
 def main_menu_handlers():
     return {
         "1": ("Клиенты", open_clients_menu),
-        "2": ("Настройки Xray", open_xray_settings_menu),
-        "3": ("Безопасность", open_security_menu),
-        "4": ("Резервные копии", open_backup_menu),
-        "5": ("Telegram бот", open_telegram_menu),
-        "6": ("Обновление менеджера", open_manager_update_menu),
+        "2": ("Подключения и TLS", open_connection_tls_menu),
+        "3": ("Маршрутизация", open_routing_menu),
+        "4": ("Трафик и активность", open_traffic_tools_menu),
+        "5": ("Сервис и диагностика", open_service_diagnostics_menu),
+        "6": ("Безопасность", open_security_menu),
+        "7": ("Резервные копии", open_backup_menu),
+        "8": ("Telegram бот", open_telegram_menu),
+        "9": ("Обновления", open_updates_menu),
     }
 
 

@@ -4,17 +4,22 @@ from xray_vps_manager.commands import menu
 
 
 class MenuStructureTests(unittest.TestCase):
-    def test_manager_update_is_root_menu_action(self) -> None:
-        self.assertIn(("6", "Обновление менеджера"), menu.main_menu_actions())
-        self.assertNotIn(("16", "Обновление менеджера"), menu.xray_settings_menu_actions())
-        self.assertIn("6", menu.main_menu_handlers())
-        self.assertNotEqual(menu.xray_settings_menu_handlers()["16"][0], "Обновление менеджера")
+    def test_main_menu_uses_task_oriented_sections(self) -> None:
+        self.assertIn(("2", "Подключения и TLS"), menu.main_menu_actions())
+        self.assertIn(("3", "Маршрутизация"), menu.main_menu_actions())
+        self.assertIn(("4", "Трафик и активность"), menu.main_menu_actions())
+        self.assertIn(("5", "Сервис и диагностика"), menu.main_menu_actions())
+        self.assertIn(("9", "Обновления"), menu.main_menu_actions())
+        self.assertNotIn(("2", "Настройки Xray"), menu.main_menu_actions())
+        self.assertIn("9", menu.main_menu_handlers())
 
     def test_caddy_and_connection_rename_actions_are_exposed(self) -> None:
-        self.assertIn(("16", "Caddy / TLS"), menu.xray_settings_menu_actions())
-        self.assertIn("16", menu.xray_settings_menu_handlers())
-        self.assertIn(("18", "Бэкапы"), menu.caddy_menu_actions())
-        self.assertIn("18", menu.caddy_menu_handlers())
+        self.assertIn(("3", "Caddy / TLS"), menu.connection_tls_menu_actions())
+        self.assertIn("3", menu.connection_tls_menu_handlers())
+        self.assertIn(("4", "Бэкапы"), menu.caddy_menu_actions())
+        self.assertIn("4", menu.caddy_menu_handlers())
+        self.assertIn(("1", "Показать TLS/XHTTP site configs"), menu.caddy_sites_menu_actions())
+        self.assertIn(("9", "Убрать дефолтный site :80"), menu.caddy_sites_menu_actions())
         self.assertIn(("1", "Создать backup Caddy config"), menu.caddy_backup_menu_actions())
         self.assertIn(("5", "Создать backup сайта"), menu.caddy_backup_menu_actions())
         self.assertIn(("7", "Восстановить сайт из backup"), menu.caddy_backup_menu_actions())
@@ -25,8 +30,22 @@ class MenuStructureTests(unittest.TestCase):
         self.assertIn("9", menu.reality_menu_handlers())
 
     def test_client_move_connection_action_is_exposed(self) -> None:
-        self.assertIn(("12", "Перенести клиента в другое подключение"), menu.client_menu_actions())
-        self.assertIn("12", menu.client_menu_handlers())
+        self.assertIn(("8", "Перенести клиента в другое подключение"), menu.client_menu_actions())
+        self.assertIn("8", menu.client_menu_handlers())
+        self.assertIn(("11", "Лимиты трафика"), menu.client_menu_actions())
+        self.assertIn("11", menu.client_menu_handlers())
+
+    def test_routing_activity_service_and_update_actions_are_exposed(self) -> None:
+        self.assertIn(("3", "Торренты"), menu.routing_menu_actions())
+        self.assertIn(("4", "GeoIP routing"), menu.routing_menu_actions())
+        self.assertIn(("5", "Блокировки IP/доменов"), menu.routing_menu_actions())
+        self.assertIn(("6", "SQLite: статус базы"), menu.service_diagnostics_menu_actions())
+        self.assertIn(("8", "Изменить часовой пояс"), menu.service_diagnostics_menu_actions())
+        self.assertIn(("2", "Geo assets"), menu.updates_menu_actions())
+        self.assertIn(("3", "Менеджер"), menu.updates_menu_actions())
+        self.assertNotIn(("6", "Обновить geoip/geosite из Xray release"), menu.update_menu_actions())
+        self.assertIn(("6", "Настройки журнала активности"), menu.traffic_menu_actions())
+        self.assertIn(("4", "Экспорт activity по клиенту"), menu.traffic_menu_actions())
 
 
 if __name__ == "__main__":

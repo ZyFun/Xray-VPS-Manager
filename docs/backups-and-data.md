@@ -57,7 +57,7 @@ xray-backup create
 Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, глобальные блокировки, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
 Перед добавлением `manager.db` в архив `xray-backup create` создаёт временный консистентный SQLite snapshot через SQLite backup API внутри `/root/xray_backups`, а не копирует живой файл базы напрямую. Это защищает архив от повреждения, если фоновые таймеры или бот записывают данные во время создания backup.
 
-Обычный `xray-backup` не включает настройки Caddy и файлы сайта. Для Caddy используются отдельные backup-пункты в меню `Настройки Xray` -> `Caddy / TLS` -> `Бэкапы`, чтобы восстановление Xray-данных не перезаписывало TLS site configs или сайт неожиданно.
+Обычный `xray-backup` не включает настройки Caddy и файлы сайта. Для Caddy используются отдельные backup-пункты в меню `Подключения и TLS` -> `Caddy / TLS` -> `Бэкапы`, чтобы восстановление Xray-данных не перезаписывало TLS site configs или сайт неожиданно.
 
 `server.env` сохраняется как переносимая конфигурация. Host-specific значения, например `SERVER_ADDR` и `SECURITY_AUDIT_LAST_RUN`, в новый архив не записываются. При восстановлении `xray-backup restore` сохраняет текущий `SERVER_ADDR` нового сервера, чтобы новые VLESS-ссылки генерировались с актуальным адресом.
 
@@ -121,10 +121,10 @@ xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 Операции с Caddy config доступны через меню:
 
 ```text
-Настройки Xray -> Caddy / TLS -> Бэкапы -> Создать backup Caddy config
-Настройки Xray -> Caddy / TLS -> Бэкапы -> Показать backups Caddy config
-Настройки Xray -> Caddy / TLS -> Бэкапы -> Восстановить Caddy config из backup
-Настройки Xray -> Caddy / TLS -> Бэкапы -> Удалить backup Caddy config
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Создать backup Caddy config
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Показать backups Caddy config
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Восстановить Caddy config из backup
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Удалить backup Caddy config
 ```
 
 Перед восстановлением Caddy config менеджер автоматически создаёт pre-restore backup текущих настроек Caddy, затем применяет выбранный архив, выполняет `caddy validate` и reload Caddy. Если проверка не проходит, менеджер пытается вернуть предыдущие настройки из pre-restore backup.
@@ -136,10 +136,10 @@ xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 Операции с файлами сайта доступны через меню:
 
 ```text
-Настройки Xray -> Caddy / TLS -> Бэкапы -> Создать backup сайта
-Настройки Xray -> Caddy / TLS -> Бэкапы -> Показать backups сайта
-Настройки Xray -> Caddy / TLS -> Бэкапы -> Восстановить сайт из backup
-Настройки Xray -> Caddy / TLS -> Бэкапы -> Удалить backup сайта
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Создать backup сайта
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Показать backups сайта
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Восстановить сайт из backup
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Удалить backup сайта
 ```
 
 Перед восстановлением сайта менеджер создаёт pre-restore backup текущей папки сайта, если она существует, затем заменяет её содержимое файлами из выбранного архива. Caddy config и сертификаты при этом не меняются.
@@ -163,7 +163,7 @@ SQLite-база менеджера хранится в:
 xray-vps-manager sqlite status
 ```
 
-Эта команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check`, готовность SQLite и количество строк в основных таблицах, включая activity blocklist и hit-счётчики. То же доступно через меню `Настройки Xray` -> `Обновление Xray`:
+Эта команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check`, готовность SQLite и количество строк в основных таблицах, включая activity blocklist и hit-счётчики. То же доступно через меню `Сервис и диагностика`:
 
 ```text
 SQLite: статус базы
