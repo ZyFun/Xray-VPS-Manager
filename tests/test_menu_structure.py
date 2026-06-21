@@ -32,8 +32,10 @@ class MenuStructureTests(unittest.TestCase):
         self.assertIn("1", menu.caddy_backup_menu_handlers())
         self.assertIn("5", menu.caddy_backup_menu_handlers())
         self.assertIn("7", menu.caddy_backup_menu_handlers())
-        self.assertIn(("9", "Переименовать подключение"), menu.reality_menu_actions())
-        self.assertIn("9", menu.reality_menu_handlers())
+        self.assertIn(("8", "Расширенные XHTTP настройки"), menu.reality_menu_actions())
+        self.assertIn("8", menu.reality_menu_handlers())
+        self.assertIn(("10", "Переименовать подключение"), menu.reality_menu_actions())
+        self.assertIn("10", menu.reality_menu_handlers())
 
     def test_client_move_connection_action_is_exposed(self) -> None:
         self.assertIn(("8", "Перенести клиента в другое подключение"), menu.client_menu_actions())

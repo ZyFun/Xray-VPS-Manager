@@ -108,6 +108,57 @@ class TelegramSubscriptionTests(unittest.TestCase):
         self.assertEqual(reason, "")
         self.assertEqual(match[0], "internal_alice")
 
+    def test_tls_xhttp_link_requires_current_extra_when_configured(self) -> None:
+        extra = (
+            "%7B%22scStreamUpServerSecs%22%3A%2225-70%22%2C%22xPaddingBytes%22%3A%22120-900%22%2C"
+            "%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22hKeepAlivePeriod%22%3A0%2C"
+            "%22hMaxRequestTimes%22%3A%22500-800%22%2C%22hMaxReusableSecs%22%3A%221500-2400%22%2C"
+            "%22maxConcurrency%22%3A%2212-24%22%2C%22maxConnections%22%3A0%7D%7D"
+        )
+        link = (
+            "vless://00000000-0000-0000-0000-000000000001@api.example.com:443?"
+            "security=tls&encryption=none&type=xhttp&sni=api.example.com"
+            f"&path=%2Fprivate-xhttp&mode=auto&extra={extra}#Xray"
+        )
+        client_db = {
+            "connections": {
+                "vless-tls": {
+                    "tag": "vless-tls",
+                    "security": "tls",
+                    "port": 443,
+                    "publicHost": "api.example.com",
+                    "sni": "api.example.com",
+                    "transport": "xhttp",
+                    "xhttpPath": "/private-xhttp",
+                    "xhttpMode": "auto",
+                    "xhttpExtra": {
+                        "xPaddingBytes": "120-900",
+                        "scStreamUpServerSecs": "25-70",
+                        "xmux": {
+                            "maxConcurrency": "12-24",
+                            "maxConnections": 0,
+                            "cMaxReuseTimes": 0,
+                            "hMaxRequestTimes": "500-800",
+                            "hMaxReusableSecs": "1500-2400",
+                            "hKeepAlivePeriod": 0,
+                        },
+                    },
+                }
+            },
+            "clients": {
+                "internal_alice": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "connection": "vless-tls",
+                },
+            },
+        }
+
+        parsed = subscriptions.parse_vless_link(link)
+        match, reason = subscriptions.match_vless_to_client(parsed, client_db)
+
+        self.assertEqual(reason, "")
+        self.assertEqual(match[0], "internal_alice")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,7 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import client_routes
+from xray_vps_manager.xray import config as xray_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 GEOIP_WARNING_OUTBOUND_PREFIX = "geoip-warning-"
@@ -127,11 +128,17 @@ def parse_vless(uri, tag=None):
     elif network == "xhttp":
         path = one(params, "path")
         mode = one(params, "mode")
+        extra = one(params, "extra")
         xhttp = {}
         if path:
             xhttp["path"] = unquote(path)
         if mode:
             xhttp["mode"] = mode
+        if extra:
+            try:
+                xhttp["extra"] = xray_config.normalize_xhttp_extra_json(extra)
+            except ValueError as exc:
+                die(str(exc))
         stream["xhttpSettings"] = xhttp
     else:
         die(f"Unsupported network type={network!r}; supported: tcp, ws, grpc, xhttp.")

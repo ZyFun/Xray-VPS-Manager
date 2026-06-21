@@ -42,7 +42,7 @@ class MenuRealityActionsReadTests(unittest.TestCase):
         self.assertEqual(mode, "stream-up")
 
     def test_choose_transport_uses_xhttp_mode_list(self) -> None:
-        inputs = iter(["3", "/private-xhttp", "4"])
+        inputs = iter(["3", "/private-xhttp", "4", "n"])
 
         with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
             settings = menu_reality_actions.choose_transport("tcp")
@@ -55,6 +55,18 @@ class MenuRealityActionsReadTests(unittest.TestCase):
                 "xhttp_mode": "stream-one",
             },
         )
+
+    def test_choose_transport_can_collect_xhttp_advanced_defaults(self) -> None:
+        inputs = iter(["3", "/private-xhttp", "1", "y", "", "", "", "", "", "", "", ""])
+
+        with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
+            settings = menu_reality_actions.choose_transport("tcp")
+
+        self.assertEqual(settings["transport"], "xhttp")
+        self.assertEqual(settings["xhttp_extra"]["xPaddingBytes"], "100-1000")
+        self.assertEqual(settings["xhttp_extra"]["scStreamUpServerSecs"], "20-80")
+        self.assertEqual(settings["xhttp_extra"]["xmux"]["maxConcurrency"], "16-32")
+        self.assertEqual(settings["xhttp_extra"]["xmux"]["hMaxRequestTimes"], "600-900")
 
     def test_choose_tls_versions_selects_profile_by_number(self) -> None:
         inputs = iter(["3"])

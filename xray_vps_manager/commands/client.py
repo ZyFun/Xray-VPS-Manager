@@ -321,6 +321,13 @@ def validate_xhttp_mode(value):
         die(str(exc))
 
 
+def validate_xhttp_extra_json(value):
+    try:
+        return xray_config.normalize_xhttp_extra_json(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def color_label(value, text):
     if value == "free":
         return f"{GREEN}{text}{RESET}"
@@ -517,6 +524,7 @@ def cmd_connection_add(
     grpc_service_name="",
     xhttp_path="",
     xhttp_mode="",
+    xhttp_extra_json="",
     security_value="reality",
     public_port_value="",
     install_caddy=False,
@@ -534,6 +542,7 @@ def cmd_connection_add(
     grpc_service_name = validate_grpc_service_name(grpc_service_name) if transport == "grpc" else ""
     xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
     xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
+    xhttp_extra = validate_xhttp_extra_json(xhttp_extra_json) if transport == "xhttp" else {}
     public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_XHTTP_TLS_PUBLIC_PORT
     tls_min_version = validate_tls_version(tls_min_version, "tls1.2")
     tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
@@ -558,6 +567,7 @@ def cmd_connection_add(
                 public_port=public_port,
                 xhttp_path=xhttp_path,
                 xhttp_mode=xhttp_mode,
+                xhttp_extra=xhttp_extra,
                 tls_min_version=tls_min_version,
                 tls_max_version=tls_max_version,
                 caddy_enabled=install_caddy,
@@ -574,6 +584,7 @@ def cmd_connection_add(
                 grpc_service_name=grpc_service_name,
                 xhttp_path=xhttp_path,
                 xhttp_mode=xhttp_mode,
+                xhttp_extra=xhttp_extra,
             )
     except (ValueError, RuntimeError) as exc:
         die(str(exc))
@@ -616,14 +627,17 @@ def cmd_connection_add(
     elif result.transport == "xhttp":
         print(f"XHTTP_PATH: {result.xhttp_path}")
         print(f"XHTTP_MODE: {result.xhttp_mode}")
+        extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
+        print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
     print(f"Backup: {backup}")
 
 
-def cmd_connection_transport(identifier, transport_value, grpc_service_name="", xhttp_path="", xhttp_mode=""):
+def cmd_connection_transport(identifier, transport_value, grpc_service_name="", xhttp_path="", xhttp_mode="", xhttp_extra_json=None):
     transport = validate_reality_transport(transport_value)
     grpc_service_name = validate_grpc_service_name(grpc_service_name) if transport == "grpc" else ""
     xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
     xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
+    xhttp_extra = validate_xhttp_extra_json(xhttp_extra_json) if transport == "xhttp" and xhttp_extra_json is not None else None
     config = load_config()
     db = load_db()
     try:
@@ -635,6 +649,7 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
             grpc_service_name=grpc_service_name,
             xhttp_path=xhttp_path,
             xhttp_mode=xhttp_mode,
+            xhttp_extra=xhttp_extra,
         )
     except (ValueError, RuntimeError) as exc:
         die(str(exc))
@@ -650,7 +665,26 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
     elif result.transport == "xhttp":
         print(f"XHTTP_PATH: {result.xhttp_path}")
         print(f"XHTTP_MODE: {result.xhttp_mode}")
+        extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
+        print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
     print("Updated clients: " + (", ".join(result.updated_clients or []) if result.updated_clients else "none"))
+    print(f"Backup: {backup}")
+    print("Выведи клиентам новые ссылки через xray-client link NAME.")
+
+
+def cmd_connection_xhttp_extra(identifier, xhttp_extra_json=None, clear=False):
+    xhttp_extra = {} if clear else validate_xhttp_extra_json(xhttp_extra_json)
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_connections.update_connection_xhttp_extra(config, db, identifier, xhttp_extra)
+    except (ValueError, RuntimeError) as exc:
+        die(str(exc))
+
+    backup = save_config_restart_xray_and_db(config, db)
+    extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
+    print(f"Connection: {result.display_name} ({result.tag})")
+    print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
     print(f"Backup: {backup}")
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
 
@@ -1231,10 +1265,11 @@ def usage():
     print("""Usage:
   xray-client list
   xray-client connection-list
-  xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE]
-  xray-client add-connection NAME LOCAL_PORT DOMAIN --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
+  xray-client add-connection NAME LOCAL_PORT DOMAIN --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
   xray-client connection-rename NAME_OR_TAG NEW_NAME
-  xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE]
+  xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
+  xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra
   xray-client remove-connection NAME_OR_TAG
   xray-client add NAME [DAYS] [--connection TAG] [--payment paid|free]
   xray-client disable NAME
@@ -1294,6 +1329,7 @@ def parse_connection_add_args(args):
     grpc_service_name = ""
     xhttp_path = ""
     xhttp_mode = ""
+    xhttp_extra_json = ""
     transport = ""
     security = "reality"
     public_port = ""
@@ -1333,6 +1369,12 @@ def parse_connection_add_args(args):
             if index + 1 >= len(rest):
                 die("--xhttp-mode requires value")
             xhttp_mode = rest[index + 1]
+            index += 2
+            continue
+        if item == "--xhttp-extra-json":
+            if index + 1 >= len(rest):
+                die("--xhttp-extra-json requires JSON value")
+            xhttp_extra_json = rest[index + 1]
             index += 2
             continue
         if item == "--public-port":
@@ -1387,6 +1429,7 @@ def parse_connection_add_args(args):
         grpc_service_name,
         xhttp_path,
         xhttp_mode,
+        xhttp_extra_json,
         security,
         public_port,
         install_caddy,
@@ -1404,6 +1447,7 @@ def parse_connection_transport_args(args):
     grpc_service_name = ""
     xhttp_path = ""
     xhttp_mode = ""
+    xhttp_extra_json = None
     rest = list(args[2:])
     index = 0
     while index < len(rest):
@@ -1426,8 +1470,43 @@ def parse_connection_transport_args(args):
             xhttp_mode = rest[index + 1]
             index += 2
             continue
+        if item == "--xhttp-extra-json":
+            if index + 1 >= len(rest):
+                die("--xhttp-extra-json requires JSON value")
+            xhttp_extra_json = rest[index + 1]
+            index += 2
+            continue
         die(f"Unknown option: {item}")
-    return identifier, transport, grpc_service_name, xhttp_path, xhttp_mode
+    return identifier, transport, grpc_service_name, xhttp_path, xhttp_mode, xhttp_extra_json
+
+
+def parse_connection_xhttp_extra_args(args):
+    if len(args) < 2:
+        usage()
+        sys.exit(1)
+    identifier = args[0]
+    rest = list(args[1:])
+    clear = False
+    xhttp_extra_json = None
+    index = 0
+    while index < len(rest):
+        item = rest[index]
+        if item == "--clear-xhttp-extra":
+            clear = True
+            index += 1
+            continue
+        if item == "--xhttp-extra-json":
+            if index + 1 >= len(rest):
+                die("--xhttp-extra-json requires JSON value")
+            xhttp_extra_json = rest[index + 1]
+            index += 2
+            continue
+        die(f"Unknown option: {item}")
+    if clear and xhttp_extra_json is not None:
+        die("Use either --xhttp-extra-json or --clear-xhttp-extra.")
+    if not clear and xhttp_extra_json is None:
+        die("connection-xhttp-extra requires --xhttp-extra-json JSON or --clear-xhttp-extra.")
+    return identifier, xhttp_extra_json, clear
 
 
 def cmd_link(name):
@@ -1457,6 +1536,8 @@ def main():
         cmd_connection_add(*parse_connection_add_args(sys.argv[2:]))
     elif command in ("connection-transport", "set-connection-transport"):
         cmd_connection_transport(*parse_connection_transport_args(sys.argv[2:]))
+    elif command in ("connection-xhttp-extra", "set-connection-xhttp-extra"):
+        cmd_connection_xhttp_extra(*parse_connection_xhttp_extra_args(sys.argv[2:]))
     elif command in ("connection-rename", "rename-connection") and len(sys.argv) == 4:
         cmd_connection_rename(sys.argv[2], sys.argv[3])
     elif command in ("remove-connection", "delete-connection") and len(sys.argv) == 3:

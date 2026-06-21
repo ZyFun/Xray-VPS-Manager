@@ -15,6 +15,7 @@ xray-client connection-list
 xray-client add-connection ИМЯ PORT REALITY_SNI FINGERPRINT
 xray-client add-connection ИМЯ PORT REALITY_SNI FINGERPRINT grpc --grpc-service-name vless-grpc
 xray-client add-connection ИМЯ PORT REALITY_SNI FINGERPRINT xhttp --xhttp-path /vless-xhttp --xhttp-mode auto
+xray-client add-connection ИМЯ PORT REALITY_SNI FINGERPRINT xhttp --xhttp-path /vless-xhttp --xhttp-mode auto --xhttp-extra-json '{"xPaddingBytes":"100-1000","scStreamUpServerSecs":"20-80","xmux":{"maxConcurrency":"16-32","maxConnections":0,"cMaxReuseTimes":0,"hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","hKeepAlivePeriod":0}}'
 ```
 
 Пример:
@@ -28,6 +29,16 @@ xray-client add-connection backup443 8443 www.microsoft.com chrome
 Transport по умолчанию - `tcp`; для него используется Vision flow `xtls-rprx-vision`. Для `grpc` и `xhttp` flow в клиентский config и VLESS-ссылку не добавляется.
 При добавлении клиента через меню, если подключений больше одного, появится выбор подключения.
 При создании Reality/TLS-подключения или смене transport через меню `XHTTP_MODE` для `xhttp` выбирается из списка: `auto`, `packet-up`, `stream-up`, `stream-one`. В CLI то же значение передаётся через `--xhttp-mode`.
+При создании xHTTP-подключения меню спрашивает, использовать ли расширенные XHTTP-настройки. Если выбрать режим по умолчанию, `extra` не записывается и Xray использует собственные defaults. Если выбрать расширенный режим, менеджер предложит `xPaddingBytes`, `scStreamUpServerSecs` и XMUX-поля; server-side часть попадёт в `config.json`, а полный профиль сохранится в `manager.db` и будет добавлен в новые VLESS-ссылки как `extra`.
+
+Изменить расширенные XHTTP-настройки существующего подключения:
+
+```bash
+xray-client connection-xhttp-extra ИМЯ_ИЛИ_TAG --xhttp-extra-json '{"xPaddingBytes":"100-1000","scStreamUpServerSecs":"20-80","xmux":{"maxConcurrency":"16-32","maxConnections":0,"cMaxReuseTimes":0,"hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","hKeepAlivePeriod":0}}'
+xray-client connection-xhttp-extra ИМЯ_ИЛИ_TAG --clear-xhttp-extra
+```
+
+Через меню это доступно в `Подключения и TLS -> Подключения VLESS / Reality -> Расширенные XHTTP настройки`. После изменения XMUX нужно выдать клиентам новые ссылки: XMUX является клиентской частью профиля и не меняет поведение уже импортированной старой ссылки.
 
 Переименовать подключение без изменения tag, порта, ключей и клиентских ссылок:
 
@@ -57,6 +68,7 @@ xray-client add-connection web-api 10000 api.example.com \
   --transport xhttp \
   --xhttp-path /vless-xhttp \
   --xhttp-mode auto \
+  --xhttp-extra-json '{"xPaddingBytes":"100-1000","scStreamUpServerSecs":"20-80","xmux":{"maxConcurrency":"16-32","maxConnections":0,"cMaxReuseTimes":0,"hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","hKeepAlivePeriod":0}}' \
   --public-port 443 \
   --tls-min-version tls1.2 \
   --tls-max-version tls1.2 \

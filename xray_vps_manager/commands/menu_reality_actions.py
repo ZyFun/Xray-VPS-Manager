@@ -25,12 +25,15 @@ from xray_vps_manager.xray.config import (
     DEFAULT_XHTTP_TLS_PUBLIC_PORT,
     INBOUND_TAG,
     XHTTP_MODES,
+    XHTTP_XMUX_KEYS,
     connection_name_from_tag,
     connection_settings_from_inbound,
+    default_xhttp_advanced_extra,
     find_inbound,
     find_inbound_by_tag,
     inbound_tag,
     load_config as load_xray_config,
+    normalize_xhttp_extra,
     normalize_grpc_service_name,
     normalize_reality_transport,
     normalize_xhttp_mode,
@@ -39,6 +42,7 @@ from xray_vps_manager.xray.config import (
     reality_inbounds,
     vless_connection_inbounds,
     save_config,
+    xhttp_extra_json,
 )
 
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
@@ -205,6 +209,25 @@ def choose_connection(action: str, auto_single: bool = True, security_filter: st
         print("Неизвестное подключение. Выбери номер из списка или 0 для возврата.")
 
 
+def choose_xhttp_connection(action: str, auto_single: bool = True) -> str:
+    rows = [row for row in connection_rows() if str(row.get("transport") or "").lower() == "xhttp"]
+    if not rows:
+        die("No xHTTP connections found.")
+    if len(rows) == 1 and auto_single:
+        return str(rows[0]["tag"])
+    print(f"Выбери xHTTP-подключение для действия: {action}.")
+    print_connection_selection_table(rows)
+    while True:
+        choice = input("Подключение: ").strip()
+        if choice == "0":
+            return ""
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return str(rows[index - 1]["tag"])
+        print("Неизвестное подключение. Выбери номер из списка или 0 для возврата.")
+
+
 def port_used_by_other_inbound(config: dict, port: int, current_tag: str) -> bool:
     for inbound in config.get("inbounds", []):
         if inbound.get("port") == port and inbound_tag(inbound) != current_tag:
@@ -355,6 +378,49 @@ def ask_yes_no(message: str, default: bool = True) -> bool:
     return value in ("y", "yes", "д", "да")
 
 
+def prompt_xhttp_advanced_settings(current: dict | None = None) -> dict:
+    defaults = default_xhttp_advanced_extra()
+    source = normalize_xhttp_extra(current or defaults)
+    source_xmux = source.get("xmux") if isinstance(source.get("xmux"), dict) else {}
+    default_xmux = defaults["xmux"]
+
+    print()
+    print("Расширенные XHTTP настройки. Enter оставляет значение в квадратных скобках.")
+    print("Диапазон задаётся как MIN-MAX, например 100-1000. Одиночное число задаёт фиксированное значение.")
+    extra = {
+        "xPaddingBytes": prompt(source.get("xPaddingBytes", defaults["xPaddingBytes"]), "xPaddingBytes"),
+        "scStreamUpServerSecs": prompt(
+            source.get("scStreamUpServerSecs", defaults["scStreamUpServerSecs"]),
+            "scStreamUpServerSecs",
+        ),
+        "xmux": {},
+    }
+    print()
+    print("XMUX. maxConcurrency и maxConnections конфликтуют: оставляй один из них равным 0.")
+    for key in XHTTP_XMUX_KEYS:
+        extra["xmux"][key] = prompt(source_xmux.get(key, default_xmux[key]), f"xmux.{key}")
+    try:
+        return normalize_xhttp_extra(extra)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def maybe_prompt_xhttp_advanced_settings() -> dict:
+    if not ask_yes_no("Использовать расширенные XHTTP настройки", False):
+        return {}
+    return prompt_xhttp_advanced_settings()
+
+
+def xhttp_extra_cli_arg(extra: dict | None) -> list[str]:
+    encoded = xhttp_extra_json(extra)
+    return ["--xhttp-extra-json", encoded] if encoded else []
+
+
+def print_xhttp_extra_status(extra: dict | None) -> None:
+    encoded = xhttp_extra_json(extra)
+    print("XHTTP_EXTRA: " + (encoded if encoded else "default"))
+
+
 def choose_security(default: str = "reality") -> str:
     print()
     print("SECURITY: тип входящего подключения.")
@@ -398,6 +464,9 @@ def choose_transport(
         mode = choose_xhttp_mode(default_xhttp_mode)
         settings["xhttp_path"] = validate_xhttp_path(path)
         settings["xhttp_mode"] = mode
+        extra = maybe_prompt_xhttp_advanced_settings()
+        if extra:
+            settings["xhttp_extra"] = extra
     return settings
 
 
@@ -423,6 +492,7 @@ def create_connection(call: CommandRunner) -> None:
         command.extend(["--grpc-service-name", transport["grpc_service_name"]])
     elif transport["transport"] == "xhttp":
         command.extend(["--xhttp-path", transport["xhttp_path"], "--xhttp-mode", transport["xhttp_mode"]])
+        command.extend(xhttp_extra_cli_arg(transport.get("xhttp_extra")))
     call(command)
 
 
@@ -435,6 +505,7 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
     public_port = str(validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
     path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
     mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
+    xhttp_extra = maybe_prompt_xhttp_advanced_settings()
     tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
     if install_caddy:
@@ -465,6 +536,7 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
         "--tls-max-version",
         tls_max,
     ]
+    command.extend(xhttp_extra_cli_arg(xhttp_extra))
     if install_caddy:
         command.append("--install-caddy")
     call(command)
@@ -639,7 +711,52 @@ def update_transport(call: CommandRunner) -> None:
         command.extend(["--grpc-service-name", settings["grpc_service_name"]])
     elif settings["transport"] == "xhttp":
         command.extend(["--xhttp-path", settings["xhttp_path"], "--xhttp-mode", settings["xhttp_mode"]])
+        command.extend(xhttp_extra_cli_arg(settings.get("xhttp_extra")))
     call(command)
+    refresh_initial_link()
+
+
+def current_xhttp_extra(tag: str) -> dict:
+    config = load_config()
+    db = load_db_sql()
+    connection_store.ensure_connections(config, db)
+    entry = db_connections(db).get(tag, {})
+    if isinstance(entry.get("xhttpExtra"), dict):
+        try:
+            return normalize_xhttp_extra(entry["xhttpExtra"])
+        except ValueError:
+            return {}
+    inbound = find_inbound_by_tag(config, tag)
+    settings = connection_settings_from_inbound(inbound)
+    if isinstance(settings.get("xhttpExtra"), dict):
+        return settings["xhttpExtra"]
+    return {}
+
+
+def update_xhttp_advanced(call: CommandRunner) -> None:
+    tag = choose_xhttp_connection("расширенных XHTTP настроек", auto_single=False)
+    if not tag:
+        print("Действие отменено.")
+        return
+    current = current_xhttp_extra(tag)
+    print()
+    print_xhttp_extra_status(current)
+    print("1) Сбросить к настройкам Xray по умолчанию")
+    print("2) Настроить расширенные значения")
+    print("0) Назад")
+    choice = input("Действие: ").strip()
+    if choice == "0":
+        print("Действие отменено.")
+        return
+    if choice == "1":
+        call(["xray-client", "connection-xhttp-extra", tag, "--clear-xhttp-extra"])
+        refresh_initial_link()
+        return
+    if choice != "2":
+        print("Неизвестное действие.")
+        return
+    extra = prompt_xhttp_advanced_settings(current or default_xhttp_advanced_extra())
+    call(["xray-client", "connection-xhttp-extra", tag, "--xhttp-extra-json", xhttp_extra_json(extra)])
     refresh_initial_link()
 
 

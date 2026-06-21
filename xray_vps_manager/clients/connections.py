@@ -26,6 +26,7 @@ from xray_vps_manager.xray.config import (
     default_connection_tag,
     find_inbound_by_tag,
     inbound_tag,
+    normalize_xhttp_extra,
     reality_dest,
     reality_inbounds,
     tls_xhttp_inbounds,
@@ -55,6 +56,7 @@ class AddConnectionResult:
     grpc_service_name: str = ""
     xhttp_path: str = ""
     xhttp_mode: str = ""
+    xhttp_extra: dict[str, Any] | None = None
 
 
 @dataclass
@@ -75,8 +77,16 @@ class UpdateConnectionTransportResult:
     grpc_service_name: str = ""
     xhttp_path: str = ""
     xhttp_mode: str = ""
+    xhttp_extra: dict[str, Any] | None = None
     updated_clients: list[str] | None = None
     env_update: dict[str, str] | None = None
+
+
+@dataclass
+class UpdateConnectionXhttpExtraResult:
+    tag: str
+    display_name: str
+    xhttp_extra: dict[str, Any]
 
 
 @dataclass
@@ -108,11 +118,17 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
         entry["dest"] = settings["dest"]
         for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode"):
             entry.pop(key, None)
+        if settings.get("transport") != "xhttp":
+            entry.pop("xhttpExtra", None)
+        elif isinstance(settings.get("xhttpExtra"), dict):
+            merged_extra = normalize_xhttp_extra(entry.get("xhttpExtra") if isinstance(entry.get("xhttpExtra"), dict) else {})
+            merged_extra.update(settings["xhttpExtra"])
+            settings["xhttpExtra"] = normalize_xhttp_extra(merged_extra)
         entry.update(
             {
                 key: value
                 for key, value in settings.items()
-                if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode")
+                if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra")
             }
         )
         entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
@@ -150,7 +166,12 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
         entry["sni"] = entry.get("publicHost") or entry.get("sni") or ""
         entry.setdefault("dest", "")
         entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
-        entry.update(connection_transport_settings_from_inbound(inbound))
+        settings = connection_transport_settings_from_inbound(inbound)
+        if isinstance(settings.get("xhttpExtra"), dict):
+            merged_extra = normalize_xhttp_extra(entry.get("xhttpExtra") if isinstance(entry.get("xhttpExtra"), dict) else {})
+            merged_extra.update(settings["xhttpExtra"])
+            settings["xhttpExtra"] = normalize_xhttp_extra(merged_extra)
+        entry.update(settings)
 
     default_tag = default_connection_tag(config)
     for inbound in vless_connection_inbounds(config):
@@ -270,6 +291,7 @@ def make_reality_inbound(
     grpc_service_name: str = "",
     xhttp_path: str = "",
     xhttp_mode: str = "",
+    xhttp_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stream_settings = {
         "network": "tcp",
@@ -289,6 +311,7 @@ def make_reality_inbound(
         grpc_service_name=grpc_service_name,
         xhttp_path=xhttp_path,
         xhttp_mode=xhttp_mode,
+        xhttp_extra=xhttp_extra,
     )
     return {
         "tag": tag,
@@ -313,6 +336,7 @@ def make_tls_xhttp_inbound(
     *,
     xhttp_path: str = "",
     xhttp_mode: str = "",
+    xhttp_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stream_settings = {
         "network": "xhttp",
@@ -323,6 +347,7 @@ def make_tls_xhttp_inbound(
         "xhttp",
         xhttp_path=xhttp_path,
         xhttp_mode=xhttp_mode,
+        xhttp_extra=xhttp_extra,
     )
     return {
         "tag": tag,
@@ -352,6 +377,7 @@ def add_connection(
     grpc_service_name: str = "",
     xhttp_path: str = "",
     xhttp_mode: str = "",
+    xhttp_extra: dict[str, Any] | None = None,
     key_pair_factory: Callable[[], tuple[str, str]] = xray_crypto.xray_x25519_keys,
     short_id_factory: Callable[[], str] = xray_crypto.random_short_id,
 ) -> AddConnectionResult:
@@ -381,11 +407,14 @@ def add_connection(
         grpc_service_name=grpc_service_name,
         xhttp_path=xhttp_path,
         xhttp_mode=xhttp_mode,
+        xhttp_extra=xhttp_extra,
     )
     config.setdefault("inbounds", []).append(inbound)
 
     dest = reality_dest(sni)
     transport_settings = connection_settings_from_inbound(inbound)
+    if transport_settings.get("transport") == "xhttp" and xhttp_extra:
+        transport_settings["xhttpExtra"] = normalize_xhttp_extra(xhttp_extra)
     created = utc_stamp()
     record = {
         "tag": tag,
@@ -402,7 +431,7 @@ def add_connection(
         {
             key: value
             for key, value in transport_settings.items()
-            if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode")
+            if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra")
         }
     )
     db_connections(db)[tag] = record
@@ -420,6 +449,7 @@ def add_connection(
         grpc_service_name=record.get("grpcServiceName", ""),
         xhttp_path=record.get("xhttpPath", ""),
         xhttp_mode=record.get("xhttpMode", ""),
+        xhttp_extra=record.get("xhttpExtra"),
     )
 
 
@@ -433,6 +463,7 @@ def add_tls_xhttp_connection(
     public_port: int = DEFAULT_XHTTP_TLS_PUBLIC_PORT,
     xhttp_path: str = "",
     xhttp_mode: str = "",
+    xhttp_extra: dict[str, Any] | None = None,
     tls_min_version: str = "tls1.2",
     tls_max_version: str = "tls1.2",
     caddy_enabled: bool = True,
@@ -452,10 +483,13 @@ def add_tls_xhttp_connection(
         local_port,
         xhttp_path=xhttp_path,
         xhttp_mode=xhttp_mode,
+        xhttp_extra=xhttp_extra,
     )
     config.setdefault("inbounds", []).append(inbound)
 
     transport_settings = connection_transport_settings_from_inbound(inbound)
+    if transport_settings.get("transport") == "xhttp" and xhttp_extra:
+        transport_settings["xhttpExtra"] = normalize_xhttp_extra(xhttp_extra)
     created = utc_stamp()
     record = {
         "tag": tag,
@@ -479,7 +513,7 @@ def add_tls_xhttp_connection(
         {
             key: value
             for key, value in transport_settings.items()
-            if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode")
+            if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra")
         }
     )
     db_connections(db)[tag] = record
@@ -503,6 +537,7 @@ def add_tls_xhttp_connection(
         tls_max_version=tls_max_version,
         xhttp_path=record.get("xhttpPath", ""),
         xhttp_mode=record.get("xhttpMode", ""),
+        xhttp_extra=record.get("xhttpExtra"),
     )
 
 
@@ -558,6 +593,7 @@ def update_connection_transport(
     grpc_service_name: str = "",
     xhttp_path: str = "",
     xhttp_mode: str = "",
+    xhttp_extra: dict[str, Any] | None = None,
 ) -> UpdateConnectionTransportResult:
     ensure_connections(config, db)
     tag = resolve_connection_identifier(config, db, identifier)
@@ -565,6 +601,10 @@ def update_connection_transport(
     security = db_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
     if security == "tls" and transport != "xhttp":
         raise ValueError("TLS connections support only xhttp transport.")
+    current_entry = db_connections(db).get(tag, {})
+    effective_xhttp_extra = xhttp_extra
+    if transport == "xhttp" and xhttp_extra is None and isinstance(current_entry.get("xhttpExtra"), dict):
+        effective_xhttp_extra = current_entry["xhttpExtra"]
     stream = inbound.setdefault("streamSettings", {})
     settings = apply_reality_transport(
         stream,
@@ -572,6 +612,7 @@ def update_connection_transport(
         grpc_service_name=grpc_service_name,
         xhttp_path=xhttp_path,
         xhttp_mode=xhttp_mode,
+        xhttp_extra=effective_xhttp_extra,
     )
     updated_clients = []
     for item in clients(inbound):
@@ -582,7 +623,7 @@ def update_connection_transport(
 
     connections = db_connections(db)
     entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
-    for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode"):
+    for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra"):
         entry.pop(key, None)
     entry.update(settings)
     for name, client_entry in db_clients(db).items():
@@ -600,8 +641,41 @@ def update_connection_transport(
         grpc_service_name=settings.get("grpcServiceName", ""),
         xhttp_path=settings.get("xhttpPath", ""),
         xhttp_mode=settings.get("xhttpMode", ""),
+        xhttp_extra=settings.get("xhttpExtra"),
         updated_clients=sorted(updated_clients),
         env_update=env_update,
+    )
+
+
+def update_connection_xhttp_extra(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    identifier: str,
+    xhttp_extra: dict[str, Any] | None,
+) -> UpdateConnectionXhttpExtraResult:
+    ensure_connections(config, db)
+    tag = resolve_connection_identifier(config, db, identifier)
+    inbound = find_inbound_by_tag(config, tag)
+    settings = connection_transport_settings_from_inbound(inbound)
+    if settings.get("transport") != "xhttp":
+        raise ValueError("XHTTP advanced settings are available only for xhttp connections.")
+    normalized_extra = normalize_xhttp_extra(xhttp_extra)
+    updated = apply_reality_transport(
+        inbound.setdefault("streamSettings", {}),
+        "xhttp",
+        xhttp_path=settings.get("xhttpPath") or DEFAULT_XHTTP_PATH,
+        xhttp_mode=settings.get("xhttpMode") or DEFAULT_XHTTP_MODE,
+        xhttp_extra=normalized_extra,
+    )
+    entry = db_connections(db).setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
+    if updated.get("xhttpExtra"):
+        entry["xhttpExtra"] = updated["xhttpExtra"]
+    else:
+        entry.pop("xhttpExtra", None)
+    return UpdateConnectionXhttpExtraResult(
+        tag=tag,
+        display_name=connection_display_name(config, db, tag),
+        xhttp_extra=entry.get("xhttpExtra", {}),
     )
 
 
