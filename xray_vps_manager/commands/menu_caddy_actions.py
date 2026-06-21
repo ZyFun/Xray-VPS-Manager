@@ -320,27 +320,34 @@ def validate_port(value: str) -> int:
 
 def prompt_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2") -> tuple[str, str]:
     try:
-        tls_min = caddy.normalize_tls_version(prompt(current_min, "TLS min version (tls1.2/tls1.3/default)"), current_min)
-        tls_max = caddy.normalize_tls_version(prompt(current_max, "TLS max version (tls1.2/tls1.3/default)"), tls_min)
+        current_key = caddy.tls_version_choice_key(current_min, current_max)
+        current_label = caddy.tls_version_label(current_min, current_max)
     except ValueError as exc:
         die(str(exc))
-    return tls_min, tls_max
+    print()
+    print("TLS: выбери версию протокола для Caddy site.")
+    for index, choice in enumerate(caddy.TLS_VERSION_CHOICES, start=1):
+        marker = " (текущий)" if choice.key == current_key else ""
+        print(f"  {index}) {choice.label}{marker}")
+    while True:
+        value = input(f"TLS [{current_label}] (номер из списка): ").strip()
+        if not value:
+            choice = caddy.tls_version_choice(current_key or "tls12")
+            return choice.tls_min_version, choice.tls_max_version
+        if value.isdigit():
+            index = int(value, 10)
+            if 1 <= index <= len(caddy.TLS_VERSION_CHOICES):
+                choice = caddy.TLS_VERSION_CHOICES[index - 1]
+                return choice.tls_min_version, choice.tls_max_version
+        print(f"Выбери номер 1-{len(caddy.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
 
 
 def apply_site_write(domain: str, local_port: int, tls_min: str, tls_max: str) -> None:
-    site_path = caddy.site_config_path(domain)
-    backup = caddy.backup_file(site_path)
     try:
-        caddy.write_site_config(domain, local_port, tls_min_version=tls_min, tls_max_version=tls_max)
-        caddy.validate_and_reload_caddy(subprocess.run)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        caddy.restore_file(backup, site_path)
-        try:
-            caddy.validate_and_reload_caddy(subprocess.run)
-        except Exception:
-            pass
-        die(f"Caddy config failed. Restored backup: {backup or 'removed new file'}. Detail: {exc}")
-    print(f"Caddy site updated: {site_path}")
+        result = caddy.update_site_config(domain, local_port, tls_min_version=tls_min, tls_max_version=tls_max)
+    except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError) as exc:
+        die(f"Caddy config failed. Previous site config was restored. Detail: {exc}")
+    print(f"Caddy site updated: {result.path}")
 
 
 def tls_connection_options() -> list[dict]:

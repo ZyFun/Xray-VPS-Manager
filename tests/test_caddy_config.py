@@ -29,6 +29,15 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertNotIn("protocols", block)
         self.assertIn("reverse_proxy h2c://127.0.0.1:10000", block)
 
+    def test_tls_version_choices_map_to_protocol_pairs(self) -> None:
+        self.assertEqual(caddy.tls_version_label("tls1.2", "tls1.3"), "TLS 1.2 + TLS 1.3")
+        self.assertEqual(caddy.tls_version_choice("tls13").tls_min_version, "tls1.3")
+        self.assertEqual(caddy.tls_version_choice_key("default", "default"), "default")
+
+    def test_tls_version_pair_rejects_reversed_range(self) -> None:
+        with self.assertRaises(ValueError):
+            caddy.caddy_site_block("api.example.com", 10000, tls_min_version="tls1.3", tls_max_version="tls1.2")
+
     def test_parse_site_config_reads_domain_tls_and_upstream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "api.example.com.caddy"
@@ -40,6 +49,7 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertEqual(item.local_port, 10300)
         self.assertEqual(item.tls_min_version, "tls1.2")
         self.assertEqual(item.tls_max_version, "tls1.2")
+        self.assertRegex(item.modified_at, r"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC$")
 
     def test_remove_default_http_site_block_preserves_import(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

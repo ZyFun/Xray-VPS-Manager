@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.clients import access as client_access
-from xray_vps_manager.telegram import keyboards, messages, notifications, payments, subscriptions
+from xray_vps_manager.telegram import keyboards, messages, notifications, payments, server_settings, subscriptions
+from xray_vps_manager.xray import caddy
 
 ADMIN_CALLBACK_GUARDS_KEY = "callbackGuards"
 ADMIN_CONSUMED_CALLBACK_LIMIT = 40
@@ -31,6 +32,8 @@ class AdminContext:
     notification_context: notifications.NotificationContext
     xray_client: Path = Path("/usr/local/sbin/xray-client")
     server_name_fragment: Callable[[], str] = default_server_name_fragment
+    list_tls_sites: Callable[[], list[dict[str, Any]]] = server_settings.tls_site_rows
+    set_tls_site_version: Callable[[str, int, str], Any] = server_settings.set_tls_site_version
 
 
 def normalize_message_id(value):
@@ -189,6 +192,149 @@ def send_admin_settings_menu(ctx: AdminContext, db, chat_id, text=None):
         text or messages.admin_settings_intro_text(),
         keyboards.admin_settings_keyboard(),
     )
+
+
+def send_admin_server_settings_menu(ctx: AdminContext, db, chat_id, text=None):
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        text or "Xray VPS Manager: настройки сервера",
+        keyboards.admin_server_settings_keyboard(),
+    )
+
+
+def server_settings_state(db):
+    admin_state = db.setdefault("adminState", {})
+    state = admin_state.setdefault("serverSettings", {})
+    if not isinstance(state, dict):
+        state = {}
+        admin_state["serverSettings"] = state
+    return state
+
+
+def set_server_tls_sites(ctx: AdminContext, db, chat_id, sites):
+    state = server_settings_state(db)
+    state[str(chat_id)] = {"tlsSites": list(sites), "updatedAt": admin_utc_stamp(ctx)}
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def selected_tls_site(db, chat_id, index_value) -> dict[str, Any]:
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return {}
+    state = server_settings_state(db)
+    entry = state.get(str(chat_id), {})
+    sites = entry.get("tlsSites", []) if isinstance(entry, dict) else []
+    if index < 0 or index >= len(sites):
+        return {}
+    item = sites[index]
+    return item if isinstance(item, dict) else {}
+
+
+def server_tls_summary_text(sites):
+    lines = ["Xray VPS Manager: TLS", ""]
+    if not sites:
+        lines.append("TLS site configs не найдены.")
+        lines.append("Создай TLS/XHTTP-подключение и Caddy site config через SSH-меню, затем вернись сюда.")
+        return "\n".join(lines)
+    lines.append("Текущее шифрование:")
+    for item in sites:
+        domain = str(item.get("domain") or "-")
+        label = str(item.get("tlsLabel") or "-")
+        modified_at = str(item.get("modifiedAt") or "-")
+        lines.append(f"- {domain}: {label}")
+        lines.append(f"  Изменено: {modified_at}")
+    lines.extend(["", "Выбери site config, чтобы сменить TLS."])
+    return "\n".join(lines)
+
+
+def server_tls_site_text(site, prefix=""):
+    domain = str(site.get("domain") or "-")
+    label = str(site.get("tlsLabel") or "-")
+    modified_at = str(site.get("modifiedAt") or "-")
+    local_port = site.get("localPort") or "-"
+    lines = []
+    if prefix:
+        lines.extend([prefix, ""])
+    lines.extend(
+        [
+            f"TLS: {domain}",
+            "",
+            f"Текущее шифрование: {label}",
+            f"Изменено: {modified_at}",
+            f"Upstream: 127.0.0.1:{local_port}",
+            "",
+            "Выбери новый TLS-профиль.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def send_admin_server_tls_menu(ctx: AdminContext, db, chat_id, text=None):
+    sites = ctx.list_tls_sites()
+    set_server_tls_sites(ctx, db, chat_id, sites)
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        text or server_tls_summary_text(sites),
+        keyboards.admin_server_tls_sites_keyboard(sites),
+    )
+
+
+def send_admin_server_tls_site_menu(ctx: AdminContext, db, chat_id, index_value, text=None):
+    site = selected_tls_site(db, chat_id, index_value)
+    if not site:
+        send_admin_server_tls_menu(ctx, db, chat_id, "Список TLS site configs устарел. Открой TLS заново.")
+        return True
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        text or server_tls_site_text(site),
+        keyboards.admin_server_tls_site_keyboard(index_value, site.get("tlsChoice", "")),
+    )
+    return True
+
+
+def handle_server_tls_set(ctx: AdminContext, db, chat_id, index_value, choice_key):
+    site = selected_tls_site(db, chat_id, index_value)
+    if not site:
+        send_admin_server_tls_menu(ctx, db, chat_id, "Список TLS site configs устарел. Открой TLS заново.")
+        return True
+    try:
+        choice = caddy.tls_version_choice(choice_key)
+    except ValueError:
+        send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, "Неизвестный TLS-профиль.")
+        return True
+    if site.get("tlsChoice") == choice.key:
+        send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, f"Этот TLS-профиль уже выбран: {choice.label}.")
+        return True
+    try:
+        local_port = int(site.get("localPort") or 0)
+    except (TypeError, ValueError):
+        local_port = 0
+    if local_port <= 0:
+        send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, "Не удалось определить upstream local port для site config.")
+        return True
+    try:
+        ctx.set_tls_site_version(str(site.get("domain") or ""), local_port, choice.key)
+    except Exception as exc:
+        text = messages.truncate_telegram_text(
+            f"Не удалось изменить TLS для {site.get('domain') or '-'}.\n\n"
+            f"Caddy config был откатан, если запись уже успела начаться.\n\n{exc}"
+        )
+        send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, text)
+        return True
+    send_admin_server_tls_menu(
+        ctx,
+        db,
+        chat_id,
+        f"TLS обновлён для {site.get('domain')}: {choice.label}.\n\nCaddy config проверен и применён.",
+    )
+    return True
 
 
 def admin_client_names(ctx: AdminContext) -> list[str]:
@@ -977,6 +1123,20 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
     if data == "admin:settings":
         send_admin_settings_menu(ctx, db, chat_id)
         return True
+    if data == "admin:server-settings":
+        send_admin_server_settings_menu(ctx, db, chat_id)
+        return True
+    if data == "admin:server-tls":
+        send_admin_server_tls_menu(ctx, db, chat_id)
+        return True
+    if data.startswith("admin:server-tls-site:"):
+        return send_admin_server_tls_site_menu(ctx, db, chat_id, data.rsplit(":", 1)[1])
+    if data.startswith("admin:server-tls-set:"):
+        parts = data.split(":")
+        if len(parts) != 4:
+            send_admin_server_tls_menu(ctx, db, chat_id, "Не удалось прочитать выбранный TLS-профиль.")
+            return True
+        return handle_server_tls_set(ctx, db, chat_id, parts[2], parts[3])
     if data == "admin:client-add":
         set_add_client_input_waiting(ctx, db, chat_id)
         return True

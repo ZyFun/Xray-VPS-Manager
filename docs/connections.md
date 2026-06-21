@@ -66,6 +66,12 @@ xray-client add-connection web-api 10000 api.example.com \
 Для TLS 1.2+1.3 вместо жёсткого TLS 1.2 можно передать:
 
 ```bash
+--tls-min-version tls1.2 --tls-max-version tls1.3
+```
+
+Для профиля Caddy default без явного `protocols` используй:
+
+```bash
 --tls-min-version default --tls-max-version default
 ```
 
@@ -91,7 +97,9 @@ api.example.com {
 Настройки Xray -> Caddy / TLS
 ```
 
-В этом разделе можно установить Caddy, проверить config, посмотреть `Caddyfile` и site configs, создать или обновить site config из существующего TLS/XHTTP-подключения, создать site вручную, изменить TLS version, upstream local port или домен site, удалить site config, убрать дефолтный site `:80`, проверить TLS handshake, посмотреть логи, выполнить reload/restart Caddy, а также открыть подменю backup для Caddy config и файлов сайта. Изменения site config валидируются через `caddy validate`; при ошибке менеджер откатывает изменённый файл из backup.
+В этом разделе можно установить Caddy, проверить config, посмотреть `Caddyfile` и site configs, создать или обновить site config из существующего TLS/XHTTP-подключения, создать site вручную, изменить TLS version, upstream local port или домен site, удалить site config, убрать дефолтный site `:80`, проверить TLS handshake, посмотреть логи, выполнить reload/restart Caddy, а также открыть подменю backup для Caddy config и файлов сайта. При создании или изменении site config TLS выбирается из списка профилей: Caddy default, TLS 1.2, TLS 1.2 + TLS 1.3, TLS 1.3. Изменения site config валидируются через `caddy validate`; при ошибке менеджер откатывает изменённый файл из backup.
+
+Через Telegram-владельца тот же TLS-профиль можно сменить в `/admin -> Настройки сервера -> TLS`. Бот показывает текущий профиль для каждого Caddy site config и время последнего изменения файла, затем применяет выбранный профиль с проверкой и reload Caddy.
 
 Обычный `xray-backup` не включает Caddy config и файлы сайта. Для `/etc/caddy/Caddyfile`, `/etc/caddy/conf.d` и папки сайта используй `Настройки Xray -> Caddy / TLS -> Бэкапы`.
 

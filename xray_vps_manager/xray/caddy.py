@@ -53,6 +53,29 @@ class SiteConfig:
     local_port: int | None
     tls_min_version: str
     tls_max_version: str
+    modified_at: str = ""
+
+
+@dataclass(frozen=True)
+class TlsVersionChoice:
+    key: str
+    label: str
+    tls_min_version: str
+    tls_max_version: str
+
+
+@dataclass(frozen=True)
+class SiteWriteResult:
+    path: Path
+    backup: Path | None
+
+
+TLS_VERSION_CHOICES: tuple[TlsVersionChoice, ...] = (
+    TlsVersionChoice("default", "Caddy default", "default", "default"),
+    TlsVersionChoice("tls12", "TLS 1.2", "tls1.2", "tls1.2"),
+    TlsVersionChoice("tls12_13", "TLS 1.2 + TLS 1.3", "tls1.2", "tls1.3"),
+    TlsVersionChoice("tls13", "TLS 1.3", "tls1.3", "tls1.3"),
+)
 
 
 def validate_domain(value: str) -> str:
@@ -67,6 +90,54 @@ def normalize_tls_version(value: str | None, default: str = "tls1.2") -> str:
     if version not in TLS_VERSIONS:
         raise ValueError("TLS version must be one of: default, tls1.2, tls1.3")
     return version
+
+
+def normalize_tls_version_pair(tls_min_version: str | None, tls_max_version: str | None) -> tuple[str, str]:
+    tls_min = normalize_tls_version(tls_min_version, "tls1.2")
+    tls_max = normalize_tls_version(tls_max_version, tls_min)
+    if "default" in (tls_min, tls_max) and (tls_min, tls_max) != ("default", "default"):
+        raise ValueError("TLS default must be selected for both min and max versions.")
+    if (tls_min, tls_max) == ("tls1.3", "tls1.2"):
+        raise ValueError("TLS max version must not be lower than TLS min version.")
+    return tls_min, tls_max
+
+
+def tls_version_choice(value: str) -> TlsVersionChoice:
+    key = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "caddy": "default",
+        "auto": "default",
+        "tls1.2": "tls12",
+        "tls12": "tls12",
+        "tls_12": "tls12",
+        "tls1.2+tls1.3": "tls12_13",
+        "tls1.2_1.3": "tls12_13",
+        "tls12_13": "tls12_13",
+        "tls1.3": "tls13",
+        "tls13": "tls13",
+        "tls_13": "tls13",
+    }
+    key = aliases.get(key, key)
+    for choice in TLS_VERSION_CHOICES:
+        if choice.key == key:
+            return choice
+    raise ValueError("TLS choice must be one of: " + ", ".join(choice.key for choice in TLS_VERSION_CHOICES))
+
+
+def tls_version_label(tls_min_version: str | None, tls_max_version: str | None) -> str:
+    tls_min, tls_max = normalize_tls_version_pair(tls_min_version, tls_max_version)
+    for choice in TLS_VERSION_CHOICES:
+        if (choice.tls_min_version, choice.tls_max_version) == (tls_min, tls_max):
+            return choice.label
+    return f"{tls_min}..{tls_max}"
+
+
+def tls_version_choice_key(tls_min_version: str | None, tls_max_version: str | None) -> str:
+    tls_min, tls_max = normalize_tls_version_pair(tls_min_version, tls_max_version)
+    for choice in TLS_VERSION_CHOICES:
+        if (choice.tls_min_version, choice.tls_max_version) == (tls_min, tls_max):
+            return choice.key
+    return ""
 
 
 def site_filename(domain: str) -> str:
@@ -566,12 +637,16 @@ def parse_site_config(path: Path) -> SiteConfig:
     domain = first_site_address(text) or path.stem
     port_match = REVERSE_PROXY_RE.search(text)
     protocols_match = PROTOCOLS_RE.search(text)
+    modified_at = ""
+    if path.exists():
+        modified_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     return SiteConfig(
         path=path,
         domain=domain,
         local_port=int(port_match.group("port")) if port_match else None,
         tls_min_version=protocols_match.group("min") if protocols_match else "default",
         tls_max_version=protocols_match.group("max") if protocols_match else "default",
+        modified_at=modified_at,
     )
 
 
@@ -587,8 +662,7 @@ def caddy_site_block(
     tls_max_version: str = "tls1.2",
 ) -> str:
     domain = validate_domain(domain)
-    tls_min_version = normalize_tls_version(tls_min_version, "tls1.2")
-    tls_max_version = normalize_tls_version(tls_max_version, tls_min_version)
+    tls_min_version, tls_max_version = normalize_tls_version_pair(tls_min_version, tls_max_version)
     tls_block = ""
     if tls_min_version != "default":
         tls_block = (
@@ -640,6 +714,30 @@ def write_site_config(
     )
     os.chmod(site_path, 0o644)
     return site_path
+
+
+def update_site_config(
+    domain: str,
+    local_port: int,
+    *,
+    tls_min_version: str = "tls1.2",
+    tls_max_version: str = "tls1.2",
+    runner=subprocess.run,
+) -> SiteWriteResult:
+    domain = validate_domain(domain)
+    site_path = site_config_path(domain)
+    backup = backup_file(site_path)
+    try:
+        written = write_site_config(domain, local_port, tls_min_version=tls_min_version, tls_max_version=tls_max_version)
+        validate_and_reload_caddy(runner)
+    except Exception:
+        restore_file(backup, site_path)
+        try:
+            validate_and_reload_caddy(runner)
+        except Exception:
+            pass
+        raise
+    return SiteWriteResult(written, backup)
 
 
 def delete_site_config(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> Path | None:
