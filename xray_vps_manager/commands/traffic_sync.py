@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.traffic import repository as traffic_repository
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -323,6 +324,19 @@ def sync_locked():
         }
 
     prune_history(db, bucket_time)
+    try:
+        client_db = client_repository.load_db_sql()
+    except Exception as exc:
+        log(f"Traffic history repair skipped: {exc}")
+    else:
+        repaired = traffic_consistency.repair_retained_history_gaps(
+            db,
+            client_repository.db_clients(client_db),
+            subtract_months(bucket_time.date(), HISTORY_RETENTION_MONTHS),
+            bucket_time,
+        )
+        if repaired:
+            log(f"Repaired retained traffic history gaps for clients: {', '.join(gap.name for gap in repaired)}")
     db["updated"] = stamp
     save_traffic(db)
     log(f"Traffic stats saved: {MANAGER_DB_PATH}")

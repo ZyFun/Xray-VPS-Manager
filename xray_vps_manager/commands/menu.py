@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-21 17:32 UTC"
+MENU_UPDATED = "2026-06-21 20:40 UTC"
 
 
 def die(message):
@@ -329,6 +329,17 @@ def traffic_menu_actions():
         ("4", "Экспорт activity по клиенту"),
         ("5", "Архивы экспорта activity"),
         ("6", "Настройки журнала активности"),
+        ("7", "Настройки суммарного трафика"),
+        ("0", "Назад"),
+    ]
+
+
+def total_traffic_settings_menu_actions():
+    return [
+        ("1", "Показать настройки"),
+        ("2", "Включить строку с множителем"),
+        ("3", "Отключить строку с множителем"),
+        ("4", "Изменить множитель"),
         ("0", "Назад"),
     ]
 
@@ -704,6 +715,16 @@ def traffic_menu_handlers():
         ),
         "5": ("Архивы экспорта activity", open_activity_export_menu),
         "6": ("Настройки журнала активности", open_activity_settings_menu),
+        "7": ("Настройки суммарного трафика", open_total_traffic_settings_menu),
+    }
+
+
+def total_traffic_settings_menu_handlers():
+    return {
+        "1": ("Показать настройки", menu_traffic_actions.show_total_traffic_settings),
+        "2": ("Включить строку с множителем", menu_traffic_actions.enable_total_traffic_multiplier),
+        "3": ("Отключить строку с множителем", menu_traffic_actions.disable_total_traffic_multiplier),
+        "4": ("Изменить множитель", menu_traffic_actions.update_total_traffic_multiplier),
     }
 
 
@@ -974,6 +995,14 @@ def open_client_traffic_menu(name):
 
 def open_traffic_tools_menu():
     menu_loop("Трафик и активность", traffic_menu_actions(), traffic_menu_handlers())
+
+
+def open_total_traffic_settings_menu():
+    menu_loop(
+        "Настройки суммарного трафика",
+        total_traffic_settings_menu_actions(),
+        total_traffic_settings_menu_handlers(),
+    )
 
 
 def open_traffic_menu():

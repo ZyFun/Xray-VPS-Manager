@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from xray_vps_manager.traffic import history
+from xray_vps_manager.traffic import settings as traffic_settings
 from xray_vps_manager.traffic.formatting import format_traffic
 from xray_vps_manager.traffic.repository import traffic_entry
 
@@ -52,3 +54,22 @@ def month_summary_rows(
             ]
         )
     return table_rows
+
+
+def total_summary_rows(
+    total_bytes: int,
+    *,
+    multiplier_enabled: bool,
+    multiplier: Decimal,
+) -> list[list[str]]:
+    label = traffic_settings.total_multiplier_label(multiplier)
+    rows = [["TOTAL", format_traffic(total_bytes)]]
+    if multiplier_enabled:
+        rows.append(
+            [
+                f"TOTAL {label}",
+                format_traffic(traffic_settings.multiplied_total_bytes(total_bytes, multiplier)),
+            ]
+        )
+    rows.append([f"Множитель {label}", "Вкл" if multiplier_enabled else "Выкл"])
+    return rows

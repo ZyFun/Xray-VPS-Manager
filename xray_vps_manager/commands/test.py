@@ -22,6 +22,7 @@ from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import sqlite_read_ready
+from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray import cascade as cascade_config
 
@@ -760,6 +761,31 @@ def month_total(entry, month_key):
     return total
 
 
+def subtract_months(day, months):
+    month = day.month - months
+    year = day.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, min(day.day, monthrange(year, month)[1]))
+
+
+def check_traffic_history_consistency(diag):
+    client_db = diag.context.get("client_db", {})
+    traffic_db = diag.context.get("traffic_db", {})
+    now = datetime.now(manager_timezone(diag)).replace(microsecond=0)
+    cutoff = subtract_months(now.date(), 6)
+    gaps = traffic_consistency.retained_history_gaps(
+        traffic_db,
+        client_db.get("clients", {}),
+        cutoff,
+    )
+    if gaps:
+        details = ", ".join(f"{gap.name}: missing {gap.missing_total} bytes" for gap in gaps[:8])
+        raise RuntimeError("traffic history is behind retained totals: " + details)
+    return "traffic history matches retained totals"
+
+
 def traffic_limit_status(client_entry, traffic_entry, now):
     limit = client_entry.get("trafficLimit")
     if not isinstance(limit, dict):
@@ -994,6 +1020,7 @@ def run_diagnostics():
     diag.check("xray-client list", check_client_list_runtime)
     diag.check("Client DB alignment", lambda: check_client_db_alignment(diag), fatal=False)
     diag.check("Traffic DB alignment", lambda: check_traffic_db_alignment(diag), fatal=False)
+    diag.check("Traffic history consistency", lambda: check_traffic_history_consistency(diag), fatal=False)
     diag.check("Traffic limit reset state", lambda: check_traffic_limit_reset_state(diag))
     diag.check("Torrent policy", lambda: check_torrent_policy(diag))
     diag.check("Cascade config", lambda: check_cascade_config(diag))
