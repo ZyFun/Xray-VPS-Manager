@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-21 22:15 UTC"
+MENU_UPDATED = "2026-06-21 23:10 UTC"
 
 
 def die(message):
@@ -137,8 +137,9 @@ def reality_menu_actions():
         ("5", "Обновить PORT, REALITY_SNI и REALITY_DEST"),
         ("6", "Обновить FINGERPRINT"),
         ("7", "Обновить TRANSPORT"),
-        ("8", "Удалить подключение"),
-        ("9", "Переименовать подключение"),
+        ("8", "Расширенные XHTTP настройки"),
+        ("9", "Удалить подключение"),
+        ("10", "Переименовать подключение"),
         ("0", "Назад"),
     ]
 
@@ -539,8 +540,9 @@ def reality_menu_handlers():
         "5": ("Обновить PORT, REALITY_SNI и REALITY_DEST", menu_reality_actions.update_port_and_sni),
         "6": ("Обновить FINGERPRINT", menu_reality_actions.update_fingerprint),
         "7": ("Обновить TRANSPORT", lambda: menu_reality_actions.update_transport(call)),
-        "8": ("Удалить подключение", lambda: menu_reality_actions.delete_connection(call, confirm)),
-        "9": ("Переименовать подключение", lambda: menu_reality_actions.rename_connection(call)),
+        "8": ("Расширенные XHTTP настройки", lambda: menu_reality_actions.update_xhttp_advanced(call)),
+        "9": ("Удалить подключение", lambda: menu_reality_actions.delete_connection(call, confirm)),
+        "10": ("Переименовать подключение", lambda: menu_reality_actions.rename_connection(call)),
     }
 
 

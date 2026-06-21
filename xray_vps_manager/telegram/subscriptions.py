@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from xray_vps_manager.xray import client_routes
+from xray_vps_manager.xray.config import xhttp_extra_json
 
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 ACTIVITY_EXCEPTION_LIMIT = 100
@@ -94,6 +95,9 @@ def expected_connection_params(client_db, entry):
                 "mode": connection.get("xhttpMode", ""),
             }
         )
+        extra = xhttp_extra_json(connection.get("xhttpExtra"))
+        if extra:
+            expected["extra"] = extra
         return expected
 
     expected.update(
@@ -111,6 +115,9 @@ def expected_connection_params(client_db, entry):
     elif transport == "xhttp":
         expected["path"] = connection.get("xhttpPath", "")
         expected["mode"] = connection.get("xhttpMode", "")
+        extra = xhttp_extra_json(connection.get("xhttpExtra"))
+        if extra:
+            expected["extra"] = extra
     return expected
 
 

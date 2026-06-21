@@ -14,6 +14,7 @@ from xray_vps_manager.xray.config import (
     default_connection_tag,
     find_inbound_by_tag,
     reality_transport_settings_from_inbound,
+    xhttp_extra_json,
 )
 from xray_vps_manager.xray.crypto import reality_public_key
 
@@ -55,6 +56,9 @@ def link_for(
             "path": transport_settings["xhttpPath"],
             "mode": transport_settings["xhttpMode"],
         }
+        extra = xhttp_extra_json(entry.get("xhttpExtra"))
+        if extra:
+            params["extra"] = extra
         fingerprint = (entry.get("fingerprint") or "").strip()
         if fingerprint:
             params["fp"] = fingerprint
@@ -91,5 +95,8 @@ def link_for(
     elif transport == "xhttp":
         params["path"] = transport_settings["xhttpPath"]
         params["mode"] = transport_settings["xhttpMode"]
+        extra = xhttp_extra_json(entry.get("xhttpExtra"))
+        if extra:
+            params["extra"] = extra
     query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params.items())
     return f"vless://{client_id}@{server_addr()}:{port}?{query}#{quote(server_name(), safe='')}"
