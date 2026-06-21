@@ -47,6 +47,4 @@ def status_rows() -> tuple[list[list[object]], list[str]]:
     warnings = []
     if not settings.activity_enabled():
         warnings.append("Activity log parser is disabled. Enable it from menu or run: xray-activity enable")
-    if geoip_code and geoip_code not in activity_parser.available_geoip_codes():
-        warnings.append(f"WARN: Xray route GeoIP warnings are set to {geoip_code}, but this region was not found in geoip.dat.")
     return rows, warnings
