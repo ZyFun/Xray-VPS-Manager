@@ -16,6 +16,7 @@ class CliSmokeTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertIn("Usage: xray-vps-manager COMMAND", output)
+        self.assertIn("caddy", output)
         self.assertIn("manager-update", output)
         self.assertIn("telegram", output)
 
@@ -56,7 +57,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(calls, [("telegram", ["xray-telegram", "status"])])
 
     def test_runner_exposes_main_for_known_command(self) -> None:
-        main = runner.command_main("telegram")
+        main = runner.command_main("caddy")
 
         self.assertTrue(callable(main))
         self.assertEqual(main.__name__, "main")

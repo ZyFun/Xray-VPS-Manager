@@ -60,6 +60,16 @@ class InstallSQLiteFirstTests(unittest.TestCase):
         self.assertIn('curl -fL --connect-timeout 20 --max-time 240 -o "$target_dir/Xray-linux-64.zip" "$XRAY_ZIP_URL"', content)
         self.assertIn('cp -f "$XRAY_LOCAL_ZIP" "$target_dir/Xray-linux-64.zip"', content)
 
+    def test_install_script_installs_disabled_caddy_random_tls_units(self) -> None:
+        content = INSTALL_SH.read_text()
+
+        self.assertIn("cat >/etc/systemd/system/xray-caddy-random-tls.service", content)
+        self.assertIn("ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --quiet", content)
+        self.assertIn("cat >/etc/systemd/system/xray-caddy-random-tls.timer", content)
+        self.assertIn("OnUnitActiveSec=15min", content)
+        self.assertIn("RandomizedDelaySec=45min", content)
+        self.assertNotIn("systemctl enable --now xray-caddy-random-tls.timer", content)
+
     def test_install_script_prompts_xhttp_mode_from_numbered_list(self) -> None:
         content = INSTALL_SH.read_text()
 

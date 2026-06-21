@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tarfile
@@ -14,10 +15,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.core.server_env import read_server_env, write_server_env
+
 CADDYFILE_PATH = Path("/etc/caddy/Caddyfile")
 CADDY_CONF_DIR = Path("/etc/caddy/conf.d")
 CADDY_BACKUP_DIR = Path("/root/xray_caddy_backups")
 CADDY_SITE_BACKUP_DIR = Path("/root/xray_caddy_site_backups")
+CADDY_RANDOM_TLS_ENV_PATH = Path("/usr/local/etc/xray/caddy-random-tls.env")
+SYSTEMD_DIR = Path("/etc/systemd/system")
+RANDOM_TLS_SERVICE = "xray-caddy-random-tls.service"
+RANDOM_TLS_TIMER = "xray-caddy-random-tls.timer"
 CADDYFILE_ARCNAME = "etc/caddy/Caddyfile"
 CADDY_CONF_DIR_ARCNAME = "etc/caddy/conf.d"
 CADDY_SITE_ARCNAME = "site"
@@ -70,12 +77,37 @@ class SiteWriteResult:
     backup: Path | None
 
 
+@dataclass(frozen=True)
+class RandomTlsConfig:
+    domain: str
+    local_port: int
+
+
+@dataclass(frozen=True)
+class RandomTlsApplyResult:
+    domain: str
+    previous_tls_min_version: str
+    previous_tls_max_version: str
+    tls_min_version: str
+    tls_max_version: str
+    path: Path
+    backup: Path | None
+
+
 TLS_VERSION_CHOICES: tuple[TlsVersionChoice, ...] = (
     TlsVersionChoice("default", "Caddy default", "default", "default"),
     TlsVersionChoice("tls12", "TLS 1.2", "tls1.2", "tls1.2"),
     TlsVersionChoice("tls12_13", "TLS 1.2 + TLS 1.3", "tls1.2", "tls1.3"),
     TlsVersionChoice("tls13", "TLS 1.3", "tls1.3", "tls1.3"),
 )
+STRICT_RANDOM_TLS_PAIRS: tuple[tuple[str, str], ...] = (
+    ("tls1.2", "tls1.2"),
+    ("tls1.3", "tls1.3"),
+)
+RANDOM_TLS_ENV_KEYS = [
+    "TLS_RANDOM_DOMAIN",
+    "TLS_RANDOM_LOCAL_PORT",
+]
 
 
 def validate_domain(value: str) -> str:
@@ -138,6 +170,109 @@ def tls_version_choice_key(tls_min_version: str | None, tls_max_version: str | N
         if (choice.tls_min_version, choice.tls_max_version) == (tls_min, tls_max):
             return choice.key
     return ""
+
+
+def validate_port(value: int | str) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("TLS random local port must be a number from 1 to 65535.") from exc
+    if port < 1 or port > 65535:
+        raise ValueError("TLS random local port must be a number from 1 to 65535.")
+    return port
+
+
+def choose_random_tls_pair(
+    current_min_version: str | None,
+    current_max_version: str | None,
+    *,
+    chooser=secrets.choice,
+) -> tuple[str, str]:
+    current = normalize_tls_version_pair(current_min_version, current_max_version)
+    options = list(STRICT_RANDOM_TLS_PAIRS)
+    if current in options:
+        options = [pair for pair in options if pair != current]
+    return chooser(options)
+
+
+def next_random_tls_label(current_min_version: str | None, current_max_version: str | None) -> str:
+    current = normalize_tls_version_pair(current_min_version, current_max_version)
+    if current == ("tls1.2", "tls1.2"):
+        return tls_version_label("tls1.3", "tls1.3")
+    if current == ("tls1.3", "tls1.3"):
+        return tls_version_label("tls1.2", "tls1.2")
+    return "Случайно: TLS 1.2 или TLS 1.3"
+
+
+def read_random_tls_config(path: Path = CADDY_RANDOM_TLS_ENV_PATH) -> RandomTlsConfig:
+    values = read_server_env(path, strict=True, require_exists=True)
+    domain = validate_domain(values.get("TLS_RANDOM_DOMAIN", ""))
+    local_port = validate_port(values.get("TLS_RANDOM_LOCAL_PORT", ""))
+    return RandomTlsConfig(domain=domain, local_port=local_port)
+
+
+def write_random_tls_config(
+    domain: str,
+    local_port: int | str,
+    path: Path = CADDY_RANDOM_TLS_ENV_PATH,
+) -> RandomTlsConfig:
+    config = RandomTlsConfig(domain=validate_domain(domain), local_port=validate_port(local_port))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_server_env(
+        {
+            "TLS_RANDOM_DOMAIN": config.domain,
+            "TLS_RANDOM_LOCAL_PORT": str(config.local_port),
+        },
+        path,
+        ordered_keys=RANDOM_TLS_ENV_KEYS,
+    )
+    return config
+
+
+def random_tls_service_unit(env_path: Path = CADDY_RANDOM_TLS_ENV_PATH) -> str:
+    return (
+        "[Unit]\n"
+        "Description=Randomize Caddy TLS protocol profile for Xray VPS Manager\n"
+        "After=network-online.target caddy.service\n"
+        "Wants=network-online.target\n"
+        f"ConditionPathExists={env_path}\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"EnvironmentFile={env_path}\n"
+        "ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --quiet\n"
+    )
+
+
+def random_tls_timer_unit(service_name: str = RANDOM_TLS_SERVICE) -> str:
+    return (
+        "[Unit]\n"
+        "Description=Randomize Caddy TLS protocol profile every 15-60 minutes\n"
+        "\n"
+        "[Timer]\n"
+        "OnBootSec=15min\n"
+        "OnUnitActiveSec=15min\n"
+        "RandomizedDelaySec=45min\n"
+        "AccuracySec=1min\n"
+        f"Unit={service_name}\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+
+
+def write_random_tls_systemd_units(systemd_dir: Path = SYSTEMD_DIR) -> dict[str, Path]:
+    systemd_dir.mkdir(parents=True, exist_ok=True)
+    service_path = systemd_dir / RANDOM_TLS_SERVICE
+    timer_path = systemd_dir / RANDOM_TLS_TIMER
+    service_path.write_text(random_tls_service_unit())
+    timer_path.write_text(random_tls_timer_unit())
+    os.chmod(service_path, 0o644)
+    os.chmod(timer_path, 0o644)
+    return {
+        "service": service_path,
+        "timer": timer_path,
+    }
 
 
 def site_filename(domain: str) -> str:
@@ -654,6 +789,13 @@ def list_site_configs(conf_dir: Path = CADDY_CONF_DIR) -> list[SiteConfig]:
     return [parse_site_config(path) for path in list_site_config_paths(conf_dir)]
 
 
+def site_config_for_domain(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> SiteConfig:
+    site_path = site_config_path(domain, conf_dir)
+    if not site_path.exists():
+        raise FileNotFoundError(f"Caddy site config not found: {site_path}")
+    return parse_site_config(site_path)
+
+
 def caddy_site_block(
     domain: str,
     local_port: int,
@@ -738,6 +880,28 @@ def update_site_config(
             pass
         raise
     return SiteWriteResult(written, backup)
+
+
+def apply_random_tls_switch(
+    config: RandomTlsConfig | None = None,
+    *,
+    runner=subprocess.run,
+    chooser=secrets.choice,
+) -> RandomTlsApplyResult:
+    config = config or read_random_tls_config()
+    site = site_config_for_domain(config.domain)
+    local_port = site.local_port or config.local_port
+    tls_min, tls_max = choose_random_tls_pair(site.tls_min_version, site.tls_max_version, chooser=chooser)
+    result = update_site_config(config.domain, local_port, tls_min_version=tls_min, tls_max_version=tls_max, runner=runner)
+    return RandomTlsApplyResult(
+        domain=config.domain,
+        previous_tls_min_version=site.tls_min_version,
+        previous_tls_max_version=site.tls_max_version,
+        tls_min_version=tls_min,
+        tls_max_version=tls_max,
+        path=result.path,
+        backup=result.backup,
+    )
 
 
 def delete_site_config(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> Path | None:

@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-21 21:05 UTC"
+MENU_UPDATED = "2026-06-21 22:15 UTC"
 
 
 def die(message):
@@ -190,6 +190,7 @@ def caddy_menu_actions():
         ("2", "Site configs"),
         ("3", "Управление сервисом"),
         ("4", "Бэкапы"),
+        ("5", "TLS randomizer"),
         ("0", "Назад"),
     ]
 
@@ -239,6 +240,16 @@ def caddy_backup_menu_actions():
         ("6", "Показать backups сайта"),
         ("7", "Восстановить сайт из backup"),
         ("8", "Удалить backup сайта"),
+        ("0", "Назад"),
+    ]
+
+
+def caddy_random_tls_menu_actions():
+    return [
+        ("1", "Статус TLS randomizer"),
+        ("2", "Включить для site"),
+        ("3", "Отключить"),
+        ("4", "Переключить сейчас"),
         ("0", "Назад"),
     ]
 
@@ -602,6 +613,7 @@ def caddy_menu_handlers():
         "2": ("Site configs", open_caddy_sites_menu),
         "3": ("Управление сервисом", open_caddy_service_menu),
         "4": ("Бэкапы", open_caddy_backup_menu),
+        "5": ("TLS randomizer", open_caddy_random_tls_menu),
     }
 
 
@@ -647,6 +659,15 @@ def caddy_backup_menu_handlers():
         "6": ("Показать backups сайта", menu_caddy_actions.list_site_backups),
         "7": ("Восстановить сайт из backup", lambda: menu_caddy_actions.restore_site_backup(confirm)),
         "8": ("Удалить backup сайта", lambda: menu_caddy_actions.delete_site_backup(confirm)),
+    }
+
+
+def caddy_random_tls_menu_handlers():
+    return {
+        "1": ("Статус TLS randomizer", menu_caddy_actions.random_tls_status),
+        "2": ("Включить для site", lambda: menu_caddy_actions.enable_random_tls(confirm)),
+        "3": ("Отключить", lambda: menu_caddy_actions.disable_random_tls(confirm)),
+        "4": ("Переключить сейчас", menu_caddy_actions.random_tls_run_now),
     }
 
 
@@ -931,6 +952,10 @@ def open_caddy_service_menu():
 
 def open_caddy_backup_menu():
     menu_loop("Caddy / TLS -> Бэкапы", caddy_backup_menu_actions(), caddy_backup_menu_handlers())
+
+
+def open_caddy_random_tls_menu():
+    menu_loop("Caddy / TLS -> TLS randomizer", caddy_random_tls_menu_actions(), caddy_random_tls_menu_handlers())
 
 
 def open_service_diagnostics_menu():

@@ -15,6 +15,7 @@ from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, 
 from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
+from xray_vps_manager.xray import caddy as xray_caddy
 
 BACKUP_DIR = Path("/root/xray_backups")
 CONFIG_DIR = Path("/usr/local/etc/xray")
@@ -23,12 +24,15 @@ SERVER_ENV_PATH = CONFIG_DIR / "server.env"
 MANAGER_DB_PATH = CONFIG_DIR / "manager.db"
 SERVER_ENV_ARCNAME = "usr/local/etc/xray/server.env"
 MANAGER_DB_ARCNAME = "usr/local/etc/xray/manager.db"
+CADDY_RANDOM_TLS_ENV_PATH = xray_caddy.CADDY_RANDOM_TLS_ENV_PATH
+CADDY_RANDOM_TLS_ENV_ARCNAME = "usr/local/etc/xray/caddy-random-tls.env"
 HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN")
 
 BACKUP_FILES = [
     ("usr/local/etc/xray/config.json", CONFIG_PATH, True),
     (SERVER_ENV_ARCNAME, SERVER_ENV_PATH, True),
     (MANAGER_DB_ARCNAME, MANAGER_DB_PATH, True),
+    (CADDY_RANDOM_TLS_ENV_ARCNAME, CADDY_RANDOM_TLS_ENV_PATH, False),
 ]
 BACKUP_DIRS = []
 
@@ -124,6 +128,34 @@ def add_portable_server_env(tar, arcname, source):
     return add_text(tar, arcname, server_env_text(portable_server_env_values(source)))
 
 
+def compact_output(result):
+    return (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+
+
+def run_systemctl(args, timeout=20):
+    command = ["systemctl", *args]
+    try:
+        return run_capture(command, timeout=timeout)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(command, 127, "", "systemctl not found")
+
+
+def systemctl_is_enabled(unit):
+    result = run_systemctl(["is-enabled", unit], timeout=10)
+    return result.returncode == 0
+
+
+def caddy_random_tls_backup_state():
+    configured = CADDY_RANDOM_TLS_ENV_PATH.exists()
+    return {
+        "configured": configured,
+        "enabled": systemctl_is_enabled(xray_caddy.RANDOM_TLS_TIMER),
+        "envArchive": CADDY_RANDOM_TLS_ENV_ARCNAME if configured else "",
+        "service": xray_caddy.RANDOM_TLS_SERVICE,
+        "timer": xray_caddy.RANDOM_TLS_TIMER,
+    }
+
+
 def sync_traffic():
     sync = Path("/usr/local/sbin/xray-traffic-sync")
     if sync.exists():
@@ -208,6 +240,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
                     "createdAt": utc_stamp(),
                     "xrayVersion": xray_version(),
                     "hostSpecificServerEnvKeysOmitted": list(HOST_SPECIFIC_SERVER_ENV_KEYS),
+                    "caddyRandomTls": caddy_random_tls_backup_state(),
                     "files": files,
                     "warning": "This archive contains Xray private keys, client UUIDs, traffic data, and activity metadata.",
                 },
@@ -297,6 +330,21 @@ def extract_archive(archive):
     return temp_dir
 
 
+def backup_manifest(temp_dir):
+    path = temp_dir / "manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def caddy_random_tls_restore_state(temp_dir):
+    state = backup_manifest(temp_dir).get("caddyRandomTls")
+    return state if isinstance(state, dict) else None
+
+
 def chown_xray(path):
     try:
         shutil.chown(path, user="root", group="xray")
@@ -377,6 +425,63 @@ def copy_dir_if_exists(temp_dir, arcname, target):
     return True
 
 
+def set_caddy_random_tls_enabled(enabled):
+    if enabled:
+        return run_systemctl(["enable", "--now", xray_caddy.RANDOM_TLS_TIMER], timeout=20)
+    disable = run_systemctl(["disable", "--now", xray_caddy.RANDOM_TLS_TIMER], timeout=20)
+    run_systemctl(["stop", xray_caddy.RANDOM_TLS_SERVICE], timeout=10)
+    return disable
+
+
+def restore_caddy_random_tls_state(temp_dir):
+    state = caddy_random_tls_restore_state(temp_dir)
+    if state is None:
+        return []
+
+    messages = []
+    configured = bool(state.get("configured"))
+    enabled = bool(state.get("enabled"))
+
+    if not configured:
+        try:
+            CADDY_RANDOM_TLS_ENV_PATH.unlink()
+            messages.append(f"Removed Caddy TLS randomizer config: {CADDY_RANDOM_TLS_ENV_PATH}")
+        except FileNotFoundError:
+            pass
+        result = set_caddy_random_tls_enabled(False)
+        if result.returncode == 0:
+            messages.append("Caddy TLS randomizer timer restored: disabled")
+        else:
+            messages.append(f"Caddy TLS randomizer disable failed: {compact_output(result)}")
+        return messages
+
+    if not CADDY_RANDOM_TLS_ENV_PATH.exists():
+        result = set_caddy_random_tls_enabled(False)
+        messages.append(f"Caddy TLS randomizer config missing after restore: {CADDY_RANDOM_TLS_ENV_PATH}")
+        if result.returncode != 0:
+            messages.append(f"Caddy TLS randomizer disable failed: {compact_output(result)}")
+        return messages
+
+    try:
+        xray_caddy.write_random_tls_systemd_units()
+    except OSError as exc:
+        messages.append(f"Caddy TLS randomizer unit restore failed: {exc}")
+        return messages
+
+    daemon_reload = run_systemctl(["daemon-reload"], timeout=20)
+    if daemon_reload.returncode != 0:
+        messages.append(f"systemctl daemon-reload failed for Caddy TLS randomizer: {compact_output(daemon_reload)}")
+
+    result = set_caddy_random_tls_enabled(enabled)
+    if result.returncode == 0:
+        status = "enabled" if enabled else "disabled"
+        messages.append(f"Caddy TLS randomizer timer restored: {status}")
+    else:
+        action = "enable" if enabled else "disable"
+        messages.append(f"Caddy TLS randomizer {action} failed: {compact_output(result)}")
+    return messages
+
+
 def apply_restore(temp_dir):
     if not (temp_dir / "usr/local/etc/xray/config.json").exists():
         die("Backup does not contain config.json.")
@@ -450,11 +555,15 @@ def restore_backup(value):
     try:
         restored = apply_restore(temp_dir)
         test_and_restart()
+        random_tls_messages = restore_caddy_random_tls_state(temp_dir)
     except Exception as exc:
         print("Restore failed. Rolling back to pre-restore backup...", file=sys.stderr)
         rollback_dir = extract_archive(pre_backup)
         apply_restore(rollback_dir)
         test_and_restart()
+        for message in restore_caddy_random_tls_state(rollback_dir):
+            print(message)
+        shutil.rmtree(rollback_dir, ignore_errors=True)
         start_timers()
         die(f"Restore failed: {exc}")
     finally:
@@ -465,6 +574,8 @@ def restore_backup(value):
     print("Restored files:")
     for path in restored:
         print(f"  {path}")
+    for message in random_tls_messages:
+        print(message)
     print("Xray status: active")
 
 
