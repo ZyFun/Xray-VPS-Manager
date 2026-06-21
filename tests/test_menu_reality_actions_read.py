@@ -3,7 +3,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from unittest import mock
 
-from xray_vps_manager.commands import menu_reality_actions
+from xray_vps_manager.commands import menu_caddy_actions, menu_reality_actions
 
 
 class MenuRealityActionsReadTests(unittest.TestCase):
@@ -55,6 +55,22 @@ class MenuRealityActionsReadTests(unittest.TestCase):
                 "xhttp_mode": "stream-one",
             },
         )
+
+    def test_choose_tls_versions_selects_profile_by_number(self) -> None:
+        inputs = iter(["3"])
+
+        with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
+            tls_min, tls_max = menu_reality_actions.choose_tls_versions("tls1.2", "tls1.2")
+
+        self.assertEqual((tls_min, tls_max), ("tls1.2", "tls1.3"))
+
+    def test_caddy_tls_prompt_uses_same_profile_list(self) -> None:
+        inputs = iter(["4"])
+
+        with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
+            tls_min, tls_max = menu_caddy_actions.prompt_tls_versions("tls1.2", "tls1.2")
+
+        self.assertEqual((tls_min, tls_max), ("tls1.3", "tls1.3"))
 
 
 if __name__ == "__main__":

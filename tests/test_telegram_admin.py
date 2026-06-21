@@ -6,13 +6,26 @@ from xray_vps_manager.telegram import admin
 
 
 class TelegramAdminTests(unittest.TestCase):
-    def make_context(self, events, client_db=None, send_response=None, run_capture=None, server_name_fragment=None):
+    def make_context(
+        self,
+        events,
+        client_db=None,
+        send_response=None,
+        run_capture=None,
+        server_name_fragment=None,
+        list_tls_sites=None,
+        set_tls_site_version=None,
+    ):
         if client_db is None:
             client_db = {"clients": {}}
         if run_capture is None:
             run_capture = lambda *_args, **_kwargs: None
         if server_name_fragment is None:
             server_name_fragment = lambda: "Xray"
+        if list_tls_sites is None:
+            list_tls_sites = lambda: []
+        if set_tls_site_version is None:
+            set_tls_site_version = lambda *_args, **_kwargs: None
 
         def send_chat_message(_db, chat_id, text, reply_markup=None, parse_mode=None):
             events.append(
@@ -35,6 +48,8 @@ class TelegramAdminTests(unittest.TestCase):
             notification_context=None,
             xray_client=Path("/usr/local/sbin/xray-client"),
             server_name_fragment=server_name_fragment,
+            list_tls_sites=list_tls_sites,
+            set_tls_site_version=set_tls_site_version,
         )
 
     def test_payment_share_callback_sends_payments_submenu(self) -> None:
@@ -79,6 +94,60 @@ class TelegramAdminTests(unittest.TestCase):
         self.assertIn("Маршрут Telegram: cascade", events[0]["text"])
         buttons = [button for row in events[0]["reply_markup"]["inline_keyboard"] for button in row]
         self.assertIn({"text": "Статус бота", "callback_data": "admin:settings-status"}, buttons)
+
+    def test_server_tls_menu_shows_current_profile_and_modified_time(self) -> None:
+        db = {"adminState": {}}
+        events = []
+        sites = [
+            {
+                "domain": "api.example.com",
+                "localPort": 10300,
+                "tlsChoice": "tls12",
+                "tlsLabel": "TLS 1.2",
+                "modifiedAt": "2026-06-21 10:00 UTC",
+            }
+        ]
+        ctx = self.make_context(events, list_tls_sites=lambda: sites)
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls"))
+
+        message = [event for event in events if "text" in event][-1]
+        self.assertIn("Текущее шифрование:", message["text"])
+        self.assertIn("- api.example.com: TLS 1.2", message["text"])
+        self.assertIn("Изменено: 2026-06-21 10:00 UTC", message["text"])
+        self.assertEqual(db["adminState"]["serverSettings"]["111"]["tlsSites"], sites)
+
+    def test_server_tls_set_updates_site_from_saved_selection(self) -> None:
+        db = {"adminState": {}}
+        events = []
+        calls = []
+        sites = [
+            {
+                "domain": "api.example.com",
+                "localPort": 10300,
+                "tlsChoice": "tls12",
+                "tlsLabel": "TLS 1.2",
+                "modifiedAt": "2026-06-21 10:00 UTC",
+            }
+        ]
+
+        def set_tls_site_version(domain, local_port, choice_key):
+            calls.append((domain, local_port, choice_key))
+
+        ctx = self.make_context(
+            events,
+            list_tls_sites=lambda: sites,
+            set_tls_site_version=set_tls_site_version,
+        )
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-site:0"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-set:0:tls13"))
+
+        self.assertEqual(calls, [("api.example.com", 10300, "tls13")])
+        sent = [event for event in events if "text" in event][-1]
+        self.assertIn("TLS обновлён для api.example.com: TLS 1.3", sent["text"])
+        self.assertIn("Caddy config проверен и применён.", sent["text"])
 
     def test_admin_menu_registers_latest_callback_message(self) -> None:
         db = {"adminState": {}}

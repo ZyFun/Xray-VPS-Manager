@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from xray_vps_manager.xray import caddy
+
 
 def is_owner_chat(db, chat_id):
     return str(chat_id or "") == str(db.get("chatId") or "")
@@ -133,7 +135,10 @@ def admin_menu_keyboard():
                 {"text": "Бэкапы", "callback_data": "admin:backups"},
                 {"text": "Активность", "callback_data": "admin:activity"},
             ],
-            [{"text": "Настройки бота", "callback_data": "admin:settings"}],
+            [
+                {"text": "Настройки сервера", "callback_data": "admin:server-settings"},
+                {"text": "Настройки бота", "callback_data": "admin:settings"},
+            ],
             [{"text": "Клиентское меню", "callback_data": "client:menu"}],
         ]
     }
@@ -272,6 +277,39 @@ def admin_settings_keyboard():
             [{"text": "Назад", "callback_data": "admin:menu"}],
         ]
     }
+
+
+def admin_server_settings_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "TLS", "callback_data": "admin:server-tls"}],
+            [{"text": "Назад", "callback_data": "admin:menu"}],
+        ]
+    }
+
+
+def admin_server_tls_sites_keyboard(sites):
+    rows = []
+    for index, item in enumerate(sites):
+        domain = str(item.get("domain") or "-")
+        label = str(item.get("tlsLabel") or "-")
+        text = f"{domain} · {label}"
+        if len(text) > 58:
+            text = text[:55].rstrip() + "..."
+        rows.append([{"text": text, "callback_data": f"admin:server-tls-site:{index}"}])
+    rows.append([{"text": "Назад", "callback_data": "admin:server-settings"}])
+    return {"inline_keyboard": rows}
+
+
+def admin_server_tls_site_keyboard(site_index, current_choice):
+    rows = []
+    for choice in caddy.TLS_VERSION_CHOICES:
+        label = choice.label
+        if choice.key == current_choice:
+            label = f"{label} (выбрано)"
+        rows.append([{"text": label, "callback_data": f"admin:server-tls-set:{site_index}:{choice.key}"}])
+    rows.append([{"text": "Назад", "callback_data": "admin:server-tls"}])
+    return {"inline_keyboard": rows}
 
 
 def admin_notice_confirm_keyboard(kind):

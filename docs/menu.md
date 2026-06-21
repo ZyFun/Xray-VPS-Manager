@@ -120,6 +120,8 @@ xray-menu
 17 Restart Caddy
 18 Бэкапы
 
+При создании или изменении TLS site config выбор TLS version открывается как список профилей: Caddy default, TLS 1.2, TLS 1.2 + TLS 1.3, TLS 1.3.
+
 Настройки Xray -> Caddy / TLS -> Бэкапы:
 1 Создать backup Caddy config
 2 Показать backups Caddy config

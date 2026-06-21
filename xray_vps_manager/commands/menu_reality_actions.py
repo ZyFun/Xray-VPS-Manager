@@ -18,6 +18,7 @@ from xray_vps_manager.clients.settings import (
 )
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.terminal import table_border, table_row
+from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import (
     DEFAULT_XHTTP_MODE,
     DEFAULT_XHTTP_PATH,
@@ -434,8 +435,7 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
     public_port = str(validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
     path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
     mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
-    tls_min = prompt("tls1.2", "TLS min version (tls1.2/tls1.3/default)")
-    tls_max = prompt("tls1.2", "TLS max version (tls1.2/tls1.3/default)")
+    tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
     if install_caddy:
         conflicts = connection_store.public_port_conflicts(config, int(public_port))
@@ -579,6 +579,30 @@ def choose_xhttp_mode(default: str = DEFAULT_XHTTP_MODE) -> str:
             if 1 <= index <= len(XHTTP_MODES):
                 return XHTTP_MODES[index - 1]
         print(f"Выбери номер 1-{len(XHTTP_MODES)} или нажми Enter для {default}.")
+
+
+def choose_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2") -> tuple[str, str]:
+    try:
+        current_key = xray_caddy.tls_version_choice_key(current_min, current_max)
+        current_label = xray_caddy.tls_version_label(current_min, current_max)
+    except ValueError as exc:
+        die(str(exc))
+    print()
+    print("TLS: выбери версию протокола для Caddy site.")
+    for index, choice in enumerate(xray_caddy.TLS_VERSION_CHOICES, start=1):
+        marker = " (текущий)" if choice.key == current_key else ""
+        print(f"  {index}) {choice.label}{marker}")
+    while True:
+        value = input(f"TLS [{current_label}] (номер из списка): ").strip()
+        if not value:
+            choice = xray_caddy.tls_version_choice(current_key or "tls12")
+            return choice.tls_min_version, choice.tls_max_version
+        if value.isdigit():
+            index = int(value, 10)
+            if 1 <= index <= len(xray_caddy.TLS_VERSION_CHOICES):
+                choice = xray_caddy.TLS_VERSION_CHOICES[index - 1]
+                return choice.tls_min_version, choice.tls_max_version
+        print(f"Выбери номер 1-{len(xray_caddy.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
 
 
 def update_fingerprint() -> None:
