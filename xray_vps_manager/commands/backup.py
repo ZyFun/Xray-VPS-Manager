@@ -22,12 +22,13 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 SERVER_ENV_PATH = CONFIG_DIR / "server.env"
 MANAGER_DB_PATH = CONFIG_DIR / "manager.db"
 SERVER_ENV_ARCNAME = "usr/local/etc/xray/server.env"
+MANAGER_DB_ARCNAME = "usr/local/etc/xray/manager.db"
 HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN")
 
 BACKUP_FILES = [
     ("usr/local/etc/xray/config.json", CONFIG_PATH, True),
     (SERVER_ENV_ARCNAME, SERVER_ENV_PATH, True),
-    ("usr/local/etc/xray/manager.db", MANAGER_DB_PATH, True),
+    (MANAGER_DB_ARCNAME, MANAGER_DB_PATH, True),
 ]
 BACKUP_DIRS = []
 
@@ -138,6 +139,17 @@ def sync_traffic():
             pass
 
 
+def create_manager_db_archive_snapshot(snapshot_dir):
+    snapshot = sqlite_database.backup_database(
+        MANAGER_DB_PATH,
+        backup_dir=snapshot_dir,
+        label="archive-snapshot",
+    )
+    if snapshot is None:
+        die(f"{MANAGER_DB_PATH} does not exist; refusing to create an incomplete backup.")
+    return snapshot
+
+
 def create_backup(path_only=False, quiet=False, sync=True):
     if sync:
         sync_traffic()
@@ -153,47 +165,53 @@ def create_backup(path_only=False, quiet=False, sync=True):
         archive = BACKUP_DIR / f"xray-backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S%fZ')}.tar.gz"
 
     files = []
-    with tarfile.open(archive, "w:gz") as tar:
-        for arcname, source, required in BACKUP_FILES:
-            if not source.exists():
-                if required:
-                    die(f"Required file not found: {source}")
-                continue
-            if arcname == SERVER_ENV_ARCNAME:
-                size = add_portable_server_env(tar, arcname, source)
-            else:
-                tar.add(source, arcname=arcname, recursive=False)
-                size = source.stat().st_size
-            files.append({
-                "source": str(source),
-                "archive": arcname,
-                "size": size,
-            })
+    with tempfile.TemporaryDirectory(prefix=".xray-backup-snapshot-", dir=BACKUP_DIR) as snapshot_dir_raw:
+        snapshot_dir = Path(snapshot_dir_raw)
+        os.chmod(snapshot_dir, 0o700)
+        with tarfile.open(archive, "w:gz") as tar:
+            for arcname, source, required in BACKUP_FILES:
+                if not source.exists():
+                    if required:
+                        die(f"Required file not found: {source}")
+                    continue
+                if arcname == SERVER_ENV_ARCNAME:
+                    size = add_portable_server_env(tar, arcname, source)
+                else:
+                    archive_source = source
+                    if arcname == MANAGER_DB_ARCNAME:
+                        archive_source = create_manager_db_archive_snapshot(snapshot_dir)
+                    tar.add(archive_source, arcname=arcname, recursive=False)
+                    size = archive_source.stat().st_size
+                files.append({
+                    "source": str(source),
+                    "archive": arcname,
+                    "size": size,
+                })
 
-        for arcname, source, required in BACKUP_DIRS:
-            if not source.exists():
-                if required:
-                    die(f"Required directory not found: {source}")
-                continue
-            tar.add(source, arcname=arcname, recursive=True)
-            size = sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
-            files.append({
-                "source": str(source),
-                "archive": arcname,
-                "size": size,
-            })
+            for arcname, source, required in BACKUP_DIRS:
+                if not source.exists():
+                    if required:
+                        die(f"Required directory not found: {source}")
+                    continue
+                tar.add(source, arcname=arcname, recursive=True)
+                size = sum(path.stat().st_size for path in source.rglob("*") if path.is_file())
+                files.append({
+                    "source": str(source),
+                    "archive": arcname,
+                    "size": size,
+                })
 
-        add_json(
-            tar,
-            "manifest.json",
-            {
-                "createdAt": utc_stamp(),
-                "xrayVersion": xray_version(),
-                "hostSpecificServerEnvKeysOmitted": list(HOST_SPECIFIC_SERVER_ENV_KEYS),
-                "files": files,
-                "warning": "This archive contains Xray private keys, client UUIDs, traffic data, and activity metadata.",
-            },
-        )
+            add_json(
+                tar,
+                "manifest.json",
+                {
+                    "createdAt": utc_stamp(),
+                    "xrayVersion": xray_version(),
+                    "hostSpecificServerEnvKeysOmitted": list(HOST_SPECIFIC_SERVER_ENV_KEYS),
+                    "files": files,
+                    "warning": "This archive contains Xray private keys, client UUIDs, traffic data, and activity metadata.",
+                },
+            )
 
     os.chmod(archive, 0o600)
     if path_only:

@@ -39,10 +39,20 @@ class BackupSQLiteTests(unittest.TestCase):
                 ("usr/local/etc/xray/manager.db", config_dir / "manager.db", True),
             ]
 
+            snapshot_path = root / "manager-snapshot.db"
+            snapshot_path.write_text("sqlite snapshot")
+            snapshot_dirs = []
+
+            def create_snapshot(snapshot_dir: Path) -> Path:
+                snapshot_dirs.append(snapshot_dir)
+                return snapshot_path
+
             with mock.patch.object(backup, "BACKUP_DIR", root / "backups"), mock.patch.object(
                 backup, "BACKUP_FILES", backup_files
             ), mock.patch.object(backup, "BACKUP_DIRS", []), mock.patch.object(
                 backup, "MANAGER_DB_PATH", config_dir / "manager.db"
+            ), mock.patch.object(
+                backup, "create_manager_db_archive_snapshot", side_effect=create_snapshot
             ):
                 archive = backup.create_backup(quiet=True, sync=False)
 
@@ -52,8 +62,10 @@ class BackupSQLiteTests(unittest.TestCase):
                 server_env = tar.extractfile("usr/local/etc/xray/server.env").read().decode()
                 manifest = json.loads(tar.extractfile("manifest.json").read())
 
+            self.assertEqual(len(snapshot_dirs), 1)
+            self.assertEqual(snapshot_dirs[0].parent, root / "backups")
             self.assertIn("usr/local/etc/xray/manager.db", names)
-            self.assertEqual(manager_db, "sqlite bytes")
+            self.assertEqual(manager_db, "sqlite snapshot")
             self.assertNotIn("SERVER_ADDR", server_env)
             self.assertNotIn("SECURITY_AUDIT_LAST_RUN", server_env)
             self.assertIn("SERVER_NAME=Virei", server_env)
@@ -81,10 +93,15 @@ class BackupSQLiteTests(unittest.TestCase):
                 ("usr/local/etc/xray/manager.db", config_dir / "manager.db", True),
             ]
 
+            snapshot_path = root / "manager-snapshot.db"
+            snapshot_path.write_text("sqlite snapshot")
+
             with mock.patch.object(backup, "BACKUP_DIR", root / "backups"), mock.patch.object(
                 backup, "BACKUP_FILES", backup_files
             ), mock.patch.object(backup, "BACKUP_DIRS", []), mock.patch.object(
                 backup, "MANAGER_DB_PATH", config_dir / "manager.db"
+            ), mock.patch.object(
+                backup, "create_manager_db_archive_snapshot", return_value=snapshot_path
             ):
                 archive = backup.create_backup(quiet=True, sync=False)
 
@@ -93,6 +110,31 @@ class BackupSQLiteTests(unittest.TestCase):
 
             self.assertIn("usr/local/etc/xray/manager.db", names)
             self.assertNotIn("usr/local/etc/xray/clients.json", names)
+
+    def test_create_manager_db_archive_snapshot_uses_sqlite_backup_api(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            connection = database.open_database(db_path)
+            try:
+                connection.execute(
+                    "INSERT INTO manager_metadata(key, value) VALUES ('sample', 'value')"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            snapshot_dir = root / "snapshots"
+            with mock.patch.object(backup, "MANAGER_DB_PATH", db_path):
+                snapshot = backup.create_manager_db_archive_snapshot(snapshot_dir)
+
+            self.assertTrue(snapshot.exists())
+            self.assertEqual(snapshot.parent, snapshot_dir)
+            self.assertNotEqual(snapshot, db_path)
+            with sqlite3.connect(str(snapshot)) as restored:
+                self.assertEqual(restored.execute("PRAGMA quick_check").fetchone()[0], "ok")
+                row = restored.execute("SELECT value FROM manager_metadata WHERE key = 'sample'").fetchone()
+            self.assertEqual(row[0], "value")
 
     def test_create_backup_rejects_missing_sqlite_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
