@@ -35,6 +35,26 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertEqual(state, "offline")
         self.assertEqual(last_online, "never")
 
+    def test_future_last_online_does_not_mark_client_online(self) -> None:
+        traffic_db = {
+            "clients": {
+                "iphone": {
+                    "lastOnline": "2026-06-21T02:30:00Z",
+                    "updated": "2026-06-20T23:30:00Z",
+                },
+            },
+        }
+
+        state, last_online = runtime.online_state(
+            {"name": "iphone", "status": "enabled"},
+            traffic_db,
+            timezone.utc,
+            now_utc=datetime(2026, 6, 20, 23, 31, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(state, "offline")
+        self.assertEqual(last_online, "2026-06-20 23:30 UTC")
+
 
 if __name__ == "__main__":
     unittest.main()

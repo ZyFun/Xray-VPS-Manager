@@ -10,6 +10,12 @@ from xray_vps_manager.traffic.repository import traffic_entry
 ONLINE_WINDOW_SECONDS = 300
 
 
+def normalize_utc(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
 def runtime_traffic_for(stats: dict[str, int] | None, email: str) -> tuple[int | None, int | None]:
     if stats is None:
         return None, None
@@ -49,6 +55,25 @@ def format_time(value: str | None, display_timezone: tzinfo) -> str:
     return local.strftime("%Y-%m-%d %H:%M %Z")
 
 
+def last_online_display(
+    entry: dict[str, Any],
+    display_timezone: tzinfo,
+    now_utc: datetime | None = None,
+) -> str:
+    last_online = entry.get("lastOnline", "")
+    parsed = parse_time(last_online)
+    if parsed is None:
+        return "never"
+    now = normalize_utc(now_utc or datetime.now(timezone.utc))
+    if parsed.astimezone(timezone.utc) > now:
+        updated = entry.get("updated", "")
+        updated_parsed = parse_time(updated)
+        if updated_parsed is not None and updated_parsed.astimezone(timezone.utc) <= now:
+            return format_time(updated, display_timezone)
+        return "never"
+    return format_time(last_online, display_timezone)
+
+
 def online_state(
     row: dict[str, Any],
     traffic_db: dict[str, Any],
@@ -60,14 +85,13 @@ def online_state(
     parsed = parse_time(last_online)
     if parsed is None:
         return "offline", "never"
+    now = normalize_utc(now_utc or datetime.now(timezone.utc))
+    display_value = last_online_display(entry, display_timezone, now)
     if row["status"] != "enabled":
-        return "offline", format_time(last_online, display_timezone)
-    now = now_utc or datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    age = (now.astimezone(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
-    state = "online" if age <= ONLINE_WINDOW_SECONDS else "offline"
-    return state, format_time(last_online, display_timezone)
+        return "offline", display_value
+    age = (now - parsed.astimezone(timezone.utc)).total_seconds()
+    state = "online" if 0 <= age <= ONLINE_WINDOW_SECONDS else "offline"
+    return state, display_value
 
 
 def traffic_updated_at(row: dict[str, Any], traffic_db: dict[str, Any], display_timezone: tzinfo) -> str:

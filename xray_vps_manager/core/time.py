@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -44,3 +44,13 @@ def manager_timezone(path: Path = SERVER_ENV_PATH):
             pass
     local = datetime.now().astimezone().tzinfo
     return local, "server local time"
+
+
+def server_local_timezone() -> tzinfo:
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def xray_access_time_to_iso(value: str, source_timezone: tzinfo | None = None) -> str:
+    parsed = datetime.strptime(value, "%Y/%m/%d %H:%M:%S")
+    local = parsed.replace(tzinfo=source_timezone or server_local_timezone())
+    return local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

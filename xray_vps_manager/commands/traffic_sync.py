@@ -10,8 +10,9 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
+from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.core.time import parse_time, xray_access_time_to_iso
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.traffic import repository as traffic_repository
@@ -63,9 +64,8 @@ def subtract_months(day, months):
     return date(year, month, min(day.day, monthrange(year, month)[1]))
 
 
-def access_time_to_iso(value):
-    parsed = datetime.strptime(value, "%Y/%m/%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    return parsed.isoformat().replace("+00:00", "Z")
+def access_time_to_iso(value, source_timezone=None):
+    return xray_access_time_to_iso(value, source_timezone)
 
 
 def max_time(left, right):
@@ -73,6 +73,10 @@ def max_time(left, right):
         return right
     if not right:
         return left
+    left_time = parse_time(left)
+    right_time = parse_time(right)
+    if left_time is not None and right_time is not None:
+        return right if right_time > left_time else left
     return max(left, right)
 
 
@@ -199,9 +203,39 @@ def positive_delta(current, previous):
     return current
 
 
-def set_last_online(entry, stamp, source):
+def set_last_online(entry, stamp, source, reference_stamp=None):
+    current = entry.get("lastOnline", "")
+    current_time = parse_time(current)
+    stamp_time = parse_time(stamp)
+    reference_time = parse_time(reference_stamp)
+    if (
+        current_time is not None
+        and stamp_time is not None
+        and reference_time is not None
+        and current_time > reference_time
+        and stamp_time <= reference_time
+    ):
+        entry["lastOnline"] = stamp
+        entry["lastOnlineSource"] = source
+        return
     entry["lastOnline"] = max_time(entry.get("lastOnline", ""), stamp)
     entry["lastOnlineSource"] = source
+
+
+def normalize_future_last_online(entry, stamp):
+    last_online = parse_time(entry.get("lastOnline", ""))
+    current = parse_time(stamp)
+    if last_online is None or current is None or last_online <= current:
+        return False
+
+    updated = entry.get("updated", "")
+    updated_time = parse_time(updated)
+    if updated_time is None or updated_time > current:
+        return False
+
+    entry["lastOnline"] = updated
+    entry["lastOnlineSource"] = "traffic"
+    return True
 
 
 def ensure_entry(entries, name, email):
@@ -270,7 +304,7 @@ def sync_access_log(db, clients, stamp):
             continue
         event_time = access_time_to_iso(match.group(1))
         entry = ensure_entry(entries, name, clients[name])
-        set_last_online(entry, event_time, "access-log")
+        set_last_online(entry, event_time, "access-log", stamp)
         entry["lastAccepted"] = max_time(entry.get("lastAccepted", ""), event_time)
         seen.add(name)
 
@@ -315,13 +349,14 @@ def sync_locked():
         add_history_delta(entry, bucket_time, delta_up, delta_down)
         traffic_changed = delta_up > 0 or delta_down > 0
         if traffic_changed and name not in access_seen:
-            set_last_online(entry, stamp, "traffic")
+            set_last_online(entry, stamp, "traffic", stamp)
         if traffic_changed:
             entry["updated"] = stamp
         entry["last"] = {
             "uplink": current_up,
             "downlink": current_down,
         }
+        normalize_future_last_online(entry, stamp)
 
     prune_history(db, bucket_time)
     try:
