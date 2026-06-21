@@ -45,7 +45,7 @@ def upsert_traffic_entry(connection: sqlite3.Connection, name: str, entry: dict[
                 entry.get("updated") or None,
             ),
         )
-        replace_history(connection, name, entry.get("history") if isinstance(entry.get("history"), dict) else {})
+        sync_history(connection, name, entry)
 
 
 def get_traffic_entry(connection: sqlite3.Connection, name: str) -> dict[str, Any]:
@@ -144,6 +144,22 @@ def replace_history(connection: sqlite3.Connection, name: str, history: dict[str
                         int(bucket.get("outgoing") or 0),
                     ),
                 )
+
+
+def history_bucket_count(connection: sqlite3.Connection, name: str) -> int:
+    row = connection.execute(
+        "SELECT COUNT(*) AS count FROM traffic_history WHERE client_name = ?",
+        (name,),
+    ).fetchone()
+    return int(row["count"] if row else 0)
+
+
+def sync_history(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
+    history = entry.get("history") if isinstance(entry.get("history"), dict) else {}
+    has_total = int(entry.get("incoming") or 0) > 0 or int(entry.get("outgoing") or 0) > 0
+    if not history and has_total and history_bucket_count(connection, name) > 0:
+        return
+    replace_history(connection, name, history)
 
 
 def add_history_delta(

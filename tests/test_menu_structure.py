@@ -45,6 +45,9 @@ class MenuStructureTests(unittest.TestCase):
         self.assertIn(("3", "Менеджер"), menu.updates_menu_actions())
         self.assertNotIn(("6", "Обновить geoip/geosite из Xray release"), menu.update_menu_actions())
         self.assertIn(("6", "Настройки журнала активности"), menu.traffic_menu_actions())
+        self.assertIn(("7", "Настройки суммарного трафика"), menu.traffic_menu_actions())
+        self.assertIn(("2", "Включить строку с множителем"), menu.total_traffic_settings_menu_actions())
+        self.assertIn(("3", "Отключить строку с множителем"), menu.total_traffic_settings_menu_actions())
         self.assertIn(("4", "Экспорт activity по клиенту"), menu.traffic_menu_actions())
 
 
