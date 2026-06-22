@@ -120,7 +120,8 @@ class CaddyConfigTests(unittest.TestCase):
     def test_random_tls_env_and_systemd_units_are_written(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            env_path = root / "caddy-random-tls.env"
+            config_dir = root / "caddy-random-tls.d"
+            env_path = config_dir / "api.example.com.env"
             systemd_dir = root / "systemd"
 
             config = caddy.write_random_tls_config("api.example.com", 10300, env_path)
@@ -132,9 +133,13 @@ class CaddyConfigTests(unittest.TestCase):
             self.assertIn("TLS_RANDOM_DOMAIN=api.example.com", env_path.read_text())
             service = units["service"].read_text()
             timer = units["timer"].read_text()
-            self.assertIn("ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --quiet", service)
+            self.assertEqual(env_path, caddy.random_tls_env_path("api.example.com", config_dir))
+            self.assertEqual(caddy.random_tls_timer_instance("api.example.com"), "xray-caddy-random-tls@api.example.com.timer")
+            self.assertIn("EnvironmentFile=/usr/local/etc/xray/caddy-random-tls.d/%i.env", service)
+            self.assertIn("ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --domain %i --quiet", service)
             self.assertIn("OnUnitActiveSec=15min", timer)
             self.assertIn("RandomizedDelaySec=45min", timer)
+            self.assertIn("Unit=xray-caddy-random-tls@%i.service", timer)
 
     def test_apply_random_tls_switch_updates_selected_site(self) -> None:
         site = caddy.SiteConfig(

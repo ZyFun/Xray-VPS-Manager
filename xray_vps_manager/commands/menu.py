@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-22 13:06 UTC"
+MENU_UPDATED = "2026-06-22 15:33 UTC"
 
 
 def die(message):
@@ -249,7 +249,7 @@ def caddy_random_tls_menu_actions():
     return [
         ("1", "Статус TLS randomizer"),
         ("2", "Включить для site"),
-        ("3", "Отключить"),
+        ("3", "Отключить для site"),
         ("4", "Переключить сейчас"),
         ("0", "Назад"),
     ]
@@ -668,7 +668,7 @@ def caddy_random_tls_menu_handlers():
     return {
         "1": ("Статус TLS randomizer", menu_caddy_actions.random_tls_status),
         "2": ("Включить для site", lambda: menu_caddy_actions.enable_random_tls(confirm)),
-        "3": ("Отключить", lambda: menu_caddy_actions.disable_random_tls(confirm)),
+        "3": ("Отключить для site", lambda: menu_caddy_actions.disable_random_tls(confirm)),
         "4": ("Переключить сейчас", menu_caddy_actions.random_tls_run_now),
     }
 

@@ -63,12 +63,13 @@ class InstallSQLiteFirstTests(unittest.TestCase):
     def test_install_script_installs_disabled_caddy_random_tls_units(self) -> None:
         content = INSTALL_SH.read_text()
 
-        self.assertIn("cat >/etc/systemd/system/xray-caddy-random-tls.service", content)
-        self.assertIn("ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --quiet", content)
-        self.assertIn("cat >/etc/systemd/system/xray-caddy-random-tls.timer", content)
+        self.assertIn("cat >/etc/systemd/system/xray-caddy-random-tls@.service", content)
+        self.assertIn("ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --domain %i --quiet", content)
+        self.assertIn("cat >/etc/systemd/system/xray-caddy-random-tls@.timer", content)
         self.assertIn("OnUnitActiveSec=15min", content)
         self.assertIn("RandomizedDelaySec=45min", content)
-        self.assertNotIn("systemctl enable --now xray-caddy-random-tls.timer", content)
+        self.assertIn("Unit=xray-caddy-random-tls@%i.service", content)
+        self.assertNotIn("systemctl enable --now xray-caddy-random-tls@api.example.com.timer", content)
 
     def test_install_script_prompts_xhttp_mode_from_numbered_list(self) -> None:
         content = INSTALL_SH.read_text()
