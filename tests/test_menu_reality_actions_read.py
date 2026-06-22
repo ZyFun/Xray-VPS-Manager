@@ -95,6 +95,46 @@ class MenuRealityActionsReadTests(unittest.TestCase):
             },
         )
 
+    def test_prompt_xhttp_advanced_settings_keeps_download_settings_when_not_editing(self) -> None:
+        download_settings = {
+            "address": "down.example.com",
+            "port": 443,
+            "network": "xhttp",
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": "down.example.com",
+                "fingerprint": "chrome",
+                "alpn": ["h2"],
+            },
+            "xhttpSettings": {
+                "path": "/private-xhttp",
+                "mode": "auto",
+            },
+        }
+        current = {
+            "xPaddingBytes": "100-1000",
+            "scStreamUpServerSecs": "20-80",
+            "xmux": {
+                "maxConcurrency": "16-32",
+                "maxConnections": 0,
+                "cMaxReuseTimes": 0,
+                "hMaxRequestTimes": "600-900",
+                "hMaxReusableSecs": "1800-3000",
+                "hKeepAlivePeriod": 0,
+            },
+            "downloadSettings": download_settings,
+        }
+        inputs = iter(["", "", "n", "n", "n", "", "", "", "", "", "", "n"])
+
+        with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
+            settings = menu_reality_actions.prompt_xhttp_advanced_settings(
+                current,
+                default_xhttp_path="/private-xhttp",
+                default_xhttp_mode="auto",
+            )
+
+        self.assertEqual(settings["downloadSettings"], download_settings)
+
     def test_choose_tls_versions_selects_profile_by_number(self) -> None:
         inputs = iter(["3"])
 

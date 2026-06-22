@@ -556,12 +556,15 @@ def prompt_xhttp_advanced_settings(
     for key in XHTTP_XMUX_KEYS:
         extra["xmux"][key] = prompt(source_xmux.get(key, default_xmux[key]), f"xmux.{key}")
 
-    if ask_yes_no("Настроить downloadSettings", isinstance(source.get("downloadSettings"), dict)):
+    current_download_settings = source.get("downloadSettings") if isinstance(source.get("downloadSettings"), dict) else {}
+    if ask_yes_no("Настроить downloadSettings", bool(current_download_settings)):
         extra["downloadSettings"] = prompt_xhttp_download_settings(
             default_xhttp_path,
             default_xhttp_mode,
-            source.get("downloadSettings") if isinstance(source.get("downloadSettings"), dict) else {},
+            current_download_settings,
         )
+    elif current_download_settings:
+        extra["downloadSettings"] = current_download_settings
     try:
         return normalize_xhttp_extra(extra)
     except ValueError as exc:

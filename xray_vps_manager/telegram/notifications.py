@@ -13,6 +13,7 @@ from typing import Any
 
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.activity import status as activity_status
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 from xray_vps_manager.telegram import keyboards, messages, payments, subscriptions
 from xray_vps_manager.traffic import formatting as traffic_formatting
@@ -160,6 +161,17 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
     rows, total_in, total_out = daily_traffic_rows(client_db, traffic_db, day_key)
     total = total_in + total_out
     payment_summary = payments.payment_summary(db, client_db)
+    activity_first_event = activity_status.first_event_status(
+        db_path=ctx.manager_db_path,
+        now=ctx.utc_now(),
+        display_tz=tzinfo,
+        language="ru",
+    )
+    activity_status_label = (
+        f"первое событие {activity_first_event}"
+        if activity_first_event not in ("нет событий",) and not activity_first_event.startswith("недоступен:")
+        else activity_first_event
+    )
 
     lines = [
         "Xray VPS Manager: ежедневная сводка",
@@ -173,6 +185,7 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
         f"Годовая аренда домена: {payment_summary['domainAnnual']} (в месяц: {payment_summary['domainMonthly']})",
         f"Общая месячная аренда: {payment_summary['total']}",
         f"База данных: {database_usage_label(ctx.manager_db_path)}",
+        f"Журнал активности: {activity_status_label}",
         f"Диск /: {disk_usage_label('/')}",
         "",
         "Трафик за предыдущий день:",
