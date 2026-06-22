@@ -117,19 +117,63 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
 
             self.assertFalse(db_path.exists())
 
-    def test_ready_sqlite_database_passes(self) -> None:
+    def test_ready_sqlite_database_skips_full_integrity_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+            diag = self.make_diag()
+
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                test_command.sqlite_database, "quick_check"
+            ) as quick_check:
+                result = test_command.check_sqlite_database(diag)
+
+            self.assertIn("schema=4", result)
+            self.assertIn("quick_check=skipped", result)
+            self.assertIn("sqliteReady=yes", result)
+            self.assertIn("clients=1", result)
+            quick_check.assert_not_called()
+
+    def test_ready_sqlite_database_full_integrity_runs_quick_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
             diag = self.make_diag()
 
             with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
-                result = test_command.check_sqlite_database(diag)
+                result = test_command.check_sqlite_database(diag, full_integrity=True)
 
             self.assertIn("schema=4", result)
             self.assertIn("quick_check=ok", result)
             self.assertIn("sqliteReady=yes", result)
             self.assertIn("clients=1", result)
+
+    def test_sqlite_full_integrity_reports_quick_check_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+            diag = self.make_diag()
+
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path), mock.patch.object(
+                test_command.sqlite_database, "quick_check", return_value="database disk image is malformed"
+            ):
+                with self.assertRaisesRegex(RuntimeError, "PRAGMA quick_check returned"):
+                    test_command.check_sqlite_database(diag, full_integrity=True)
+
+    def test_main_routes_all_argument_to_full_integrity(self) -> None:
+        with mock.patch.object(test_command, "run_diagnostics", return_value=0) as run_diagnostics:
+            with mock.patch.object(test_command.sys, "argv", ["xray-test"]):
+                with self.assertRaises(SystemExit) as default_exit:
+                    test_command.main()
+            self.assertEqual(default_exit.exception.code, 0)
+            self.assertFalse(run_diagnostics.call_args.kwargs["full_integrity"])
+
+        with mock.patch.object(test_command, "run_diagnostics", return_value=0) as run_diagnostics:
+            with mock.patch.object(test_command.sys, "argv", ["xray-test", "--all"]):
+                with self.assertRaises(SystemExit) as all_exit:
+                    test_command.main()
+            self.assertEqual(all_exit.exception.code, 0)
+            self.assertTrue(run_diagnostics.call_args.kwargs["full_integrity"])
 
     def test_ready_sqlite_database_reports_alignment_issues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

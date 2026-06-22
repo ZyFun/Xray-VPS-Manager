@@ -535,7 +535,7 @@ def cmd_connection_add(
     security = validate_connection_security(security_value)
     port = validate_port(port_value)
     sni = validate_host(sni_value, "REALITY_SNI" if security == "reality" else "TLS_DOMAIN")
-    fp = validate_fingerprint(fingerprint_value or "chrome") if security == "reality" else ""
+    fp = validate_fingerprint(fingerprint_value or "chrome")
     transport = validate_reality_transport(transport_value or ("xhttp" if security == "tls" else "tcp"))
     if security == "tls" and transport != "xhttp":
         die("TLS connections support only xhttp transport.")
@@ -565,6 +565,7 @@ def cmd_connection_add(
                 xray_caddy.validate_domain(sni),
                 local_port=port,
                 public_port=public_port,
+                fingerprint_value=fp,
                 xhttp_path=xhttp_path,
                 xhttp_mode=xhttp_mode,
                 xhttp_extra=xhttp_extra,
@@ -612,6 +613,7 @@ def cmd_connection_add(
         print(f"PUBLIC_HOST: {result.public_host}")
         print(f"PUBLIC_PORT: {result.public_port}")
         print(f"LOCAL_PORT: {result.local_port}")
+        print(f"FINGERPRINT: {result.fingerprint or '-'}")
         print(f"TLS_MIN_VERSION: {result.tls_min_version}")
         print(f"TLS_MAX_VERSION: {result.tls_max_version}")
         if caddy_site:
@@ -1266,7 +1268,7 @@ def usage():
   xray-client list
   xray-client connection-list
   xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
-  xray-client add-connection NAME LOCAL_PORT DOMAIN --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
   xray-client connection-rename NAME_OR_TAG NEW_NAME
   xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
   xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra

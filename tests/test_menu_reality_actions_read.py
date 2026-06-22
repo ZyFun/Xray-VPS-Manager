@@ -1,9 +1,11 @@
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 
 from xray_vps_manager.commands import menu_caddy_actions, menu_reality_actions
+from xray_vps_manager.xray import caddy
 
 
 class MenuRealityActionsReadTests(unittest.TestCase):
@@ -57,7 +59,7 @@ class MenuRealityActionsReadTests(unittest.TestCase):
         )
 
     def test_choose_transport_can_collect_xhttp_advanced_defaults(self) -> None:
-        inputs = iter(["3", "/private-xhttp", "1", "y", "", "", "", "", "", "", "", ""])
+        inputs = iter(["3", "/private-xhttp", "1", "y", "", "", "n", "n", "n", "", "", "", "", "", "", "n"])
 
         with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
             settings = menu_reality_actions.choose_transport("tcp")
@@ -67,6 +69,31 @@ class MenuRealityActionsReadTests(unittest.TestCase):
         self.assertEqual(settings["xhttp_extra"]["scStreamUpServerSecs"], "20-80")
         self.assertEqual(settings["xhttp_extra"]["xmux"]["maxConcurrency"], "16-32")
         self.assertEqual(settings["xhttp_extra"]["xmux"]["hMaxRequestTimes"], "600-900")
+
+    def test_prompt_xhttp_download_settings_collects_tls_profile(self) -> None:
+        inputs = iter(["down.example.com", "", "", "", "", "", "", "1", "", "n", "n"])
+
+        with mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), redirect_stdout(StringIO()):
+            settings = menu_reality_actions.prompt_xhttp_download_settings("/private-xhttp", "auto")
+
+        self.assertEqual(
+            settings,
+            {
+                "address": "down.example.com",
+                "port": 443,
+                "network": "xhttp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": "down.example.com",
+                    "fingerprint": "chrome",
+                    "alpn": ["h2"],
+                },
+                "xhttpSettings": {
+                    "path": "/private-xhttp",
+                    "mode": "auto",
+                },
+            },
+        )
 
     def test_choose_tls_versions_selects_profile_by_number(self) -> None:
         inputs = iter(["3"])
@@ -83,6 +110,24 @@ class MenuRealityActionsReadTests(unittest.TestCase):
             tls_min, tls_max = menu_caddy_actions.prompt_tls_versions("tls1.2", "tls1.2")
 
         self.assertEqual((tls_min, tls_max), ("tls1.3", "tls1.3"))
+
+    def test_update_site_tls_supports_static_site_default_profile(self) -> None:
+        inputs = iter(["4"])
+        site = caddy.SiteConfig(
+            path=Path("/etc/caddy/conf.d/site.example.com.caddy"),
+            domain="site.example.com",
+            local_port=None,
+            tls_min_version="default",
+            tls_max_version="default",
+        )
+
+        with mock.patch.object(menu_caddy_actions, "site_rows", return_value=[site]), \
+            mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), \
+            mock.patch.object(menu_caddy_actions, "apply_site_tls_write") as apply_tls, \
+            redirect_stdout(StringIO()):
+            menu_caddy_actions.update_site_tls()
+
+        apply_tls.assert_called_once_with(site, "tls1.3", "tls1.3")
 
 
 if __name__ == "__main__":

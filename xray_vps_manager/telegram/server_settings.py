@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.xray import caddy
@@ -27,8 +28,20 @@ def tls_site_rows() -> list[dict[str, Any]]:
     return rows
 
 
-def set_tls_site_version(domain: str, local_port: int, choice_key: str) -> caddy.SiteWriteResult:
+def set_tls_site_version(
+    domain: str,
+    local_port: int,
+    choice_key: str,
+    site_path: str | Path | None = None,
+) -> caddy.SiteWriteResult:
     choice = caddy.tls_version_choice(choice_key)
+    if site_path:
+        return caddy.update_site_tls_config(
+            Path(site_path),
+            tls_min_version=choice.tls_min_version,
+            tls_max_version=choice.tls_max_version,
+            runner=subprocess.run,
+        )
     return caddy.update_site_config(
         domain,
         local_port,

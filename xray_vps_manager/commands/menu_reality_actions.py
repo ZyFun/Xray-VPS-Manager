@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -29,10 +30,12 @@ from xray_vps_manager.xray.config import (
     connection_name_from_tag,
     connection_settings_from_inbound,
     default_xhttp_advanced_extra,
+    default_xhttp_packet_up_extra,
     find_inbound,
     find_inbound_by_tag,
     inbound_tag,
     load_config as load_xray_config,
+    normalize_xhttp_download_settings,
     normalize_xhttp_extra,
     normalize_grpc_service_name,
     normalize_reality_transport,
@@ -156,7 +159,7 @@ def connection_rows(security_filter: str | None = None) -> list[dict[str, str | 
             "port": entry.get("port") or settings["port"],
             "sni": entry.get("sni") or settings["sni"],
             "transport": entry.get("transport") or settings["transport"],
-            "fingerprint": (entry.get("fingerprint") or current_fingerprint()) if security == "reality" else "-",
+            "fingerprint": (entry.get("fingerprint") or current_fingerprint()) if security == "reality" else (entry.get("fingerprint") or "-"),
         })
     return rows
 
@@ -378,7 +381,132 @@ def ask_yes_no(message: str, default: bool = True) -> bool:
     return value in ("y", "yes", "д", "да")
 
 
-def prompt_xhttp_advanced_settings(current: dict | None = None) -> dict:
+def prompt_json_object(current: dict | None, message: str) -> dict:
+    default_text = json.dumps(current or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    value = input(f"{message} [{default_text}]: ").strip()
+    if not value:
+        return dict(current or {})
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        die(f"{message} must be valid JSON: {exc}")
+    if not isinstance(parsed, dict):
+        die(f"{message} must be a JSON object.")
+    return parsed
+
+
+def prompt_bool_value(default: bool, message: str) -> bool:
+    return ask_yes_no(message, default)
+
+
+def prompt_xhttp_headers(current: dict | None = None) -> dict:
+    headers = {str(key): str(value) for key, value in (current or {}).items()}
+    if headers:
+        print("Текущие headers:")
+        for key, value in headers.items():
+            print(f"  {key}: {value}")
+    print("Добавляй headers по одному. Пустое имя завершает ввод.")
+    while True:
+        key = input("Header name: ").strip()
+        if not key:
+            break
+        value = input(f"{key}: ").strip()
+        if value:
+            headers[key] = value
+        elif key in headers and ask_yes_no(f"Удалить header {key}", False):
+            headers.pop(key, None)
+    try:
+        return normalize_xhttp_extra({"headers": headers}).get("headers", {})
+    except ValueError as exc:
+        die(str(exc))
+
+
+def prompt_xhttp_download_settings(
+    default_xhttp_path: str,
+    default_xhttp_mode: str,
+    current: dict | None = None,
+) -> dict:
+    current = current or {}
+    current_xhttp = current.get("xhttpSettings") if isinstance(current.get("xhttpSettings"), dict) else {}
+    current_tls = current.get("tlsSettings") if isinstance(current.get("tlsSettings"), dict) else {}
+    current_reality = current.get("realitySettings") if isinstance(current.get("realitySettings"), dict) else {}
+
+    print()
+    print("downloadSettings: отдельная точка входа для download/downstream.")
+    print("network фиксируется как xhttp; security выбирается tls или reality.")
+    print("address: домен или IP download endpoint без https:// и без порта.")
+    address = prompt(current.get("address", ""), "downloadSettings.address")
+    print("port: публичный порт download endpoint, обычно 443.")
+    port = prompt(current.get("port", 443), "downloadSettings.port")
+    print("security: tls для обычного TLS/Caddy/CDN, reality для отдельного Reality endpoint.")
+    security = prompt(current.get("security", "tls"), "downloadSettings.security tls|reality").strip().lower()
+    settings = {
+        "address": address,
+        "port": port,
+        "network": "xhttp",
+        "security": security,
+        "xhttpSettings": {},
+    }
+    if security == "tls":
+        print("tlsSettings.serverName: SNI для TLS download endpoint; обычно тот же домен, что address.")
+        print("tlsSettings.fingerprint: uTLS/browser fingerprint, обычно chrome.")
+        print("tlsSettings.alpn: HTTP versions через запятую, например h2 или h3. Для Caddy обычно h2.")
+        tls = {
+            "serverName": prompt(current_tls.get("serverName", address), "downloadSettings.tlsSettings.serverName"),
+            "fingerprint": prompt(current_tls.get("fingerprint", "chrome"), "downloadSettings.tlsSettings.fingerprint"),
+            "alpn": prompt(",".join(current_tls.get("alpn", ["h2"])), "downloadSettings.tlsSettings.alpn comma-list"),
+        }
+        settings["tlsSettings"] = tls
+    elif security == "reality":
+        print("realitySettings.serverName: REALITY SNI download endpoint.")
+        print("realitySettings.publicKey: публичный Reality key download endpoint, обязателен.")
+        print("realitySettings.shortId: shortId download endpoint; можно оставить пустым, если он пустой на сервере.")
+        print("realitySettings.fingerprint: uTLS/browser fingerprint, обычно chrome.")
+        print("realitySettings.spiderX: spiderX path, обычно /.")
+        settings["realitySettings"] = {
+            "serverName": prompt(current_reality.get("serverName", address), "downloadSettings.realitySettings.serverName"),
+            "publicKey": prompt(current_reality.get("publicKey", ""), "downloadSettings.realitySettings.publicKey"),
+            "shortId": prompt(current_reality.get("shortId", ""), "downloadSettings.realitySettings.shortId"),
+            "fingerprint": prompt(current_reality.get("fingerprint", "chrome"), "downloadSettings.realitySettings.fingerprint"),
+            "spiderX": prompt(current_reality.get("spiderX", "/"), "downloadSettings.realitySettings.spiderX"),
+        }
+    else:
+        die("downloadSettings.security must be tls or reality.")
+
+    print("xhttpSettings.path: path download endpoint; обычно такой же, как у основного xHTTP подключения.")
+    print("xhttpSettings.mode: режим download endpoint. Для auto Xray сам выберет подходящий режим.")
+    xhttp = {
+        "path": prompt(current_xhttp.get("path", default_xhttp_path), "downloadSettings.xhttpSettings.path"),
+        "mode": choose_xhttp_mode(current_xhttp.get("mode", default_xhttp_mode)),
+    }
+    print("xhttpSettings.host: опциональная проверка/отправка Host. Без необходимости лучше оставить пустым.")
+    host = prompt(current_xhttp.get("host", ""), "downloadSettings.xhttpSettings.host optional")
+    if host:
+        xhttp["host"] = host
+    if ask_yes_no(
+        "Настроить downloadSettings.xhttpSettings.extra JSON",
+        isinstance(current_xhttp.get("extra"), dict),
+    ):
+        print("xhttpSettings.extra: вложенный XHTTP extra для download endpoint. Не должен содержать новый downloadSettings.")
+        xhttp["extra"] = prompt_json_object(current_xhttp.get("extra") or {}, "downloadSettings.xhttpSettings.extra")
+    settings["xhttpSettings"] = xhttp
+
+    if ask_yes_no("Настроить downloadSettings.sockopt JSON", isinstance(current.get("sockopt"), dict)):
+        print("sockopt: редкие socket options для download endpoint. Обычно лучше оставить пустым.")
+        settings["sockopt"] = prompt_json_object(current.get("sockopt") or {}, "downloadSettings.sockopt")
+
+    try:
+        return normalize_xhttp_download_settings(settings)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def prompt_xhttp_advanced_settings(
+    current: dict | None = None,
+    *,
+    default_xhttp_path: str = DEFAULT_XHTTP_PATH,
+    default_xhttp_mode: str = DEFAULT_XHTTP_MODE,
+) -> dict:
     defaults = default_xhttp_advanced_extra()
     source = normalize_xhttp_extra(current or defaults)
     source_xmux = source.get("xmux") if isinstance(source.get("xmux"), dict) else {}
@@ -395,20 +523,62 @@ def prompt_xhttp_advanced_settings(current: dict | None = None) -> dict:
         ),
         "xmux": {},
     }
+
+    packet_defaults = default_xhttp_packet_up_extra()
+    if ask_yes_no(
+        "Настроить packet-up параметры",
+        any(key in source for key in ("scMaxEachPostBytes", "scMinPostsIntervalMs", "scMaxBufferedPosts")),
+    ):
+        extra["scMaxEachPostBytes"] = prompt(
+            source.get("scMaxEachPostBytes", packet_defaults["scMaxEachPostBytes"]),
+            "scMaxEachPostBytes",
+        )
+        extra["scMinPostsIntervalMs"] = prompt(
+            source.get("scMinPostsIntervalMs", packet_defaults["scMinPostsIntervalMs"]),
+            "scMinPostsIntervalMs",
+        )
+        extra["scMaxBufferedPosts"] = prompt(
+            source.get("scMaxBufferedPosts", packet_defaults["scMaxBufferedPosts"]),
+            "scMaxBufferedPosts",
+        )
+
+    if ask_yes_no("Настроить noGRPCHeader/noSSEHeader", "noGRPCHeader" in source or "noSSEHeader" in source):
+        extra["noGRPCHeader"] = prompt_bool_value(bool(source.get("noGRPCHeader", False)), "noGRPCHeader")
+        extra["noSSEHeader"] = prompt_bool_value(bool(source.get("noSSEHeader", False)), "noSSEHeader")
+
+    if ask_yes_no("Настроить custom headers", isinstance(source.get("headers"), dict)):
+        headers = prompt_xhttp_headers(source.get("headers") if isinstance(source.get("headers"), dict) else {})
+        if headers:
+            extra["headers"] = headers
+
     print()
     print("XMUX. maxConcurrency и maxConnections конфликтуют: оставляй один из них равным 0.")
     for key in XHTTP_XMUX_KEYS:
         extra["xmux"][key] = prompt(source_xmux.get(key, default_xmux[key]), f"xmux.{key}")
+
+    if ask_yes_no("Настроить downloadSettings", isinstance(source.get("downloadSettings"), dict)):
+        extra["downloadSettings"] = prompt_xhttp_download_settings(
+            default_xhttp_path,
+            default_xhttp_mode,
+            source.get("downloadSettings") if isinstance(source.get("downloadSettings"), dict) else {},
+        )
     try:
         return normalize_xhttp_extra(extra)
     except ValueError as exc:
         die(str(exc))
 
 
-def maybe_prompt_xhttp_advanced_settings() -> dict:
+def maybe_prompt_xhttp_advanced_settings(
+    *,
+    default_xhttp_path: str = DEFAULT_XHTTP_PATH,
+    default_xhttp_mode: str = DEFAULT_XHTTP_MODE,
+) -> dict:
     if not ask_yes_no("Использовать расширенные XHTTP настройки", False):
         return {}
-    return prompt_xhttp_advanced_settings()
+    return prompt_xhttp_advanced_settings(
+        default_xhttp_path=default_xhttp_path,
+        default_xhttp_mode=default_xhttp_mode,
+    )
 
 
 def xhttp_extra_cli_arg(extra: dict | None) -> list[str]:
@@ -464,7 +634,10 @@ def choose_transport(
         mode = choose_xhttp_mode(default_xhttp_mode)
         settings["xhttp_path"] = validate_xhttp_path(path)
         settings["xhttp_mode"] = mode
-        extra = maybe_prompt_xhttp_advanced_settings()
+        extra = maybe_prompt_xhttp_advanced_settings(
+            default_xhttp_path=settings["xhttp_path"],
+            default_xhttp_mode=mode,
+        )
         if extra:
             settings["xhttp_extra"] = extra
     return settings
@@ -503,9 +676,10 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
     default_local_port = connection_store.next_local_port(config)
     local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
     public_port = str(validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
+    fp = choose_fingerprint(current_fingerprint())
     path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
     mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
-    xhttp_extra = maybe_prompt_xhttp_advanced_settings()
+    xhttp_extra = maybe_prompt_xhttp_advanced_settings(default_xhttp_path=path, default_xhttp_mode=mode)
     tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
     if install_caddy:
@@ -521,6 +695,7 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
         name,
         local_port,
         domain,
+        fp,
         "--security",
         "tls",
         "--transport",
@@ -738,6 +913,9 @@ def update_xhttp_advanced(call: CommandRunner) -> None:
     if not tag:
         print("Действие отменено.")
         return
+    config = load_config()
+    inbound = find_inbound_by_tag(config, tag)
+    settings = connection_settings_from_inbound(inbound)
     current = current_xhttp_extra(tag)
     print()
     print_xhttp_extra_status(current)
@@ -755,7 +933,11 @@ def update_xhttp_advanced(call: CommandRunner) -> None:
     if choice != "2":
         print("Неизвестное действие.")
         return
-    extra = prompt_xhttp_advanced_settings(current or default_xhttp_advanced_extra())
+    extra = prompt_xhttp_advanced_settings(
+        current or default_xhttp_advanced_extra(),
+        default_xhttp_path=str(settings.get("xhttpPath") or DEFAULT_XHTTP_PATH),
+        default_xhttp_mode=str(settings.get("xhttpMode") or DEFAULT_XHTTP_MODE),
+    )
     call(["xray-client", "connection-xhttp-extra", tag, "--xhttp-extra-json", xhttp_extra_json(extra)])
     refresh_initial_link()
 

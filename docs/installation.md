@@ -29,6 +29,14 @@ bash /tmp/xray-bootstrap.sh
 xray-menu
 ```
 
+Для второго сервера, который должен быть только download endpoint для XHTTP `downloadSettings`, не запускай основной `install.sh`. Используй отдельный Caddy-only установщик:
+
+```bash
+bash install-caddy-download-proxy.sh
+```
+
+Он устанавливает только Caddy и команду `caddy-menu`; Xray, `manager.db`, клиенты, Telegram bot и основной менеджер на такой сервер не ставятся. В `caddy-menu` настройки вводятся интерактивно: меню показывает, что именно будет проксироваться, текущие значения, описание каждого поля, ручной ввод `UPSTREAM_PORT` с дефолтом `443`, ручной ввод `XHTTP_PATH`, нумерованный выбор для `XHTTP_MODE`, `TLS_FINGERPRINT`, `TLS_ALPN` и `TLS_PROFILE`, preview Caddyfile и JSON для `downloadSettings`.
+
 `install.sh` предназначен для новой установки менеджера на сервер. При запуске на уже настроенном сервере он создаёт новый Reality-конфиг, новые ключи, новый UUID и стартового клиента, поэтому для обновления установленного сервера нужно использовать меню: `xray-manager-update` обновляет сам менеджер, а `xray-update` обновляет Xray Core и geo assets.
 
 `bootstrap.sh` - это первый вход для чистого сервера. Он ставит минимальные зависимости `curl`, `ca-certificates` и `tar`, скачивает release-архив `ZyFun/Xray-VPS-Manager`, переносит старую папку `/root/xray_server` в backup-папку при необходимости и запускает `install.sh`. Если на сервере уже есть `/usr/local/etc/xray/config.json` или `/usr/local/etc/xray/manager.db`, bootstrap останавливается и предлагает использовать `xray-manager-update`, чтобы не пересоздать рабочий конфиг.

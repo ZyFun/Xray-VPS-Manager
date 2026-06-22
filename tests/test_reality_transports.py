@@ -1,5 +1,6 @@
-from urllib.parse import parse_qs, urlsplit
+import json
 import unittest
+from urllib.parse import parse_qs, quote, urlsplit
 from unittest import mock
 
 from xray_vps_manager.clients import connections as client_connections
@@ -20,6 +21,39 @@ XHTTP_EXTRA = {
         "hMaxRequestTimes": "500-800",
         "hMaxReusableSecs": "1500-2400",
         "hKeepAlivePeriod": 0,
+    },
+}
+XHTTP_FULL_EXTRA = {
+    "headers": {"X-Client-Profile": "mobile"},
+    "xPaddingBytes": "120-900",
+    "noGRPCHeader": False,
+    "noSSEHeader": False,
+    "scMaxEachPostBytes": "500000-1000000",
+    "scMinPostsIntervalMs": "10-50",
+    "scMaxBufferedPosts": 30,
+    "scStreamUpServerSecs": "25-70",
+    "xmux": {
+        "maxConcurrency": "12-24",
+        "maxConnections": 0,
+        "cMaxReuseTimes": 0,
+        "hMaxRequestTimes": "500-800",
+        "hMaxReusableSecs": "1500-2400",
+        "hKeepAlivePeriod": 0,
+    },
+    "downloadSettings": {
+        "address": "down.example.com",
+        "port": 443,
+        "network": "xhttp",
+        "security": "tls",
+        "tlsSettings": {
+            "serverName": "down.example.com",
+            "fingerprint": "chrome",
+            "alpn": ["h2"],
+        },
+        "xhttpSettings": {
+            "path": "/private-xhttp",
+            "mode": "auto",
+        },
     },
 }
 
@@ -70,6 +104,22 @@ class RealityTransportTests(unittest.TestCase):
         extra = xray_config.normalize_xhttp_extra({"scStreamUpServerSecs": "-1"})
 
         self.assertEqual(extra, {"scStreamUpServerSecs": -1})
+
+    def test_xhttp_extra_normalizes_packet_headers_and_download_settings(self) -> None:
+        extra = xray_config.normalize_xhttp_extra(XHTTP_FULL_EXTRA)
+
+        self.assertEqual(extra, XHTTP_FULL_EXTRA)
+        self.assertEqual(
+            xray_config.xhttp_server_extra(extra),
+            {
+                "headers": {"X-Client-Profile": "mobile"},
+                "xPaddingBytes": "120-900",
+                "noSSEHeader": False,
+                "scMaxEachPostBytes": "500000-1000000",
+                "scMaxBufferedPosts": 30,
+                "scStreamUpServerSecs": "25-70",
+            },
+        )
 
     def test_update_existing_connection_to_grpc_removes_client_flow(self) -> None:
         item = {
@@ -180,7 +230,7 @@ class RealityTransportTests(unittest.TestCase):
             transport="xhttp",
             xhttp_path="/private-xhttp",
             xhttp_mode="auto",
-            xhttp_extra=XHTTP_EXTRA,
+            xhttp_extra=XHTTP_FULL_EXTRA,
             key_pair_factory=lambda: ("private-key-2", "public-key-2"),
             short_id_factory=lambda: "bcde",
         )
@@ -189,11 +239,15 @@ class RealityTransportTests(unittest.TestCase):
         self.assertEqual(
             inbound["streamSettings"]["xhttpSettings"]["extra"],
             {
+                "headers": {"X-Client-Profile": "mobile"},
                 "xPaddingBytes": "120-900",
+                "noSSEHeader": False,
+                "scMaxEachPostBytes": "500000-1000000",
+                "scMaxBufferedPosts": 30,
                 "scStreamUpServerSecs": "25-70",
             },
         )
-        self.assertEqual(db["connections"][connection.tag]["xhttpExtra"], XHTTP_EXTRA)
+        self.assertEqual(db["connections"][connection.tag]["xhttpExtra"], XHTTP_FULL_EXTRA)
 
         with mock.patch.object(client_links, "server_addr", return_value="vpn.example"), \
             mock.patch.object(client_links, "server_name", return_value="Xray"), \
@@ -202,6 +256,8 @@ class RealityTransportTests(unittest.TestCase):
 
         params = parse_qs(urlsplit(link).query)
         self.assertIn("extra", params)
+        self.assertIn('"downloadSettings"', params["extra"][0])
+        self.assertIn('"scMinPostsIntervalMs":"10-50"', params["extra"][0])
         self.assertIn('"xmux"', params["extra"][0])
         self.assertIn('"xPaddingBytes":"120-900"', params["extra"][0])
 
@@ -218,6 +274,7 @@ class RealityTransportTests(unittest.TestCase):
             "api",
             "api.example.com",
             local_port=10000,
+            fingerprint_value="ios",
             xhttp_path="/private-xhttp",
             xhttp_mode="auto",
         )
@@ -238,6 +295,10 @@ class RealityTransportTests(unittest.TestCase):
         self.assertNotIn("flow", result.entry["client"])
         self.assertEqual(db["connections"][connection.tag]["security"], "tls")
         self.assertEqual(db["connections"][connection.tag]["publicHost"], "api.example.com")
+        self.assertEqual(connection.fingerprint, "ios")
+        self.assertEqual(db["connections"][connection.tag]["fingerprint"], "ios")
+        tls_rows = [row for row in client_connections.connection_rows(config, db) if row[1] == connection.tag]
+        self.assertEqual(tls_rows[0][6], "ios")
 
         with mock.patch.object(client_links, "server_name", return_value="Xray"):
             link = client_links.link_for(config, CLIENT_ID, "alice", connection.tag, db)
@@ -249,6 +310,7 @@ class RealityTransportTests(unittest.TestCase):
         self.assertEqual(params["security"], ["tls"])
         self.assertEqual(params["type"], ["xhttp"])
         self.assertEqual(params["sni"], ["api.example.com"])
+        self.assertEqual(params["fp"], ["ios"])
         self.assertEqual(params["path"], ["/private-xhttp"])
         self.assertNotIn("pbk", params)
 
@@ -289,12 +351,7 @@ class RealityTransportTests(unittest.TestCase):
         self.assertNotIn("flow", outbound["settings"]["vnext"][0]["users"][0])
 
     def test_cascade_parser_accepts_xhttp_extra_from_link(self) -> None:
-        extra = (
-            "%7B%22scStreamUpServerSecs%22%3A%2225-70%22%2C%22xPaddingBytes%22%3A%22120-900%22%2C"
-            "%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22hKeepAlivePeriod%22%3A0%2C"
-            "%22hMaxRequestTimes%22%3A%22500-800%22%2C%22hMaxReusableSecs%22%3A%221500-2400%22%2C"
-            "%22maxConcurrency%22%3A%2212-24%22%2C%22maxConnections%22%3A0%7D%7D"
-        )
+        extra = quote(json.dumps(XHTTP_FULL_EXTRA, separators=(",", ":"), sort_keys=True), safe="")
         link = (
             "vless://11111111-1111-1111-1111-111111111111@example.com:443?"
             "security=reality&encryption=none&type=xhttp&pbk=public-key&fp=firefox"
@@ -303,7 +360,7 @@ class RealityTransportTests(unittest.TestCase):
 
         outbound, _ = set_cascade.parse_vless(link, "cascade-xhttp")
 
-        self.assertEqual(outbound["streamSettings"]["xhttpSettings"]["extra"], XHTTP_EXTRA)
+        self.assertEqual(outbound["streamSettings"]["xhttpSettings"]["extra"], XHTTP_FULL_EXTRA)
 
     def test_rename_connection_changes_display_name_only(self) -> None:
         config = {"inbounds": [base_inbound("xhttp")]}

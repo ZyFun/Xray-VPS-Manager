@@ -412,15 +412,18 @@ def table_values(connection, table, column):
     return {str(row[column]) for row in rows}
 
 
-def check_sqlite_database(diag):
+def check_sqlite_database(diag, full_integrity=False):
     if not MANAGER_DB_PATH.exists():
         raise RuntimeError(f"not found: {MANAGER_DB_PATH}; run install.sh or restore a backup with manager.db")
 
     connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
     try:
-        quick_check = sqlite_database.quick_check(connection)
-        if quick_check != "ok":
-            raise RuntimeError(f"PRAGMA quick_check returned: {quick_check}")
+        quick_check_status = "skipped; run xray-test --all for full SQLite integrity scan"
+        if full_integrity:
+            quick_check = sqlite_database.quick_check(connection)
+            if quick_check != "ok":
+                raise RuntimeError(f"PRAGMA quick_check returned: {quick_check}")
+            quick_check_status = "ok"
 
         version = sqlite_schema.schema_version(connection)
         if version != sqlite_schema.CURRENT_SCHEMA_VERSION:
@@ -447,7 +450,7 @@ def check_sqlite_database(diag):
                 raise RuntimeError("; ".join(issues[:8]))
 
         count_text = ", ".join(f"{key}={value}" for key, value in counts.items())
-        return f"{MANAGER_DB_PATH} schema={version}, quick_check=ok, sqliteReady=yes, {count_text}"
+        return f"{MANAGER_DB_PATH} schema={version}, quick_check={quick_check_status}, sqliteReady=yes, {count_text}"
     finally:
         connection.close()
 
@@ -988,7 +991,7 @@ def check_file_permissions():
     return "sensitive file permissions OK: " + ", ".join(checked)
 
 
-def run_diagnostics():
+def run_diagnostics(full_integrity=False):
     diag = Diagnostics()
     diag.check("Root privileges", check_root)
     diag.check("Xray binary", lambda: check_xray_binary(diag))
@@ -1002,7 +1005,7 @@ def run_diagnostics():
     diag.check("Activity exceptions DB", lambda: check_activity_exceptions_db(diag))
     diag.check("Activity blocklist DB", lambda: check_activity_blocklist_db(diag))
     diag.check("Telegram bot DB", lambda: check_telegram_bot_db(diag))
-    diag.check("Manager SQLite DB", lambda: check_sqlite_database(diag), fatal=False)
+    diag.check("Manager SQLite DB", lambda: check_sqlite_database(diag, full_integrity=full_integrity), fatal=False)
     diag.check("server.env", lambda: check_server_env(diag))
     diag.check("Manager timezone", lambda: check_manager_timezone(diag))
     diag.check("Reality connections", lambda: check_reality_inbounds(diag))
@@ -1035,14 +1038,18 @@ def usage():
     print("""Usage:
   xray-test
   xray-test --all
+
+Default mode skips the full SQLite PRAGMA quick_check scan.
+Use --all when you need a deep SQLite physical integrity check.
 """)
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] not in ("--all", "all"):
+    args = sys.argv[1:]
+    if len(args) > 1 or any(arg not in ("--all", "all") for arg in args):
         usage()
         sys.exit(1)
-    sys.exit(run_diagnostics())
+    sys.exit(run_diagnostics(full_integrity=bool(args)))
 
 
 if __name__ == "__main__":

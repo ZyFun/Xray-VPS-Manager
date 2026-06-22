@@ -218,7 +218,7 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
                 entry.get("port", ""),
                 entry.get("sni", ""),
                 entry.get("transport", "tcp"),
-                entry.get("fingerprint", fallback_fingerprint) if security == "reality" else "-",
+                entry.get("fingerprint", fallback_fingerprint) if security == "reality" else (entry.get("fingerprint") or "-"),
                 entry.get("created", "unknown"),
             ]
         )
@@ -461,6 +461,7 @@ def add_tls_xhttp_connection(
     *,
     local_port: int,
     public_port: int = DEFAULT_XHTTP_TLS_PUBLIC_PORT,
+    fingerprint_value: str = "",
     xhttp_path: str = "",
     xhttp_mode: str = "",
     xhttp_extra: dict[str, Any] | None = None,
@@ -476,6 +477,10 @@ def add_tls_xhttp_connection(
 
     if local_port in used_ports(config):
         raise ValueError(f"LOCAL_PORT is already used by another inbound: {local_port}")
+
+    fp = (fingerprint_value or "").strip().lower()
+    if fp and fp not in FINGERPRINTS:
+        raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
 
     tag = next_tls_connection_tag(config)
     inbound = make_tls_xhttp_inbound(
@@ -502,7 +507,7 @@ def add_tls_xhttp_connection(
         "publicHost": domain,
         "sni": domain,
         "dest": "",
-        "fingerprint": "",
+        "fingerprint": fp,
         "publicKey": "",
         "shortId": "",
         "caddy": bool(caddy_enabled),
@@ -524,7 +529,7 @@ def add_tls_xhttp_connection(
         port=public_port,
         sni=domain,
         dest="",
-        fingerprint="",
+        fingerprint=fp,
         public_key="",
         short_id="",
         transport=record.get("transport", "xhttp"),
