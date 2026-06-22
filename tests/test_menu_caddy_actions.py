@@ -15,7 +15,7 @@ class MenuCaddyActionsTests(unittest.TestCase):
         next_run, left = menu_caddy_actions.timer_line_next_and_left(
             "Mon 2026-06-22 01:49:41 MSK 43min "
             "Mon 2026-06-22 01:01:45 MSK 4min 49s ago "
-            "xray-caddy-random-tls.timer xray-caddy-random-tls.service"
+            "xray-caddy-random-tls@api.example.com.timer xray-caddy-random-tls@api.example.com.service"
         )
 
         self.assertEqual(next_run, "Mon 2026-06-22 01:49:41 MSK")
@@ -25,7 +25,7 @@ class MenuCaddyActionsTests(unittest.TestCase):
     def test_timer_line_next_and_left_parses_multi_part_left(self) -> None:
         next_run, left = menu_caddy_actions.timer_line_next_and_left(
             "Mon 2026-06-22 02:19:41 MSK 1h 13min n/a n/a "
-            "xray-caddy-random-tls.timer xray-caddy-random-tls.service"
+            "xray-caddy-random-tls@api.example.com.timer xray-caddy-random-tls@api.example.com.service"
         )
 
         self.assertEqual(next_run, "Mon 2026-06-22 02:19:41 MSK")

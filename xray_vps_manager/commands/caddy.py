@@ -22,13 +22,13 @@ def require_root() -> None:
 
 def usage() -> None:
     print("Usage:")
-    print("  xray-vps-manager caddy random-tls-run [--quiet]")
+    print("  xray-vps-manager caddy random-tls-run [--domain DOMAIN] [--quiet]")
 
 
-def cmd_random_tls_run(quiet: bool = False) -> None:
+def cmd_random_tls_run(quiet: bool = False, domain: str | None = None) -> None:
     require_root()
     try:
-        result = caddy.apply_random_tls_switch()
+        result = caddy.apply_random_tls_switch(domain=domain)
     except (FileNotFoundError, ValueError, OSError, subprocess.CalledProcessError, RuntimeError) as exc:
         die(str(exc))
     if quiet:
@@ -49,10 +49,17 @@ def main() -> None:
     command = args.pop(0)
     quiet = "--quiet" in args
     args = [item for item in args if item != "--quiet"]
-    if args:
-        die(f"Unknown argument: {args[0]}")
+    domain = None
+    while args:
+        arg = args.pop(0)
+        if arg == "--domain":
+            if not args:
+                die("--domain requires a value.")
+            domain = args.pop(0)
+            continue
+        die(f"Unknown argument: {arg}")
     if command == "random-tls-run":
-        cmd_random_tls_run(quiet=quiet)
+        cmd_random_tls_run(quiet=quiet, domain=domain)
         return
     die(f"Unknown caddy command: {command}")
 
