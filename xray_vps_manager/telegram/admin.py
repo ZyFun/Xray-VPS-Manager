@@ -33,7 +33,7 @@ class AdminContext:
     xray_client: Path = Path("/usr/local/sbin/xray-client")
     server_name_fragment: Callable[[], str] = default_server_name_fragment
     list_tls_sites: Callable[[], list[dict[str, Any]]] = server_settings.tls_site_rows
-    set_tls_site_version: Callable[[str, int, str], Any] = server_settings.set_tls_site_version
+    set_tls_site_version: Callable[..., Any] = server_settings.set_tls_site_version
 
 
 def normalize_message_id(value):
@@ -255,6 +255,7 @@ def server_tls_site_text(site, prefix=""):
     label = str(site.get("tlsLabel") or "-")
     modified_at = str(site.get("modifiedAt") or "-")
     local_port = site.get("localPort") or "-"
+    upstream = f"127.0.0.1:{local_port}" if local_port != "-" else "-"
     lines = []
     if prefix:
         lines.extend([prefix, ""])
@@ -264,7 +265,7 @@ def server_tls_site_text(site, prefix=""):
             "",
             f"Текущее шифрование: {label}",
             f"Изменено: {modified_at}",
-            f"Upstream: 127.0.0.1:{local_port}",
+            f"Upstream: {upstream}",
             "",
             "Выбери новый TLS-профиль.",
         ]
@@ -316,11 +317,12 @@ def handle_server_tls_set(ctx: AdminContext, db, chat_id, index_value, choice_ke
         local_port = int(site.get("localPort") or 0)
     except (TypeError, ValueError):
         local_port = 0
-    if local_port <= 0:
+    site_path = str(site.get("path") or "")
+    if local_port <= 0 and not site_path:
         send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, "Не удалось определить upstream local port для site config.")
         return True
     try:
-        ctx.set_tls_site_version(str(site.get("domain") or ""), local_port, choice.key)
+        ctx.set_tls_site_version(str(site.get("domain") or ""), local_port, choice.key, site_path or None)
     except Exception as exc:
         text = messages.truncate_telegram_text(
             f"Не удалось изменить TLS для {site.get('domain') or '-'}.\n\n"

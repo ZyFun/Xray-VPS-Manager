@@ -131,8 +131,8 @@ class TelegramAdminTests(unittest.TestCase):
             }
         ]
 
-        def set_tls_site_version(domain, local_port, choice_key):
-            calls.append((domain, local_port, choice_key))
+        def set_tls_site_version(domain, local_port, choice_key, site_path=None):
+            calls.append((domain, local_port, choice_key, site_path))
 
         ctx = self.make_context(
             events,
@@ -144,10 +144,42 @@ class TelegramAdminTests(unittest.TestCase):
         self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-site:0"))
         self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-set:0:tls13"))
 
-        self.assertEqual(calls, [("api.example.com", 10300, "tls13")])
+        self.assertEqual(calls, [("api.example.com", 10300, "tls13", None)])
         sent = [event for event in events if "text" in event][-1]
         self.assertIn("TLS обновлён для api.example.com: TLS 1.3", sent["text"])
         self.assertIn("Caddy config проверен и применён.", sent["text"])
+
+    def test_server_tls_set_updates_static_site_by_config_path(self) -> None:
+        db = {"adminState": {}}
+        events = []
+        calls = []
+        sites = [
+            {
+                "domain": "site.example.com",
+                "path": "/etc/caddy/conf.d/site.example.com.caddy",
+                "localPort": None,
+                "tlsChoice": "default",
+                "tlsLabel": "Caddy default",
+                "modifiedAt": "2026-06-21 10:00 UTC",
+            }
+        ]
+
+        def set_tls_site_version(domain, local_port, choice_key, site_path=None):
+            calls.append((domain, local_port, choice_key, site_path))
+
+        ctx = self.make_context(
+            events,
+            list_tls_sites=lambda: sites,
+            set_tls_site_version=set_tls_site_version,
+        )
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-site:0"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-set:0:tls13"))
+
+        self.assertEqual(calls, [("site.example.com", 0, "tls13", "/etc/caddy/conf.d/site.example.com.caddy")])
+        sent = [event for event in events if "text" in event][-1]
+        self.assertIn("TLS обновлён для site.example.com: TLS 1.3", sent["text"])
 
     def test_admin_menu_registers_latest_callback_message(self) -> None:
         db = {"adminState": {}}

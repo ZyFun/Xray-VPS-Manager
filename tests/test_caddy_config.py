@@ -30,6 +30,63 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertNotIn("protocols", block)
         self.assertIn("reverse_proxy h2c://127.0.0.1:10000", block)
 
+    def test_update_site_tls_config_preserves_static_site_from_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            static_root = root / "site"
+            static_root.mkdir()
+            path = root / "site.example.com.caddy"
+            path.write_text(
+                "site.example.com {\n"
+                f"    root * {static_root}\n"
+                "    file_server\n"
+                "}\n"
+            )
+
+            result = caddy.update_site_tls_config(
+                path,
+                tls_min_version="tls1.3",
+                tls_max_version="tls1.3",
+                validator=lambda: None,
+            )
+
+            content = path.read_text()
+            backup_exists = result.backup.exists()
+
+        self.assertEqual(result.path, path)
+        self.assertIn("protocols tls1.3 tls1.3", content)
+        self.assertIn(f"root * {static_root}", content)
+        self.assertIn("file_server", content)
+        self.assertTrue(backup_exists)
+
+    def test_update_site_tls_config_removes_protocol_override_for_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "site.example.com.caddy"
+            path.write_text(
+                "site.example.com {\n"
+                "    tls {\n"
+                "        protocols tls1.2 tls1.2\n"
+                "    }\n"
+                "\n"
+                "    root * /var/www/site\n"
+                "    file_server\n"
+                "}\n"
+            )
+
+            caddy.update_site_tls_config(
+                path,
+                tls_min_version="default",
+                tls_max_version="default",
+                validator=lambda: None,
+            )
+
+            content = path.read_text()
+
+        self.assertNotIn("protocols", content)
+        self.assertNotIn("tls {", content)
+        self.assertIn("root * /var/www/site", content)
+        self.assertIn("file_server", content)
+
     def test_tls_version_choices_map_to_protocol_pairs(self) -> None:
         self.assertEqual(caddy.tls_version_label("tls1.2", "tls1.3"), "TLS 1.2 + TLS 1.3")
         self.assertEqual(caddy.tls_version_choice("tls13").tls_min_version, "tls1.3")

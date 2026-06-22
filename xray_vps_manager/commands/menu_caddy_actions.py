@@ -356,6 +356,14 @@ def apply_site_write(domain: str, local_port: int, tls_min: str, tls_max: str) -
     print(f"Caddy site updated: {result.path}")
 
 
+def apply_site_tls_write(site: caddy.SiteConfig, tls_min: str, tls_max: str) -> None:
+    try:
+        result = caddy.update_site_tls_config(site.path, tls_min_version=tls_min, tls_max_version=tls_max)
+    except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError) as exc:
+        die(f"Caddy config failed. Previous site config was restored. Detail: {exc}")
+    print(f"Caddy site TLS updated: {result.path}")
+
+
 def tls_connection_options() -> list[dict]:
     config = load_xray_config()
     db = load_db_sql()
@@ -425,11 +433,8 @@ def update_site_tls() -> None:
     site = choose_site("изменения TLS version", auto_single=True)
     if not site:
         return
-    if site.local_port is None:
-        print("Не удалось определить upstream local port в site config.")
-        return
     tls_min, tls_max = prompt_tls_versions(site.tls_min_version, site.tls_max_version)
-    apply_site_write(site.domain, site.local_port, tls_min, tls_max)
+    apply_site_tls_write(site, tls_min, tls_max)
 
 
 def update_site_upstream() -> None:

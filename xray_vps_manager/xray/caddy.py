@@ -32,6 +32,7 @@ DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 TLS_VERSIONS = {"default", "tls1.2", "tls1.3"}
 REVERSE_PROXY_RE = re.compile(r"reverse_proxy\s+h2c://127\.0\.0\.1:(?P<port>[0-9]+)")
 PROTOCOLS_RE = re.compile(r"protocols\s+(?P<min>tls1\.[23])\s+(?P<max>tls1\.[23])")
+PROTOCOLS_LINE_RE = re.compile(r"^\s*protocols\s+tls1\.[23]\s+tls1\.[23]\s*(?:#.*)?$")
 ROOT_DIRECTIVE_RE = re.compile(r"(?m)^\s*root\s+(?:\*\s+)?(?P<path>/\S+)")
 DANGEROUS_SITE_ROOTS = {
     Path("/"),
@@ -170,6 +171,95 @@ def tls_version_choice_key(tls_min_version: str | None, tls_max_version: str | N
         if (choice.tls_min_version, choice.tls_max_version) == (tls_min, tls_max):
             return choice.key
     return ""
+
+
+def line_brace_delta(line: str) -> int:
+    return line.count("{") - line.count("}")
+
+
+def first_site_block_line_span(lines: list[str]) -> tuple[int, int]:
+    start = None
+    depth = 0
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if start is None:
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "{" in stripped:
+                start = index
+                depth = line_brace_delta(line)
+                if depth <= 0:
+                    return start, index
+            continue
+        depth += line_brace_delta(line)
+        if depth <= 0:
+            return start, index
+    raise ValueError("Caddy site block not found.")
+
+
+def top_level_tls_block_line_span(lines: list[str], site_start: int, site_end: int) -> tuple[int, int] | None:
+    depth = line_brace_delta(lines[site_start])
+    index = site_start + 1
+    while index < site_end:
+        stripped = lines[index].strip()
+        if depth == 1 and re.fullmatch(r"tls\s*\{\s*(?:#.*)?", stripped):
+            tls_start = index
+            tls_depth = depth + line_brace_delta(lines[index])
+            tls_end = index
+            while tls_depth > 1 and tls_end < site_end:
+                tls_end += 1
+                tls_depth += line_brace_delta(lines[tls_end])
+            if tls_depth == 1:
+                return tls_start, tls_end
+            raise ValueError("Caddy TLS block could not be parsed.")
+        depth += line_brace_delta(lines[index])
+        index += 1
+    return None
+
+
+def set_site_tls_versions_in_text(text: str, tls_min_version: str | None, tls_max_version: str | None) -> str:
+    tls_min, tls_max = normalize_tls_version_pair(tls_min_version, tls_max_version)
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        raise ValueError("Caddy site config is empty.")
+
+    site_start, site_end = first_site_block_line_span(lines)
+    tls_span = top_level_tls_block_line_span(lines, site_start, site_end)
+    tls_indent = "    "
+    protocols_indent = "        "
+    protocols_line = f"{protocols_indent}protocols {tls_min} {tls_max}\n"
+
+    if tls_span is None:
+        if tls_min == "default":
+            return text
+        lines[site_start + 1 : site_start + 1] = [
+            f"{tls_indent}tls {{\n",
+            protocols_line,
+            f"{tls_indent}}}\n",
+            "\n",
+        ]
+        return "".join(lines)
+
+    tls_start, tls_end = tls_span
+    if tls_min != "default":
+        for index in range(tls_start + 1, tls_end):
+            if PROTOCOLS_LINE_RE.fullmatch(lines[index].strip()):
+                lines[index] = protocols_line
+                return "".join(lines)
+        lines[tls_start + 1 : tls_start + 1] = [protocols_line]
+        return "".join(lines)
+
+    block = list(lines[tls_start : tls_end + 1])
+    block = [line for index, line in enumerate(block) if index in (0, len(block) - 1) or not PROTOCOLS_LINE_RE.fullmatch(line.strip())]
+    meaningful_inner = [line for line in block[1:-1] if line.strip() and not line.strip().startswith("#")]
+    if meaningful_inner:
+        lines[tls_start : tls_end + 1] = block
+        return "".join(lines)
+
+    del lines[tls_start : tls_end + 1]
+    if tls_start < len(lines) and not lines[tls_start].strip():
+        del lines[tls_start]
+    return "".join(lines)
 
 
 def validate_port(value: int | str) -> int:
@@ -880,6 +970,38 @@ def update_site_config(
             pass
         raise
     return SiteWriteResult(written, backup)
+
+
+def update_site_tls_config(
+    path: str | Path,
+    *,
+    tls_min_version: str = "tls1.2",
+    tls_max_version: str = "tls1.2",
+    runner=subprocess.run,
+    validator=None,
+) -> SiteWriteResult:
+    site_path = Path(path)
+    if not site_path.exists():
+        raise FileNotFoundError(f"Caddy site config not found: {site_path}")
+    backup = backup_file(site_path)
+    validate = validator or (lambda: validate_and_reload_caddy(runner))
+    try:
+        site_path.write_text(
+            set_site_tls_versions_in_text(
+                site_path.read_text(),
+                tls_min_version,
+                tls_max_version,
+            )
+        )
+        validate()
+    except Exception:
+        restore_file(backup, site_path)
+        try:
+            validate()
+        except Exception:
+            pass
+        raise
+    return SiteWriteResult(site_path, backup)
 
 
 def apply_random_tls_switch(

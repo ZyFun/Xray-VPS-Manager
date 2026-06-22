@@ -32,8 +32,33 @@ XHTTP_XMUX_KEYS = (
     "hMaxReusableSecs",
     "hKeepAlivePeriod",
 )
-XHTTP_SERVER_EXTRA_KEYS = ("xPaddingBytes", "scStreamUpServerSecs")
-XHTTP_EXTRA_KEYS = XHTTP_SERVER_EXTRA_KEYS + ("xmux",)
+XHTTP_DOWNLOAD_SETTINGS_KEYS = (
+    "address",
+    "port",
+    "network",
+    "security",
+    "tlsSettings",
+    "realitySettings",
+    "xhttpSettings",
+    "sockopt",
+)
+XHTTP_DOWNLOAD_TLS_KEYS = ("serverName", "fingerprint", "alpn")
+XHTTP_DOWNLOAD_REALITY_KEYS = ("serverName", "publicKey", "shortId", "fingerprint", "spiderX")
+XHTTP_DOWNLOAD_XHTTP_KEYS = ("host", "path", "mode", "extra")
+XHTTP_SERVER_EXTRA_KEYS = (
+    "headers",
+    "xPaddingBytes",
+    "noSSEHeader",
+    "scMaxEachPostBytes",
+    "scMaxBufferedPosts",
+    "scStreamUpServerSecs",
+)
+XHTTP_EXTRA_KEYS = XHTTP_SERVER_EXTRA_KEYS + (
+    "noGRPCHeader",
+    "scMinPostsIntervalMs",
+    "xmux",
+    "downloadSettings",
+)
 DEFAULT_XHTTP_ADVANCED_EXTRA = {
     "xPaddingBytes": "100-1000",
     "scStreamUpServerSecs": "20-80",
@@ -46,8 +71,15 @@ DEFAULT_XHTTP_ADVANCED_EXTRA = {
         "hKeepAlivePeriod": 0,
     },
 }
+DEFAULT_XHTTP_PACKET_UP_EXTRA = {
+    "scMaxEachPostBytes": 1000000,
+    "scMinPostsIntervalMs": 30,
+    "scMaxBufferedPosts": 30,
+}
 VISION_FLOW = "xtls-rprx-vision"
 GRPC_SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
+HTTP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
 NON_NEGATIVE_RANGE_RE = re.compile(r"^(0|[1-9][0-9]*)(?:-(0|[1-9][0-9]*))?$")
 INTEGER_RE = re.compile(r"^-?(0|[1-9][0-9]*)$")
 
@@ -177,6 +209,10 @@ def default_xhttp_advanced_extra() -> dict[str, Any]:
     return json.loads(json.dumps(DEFAULT_XHTTP_ADVANCED_EXTRA))
 
 
+def default_xhttp_packet_up_extra() -> dict[str, Any]:
+    return dict(DEFAULT_XHTTP_PACKET_UP_EXTRA)
+
+
 def _is_empty_extra_value(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
@@ -225,12 +261,199 @@ def _normalize_integer(value: Any, label: str) -> int:
     return int(text, 10)
 
 
+def _normalize_non_negative_integer(value: Any, label: str) -> int:
+    number = _normalize_integer(value, label)
+    if number < 0:
+        raise ValueError(f"{label} must be >= 0.")
+    return number
+
+
+def _normalize_port(value: Any, label: str = "port") -> int:
+    port = _normalize_integer(value, label)
+    if port < 1 or port > 65535:
+        raise ValueError(f"{label} must be a number from 1 to 65535.")
+    return port
+
+
+def _normalize_bool(value: Any, label: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y", "on", "да", "д"):
+        return True
+    if text in ("false", "0", "no", "n", "off", "нет", "н"):
+        return False
+    raise ValueError(f"{label} must be true or false.")
+
+
+def _normalize_host_like(value: Any, label: str, *, required: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text:
+        if required:
+            raise ValueError(f"{label} is required.")
+        return ""
+    if "/" in text or ":" in text or any(char.isspace() for char in text) or not HOST_RE.fullmatch(text):
+        raise ValueError(f"{label} must be a domain or IP without scheme, path, spaces, or port.")
+    return text
+
+
+def _normalize_text(value: Any, label: str, *, max_length: int = 256, required: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text:
+        if required:
+            raise ValueError(f"{label} is required.")
+        return ""
+    if "\r" in text or "\n" in text or len(text) > max_length:
+        raise ValueError(f"{label} must be one line and at most {max_length} chars.")
+    return text
+
+
 def _range_is_active(value: int | str | None) -> bool:
     if value is None:
         return False
     if isinstance(value, int):
         return value > 0
     return value.strip() not in ("", "0")
+
+
+def normalize_xhttp_headers(value: Any) -> dict[str, str]:
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("headers must be a JSON object.")
+    result: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        if not HTTP_HEADER_NAME_RE.fullmatch(key):
+            raise ValueError("Header names must be 1-64 chars and use HTTP token characters.")
+        result[key] = _normalize_text(raw_value, f"headers.{key}", max_length=512)
+    return result
+
+
+def _normalize_string_list(value: Any, label: str) -> list[str]:
+    if _is_empty_extra_value(value):
+        return []
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        items = [str(item).strip() for item in value]
+    else:
+        raise ValueError(f"{label} must be a comma-separated string or JSON list.")
+    result = []
+    for item in items:
+        if not item:
+            continue
+        result.append(_normalize_text(item, label, max_length=32))
+    return result
+
+
+def _normalize_download_tls_settings(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("downloadSettings.tlsSettings must be a JSON object.")
+    unknown = sorted(str(key) for key in set(value) - set(XHTTP_DOWNLOAD_TLS_KEYS))
+    if unknown:
+        raise ValueError("Unsupported downloadSettings.tlsSettings field(s): " + ", ".join(unknown))
+    result: dict[str, Any] = {}
+    if not _is_empty_extra_value(value.get("serverName")):
+        result["serverName"] = _normalize_host_like(value.get("serverName"), "downloadSettings.tlsSettings.serverName")
+    if not _is_empty_extra_value(value.get("fingerprint")):
+        result["fingerprint"] = _normalize_text(value.get("fingerprint"), "downloadSettings.tlsSettings.fingerprint", max_length=32)
+    alpn = _normalize_string_list(value.get("alpn"), "downloadSettings.tlsSettings.alpn")
+    if alpn:
+        result["alpn"] = alpn
+    return result
+
+
+def _normalize_download_reality_settings(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("downloadSettings.realitySettings must be a JSON object.")
+    unknown = sorted(str(key) for key in set(value) - set(XHTTP_DOWNLOAD_REALITY_KEYS))
+    if unknown:
+        raise ValueError("Unsupported downloadSettings.realitySettings field(s): " + ", ".join(unknown))
+    result: dict[str, Any] = {}
+    result["serverName"] = _normalize_host_like(
+        value.get("serverName"),
+        "downloadSettings.realitySettings.serverName",
+        required=True,
+    )
+    result["publicKey"] = _normalize_text(
+        value.get("publicKey"),
+        "downloadSettings.realitySettings.publicKey",
+        max_length=128,
+        required=True,
+    )
+    if not _is_empty_extra_value(value.get("shortId")):
+        result["shortId"] = _normalize_text(value.get("shortId"), "downloadSettings.realitySettings.shortId", max_length=32)
+    if not _is_empty_extra_value(value.get("fingerprint")):
+        result["fingerprint"] = _normalize_text(value.get("fingerprint"), "downloadSettings.realitySettings.fingerprint", max_length=32)
+    if not _is_empty_extra_value(value.get("spiderX")):
+        result["spiderX"] = normalize_xhttp_path(value.get("spiderX"))
+    return result
+
+
+def _normalize_download_xhttp_settings(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("downloadSettings.xhttpSettings must be a JSON object.")
+    unknown = sorted(str(key) for key in set(value) - set(XHTTP_DOWNLOAD_XHTTP_KEYS))
+    if unknown:
+        raise ValueError("Unsupported downloadSettings.xhttpSettings field(s): " + ", ".join(unknown))
+    result: dict[str, Any] = {
+        "path": normalize_xhttp_path(value.get("path")),
+        "mode": normalize_xhttp_mode(value.get("mode")),
+    }
+    if not _is_empty_extra_value(value.get("host")):
+        result["host"] = _normalize_host_like(value.get("host"), "downloadSettings.xhttpSettings.host")
+    nested_extra = value.get("extra")
+    if not _is_empty_extra_value(nested_extra):
+        if not isinstance(nested_extra, dict):
+            raise ValueError("downloadSettings.xhttpSettings.extra must be a JSON object.")
+        if "downloadSettings" in nested_extra:
+            raise ValueError("Nested downloadSettings inside downloadSettings.xhttpSettings.extra is not supported.")
+        normalized_nested = normalize_xhttp_extra(nested_extra)
+        if normalized_nested:
+            result["extra"] = normalized_nested
+    return result
+
+
+def normalize_xhttp_download_settings(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("downloadSettings must be a JSON object.")
+    unknown = sorted(str(key) for key in set(value) - set(XHTTP_DOWNLOAD_SETTINGS_KEYS))
+    if unknown:
+        raise ValueError("Unsupported downloadSettings field(s): " + ", ".join(unknown))
+    result: dict[str, Any] = {
+        "address": _normalize_host_like(value.get("address"), "downloadSettings.address", required=True),
+        "port": _normalize_port(value.get("port") or 443, "downloadSettings.port"),
+        "network": "xhttp",
+    }
+    network = str(value.get("network") or "xhttp").strip().lower()
+    if network != "xhttp":
+        raise ValueError("downloadSettings.network must be xhttp.")
+    security = str(value.get("security") or "tls").strip().lower()
+    if security not in ("tls", "reality"):
+        raise ValueError("downloadSettings.security must be tls or reality.")
+    result["security"] = security
+    if security == "tls":
+        tls = _normalize_download_tls_settings(value.get("tlsSettings") or {})
+        if tls:
+            result["tlsSettings"] = tls
+    else:
+        result["realitySettings"] = _normalize_download_reality_settings(value.get("realitySettings") or {})
+    result["xhttpSettings"] = _normalize_download_xhttp_settings(value.get("xhttpSettings") or {})
+    sockopt = value.get("sockopt")
+    if isinstance(sockopt, dict) and sockopt:
+        result["sockopt"] = sockopt
+    elif sockopt not in (None, "", {}):
+        raise ValueError("downloadSettings.sockopt must be a JSON object.")
+    return result
 
 
 def normalize_xhttp_extra(value: dict[str, Any] | None) -> dict[str, Any]:
@@ -243,8 +466,22 @@ def normalize_xhttp_extra(value: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError("Unsupported XHTTP extra field(s): " + ", ".join(unknown))
 
     result: dict[str, Any] = {}
+    if not _is_empty_extra_value(value.get("headers")):
+        headers = normalize_xhttp_headers(value["headers"])
+        if headers:
+            result["headers"] = headers
     if not _is_empty_extra_value(value.get("xPaddingBytes")):
         result["xPaddingBytes"] = _normalize_non_negative_range(value["xPaddingBytes"], "xPaddingBytes")
+    if not _is_empty_extra_value(value.get("noGRPCHeader")):
+        result["noGRPCHeader"] = _normalize_bool(value["noGRPCHeader"], "noGRPCHeader")
+    if not _is_empty_extra_value(value.get("noSSEHeader")):
+        result["noSSEHeader"] = _normalize_bool(value["noSSEHeader"], "noSSEHeader")
+    if not _is_empty_extra_value(value.get("scMaxEachPostBytes")):
+        result["scMaxEachPostBytes"] = _normalize_non_negative_range(value["scMaxEachPostBytes"], "scMaxEachPostBytes")
+    if not _is_empty_extra_value(value.get("scMinPostsIntervalMs")):
+        result["scMinPostsIntervalMs"] = _normalize_non_negative_range(value["scMinPostsIntervalMs"], "scMinPostsIntervalMs")
+    if not _is_empty_extra_value(value.get("scMaxBufferedPosts")):
+        result["scMaxBufferedPosts"] = _normalize_non_negative_integer(value["scMaxBufferedPosts"], "scMaxBufferedPosts")
     if not _is_empty_extra_value(value.get("scStreamUpServerSecs")):
         result["scStreamUpServerSecs"] = _normalize_non_negative_range(
             value["scStreamUpServerSecs"],
@@ -271,6 +508,10 @@ def normalize_xhttp_extra(value: dict[str, Any] | None) -> dict[str, Any]:
             raise ValueError("XMUX maxConcurrency and maxConnections conflict; set only one of them above 0.")
         if xmux:
             result["xmux"] = xmux
+
+    raw_download_settings = value.get("downloadSettings")
+    if not _is_empty_extra_value(raw_download_settings):
+        result["downloadSettings"] = normalize_xhttp_download_settings(raw_download_settings)
 
     return result
 
