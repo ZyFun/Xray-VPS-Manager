@@ -2,22 +2,77 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone, tzinfo
+from pathlib import Path
+
 from xray_vps_manager.activity import blocklist as activity_blocklist
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import parser as activity_parser
 from xray_vps_manager.activity import repository
 from xray_vps_manager.activity import settings
+from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.activity.constants import (
     CONFIG_PATH,
 )
 from xray_vps_manager.activity.reports import format_size
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
+from xray_vps_manager.core.time import manager_timezone
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 
 def manager_db_status() -> str:
     if not MANAGER_DB_PATH.exists():
         return f"{MANAGER_DB_PATH}, missing"
     return f"{MANAGER_DB_PATH}, {format_size(MANAGER_DB_PATH.stat().st_size)}"
+
+
+def first_event_age(
+    first_event_time: str | None,
+    *,
+    now: datetime | None = None,
+    display_tz: tzinfo | None = None,
+) -> tuple[str | None, int | None]:
+    parsed = activity_time.parse_time(first_event_time)
+    if not parsed:
+        return None, None
+    current = now or activity_time.utc_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    tz = display_tz or manager_timezone()[0] or timezone.utc
+    first_local = parsed.astimezone(tz)
+    current_local = current.astimezone(tz)
+    return first_local.date().isoformat(), max(0, (current_local.date() - first_local.date()).days)
+
+
+def format_first_event_status(
+    first_event_time: str | None,
+    *,
+    now: datetime | None = None,
+    display_tz: tzinfo | None = None,
+    language: str = "en",
+) -> str:
+    first_date, days_ago = first_event_age(first_event_time, now=now, display_tz=display_tz)
+    if first_date is None or days_ago is None:
+        return "нет событий" if language == "ru" else "no events"
+    if language == "ru":
+        return f"{first_date} ({days_ago} дн. назад)"
+    return f"{first_date} ({days_ago} days ago)"
+
+
+def first_event_status(
+    *,
+    db_path: str | Path | None = None,
+    now: datetime | None = None,
+    display_tz: tzinfo | None = None,
+    language: str = "en",
+) -> str:
+    try:
+        first_event_time = repository.first_event_time_for_read(db_path=db_path)
+    except SQLiteReadUnavailable as exc:
+        if language == "ru":
+            return f"недоступен: {exc}"
+        return f"unavailable: {exc}"
+    return format_first_event_status(first_event_time, now=now, display_tz=display_tz, language=language)
 
 
 def status_rows() -> tuple[list[list[object]], list[str]]:
@@ -42,6 +97,7 @@ def status_rows() -> tuple[list[list[object]], list[str]]:
         ["Access log", access or "not configured"],
         ["GeoIP data", str(geoip_path) if geoip_path else "geoip.dat not available"],
         ["Manager DB", manager_db_status()],
+        ["First event", first_event_status()],
         ["Last sync", db.get("lastSync", "never")],
     ]
     warnings = []

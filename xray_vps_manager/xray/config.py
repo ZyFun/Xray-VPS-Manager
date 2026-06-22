@@ -315,7 +315,18 @@ def _range_is_active(value: int | str | None) -> bool:
         return False
     if isinstance(value, int):
         return value > 0
-    return value.strip() not in ("", "0")
+    text = value.strip()
+    if not text:
+        return False
+    integer_match = INTEGER_RE.fullmatch(text)
+    if integer_match:
+        return int(text, 10) > 0
+    range_match = NON_NEGATIVE_RANGE_RE.fullmatch(text)
+    if range_match:
+        start = int(range_match.group(1), 10)
+        end = int(range_match.group(2), 10)
+        return start > 0 or end > 0
+    return True
 
 
 def normalize_xhttp_headers(value: Any) -> dict[str, str]:

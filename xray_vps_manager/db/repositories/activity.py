@@ -113,6 +113,14 @@ def max_event_id(connection: sqlite3.Connection) -> int:
     return int(row["value"] or 0)
 
 
+def first_event_time(connection: sqlite3.Connection) -> str | None:
+    row = connection.execute(
+        "SELECT MIN(event_time) AS value FROM activity_events WHERE event_time != ''"
+    ).fetchone()
+    value = row["value"] if row else None
+    return str(value) if value else None
+
+
 def iter_geoip_events_after(
     connection: sqlite3.Connection,
     *,

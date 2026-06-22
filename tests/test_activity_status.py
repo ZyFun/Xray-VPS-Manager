@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -45,6 +46,7 @@ class ActivityStatusTests(unittest.TestCase):
                 ),
                 mock.patch.object(activity_status.settings, "xray_geoip_warning_code", return_value="RU"),
                 mock.patch.object(activity_status.activity_parser, "geoip_path", return_value=geoip_path),
+                mock.patch.object(activity_status.repository, "first_event_time_for_read", return_value=None),
                 mock.patch.object(
                     activity_status.activity_parser,
                     "available_geoip_codes",
@@ -56,6 +58,19 @@ class ActivityStatusTests(unittest.TestCase):
             self.assertEqual(warnings, [])
             self.assertIn(["Xray route GeoIP warnings", "RU"], rows)
             self.assertIn(["GeoIP data", str(geoip_path)], rows)
+            self.assertIn(["First event", "no events"], rows)
+
+    def test_first_event_status_shows_date_and_days_ago(self) -> None:
+        label = activity_status.format_first_event_status(
+            "2026-06-01T21:00:00Z",
+            now=datetime(2026, 6, 13, 8, 0, tzinfo=timezone.utc),
+            display_tz=timezone.utc,
+        )
+
+        self.assertEqual(label, "2026-06-01 (12 days ago)")
+
+    def test_first_event_status_handles_empty_activity_log(self) -> None:
+        self.assertEqual(activity_status.format_first_event_status(None), "no events")
 
 
 if __name__ == "__main__":

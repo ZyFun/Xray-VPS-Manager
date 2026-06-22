@@ -100,6 +100,34 @@ class RealityTransportTests(unittest.TestCase):
                 }
             )
 
+    def test_xhttp_extra_allows_zero_range_concurrency_with_max_connections(self) -> None:
+        extra = xray_config.normalize_xhttp_extra(
+            {
+                "xmux": {
+                    "maxConcurrency": "0-0",
+                    "maxConnections": "1-3",
+                    "cMaxReuseTimes": 0,
+                    "hMaxRequestTimes": "600-900",
+                    "hMaxReusableSecs": "1800-3000",
+                    "hKeepAlivePeriod": 45,
+                }
+            }
+        )
+
+        self.assertEqual(
+            extra,
+            {
+                "xmux": {
+                    "maxConcurrency": "0-0",
+                    "maxConnections": "1-3",
+                    "cMaxReuseTimes": 0,
+                    "hMaxRequestTimes": "600-900",
+                    "hMaxReusableSecs": "1800-3000",
+                    "hKeepAlivePeriod": 45,
+                }
+            },
+        )
+
     def test_xhttp_extra_allows_sc_stream_up_server_secs_minus_one(self) -> None:
         extra = xray_config.normalize_xhttp_extra({"scStreamUpServerSecs": "-1"})
 

@@ -221,6 +221,24 @@ def event_client_names_for_read(
             connection.close()
 
 
+def first_event_time_for_read(*, db_path: str | Path | None = None) -> str | None:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return sqlite_activity.first_event_time(connection)
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite first activity event cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def geoip_events_after_for_read(
     *,
     after_id: int = 0,
