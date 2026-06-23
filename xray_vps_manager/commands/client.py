@@ -566,6 +566,7 @@ def cmd_connection_add(
     db = load_db()
     try:
         if security == "tls":
+            tls_domain = xray_caddy.validate_domain(sni)
             if install_caddy:
                 conflicts = client_connections.public_port_conflicts(config, public_port)
                 if conflicts:
@@ -574,11 +575,12 @@ def cmd_connection_add(
                         f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
                         "Move those connections to another port before installing Caddy."
                     )
+                xray_caddy.require_site_config_absent(tls_domain)
             result = client_connections.add_tls_xhttp_connection(
                 config,
                 db,
                 name,
-                xray_caddy.validate_domain(sni),
+                tls_domain,
                 local_port=port,
                 public_port=public_port,
                 fingerprint_value=fp,
@@ -603,7 +605,7 @@ def cmd_connection_add(
                 xhttp_mode=xhttp_mode,
                 xhttp_extra=xhttp_extra,
             )
-    except (ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         die(str(exc))
 
     backup = save_config_restart_xray_and_db(config, db)
@@ -616,7 +618,7 @@ def cmd_connection_add(
                 tls_min_version=result.tls_min_version,
                 tls_max_version=result.tls_max_version,
             )
-        except (RuntimeError, subprocess.CalledProcessError) as exc:
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             die(
                 "TLS-XHTTP connection was added, but Caddy setup failed. "
                 f"Config backup: {backup}. Detail: {exc}"
@@ -679,6 +681,7 @@ def cmd_trojan_connection_add(
             path = validate_trojan_ws_path(ws_path)
             tls_min_version = validate_tls_version(tls_min_version, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
             tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
+            tls_domain = xray_caddy.validate_domain(domain)
             if install_caddy:
                 conflicts = client_connections.public_port_conflicts(config, public_port)
                 if conflicts:
@@ -687,11 +690,12 @@ def cmd_trojan_connection_add(
                         f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
                         "Move those connections to another port before installing Caddy."
                     )
+                xray_caddy.require_site_config_absent(tls_domain)
             result = client_connections.add_trojan_caddy_connection(
                 config,
                 db,
                 name,
-                xray_caddy.validate_domain(domain),
+                tls_domain,
                 local_port=local_port,
                 public_port=public_port,
                 fingerprint_value=fp,
@@ -714,7 +718,7 @@ def cmd_trojan_connection_add(
                 key_file,
                 fp,
             )
-    except (ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         die(str(exc))
 
     backup = save_config_restart_xray_and_db(config, db)
@@ -728,7 +732,7 @@ def cmd_trojan_connection_add(
                 tls_min_version=result.tls_min_version,
                 tls_max_version=result.tls_max_version,
             )
-        except (RuntimeError, subprocess.CalledProcessError) as exc:
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             die(
                 "Trojan Caddy connection was added, but Caddy setup failed. "
                 f"Config backup: {backup}. Detail: {exc}"

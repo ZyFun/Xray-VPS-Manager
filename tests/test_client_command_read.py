@@ -1,4 +1,6 @@
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from unittest import mock
 
 from xray_vps_manager.commands import client as client_command
@@ -123,6 +125,28 @@ class ClientCommandReadTests(unittest.TestCase):
         self.assertEqual(parsed[5], "firefox")
         self.assertEqual(parsed[6], "tcp")
         self.assertFalse(parsed[9])
+
+    def test_trojan_caddy_site_conflict_stops_before_config_save(self) -> None:
+        with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
+            mock.patch.object(client_command, "load_db", return_value={"connections": {}, "clients": {}}), \
+            mock.patch.object(
+                client_command.xray_caddy,
+                "require_site_config_absent",
+                side_effect=FileExistsError("existing site"),
+            ) as require_absent, \
+            mock.patch.object(client_command.client_connections, "add_trojan_caddy_connection") as add_connection, \
+            mock.patch.object(client_command, "save_config_restart_xray_and_db") as save_config:
+            with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+                client_command.cmd_trojan_connection_add(
+                    "trojan-main",
+                    "10100",
+                    "vpn.example.com",
+                    fingerprint_value="chrome",
+                )
+
+        require_absent.assert_called_once_with("vpn.example.com")
+        add_connection.assert_not_called()
+        save_config.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -744,6 +744,12 @@ def create_trojan_connection(call: CommandRunner) -> None:
             print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
             print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
             return
+        try:
+            xray_caddy.require_site_config_absent(domain)
+        except OSError as exc:
+            print(str(exc))
+            print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
+            return
     command = [
         "xray-client",
         "add-trojan-connection",
@@ -788,6 +794,12 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
             tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
             print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
             print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
+            return
+        try:
+            xray_caddy.require_site_config_absent(domain)
+        except OSError as exc:
+            print(str(exc))
+            print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
             return
     command = [
         "xray-client",
