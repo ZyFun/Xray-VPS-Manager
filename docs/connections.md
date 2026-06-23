@@ -262,8 +262,6 @@ bash install-caddy-download-proxy.sh
 
 ```caddyfile
 cdn.example.com {
-    encode zstd gzip
-
     reverse_proxy https://api.example.com {
         header_up Host api.example.com
         flush_interval -1
@@ -273,6 +271,8 @@ cdn.example.com {
     }
 }
 ```
+
+Для xHTTP download endpoint не включай `encode zstd gzip`: сжатие Caddy может нарушить streaming-ответ `downloadSettings` и привести к обрыву клиентского TLS-туннеля.
 
 После настройки нужно вставить JSON из `caddy-menu -> Показать JSON downloadSettings` в расширенные настройки xHTTP-подключения и выдать клиентам новые ссылки. Это client-side часть профиля: уже импортированные старые ссылки не узнают о новом download endpoint автоматически.
 

@@ -59,10 +59,21 @@ class CaddyConfigTests(unittest.TestCase):
             route_path="/api/v1/sync",
         )
 
-        self.assertIn("@xray_path path /api/v1/sync", block)
+        self.assertIn("@xray_path path /api/v1/sync*", block)
         self.assertIn("reverse_proxy h2c://127.0.0.1:10300", block)
         self.assertIn("try_files {path} /index.html", block)
         self.assertIn("file_server", block)
+
+    def test_site_block_does_not_duplicate_xhttp_path_wildcard(self) -> None:
+        block = caddy.caddy_site_block(
+            "files.example.com",
+            10300,
+            upstream_transport="xhttp",
+            route_path="/api/v1/sync*",
+        )
+
+        self.assertIn("@xray_path path /api/v1/sync*", block)
+        self.assertNotIn("/api/v1/sync**", block)
 
     def test_site_block_uses_json_fallback_for_api_subdomain(self) -> None:
         block = caddy.caddy_site_block(
@@ -249,6 +260,24 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertEqual(item.local_port, 10100)
         self.assertEqual(item.upstream_transport, "http")
         self.assertEqual(item.match_path, "/trojan-private")
+
+    def test_parse_site_config_normalizes_xhttp_wildcard_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "files.example.com.caddy"
+            path.write_text(
+                "files.example.com {\n"
+                "    @xray_path path /api/v1/sync*\n"
+                "    handle @xray_path {\n"
+                "        reverse_proxy h2c://127.0.0.1:10300\n"
+                "    }\n"
+                "}\n"
+            )
+
+            item = caddy.parse_site_config(path)
+
+        self.assertEqual(item.local_port, 10300)
+        self.assertEqual(item.upstream_transport, "xhttp")
+        self.assertEqual(item.match_path, "/api/v1/sync")
 
     def test_parse_site_config_reads_block_path_matcher(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

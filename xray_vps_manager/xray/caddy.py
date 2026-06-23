@@ -969,11 +969,23 @@ def first_path_matcher_path(text: str) -> str:
     return ""
 
 
+def xhttp_route_match_path(route_path: str) -> str:
+    path = validate_http_path(route_path)
+    return path if path.endswith("*") else f"{path}*"
+
+
+def normalized_site_match_path(path: str, upstream_transport: str) -> str:
+    if upstream_transport == "xhttp" and path.endswith("*"):
+        return path[:-1]
+    return path
+
+
 def parse_site_config(path: Path) -> SiteConfig:
     text = path.read_text() if path.exists() else ""
     domain = first_site_address(text) or path.stem
     port_match = REVERSE_PROXY_RE.search(text)
-    route_path = first_path_matcher_path(text)
+    upstream_transport = "xhttp" if port_match and port_match.group("scheme") else "http"
+    route_path = normalized_site_match_path(first_path_matcher_path(text), upstream_transport)
     protocols_match = PROTOCOLS_RE.search(text)
     modified_at = ""
     if path.exists():
@@ -985,7 +997,7 @@ def parse_site_config(path: Path) -> SiteConfig:
         tls_min_version=protocols_match.group("min") if protocols_match else "default",
         tls_max_version=protocols_match.group("max") if protocols_match else "default",
         modified_at=modified_at,
-        upstream_transport="xhttp" if port_match and port_match.group("scheme") else "http",
+        upstream_transport=upstream_transport,
         match_path=route_path,
     )
 
@@ -1077,8 +1089,9 @@ def caddy_site_block(
             f"{fallback_block}"
         )
     elif route_path:
+        match_path = xhttp_route_match_path(route_path)
         proxy_block = (
-            f"    @xray_path path {route_path}\n"
+            f"    @xray_path path {match_path}\n"
             "    handle @xray_path {\n"
             f"        reverse_proxy {upstream}\n"
             "    }\n"
