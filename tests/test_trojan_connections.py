@@ -9,6 +9,7 @@ from xray_vps_manager.xray import config as xray_config
 
 
 CLIENT_ID = "00000000-0000-0000-0000-000000000001"
+SECOND_CLIENT_ID = "00000000-0000-0000-0000-000000000002"
 PASSWORD = "trojan-secret"
 
 
@@ -101,6 +102,57 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(params["sni"], ["vpn.example.com"])
         self.assertEqual(params["fp"], ["chrome"])
 
+    def test_existing_vless_client_can_receive_trojan_credential(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        trojan = client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-web",
+            "vpn.example.com",
+            local_port=10100,
+            public_port=443,
+            fingerprint_value="chrome",
+            ws_path="/trojan-private",
+        )
+
+        first = client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag="vless-reality",
+            uuid_factory=lambda: CLIENT_ID,
+        )
+        second = client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag=trojan.tag,
+            uuid_factory=lambda: SECOND_CLIENT_ID,
+            password_factory=lambda: PASSWORD,
+        )
+
+        self.assertTrue(first.added_client)
+        self.assertFalse(second.added_client)
+        self.assertEqual(db["clients"]["alice"]["id"], CLIENT_ID)
+        self.assertEqual(set(db["clients"]["alice"]["credentials"]), {"vless-reality", trojan.tag})
+        self.assertEqual(db["clients"]["alice"]["credentials"][trojan.tag]["client"]["password"], PASSWORD)
+        self.assertEqual(config["inbounds"][0]["settings"]["clients"][0]["id"], CLIENT_ID)
+        self.assertEqual(config["inbounds"][1]["settings"]["clients"][0]["password"], PASSWORD)
+
+        client_crud.disable_client(config, db, "alice")
+
+        self.assertEqual(config["inbounds"][0]["settings"]["clients"], [])
+        self.assertEqual(config["inbounds"][1]["settings"]["clients"], [])
+        self.assertFalse(db["clients"]["alice"]["enabled"])
+
+        client_crud.enable_client(config, db, {"clients": {}}, "alice")
+
+        self.assertEqual(config["inbounds"][0]["settings"]["clients"][0]["id"], CLIENT_ID)
+        self.assertEqual(config["inbounds"][1]["settings"]["clients"][0]["password"], PASSWORD)
+
     def test_add_trojan_caddy_connection_uses_local_ws_inbound_and_public_tls_link(self) -> None:
         config = {"inbounds": [base_vless_inbound()], "outbounds": []}
         db = {"connections": {}, "clients": {}}
@@ -185,7 +237,10 @@ class TrojanConnectionTests(unittest.TestCase):
 
         clients = config["inbounds"][1]["settings"]["clients"]
         self.assertEqual(clients[0]["password"], PASSWORD)
-        self.assertEqual(clients[0]["email"], "alice|created=" + db["clients"]["alice"]["created"])
+        self.assertEqual(
+            clients[0]["email"],
+            "alice|created=" + db["clients"]["alice"]["created"] + "|connection=trojan-tls",
+        )
         self.assertNotIn("id", clients[0])
 
     def test_legacy_trojan_users_section_is_migrated_to_clients_section(self) -> None:

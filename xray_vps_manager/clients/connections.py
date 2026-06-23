@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Callable
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
 from xray_vps_manager.core.time import utc_stamp
@@ -840,7 +841,15 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
 
     db_connections(db).pop(tag, None)
     for name in removed_client_names:
-        db_clients(db).pop(name, None)
+        entry = db_clients(db).get(name)
+        if not isinstance(entry, dict):
+            continue
+        credentials = client_credentials.normalize_entry_credentials(entry)
+        credentials.pop(tag, None)
+        if credentials:
+            client_credentials.sync_legacy_fields(entry)
+        else:
+            db_clients(db).pop(name, None)
 
     env_update = None
     env_switch_tag = ""
@@ -907,11 +916,15 @@ def update_connection_transport(
         entry.pop(key, None)
     entry.update(settings)
     for name, client_entry in db_clients(db).items():
-        if client_entry.get("connection") == tag:
-            client = dict(client_entry.get("client") or {})
+        credentials = client_credentials.normalize_entry_credentials(client_entry)
+        credential = credentials.get(tag)
+        if credential:
+            client = dict(credential.get("client") or {})
             if client:
                 apply_client_transport(client, settings["transport"])
-                client_entry["client"] = client
+                credential["client"] = client
+                credential["transport"] = settings["transport"]
+                client_credentials.sync_legacy_fields(client_entry)
 
     env_update = server_env_values_for_connection(config, db, tag) if tag == INBOUND_TAG else None
     return UpdateConnectionTransportResult(
@@ -983,7 +996,8 @@ def connection_client_names(config: dict[str, Any], db: dict[str, Any], tag: str
         if name:
             names.add(name)
     for name, entry in db_clients(db).items():
-        if entry.get("connection") == tag:
+        credentials = client_credentials.normalize_entry_credentials(entry)
+        if tag in credentials:
             names.add(name)
     return sorted(names)
 

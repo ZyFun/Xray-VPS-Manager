@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.payments import normalize_payment_type
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
@@ -40,6 +41,7 @@ def normalize_client_defaults(db: dict[str, Any]) -> dict[str, Any]:
         if isinstance(entry, dict):
             entry["paymentType"] = normalize_payment_type(entry.get("paymentType", "free"))
             entry.setdefault("selectedCascadeTag", "")
+            client_credentials.normalize_entry_credentials(entry)
     return db
 
 

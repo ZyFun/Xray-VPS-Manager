@@ -229,15 +229,17 @@ erDiagram
 |---|---|
 | `reality_connections` | Managed подключения. Для VLESS Reality хранятся порт, SNI, fingerprint, public key и short id; для TLS/XHTTP через Caddy дополнительные поля (`security`, `publicHost`, `publicPort`, `localPort`, `xhttpPath`, `xhttpMode`, `xhttpExtra`, TLS version) лежат в `extra_json`. Для Trojan через Caddy в `extra_json` хранятся `protocol=trojan`, `security=tls`, `transport=ws`, `publicHost`, `publicPort`, `localPort`, `wsPath`, TLS version и другие protocol-specific поля; legacy direct TLS/TCP может хранить `certFile` и `keyFile`. |
 | `cascade_routes` | Метаданные cascade outbounds: tag, отображаемая страна, label и timestamps. |
-| `clients` | Клиенты, внутренний UUID менеджера, статус, срок доступа, платежный тип, выбранный cascade route и связанное managed подключение. Для VLESS активный Xray credential использует UUID; для Trojan активный Xray credential использует password, а внутренний UUID остаётся идентификатором клиента в SQLite/Telegram/routing. |
+| `clients` | Клиенты как отдельная сущность: внутренний UUID менеджера, общий статус, срок доступа, платежный тип и выбранный cascade route. Legacy-поля `connection_tag` и `xray_client_json` сохраняются как primary credential для совместимости. |
+| `client_credentials` | Protocol credentials клиента. Хранит `client_name`, `connection_tag`, credential UUID/password в `xray_client_json`, `protocol`, `security`, `transport`, enabled state, timestamps и link metadata. Один клиент может иметь несколько credentials разных протоколов. |
 
 Основная связь:
 
 ```text
 reality_connections.tag -> clients.connection_tag
+clients.name + reality_connections.tag -> client_credentials(client_name, connection_tag)
 ```
 
-Если подключение удаляется, клиенты удаляются логикой менеджера вместе с ним. На уровне SQLite внешний ключ у клиента настроен как `ON DELETE SET NULL`, поэтому бизнес-правило удаления остаётся в коде менеджера.
+Если подключение удаляется, менеджер удаляет credentials этого подключения. Клиент удаляется только если это был его последний credential. На уровне SQLite legacy-внешний ключ у `clients.connection_tag` настроен как `ON DELETE SET NULL`, а `client_credentials` удаляется каскадно.
 
 ### Трафик и лимиты
 
@@ -245,6 +247,8 @@ reality_connections.tag -> clients.connection_tag
 |---|---|
 | `traffic_totals` | Постоянные суммарные IN/OUT счётчики клиента и online/last seen данные. |
 | `traffic_history` | Почасовая история трафика по дням. |
+| `credential_traffic_totals` | Постоянные IN/OUT счётчики и online/last seen данные конкретного credential. |
+| `credential_traffic_history` | Почасовая история трафика конкретного credential. |
 | `client_traffic_limits` | Настроенный daily/monthly лимит клиента. |
 | `client_traffic_limit_state` | Состояние превышения лимита и момент сброса. |
 
@@ -253,6 +257,8 @@ reality_connections.tag -> clients.connection_tag
 ```text
 clients.name -> traffic_totals.client_name
 clients.name -> traffic_history.client_name
+client_credentials(client_name, connection_tag) -> credential_traffic_totals(client_name, connection_tag)
+client_credentials(client_name, connection_tag) -> credential_traffic_history(client_name, connection_tag)
 clients.name -> client_traffic_limits.client_name
 clients.name -> client_traffic_limit_state.client_name
 ```
@@ -327,9 +333,13 @@ clients.name -> telegram_subscriptions.client_name
 | `idx_clients_expires_at` | `clients` | Поиск клиентов по сроку доступа. |
 | `idx_clients_payment_type` | `clients` | Расчёт платных клиентов. |
 | `idx_clients_selected_cascade` | `clients` | Поиск клиентов по выбранному cascade route. |
+| `idx_client_credentials_client` | `client_credentials` | Быстрый список credentials клиента. |
+| `idx_client_credentials_connection` | `client_credentials` | Поиск credentials по managed connection. |
+| `idx_client_credentials_uuid` | `client_credentials` | Сопоставление VLESS credential UUID. |
 | `idx_cascade_routes_country` | `cascade_routes` | Список cascade routes по отображаемой стране. |
 | `idx_traffic_history_date` | `traffic_history` | Отчёты по дням. |
 | `idx_traffic_history_client_date` | `traffic_history` | Отчёты по клиенту и периоду. |
+| `idx_credential_traffic_history_client_date` | `credential_traffic_history` | Отчёты по credential и периоду. |
 | `idx_activity_events_time` | `activity_events` | Activity-отчёты по периоду. |
 | `idx_activity_events_client_time` | `activity_events` | Activity-отчёты по клиенту и периоду. |
 | `idx_activity_events_host` | `activity_events` | Поиск и агрегация по host. |

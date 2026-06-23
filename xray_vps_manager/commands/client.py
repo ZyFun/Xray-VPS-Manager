@@ -353,6 +353,8 @@ def color_label(value, text):
         return f"{GREEN}{text}{RESET}"
     if value in ("disabled", "offline"):
         return f"{RED}{text}{RESET}"
+    if value == "missing":
+        return f"{YELLOW}{text}{RESET}"
     return text
 
 
@@ -503,8 +505,14 @@ def traffic_limit_status(db_entry, traffic_db_entry, now=None):
 
 
 def print_client_table(rows):
-    headers = ["NAME", "STATUS", "PAYMENT", "COUNTRY", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
+    headers = ["NAME", "STATUS", "PAYMENT", "COUNTRY", "ONLINE", "LAST ONLINE", "TOTAL", "LIMIT", "TRAFFIC UPDATED", "ACCESS UNTIL", "CREDS"]
     color_columns = {headers.index("STATUS"), headers.index("PAYMENT"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
+    print_table(headers, rows, empty_message=None, color_columns=color_columns, colorizer=color_label)
+
+
+def print_credential_table(rows):
+    headers = ["CLIENT", "PROTOCOL", "SECURITY", "TRANSPORT", "CONNECTION", "STATUS", "ONLINE", "TRAFFIC", "TRAFFIC UPDATED", "LAST ONLINE"]
+    color_columns = {headers.index("STATUS"), headers.index("ONLINE")}
     print_table(headers, rows, empty_message=None, color_columns=color_columns, colorizer=color_label)
 
 
@@ -869,40 +877,55 @@ def cmd_list():
     traffic_db = load_traffic_db_readonly()
     stats = query_user_stats()
     display_timezone = client_settings.manager_timezone()
-    grouped = {}
+    table_rows = []
     for row in rows:
-        grouped.setdefault(row["connection"], []).append(row)
+        incoming, outgoing = client_runtime.traffic_for(traffic_db, stats, row)
+        total = None if incoming is None or outgoing is None else incoming + outgoing
+        online, last_online = client_runtime.online_state(row, traffic_db, display_timezone)
+        db_entry = client_repository.db_clients(db).get(row["name"], {})
+        traffic_updated = client_runtime.traffic_updated_at(row, traffic_db, display_timezone)
+        table_rows.append(
+            [
+                row["name"],
+                row["status"],
+                row["paymentType"],
+                row["cascade"],
+                online,
+                last_online,
+                format_traffic(total),
+                client_limits.format_traffic_limit(db_entry),
+                traffic_updated,
+                client_access.format_access_until(row["expiresAt"]),
+                f"{row.get('credentialsActive', 0)}/{row.get('credentialsTotal', 0)}",
+            ]
+        )
+    print()
+    print("Clients")
+    print_client_table(table_rows)
 
-    for tag in client_repository.db_connections(db):
-        group_rows = grouped.get(tag, [])
-        if not group_rows:
-            continue
-        print_connection_title(config, db, tag)
-        table_rows = []
-        for row in group_rows:
-            incoming, outgoing = client_runtime.traffic_for(traffic_db, stats, row)
-            total = None if incoming is None or outgoing is None else incoming + outgoing
-            online, last_online = client_runtime.online_state(row, traffic_db, display_timezone)
-            db_entry = client_repository.db_clients(db).get(row["name"], {})
-            traffic_updated = client_runtime.traffic_updated_at(row, traffic_db, display_timezone)
-            table_rows.append(
-                [
-                    row["name"],
-                    row["status"],
-                    row["paymentType"],
-                    row["cascade"],
-                    online,
-                    format_traffic(incoming),
-                    format_traffic(outgoing),
-                    format_traffic(total),
-                    traffic_updated,
-                    client_limits.format_traffic_limit(db_entry),
-                    last_online,
-                    client_access.format_access_until(row["expiresAt"]),
-                    row["created"],
-                ]
-            )
-        print_client_table(table_rows)
+    credential_table_rows = []
+    for row in client_listing.credential_rows(config, db):
+        incoming, outgoing = client_runtime.credential_traffic_for(traffic_db, stats, row)
+        total = None if incoming is None or outgoing is None else incoming + outgoing
+        online, last_online = client_runtime.credential_online_state(row, traffic_db, display_timezone)
+        traffic_updated = client_runtime.credential_traffic_updated_at(row, traffic_db, display_timezone)
+        credential_table_rows.append(
+            [
+                row["client"],
+                row["protocol"],
+                row["security"] or "-",
+                row["transport"] or "-",
+                row["connection"],
+                row["status"],
+                online,
+                format_traffic(total),
+                traffic_updated,
+                last_online,
+            ]
+        )
+    print()
+    print("Credentials")
+    print_credential_table(credential_table_rows)
 
 
 def known_for_traffic_report(config, db, traffic_db, name):
@@ -1001,15 +1024,16 @@ def db_entry_for_existing_client(config, db, name):
 
 def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, payment_type="free"):
     validate_name(name)
-    payment_type = normalize_payment_type(payment_type)
+    payment_type = normalize_payment_type(payment_type) if payment_type else ""
     config = load_config()
     db = load_db()
+    existing_client = client_crud.client_exists(config, db, name)
     try:
         connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag)
     except ValueError as exc:
         die(str(exc))
 
-    if prompt_for_access:
+    if prompt_for_access and not existing_client:
         access_days = prompt_access_days()
     try:
         result = client_crud.add_client(config, db, name, access_days, connection_tag, payment_type)
@@ -1018,14 +1042,14 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
 
     backup = save_config_restart_xray_and_db(config, db)
 
-    print(f"Added client: {name}")
+    print(("Added client: " if result.added_client else "Added credential for client: ") + name)
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
     print(f"Payment type: {client_payments.payment_type_label(result.entry)}")
     print(f"Created: {result.created}")
     print(f"Access until: {client_access.format_access_until(result.entry.get('expiresAt', ''))}")
     print(f"Backup: {backup}")
     print_payment_summary()
-    print(link_for(config, result.client_id, name, result.connection_tag, db))
+    print(link_for(config, result.credential_id, name, result.connection_tag, db))
 
 
 def cmd_set_payment(name, payment_value):
@@ -1120,29 +1144,31 @@ def cmd_remove(name):
     print(f"Backup: {backup}")
 
 
-def cmd_disable(name):
+def cmd_disable(name, connection_tag=None):
     validate_name(name)
     config = load_config()
     db = load_db()
     try:
-        result = client_crud.disable_client(config, db, name)
+        result = client_crud.disable_client(config, db, name, connection_tag=connection_tag)
     except ValueError as exc:
         die(str(exc))
 
     backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Disabled client: {result.name}")
+    if result.connection_tags:
+        print("Disabled credentials: " + ", ".join(result.connection_tags))
     print(f"Backup: {backup}")
 
 
-def cmd_enable(name):
+def cmd_enable(name, connection_tag=None):
     validate_name(name)
     sync_traffic()
     config = load_config()
     db = load_db()
     traffic_db = load_traffic_db()
     try:
-        result = client_crud.enable_client(config, db, traffic_db, name)
+        result = client_crud.enable_client(config, db, traffic_db, name, connection_tag=connection_tag)
     except client_crud.EnableTrafficLimitExceeded as exc:
         traffic_status = exc.traffic_status
         die(
@@ -1157,9 +1183,13 @@ def cmd_enable(name):
     backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Enabled client: {result.name}")
-    print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
+    if result.connection_tags:
+        print("Enabled credentials: " + ", ".join(result.connection_tags))
+    if result.connection_tag:
+        print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
     print(f"Backup: {backup}")
-    print(link_for(config, result.client_id, result.name, result.connection_tag, db))
+    if result.connection_tag:
+        print(link_for(config, result.credential_id, result.name, result.connection_tag, db))
 
 
 def cmd_move_connection(name, target_connection_identifier):
@@ -1402,11 +1432,12 @@ def usage():
   xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra
   xray-client remove-connection NAME_OR_TAG
   xray-client add NAME [DAYS] [--connection TAG] [--payment paid|free]
-  xray-client disable NAME
-  xray-client enable NAME
+  xray-client disable NAME [--connection TAG]
+  xray-client enable NAME [--connection TAG]
   xray-client move-connection NAME CONNECTION_NAME_OR_TAG
   xray-client remove NAME
-  xray-client link NAME
+  xray-client link NAME [--connection TAG]
+  xray-client key NAME
   xray-client set-days NAME DAYS
   xray-client extend-days NAME DAYS
   xray-client set-payment NAME paid|free
@@ -1434,7 +1465,7 @@ def parse_add_args(args):
     name = args[0]
     rest = list(args[1:])
     connection_tag = None
-    payment_type = "free"
+    payment_type = ""
     if "--connection" in rest:
         index = rest.index("--connection")
         if index + 1 >= len(rest):
@@ -1768,16 +1799,61 @@ def parse_connection_xhttp_extra_args(args):
     return identifier, xhttp_extra_json, clear
 
 
-def cmd_link(name):
+def parse_name_connection_args(args):
+    if not args:
+        usage()
+        sys.exit(1)
+    name = args[0]
+    rest = list(args[1:])
+    connection_tag = None
+    if "--connection" in rest:
+        index = rest.index("--connection")
+        if index + 1 >= len(rest):
+            die("--connection requires TAG")
+        connection_tag = rest[index + 1]
+        del rest[index:index + 2]
+    if rest:
+        usage()
+        sys.exit(1)
+    return name, connection_tag
+
+
+def cmd_link(name, connection_tag=None):
     validate_name(name)
     config = load_config()
     db = load_db_readonly().db
     ensure_connections(config, db)
-    for row in client_listing.client_rows(config, db):
-        if row["name"] == name:
+    links = []
+    for row in client_listing.credential_rows(config, db):
+        if row["name"] != name:
+            continue
+        if connection_tag and row["connection"] != connection_tag:
+            continue
+        links.append(row)
+    if links:
+        if len(links) == 1:
+            row = links[0]
             print(link_for(config, row["id"], name, row["connection"], db))
             return
+        for row in links:
+            print(f"[{row['protocol']} {row['connection']}]")
+            print(link_for(config, row["id"], name, row["connection"], db))
+        return
     die(f"Client not found: {name}")
+
+
+def cmd_key(name):
+    validate_name(name)
+    config = load_config()
+    db = load_db_readonly().db
+    ensure_connections(config, db)
+    entry = client_repository.db_clients(db).get(name)
+    if not entry:
+        die(f"Client not found: {name}")
+    client_id = str(entry.get("id") or "").strip()
+    if not client_id:
+        die(f"Client has no internal UUID: {name}")
+    print(f"vpn-key:{client_id}")
 
 
 def main():
@@ -1812,16 +1888,21 @@ def main():
             connection_tag=connection_tag,
             payment_type=payment_type,
         )
-    elif command in ("disable", "off") and len(sys.argv) == 3:
-        cmd_disable(sys.argv[2])
-    elif command in ("enable", "on") and len(sys.argv) == 3:
-        cmd_enable(sys.argv[2])
+    elif command in ("disable", "off"):
+        name, connection_tag = parse_name_connection_args(sys.argv[2:])
+        cmd_disable(name, connection_tag)
+    elif command in ("enable", "on"):
+        name, connection_tag = parse_name_connection_args(sys.argv[2:])
+        cmd_enable(name, connection_tag)
     elif command in ("move-connection", "move-client", "move") and len(sys.argv) == 4:
         cmd_move_connection(sys.argv[2], sys.argv[3])
     elif command in ("remove", "delete", "del", "rm") and len(sys.argv) == 3:
         cmd_remove(sys.argv[2])
-    elif command == "link" and len(sys.argv) == 3:
-        cmd_link(sys.argv[2])
+    elif command == "link":
+        name, connection_tag = parse_name_connection_args(sys.argv[2:])
+        cmd_link(name, connection_tag)
+    elif command == "key" and len(sys.argv) == 3:
+        cmd_key(sys.argv[2])
     elif command in ("set-days", "access-days") and len(sys.argv) == 4:
         cmd_set_days(sys.argv[2], sys.argv[3])
     elif command in ("extend-days", "prolong-days") and len(sys.argv) == 4:

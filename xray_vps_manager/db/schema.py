@@ -8,7 +8,7 @@ from pathlib import Path
 
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -317,6 +317,90 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_expires ON activity_blocklist(expires_at)",
             "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_enabled ON activity_blocklist(enabled)",
             "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_hits_client ON activity_blocklist_hits(client_name)",
+        ),
+    ),
+    Migration(
+        version=5,
+        name="client_credentials",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS client_credentials (
+                client_name TEXT NOT NULL,
+                connection_tag TEXT NOT NULL,
+                credential_uuid TEXT,
+                protocol TEXT NOT NULL DEFAULT 'vless' CHECK (protocol IN ('vless', 'trojan')),
+                security TEXT NOT NULL DEFAULT '',
+                transport TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                created_at TEXT,
+                xray_client_json TEXT NOT NULL DEFAULT '{}',
+                link_metadata_json TEXT NOT NULL DEFAULT '{}',
+                extra_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (client_name, connection_tag),
+                FOREIGN KEY (client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE,
+                FOREIGN KEY (connection_tag)
+                    REFERENCES reality_connections(tag)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            INSERT OR IGNORE INTO client_credentials(
+                client_name, connection_tag, credential_uuid, protocol, enabled, created_at, xray_client_json
+            )
+            SELECT
+                name,
+                connection_tag,
+                uuid,
+                CASE WHEN instr(xray_client_json, '"password"') > 0 THEN 'trojan' ELSE 'vless' END,
+                enabled,
+                created_at,
+                xray_client_json
+            FROM clients
+            WHERE connection_tag IS NOT NULL AND connection_tag != ''
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS credential_traffic_totals (
+                client_name TEXT NOT NULL,
+                connection_tag TEXT NOT NULL,
+                email TEXT,
+                incoming_bytes INTEGER NOT NULL DEFAULT 0 CHECK (incoming_bytes >= 0),
+                outgoing_bytes INTEGER NOT NULL DEFAULT 0 CHECK (outgoing_bytes >= 0),
+                last_runtime_uplink INTEGER,
+                last_runtime_downlink INTEGER,
+                last_online_at TEXT,
+                last_online_source TEXT,
+                last_accepted_at TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (client_name, connection_tag),
+                FOREIGN KEY (client_name, connection_tag)
+                    REFERENCES client_credentials(client_name, connection_tag)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS credential_traffic_history (
+                client_name TEXT NOT NULL,
+                connection_tag TEXT NOT NULL,
+                bucket_date TEXT NOT NULL,
+                bucket_hour INTEGER NOT NULL CHECK (bucket_hour BETWEEN 0 AND 23),
+                incoming_bytes INTEGER NOT NULL DEFAULT 0 CHECK (incoming_bytes >= 0),
+                outgoing_bytes INTEGER NOT NULL DEFAULT 0 CHECK (outgoing_bytes >= 0),
+                PRIMARY KEY (client_name, connection_tag, bucket_date, bucket_hour),
+                FOREIGN KEY (client_name, connection_tag)
+                    REFERENCES client_credentials(client_name, connection_tag)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_client_credentials_client ON client_credentials(client_name)",
+            "CREATE INDEX IF NOT EXISTS idx_client_credentials_connection ON client_credentials(connection_tag)",
+            "CREATE INDEX IF NOT EXISTS idx_client_credentials_uuid ON client_credentials(credential_uuid)",
+            "CREATE INDEX IF NOT EXISTS idx_credential_traffic_history_client_date ON credential_traffic_history(client_name, connection_tag, bucket_date)",
         ),
     ),
 )

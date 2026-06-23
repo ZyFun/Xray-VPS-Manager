@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.payments import normalize_payment_type
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories.base import decode_json, encode_json, without_keys
@@ -27,6 +28,20 @@ _CLIENT_KNOWN_KEYS = {
     "trafficLimitResetAt",
     "paymentType",
     "selectedCascadeTag",
+    "credentials",
+    "extra",
+}
+
+_CREDENTIAL_KNOWN_KEYS = {
+    "id",
+    "connection",
+    "protocol",
+    "security",
+    "transport",
+    "enabled",
+    "created",
+    "client",
+    "linkMetadata",
     "extra",
 }
 
@@ -76,10 +91,13 @@ def _entry_from_row(connection: sqlite3.Connection, row) -> dict[str, Any] | Non
         entry["trafficLimit"] = limit
     state = get_traffic_limit_state(connection, row["name"])
     entry.update(state)
+    entry["credentials"] = list_client_credentials(connection, row["name"])
+    client_credentials.normalize_entry_credentials(entry)
     return entry
 
 
 def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
+    client_credentials.normalize_entry_credentials(entry)
     client = _client_json(entry, name)
     uuid = str(entry.get("id") or client.get("id") or "")
     if not uuid:
@@ -143,6 +161,10 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
             exceeded_bytes=int(entry.get("trafficLimitExceededBytes") or 0),
             reset_at=entry.get("trafficLimitResetAt") or "",
         )
+        desired_credentials = client_credentials.normalize_entry_credentials(entry)
+        for connection_tag, credential in desired_credentials.items():
+            upsert_client_credential(connection, name, connection_tag, credential)
+        delete_stale_client_credentials(connection, name, set(desired_credentials))
 
 
 def get_client(connection: sqlite3.Connection, name: str) -> dict[str, Any] | None:
@@ -251,3 +273,111 @@ def get_traffic_limit_state(connection: sqlite3.Connection, name: str) -> dict[s
     if row["reset_at"]:
         state["trafficLimitResetAt"] = row["reset_at"]
     return state
+
+
+def _credential_from_row(row) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    extra = decode_json(row["extra_json"])
+    credential = dict(extra) if isinstance(extra, dict) else {}
+    client = decode_json(row["xray_client_json"])
+    link_metadata = decode_json(row["link_metadata_json"])
+    credential.update(
+        {
+            "id": row["credential_uuid"] or (client or {}).get("id", ""),
+            "connection": row["connection_tag"] or "",
+            "protocol": row["protocol"] or "vless",
+            "security": row["security"] or "",
+            "transport": row["transport"] or "",
+            "enabled": bool(row["enabled"]),
+            "created": row["created_at"] or "",
+            "client": client if isinstance(client, dict) else {},
+            "linkMetadata": link_metadata if isinstance(link_metadata, dict) else {},
+        }
+    )
+    return credential
+
+
+def list_client_credentials(connection: sqlite3.Connection, name: str) -> dict[str, dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT * FROM client_credentials WHERE client_name = ? ORDER BY connection_tag",
+        (name,),
+    ).fetchall()
+    return {
+        row["connection_tag"]: credential
+        for row in rows
+        if (credential := _credential_from_row(row)) is not None
+    }
+
+
+def _credential_client_json(credential: dict[str, Any]) -> dict[str, Any]:
+    client = dict(credential.get("client") or {})
+    credential_id = str(credential.get("id") or client.get("id") or "")
+    if credential_id:
+        client.setdefault("id", credential_id)
+    return client
+
+
+def upsert_client_credential(
+    connection: sqlite3.Connection,
+    name: str,
+    connection_tag: str,
+    credential: dict[str, Any],
+) -> None:
+    client = _credential_client_json(credential)
+    extra = credential.get("extra")
+    if not isinstance(extra, dict):
+        extra = without_keys(credential, _CREDENTIAL_KNOWN_KEYS)
+    link_metadata = credential.get("linkMetadata")
+    if not isinstance(link_metadata, dict):
+        link_metadata = {}
+    protocol = str(credential.get("protocol") or ("trojan" if client.get("password") else "vless")).strip().lower()
+    with database.transaction(connection):
+        connection.execute(
+            """
+            INSERT INTO client_credentials(
+                client_name, connection_tag, credential_uuid, protocol, security, transport,
+                enabled, created_at, xray_client_json, link_metadata_json, extra_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(client_name, connection_tag) DO UPDATE SET
+                credential_uuid = excluded.credential_uuid,
+                protocol = excluded.protocol,
+                security = excluded.security,
+                transport = excluded.transport,
+                enabled = excluded.enabled,
+                created_at = excluded.created_at,
+                xray_client_json = excluded.xray_client_json,
+                link_metadata_json = excluded.link_metadata_json,
+                extra_json = excluded.extra_json
+            """,
+            (
+                name,
+                connection_tag,
+                credential.get("id") or client.get("id") or None,
+                protocol,
+                str(credential.get("security") or ""),
+                str(credential.get("transport") or ""),
+                0 if credential.get("enabled") is False else 1,
+                credential.get("created") or "",
+                encode_json(client),
+                encode_json(link_metadata),
+                encode_json(extra),
+            ),
+        )
+
+
+def delete_stale_client_credentials(connection: sqlite3.Connection, name: str, desired_connection_tags: set[str]) -> None:
+    rows = connection.execute(
+        "SELECT connection_tag FROM client_credentials WHERE client_name = ?",
+        (name,),
+    ).fetchall()
+    stale = {row["connection_tag"] for row in rows} - desired_connection_tags
+    if not stale:
+        return
+    with database.transaction(connection):
+        for tag in stale:
+            connection.execute(
+                "DELETE FROM client_credentials WHERE client_name = ? AND connection_tag = ?",
+                (name, tag),
+            )

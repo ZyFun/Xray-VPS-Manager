@@ -21,8 +21,11 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "clients",
                     "client_traffic_limits",
                     "client_traffic_limit_state",
+                    "client_credentials",
                     "traffic_totals",
                     "traffic_history",
+                    "credential_traffic_totals",
+                    "credential_traffic_history",
                     "file_offsets",
                     "activity_events",
                     "activity_event_risks",
@@ -40,7 +43,9 @@ class SQLiteSchemaTests(unittest.TestCase):
             self.assertTrue(
                 {
                     "idx_clients_connection",
+                    "idx_client_credentials_client",
                     "idx_traffic_history_client_date",
+                    "idx_credential_traffic_history_client_date",
                     "idx_activity_events_client_time",
                     "idx_activity_event_risks_risk",
                     "idx_activity_blocklist_client",
@@ -63,6 +68,7 @@ class SQLiteSchemaTests(unittest.TestCase):
                     (2, "cascade_client_routes"),
                     (3, "telegram_activity_subscriptions"),
                     (4, "activity_global_blocklist"),
+                    (5, "client_credentials"),
                 ],
             )
 
@@ -119,8 +125,11 @@ class SQLiteSchemaTests(unittest.TestCase):
 
             for table in (
                 "client_traffic_limits",
+                "client_credentials",
                 "traffic_totals",
                 "traffic_history",
+                "credential_traffic_totals",
+                "credential_traffic_history",
                 "activity_events",
                 "activity_event_risks",
             ):

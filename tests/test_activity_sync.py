@@ -23,7 +23,13 @@ class ActivitySyncTests(unittest.TestCase):
         self.assertEqual(
             clients,
             {
+                "sqlite_client|created=2026-06-12T07:01:00Z": {
+                    "client": "sqlite_client",
+                    "email": "sqlite_client|created=2026-06-12T07:01:00Z",
+                    "connection": "sqlite-connection",
+                },
                 "sqlite_client": {
+                    "client": "sqlite_client",
                     "email": "sqlite_client|created=2026-06-12T07:01:00Z",
                     "connection": "sqlite-connection",
                 }

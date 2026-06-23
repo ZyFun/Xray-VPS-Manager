@@ -57,7 +57,7 @@ xray-client connection-rename ИМЯ_ИЛИ_TAG НОВОЕ_ИМЯ
 client -> vpn.example.com:443 -> Caddy /trojan -> 127.0.0.1:10100 -> Xray Trojan WS
 ```
 
-Менеджер хранит Trojan-пользователей в `settings.clients`, выдаёт `trojan://` ссылки и использует внутренний UUID клиента для SQLite, маршрутизации и будущей привязки нескольких credentials к одному клиенту. В самом Xray Trojan-пользователь аутентифицируется по `password`, а `email` используется для stats/routing.
+Менеджер хранит Trojan-пользователей в `settings.clients`, выдаёт `trojan://` ссылки и использует внутренний UUID клиента для SQLite, маршрутизации и Telegram. В самом Xray Trojan credential аутентифицируется по `password`, а `email` используется для stats/routing и включает connection metadata.
 
 DNS-запись домена должна заранее указывать на сервер:
 
@@ -104,7 +104,7 @@ xray-client add-trojan-connection trojan-main 10100 vpn.example.com chrome \
 
 Если конфликтов нет, команда создаёт локальный Xray inbound на `127.0.0.1:LOCAL_PORT`, добавляет запись подключения в SQLite, проверяет и перезапускает Xray, затем создаёт новый Caddy site config для `DOMAIN`. Caddy site валидируется через `caddy validate`; при ошибке менеджер сообщает backup Xray config и детали ошибки.
 
-После создания подключения добавь пользователя обычной командой, явно выбрав Trojan connection:
+После создания подключения добавь нового пользователя обычной командой, явно выбрав Trojan connection:
 
 ```bash
 xray-client add alice 30 --connection trojan-tls --payment paid
@@ -120,6 +120,13 @@ xray-client link alice
 Если подключений несколько, меню покажет таблицу VLESS и Trojan connections. Выбери Trojan connection, чтобы получить `trojan://` ссылку.
 
 Если на сервере уже есть несколько подключений, `--connection` обязателен. Для Trojan-клиента менеджер генерирует внутренний UUID и отдельный Trojan password. В активный Xray config попадает только `password`, `email` и `level`; внутренний UUID остаётся в `manager.db`.
+Если `alice` уже существует, основной путь в меню:
+
+```text
+Клиенты -> Добавить подключение к клиенту
+```
+
+Этот пункт выбирает существующего клиента из таблицы, затем показывает только connections, которых у клиента ещё нет. CLI-команда `xray-client add alice --connection trojan-tls` остаётся совместимым способом добавить новый Trojan credential без создания отдельного клиента. Клиентский UUID останется прежним, а Trojan password будет отдельным credential secret.
 
 Ссылку нужно выдать заново, если изменились домен, публичный порт, `WS_PATH`, fingerprint или TLS-параметры клиентской ссылки. Если менялся только серверный Caddy site config без изменения этих параметров, уже импортированную ссылку обычно менять не нужно.
 
@@ -132,7 +139,7 @@ xray-client add-trojan-connection trojan-direct 8443 vpn.example.com /etc/ssl/vp
 Ограничения:
 
 - перенос клиента между VLESS и Trojan подключениями пока запрещён, потому что у протоколов разные credentials;
-- Telegram-подписки по Trojan-ссылке пока не распознаются;
+- Telegram-подписки привязываются к внутреннему UUID клиента через `vpn-key:UUID` или VLESS-ссылку; распознавание `trojan://` ссылки по password остаётся отдельной задачей;
 - старый формат Trojan пользователей `settings.users` не используется: для Xray 26 активные Trojan credentials должны лежать в `settings.clients`.
 
 ## XHTTP через TLS и Caddy
@@ -279,4 +286,4 @@ xray-client remove-connection ИМЯ_ИЛИ_TAG
 Удаление убирает VLESS inbound из `config.json`, запись подключения из `manager.db`, всех клиентов этого подключения и их историю трафика.
 Последнее VLESS-подключение удалить нельзя.
 Последнее Reality-подключение удалить нельзя.
-Удаление Trojan-подключения убирает Trojan inbound, запись подключения и всех клиентов этого подключения; последнее VLESS/Reality-подключение при этом остаётся защищено от удаления.
+Удаление Trojan-подключения убирает Trojan inbound, запись подключения и credentials этого подключения. Если у клиента были другие credentials, сам клиент остаётся в базе; если это был последний credential клиента, клиент удаляется вместе с подключением. Последнее VLESS/Reality-подключение остаётся защищено от удаления.

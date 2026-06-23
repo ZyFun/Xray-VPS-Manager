@@ -43,11 +43,13 @@ class MenuStructureTests(unittest.TestCase):
         self.assertIn(("10", "Переименовать подключение"), menu.reality_menu_actions())
         self.assertIn("10", menu.reality_menu_handlers())
 
-    def test_client_move_connection_action_is_exposed(self) -> None:
-        self.assertIn(("8", "Перенести клиента в другое подключение"), menu.client_menu_actions())
-        self.assertIn("8", menu.client_menu_handlers())
-        self.assertIn(("11", "Лимиты трафика"), menu.client_menu_actions())
-        self.assertIn("11", menu.client_menu_handlers())
+    def test_client_connection_actions_are_exposed(self) -> None:
+        self.assertIn(("3", "Добавить подключение к клиенту"), menu.client_menu_actions())
+        self.assertIn("3", menu.client_menu_handlers())
+        self.assertIn(("9", "Перенести клиента в другое подключение"), menu.client_menu_actions())
+        self.assertIn("9", menu.client_menu_handlers())
+        self.assertIn(("12", "Лимиты трафика"), menu.client_menu_actions())
+        self.assertIn("12", menu.client_menu_handlers())
 
     def test_routing_activity_service_and_update_actions_are_exposed(self) -> None:
         self.assertIn(("3", "Торренты"), menu.routing_menu_actions())
