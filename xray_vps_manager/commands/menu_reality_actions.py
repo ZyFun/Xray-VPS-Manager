@@ -178,13 +178,11 @@ def connection_rows(
         security = entry.get("security") or ("reality" if settings.get("security") == "reality" else "tls")
         if security_filter and security != security_filter:
             continue
-        security_label = f"{protocol}/{security}" if protocol != "vless" else security
         rows.append({
             "tag": settings["tag"],
             "name": entry.get("name") or connection_name_from_tag(settings["tag"]),
             "protocol": protocol,
             "security": security,
-            "securityLabel": security_label,
             "port": entry.get("port") or settings["port"],
             "sni": entry.get("sni") or settings["sni"],
             "transport": entry.get("transport") or settings["transport"],
@@ -194,13 +192,14 @@ def connection_rows(
 
 
 def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
-    headers = ("№", "NAME", "TAG", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT")
+    headers = ("№", "NAME", "TAG", "PROTOCOL", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT")
     values = [
         (
             str(index),
             row["name"],
             row["tag"],
-            row.get("securityLabel") or row["security"],
+            row["protocol"],
+            row["security"],
             row["port"],
             row["sni"],
             row["transport"],
@@ -208,7 +207,7 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
         )
         for index, row in enumerate(rows, start=1)
     ]
-    values.append(("0", "Назад", "", "", "", "", "", ""))
+    values.append(("0", "Назад", "", "", "", "", "", "", ""))
     widths = [
         max(len(headers[column]), *(len(str(row[column])) for row in values))
         for column in range(len(headers))

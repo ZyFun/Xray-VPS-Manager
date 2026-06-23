@@ -280,12 +280,12 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
     for tag, entry in db_managed_connections(db).items():
         protocol = entry.get("protocol") or "vless"
         security = entry.get("security") or "reality"
-        security_label = f"{protocol}/{security}" if protocol != "vless" else security
         rows.append(
             [
                 entry.get("name", connection_name_from_tag(tag)),
                 tag,
-                security_label,
+                protocol,
+                security,
                 entry.get("port", ""),
                 entry.get("sni", ""),
                 entry.get("transport", "tcp"),

@@ -1,5 +1,5 @@
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from unittest import mock
 
@@ -28,6 +28,48 @@ class ClientCommandReadTests(unittest.TestCase):
             self.assertEqual(client_command.load_traffic_db(), expected)
 
         load_traffic_for_read.assert_called_once_with()
+
+    def test_connection_list_shows_protocol_column(self) -> None:
+        config = {
+            "inbounds": [
+                client_command.client_connections.make_reality_inbound(
+                    "vless-reality",
+                    443,
+                    "example.com",
+                    "private-key",
+                    "abcd",
+                )
+            ],
+            "outbounds": [],
+        }
+        db = {"connections": {}, "clients": {}}
+        with mock.patch.object(client_command.client_connections, "server_env_values", return_value={}):
+            client_command.client_connections.add_trojan_caddy_connection(
+                config,
+                db,
+                "trojan-web",
+                "vpn.example.com",
+                local_port=10100,
+                public_port=443,
+                fingerprint_value="firefox",
+                ws_path="/trojan",
+            )
+
+        read_result = client_command.client_repository.ClientDbReadResult(db, "sqlite")
+        output = StringIO()
+        with mock.patch.object(client_command, "load_config", return_value=config), \
+            mock.patch.object(client_command, "load_db_readonly", return_value=read_result), \
+            mock.patch.object(client_command.client_connections, "server_env_values", return_value={}), \
+            mock.patch.object(client_command.client_connections, "fingerprint", return_value="chrome"), \
+            redirect_stdout(output):
+            client_command.cmd_connection_list()
+
+        text = output.getvalue()
+        self.assertIn("PROTOCOL", text)
+        self.assertIn("SECURITY", text)
+        self.assertIn("vless", text)
+        self.assertIn("trojan", text)
+        self.assertIn("tls", text)
 
     def test_parse_trojan_caddy_connection_args(self) -> None:
         parsed = client_command.parse_trojan_connection_add_args(

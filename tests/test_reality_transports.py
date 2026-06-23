@@ -326,7 +326,7 @@ class RealityTransportTests(unittest.TestCase):
         self.assertEqual(connection.fingerprint, "ios")
         self.assertEqual(db["connections"][connection.tag]["fingerprint"], "ios")
         tls_rows = [row for row in client_connections.connection_rows(config, db) if row[1] == connection.tag]
-        self.assertEqual(tls_rows[0][6], "ios")
+        self.assertEqual(tls_rows[0][7], "ios")
 
         with mock.patch.object(client_links, "server_name", return_value="Xray"):
             link = client_links.link_for(config, CLIENT_ID, "alice", connection.tag, db)

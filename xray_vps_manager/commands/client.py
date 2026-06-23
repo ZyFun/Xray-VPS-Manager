@@ -523,9 +523,8 @@ def print_connection_title(config, db, tag):
     sni = entry.get("sni", "")
     security = entry.get("security") or "reality"
     protocol = entry.get("protocol") or "vless"
-    security_label = f"{protocol}/{security}" if protocol != "vless" else security
     print()
-    print(f"Connection: {name}  |  SECURITY={security_label}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
+    print(f"Connection: {name}  |  PROTOCOL={protocol}  |  SECURITY={security}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
 
 
 def cmd_connection_list():
@@ -535,7 +534,7 @@ def cmd_connection_list():
     ensure_connections(config, db)
     if read_result.source == "json":
         save_db(db)
-    headers = ["NAME", "TAG", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT", "CREATED"]
+    headers = ["NAME", "TAG", "PROTOCOL", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT", "CREATED"]
     print_table(headers, connection_rows(config, db), empty_message=None)
 
 
