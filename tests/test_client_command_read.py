@@ -66,6 +66,64 @@ class ClientCommandReadTests(unittest.TestCase):
             ),
         )
 
+    def test_parse_trojan_connection_defaults_to_caddy_websocket(self) -> None:
+        parsed = client_command.parse_trojan_connection_add_args(
+            [
+                "trojan-main",
+                "10100",
+                "vpn.example.com",
+            ]
+        )
+
+        self.assertEqual(
+            parsed,
+            (
+                "trojan-main",
+                "10100",
+                "vpn.example.com",
+                "",
+                "",
+                "chrome",
+                "ws",
+                "/trojan",
+                "",
+                True,
+                "tls1.2",
+                "tls1.3",
+            ),
+        )
+
+    def test_parse_trojan_connection_can_disable_caddy_setup(self) -> None:
+        parsed = client_command.parse_trojan_connection_add_args(
+            [
+                "trojan-main",
+                "10100",
+                "vpn.example.com",
+                "--no-caddy",
+            ]
+        )
+
+        self.assertEqual(parsed[6], "ws")
+        self.assertFalse(parsed[9])
+
+    def test_parse_trojan_legacy_direct_tls_args(self) -> None:
+        parsed = client_command.parse_trojan_connection_add_args(
+            [
+                "trojan-direct",
+                "8443",
+                "vpn.example.com",
+                "/etc/ssl/vpn/fullchain.pem",
+                "/etc/ssl/vpn/privkey.pem",
+                "firefox",
+            ]
+        )
+
+        self.assertEqual(parsed[3], "/etc/ssl/vpn/fullchain.pem")
+        self.assertEqual(parsed[4], "/etc/ssl/vpn/privkey.pem")
+        self.assertEqual(parsed[5], "firefox")
+        self.assertEqual(parsed[6], "tcp")
+        self.assertFalse(parsed[9])
+
 
 if __name__ == "__main__":
     unittest.main()

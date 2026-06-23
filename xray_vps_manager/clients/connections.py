@@ -16,6 +16,8 @@ from xray_vps_manager.xray.config import (
     DEFAULT_XHTTP_TLS_LOCAL_PORT,
     DEFAULT_XHTTP_TLS_PUBLIC_PORT,
     DEFAULT_TROJAN_TLS_PUBLIC_PORT,
+    DEFAULT_TROJAN_TLS_MIN_VERSION,
+    DEFAULT_TROJAN_TLS_MAX_VERSION,
     DEFAULT_TROJAN_WS_PATH,
     INBOUND_TAG,
     TLS_INBOUND_TAG,
@@ -749,8 +751,8 @@ def add_trojan_caddy_connection(
     public_port: int = DEFAULT_TROJAN_TLS_PUBLIC_PORT,
     fingerprint_value: str = "chrome",
     ws_path: str = "",
-    tls_min_version: str = "tls1.2",
-    tls_max_version: str = "tls1.2",
+    tls_min_version: str = DEFAULT_TROJAN_TLS_MIN_VERSION,
+    tls_max_version: str = DEFAULT_TROJAN_TLS_MAX_VERSION,
     caddy_enabled: bool = True,
 ) -> AddConnectionResult:
     ensure_connections(config, db)

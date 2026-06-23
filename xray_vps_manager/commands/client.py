@@ -657,17 +657,17 @@ def cmd_trojan_connection_add(
     cert_file_value="",
     key_file_value="",
     fingerprint_value="chrome",
-    transport_value="tcp",
+    transport_value="ws",
     ws_path="",
     public_port_value="",
-    install_caddy=False,
-    tls_min_version="tls1.2",
-    tls_max_version="tls1.2",
+    install_caddy=True,
+    tls_min_version=xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION,
+    tls_max_version=xray_config.DEFAULT_TROJAN_TLS_MAX_VERSION,
 ):
     name = validate_connection_name(name)
     domain = validate_host(domain_value, "TLS_DOMAIN")
     fp = validate_fingerprint(fingerprint_value or "chrome")
-    transport = (transport_value or "tcp").strip().lower()
+    transport = (transport_value or "ws").strip().lower()
     if transport not in ("tcp", "ws"):
         die("Trojan TRANSPORT must be tcp or ws.")
     config = load_config()
@@ -677,7 +677,7 @@ def cmd_trojan_connection_add(
             local_port = validate_port(port_value)
             public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_TROJAN_TLS_PUBLIC_PORT
             path = validate_trojan_ws_path(ws_path)
-            tls_min_version = validate_tls_version(tls_min_version, "tls1.2")
+            tls_min_version = validate_tls_version(tls_min_version, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
             tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
             if install_caddy:
                 conflicts = client_connections.public_port_conflicts(config, public_port)
@@ -1391,8 +1391,8 @@ def usage():
   xray-client connection-list
   xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
   xray-client add-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
-  xray-client add-trojan-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] --transport ws [--ws-path PATH] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
-  xray-client add-trojan-connection NAME PORT DOMAIN CERT_FILE KEY_FILE [FINGERPRINT]
+  xray-client add-trojan-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] [--ws-path PATH] [--public-port PORT] [--no-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-trojan-connection NAME PORT DOMAIN CERT_FILE KEY_FILE [FINGERPRINT] [--transport tcp]
   xray-client connection-rename NAME_OR_TAG NEW_NAME
   xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
   xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra
@@ -1568,12 +1568,13 @@ def parse_trojan_connection_add_args(args):
     if not args:
         usage()
         sys.exit(1)
-    transport = "tcp"
+    transport = "ws"
+    transport_explicit = False
     ws_path = xray_config.DEFAULT_TROJAN_WS_PATH
     public_port = ""
-    install_caddy = False
-    tls_min_version = "tls1.2"
-    tls_max_version = "tls1.2"
+    install_caddy = True
+    tls_min_version = xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION
+    tls_max_version = xray_config.DEFAULT_TROJAN_TLS_MAX_VERSION
     fingerprint_value = ""
     rest = list(args)
     positional = []
@@ -1582,13 +1583,23 @@ def parse_trojan_connection_add_args(args):
         item = rest[index]
         if item in ("--caddy", "--install-caddy"):
             transport = "ws"
+            transport_explicit = True
             install_caddy = True
+            index += 1
+            continue
+        if item in ("--no-caddy", "--no-install-caddy"):
+            transport = "ws"
+            transport_explicit = True
+            install_caddy = False
             index += 1
             continue
         if item == "--transport":
             if index + 1 >= len(rest):
                 die("--transport requires tcp or ws")
             transport = rest[index + 1]
+            transport_explicit = True
+            if transport.strip().lower() == "tcp":
+                install_caddy = False
             index += 2
             continue
         if item == "--ws-path":
@@ -1596,6 +1607,7 @@ def parse_trojan_connection_add_args(args):
                 die("--ws-path requires PATH")
             ws_path = rest[index + 1]
             transport = "ws"
+            transport_explicit = True
             index += 2
             continue
         if item == "--public-port":
@@ -1603,6 +1615,7 @@ def parse_trojan_connection_add_args(args):
                 die("--public-port requires PORT")
             public_port = rest[index + 1]
             transport = "ws"
+            transport_explicit = True
             index += 2
             continue
         if item == "--fingerprint":
@@ -1616,6 +1629,7 @@ def parse_trojan_connection_add_args(args):
                 die("--tls-min-version requires tls1.2, tls1.3, or default")
             tls_min_version = rest[index + 1]
             transport = "ws"
+            transport_explicit = True
             index += 2
             continue
         if item == "--tls-max-version":
@@ -1623,6 +1637,7 @@ def parse_trojan_connection_add_args(args):
                 die("--tls-max-version requires tls1.2, tls1.3, or default")
             tls_max_version = rest[index + 1]
             transport = "ws"
+            transport_explicit = True
             index += 2
             continue
         if item.startswith("--"):
@@ -1630,7 +1645,10 @@ def parse_trojan_connection_add_args(args):
         positional.append(item)
         index += 1
 
-    transport = (transport or "tcp").strip().lower()
+    if not transport_explicit and len(positional) in (5, 6):
+        transport = "tcp"
+        install_caddy = False
+    transport = (transport or "ws").strip().lower()
     if transport not in ("tcp", "ws"):
         die("Trojan --transport requires tcp or ws")
     if transport == "ws":

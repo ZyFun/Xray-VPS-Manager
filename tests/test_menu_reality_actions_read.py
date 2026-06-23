@@ -59,7 +59,7 @@ class MenuRealityActionsReadTests(unittest.TestCase):
         )
 
     def test_create_trojan_connection_builds_cli_command(self) -> None:
-        inputs = iter(["trojan-main", "", "vpn.example.com", "", "/private-trojan", "1", "3", "y"])
+        inputs = iter(["trojan-main", "", "vpn.example.com", "", "/private-trojan", "1", "", "y"])
         calls = []
 
         with mock.patch.object(menu_reality_actions, "current_fingerprint", return_value="chrome"), \
