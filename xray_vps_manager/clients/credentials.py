@@ -39,6 +39,21 @@ def security_from_inbound(inbound: dict[str, Any] | None) -> str:
     return str(inbound.get("streamSettings", {}).get("security") or "").strip().lower()
 
 
+def display_security(
+    security: str,
+    inbound: dict[str, Any] | None,
+    connection_entry: dict[str, Any] | None = None,
+) -> str:
+    raw_security = str(security or "").strip().lower() or security_from_inbound(inbound)
+    connection = connection_entry if isinstance(connection_entry, dict) else {}
+    connection_security = str(connection.get("security") or "").strip().lower()
+    if connection.get("caddy") and connection_security == "tls":
+        return "tls/caddy"
+    if raw_security in ("", "none") and connection_security:
+        return connection_security
+    return raw_security
+
+
 def transport_from_inbound(inbound: dict[str, Any] | None) -> str:
     if not inbound:
         return ""

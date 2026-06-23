@@ -8,7 +8,7 @@ from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.connections import ensure_connections
 from xray_vps_manager.clients.models import db_entry_from_client, split_email
 from xray_vps_manager.clients.payments import payment_type_label
-from xray_vps_manager.clients.repository import db_clients
+from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import clients, default_connection_tag, inbound_tag, managed_connection_inbounds
 
@@ -59,6 +59,7 @@ def credential_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str
     ensure_connections(config, db)
     active: dict[tuple[str, str], dict[str, Any]] = {}
     inbound_by_tag = {inbound_tag(inbound): inbound for inbound in managed_connection_inbounds(config)}
+    connection_entries = db_connections(db)
     for tag, inbound in inbound_by_tag.items():
         for item in clients(inbound):
             name, _created = split_email(item.get("email", ""))
@@ -69,6 +70,7 @@ def credential_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str
         credentials = client_credentials.normalize_entry_credentials(entry)
         for tag, credential in credentials.items():
             inbound = inbound_by_tag.get(tag)
+            connection_entry = connection_entries.get(tag, {})
             active_item = active.get((name, tag))
             protocol = credential.get("protocol") or client_credentials.protocol_from_inbound(inbound)
             status = "enabled" if active_item is not None else ("disabled" if credential.get("enabled") is False else "missing")
@@ -79,7 +81,11 @@ def credential_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str
                     "id": credential.get("id") or (credential.get("client") or {}).get("id") or entry.get("id", ""),
                     "email": client_credentials.credential_email(name, entry, credential),
                     "protocol": str(protocol or "vless").lower(),
-                    "security": credential.get("security") or client_credentials.security_from_inbound(inbound),
+                    "security": client_credentials.display_security(
+                        str(credential.get("security") or ""),
+                        inbound,
+                        connection_entry,
+                    ),
                     "transport": credential.get("transport") or client_credentials.transport_from_inbound(inbound),
                     "connection": tag,
                     "status": status,
@@ -92,6 +98,7 @@ def credential_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str
         if name in db_clients(db) and tag in client_credentials.normalize_entry_credentials(db_clients(db)[name]):
             continue
         inbound = inbound_by_tag.get(tag)
+        connection_entry = connection_entries.get(tag, {})
         raw_email = item.get("email", "")
         _name, created = split_email(raw_email)
         rows.append(
@@ -101,7 +108,7 @@ def credential_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str
                 "id": item.get("id", ""),
                 "email": raw_email,
                 "protocol": client_credentials.protocol_from_inbound(inbound),
-                "security": client_credentials.security_from_inbound(inbound),
+                "security": client_credentials.display_security("", inbound, connection_entry),
                 "transport": client_credentials.transport_from_inbound(inbound),
                 "connection": tag,
                 "status": "enabled",
