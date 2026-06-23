@@ -204,7 +204,7 @@ api.example.com {
 
 Через Telegram-владельца тот же TLS-профиль можно сменить в `/admin -> Настройки сервера -> TLS`. Бот показывает текущий профиль для каждого Caddy site config и время последнего изменения файла, затем применяет выбранный профиль с проверкой и reload Caddy.
 
-Обычный `xray-backup` не включает Caddy config и файлы сайта. Для `/etc/caddy/Caddyfile`, `/etc/caddy/conf.d` и папки сайта используй `Подключения и TLS -> Caddy / TLS -> Бэкапы`.
+Обычный `xray-backup` включает `/etc/caddy/Caddyfile` и `/etc/caddy/conf.d`, если Caddy настроен, чтобы TLS/Caddy-подключения восстанавливались вместе с Xray config и `manager.db`. Файлы сайта и config-only операции Caddy доступны отдельно через `Подключения и TLS -> Caddy / TLS -> Бэкапы`.
 
 ## Отдельный Caddy-Endpoint Для downloadSettings
 

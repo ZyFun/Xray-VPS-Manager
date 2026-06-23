@@ -51,13 +51,15 @@ xray-backup create
 /usr/local/etc/xray/config.json
 /usr/local/etc/xray/server.env
 /usr/local/etc/xray/manager.db
+/etc/caddy/Caddyfile, если Caddy настроен
+/etc/caddy/conf.d, если Caddy site configs существуют
 ```
 
 Архивы хранятся на сервере в `/root/xray_backups`.
-Архив содержит Reality private key, UUID клиентов, Trojan passwords, SQLite-базу менеджера, статистику трафика, журнал активности, глобальные блокировки, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
+Архив содержит Reality private key, UUID клиентов, Trojan passwords, SQLite-базу менеджера, статистику трафика, журнал активности, глобальные блокировки, исключения suspicious, token Telegram-бота и Caddy site configs, поэтому его нужно хранить как приватный секрет.
 Перед добавлением `manager.db` в архив `xray-backup create` создаёт временный консистентный SQLite snapshot через SQLite backup API внутри `/root/xray_backups`, а не копирует живой файл базы напрямую. Это защищает архив от повреждения, если фоновые таймеры или бот записывают данные во время создания backup.
 
-Обычный `xray-backup` не включает настройки Caddy и файлы сайта. Для Caddy используются отдельные backup-пункты в меню `Подключения и TLS` -> `Caddy / TLS` -> `Бэкапы`, чтобы восстановление Xray-данных не перезаписывало TLS site configs или сайт неожиданно.
+Обычный `xray-backup` теперь включает настройки Caddy, чтобы Trojan TLS/WebSocket и VLESS TLS/XHTTP подключения восстанавливались вместе со связанными Caddy site configs. Сертификатный кеш Caddy не копируется: Caddy может выпустить сертификаты заново после восстановления. Статические файлы сайта не входят в общий backup; для них остаются отдельные backup-пункты в меню `Подключения и TLS` -> `Caddy / TLS` -> `Бэкапы`.
 
 `server.env` сохраняется как переносимая конфигурация. Host-specific значения, например `SERVER_ADDR` и `SECURITY_AUDIT_LAST_RUN`, в новый архив не записываются. При восстановлении `xray-backup restore` сохраняет текущий `SERVER_ADDR` нового сервера, чтобы новые VLESS-ссылки генерировались с актуальным адресом.
 
@@ -101,13 +103,13 @@ xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 
 Перед восстановлением менеджер автоматически создаёт pre-restore бэкап текущего состояния.
 Если на сервере уже есть `/usr/local/etc/xray/manager.db`, дополнительно создаётся отдельная pre-restore копия SQLite-базы в каталоге резервных копий.
-После восстановления менеджер проверяет `config.json`, перезапускает Xray и включает timers.
+После восстановления менеджер применяет Caddy config из архива, если он там есть, выполняет `caddy validate` и reload Caddy, проверяет `config.json`, перезапускает Xray и включает timers. Если Caddy или Xray проверка не проходит, restore откатывается к pre-restore backup.
 Если архив переносится на сервер с новым IP или доменом, сначала установи менеджер на новом сервере, затем восстанови архив. `SERVER_ADDR` из нового `server.env` будет сохранён, а старый адрес из архива не перезапишет новый.
 
 
 ## Резервные Копии Caddy
 
-Настройки Caddy сохраняются отдельно от `xray-backup`.
+Настройки Caddy входят в обычный `xray-backup`, если Caddy настроен. Отдельные операции ниже нужны для точечного config-only backup/restore перед ручными изменениями Caddy или без восстановления Xray/SQLite.
 В backup Caddy входят:
 
 ```text

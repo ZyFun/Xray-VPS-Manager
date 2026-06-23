@@ -28,6 +28,10 @@ CADDY_RANDOM_TLS_ENV_PATH = xray_caddy.CADDY_RANDOM_TLS_ENV_PATH
 CADDY_RANDOM_TLS_ENV_ARCNAME = "usr/local/etc/xray/caddy-random-tls.env"
 CADDY_RANDOM_TLS_CONFIG_DIR = xray_caddy.CADDY_RANDOM_TLS_CONFIG_DIR
 CADDY_RANDOM_TLS_CONFIG_DIR_ARCNAME = "usr/local/etc/xray/caddy-random-tls.d"
+CADDYFILE_PATH = xray_caddy.CADDYFILE_PATH
+CADDYFILE_ARCNAME = xray_caddy.CADDYFILE_ARCNAME
+CADDY_CONF_DIR = xray_caddy.CADDY_CONF_DIR
+CADDY_CONF_DIR_ARCNAME = xray_caddy.CADDY_CONF_DIR_ARCNAME
 HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN")
 
 BACKUP_FILES = [
@@ -38,6 +42,12 @@ BACKUP_FILES = [
 ]
 BACKUP_DIRS = [
     (CADDY_RANDOM_TLS_CONFIG_DIR_ARCNAME, CADDY_RANDOM_TLS_CONFIG_DIR, False),
+]
+CADDY_CONFIG_FILES = [
+    (CADDYFILE_ARCNAME, CADDYFILE_PATH, False),
+]
+CADDY_CONFIG_DIRS = [
+    (CADDY_CONF_DIR_ARCNAME, CADDY_CONF_DIR, False),
 ]
 
 
@@ -192,6 +202,16 @@ def caddy_random_tls_backup_state():
     }
 
 
+def caddy_config_backup_state():
+    caddyfile_exists = CADDYFILE_PATH.exists()
+    conf_dir_exists = CADDY_CONF_DIR.exists()
+    return {
+        "configured": bool(caddyfile_exists or conf_dir_exists),
+        "caddyfileArchive": CADDYFILE_ARCNAME if caddyfile_exists else "",
+        "confDirArchive": CADDY_CONF_DIR_ARCNAME if conf_dir_exists else "",
+    }
+
+
 def sync_traffic():
     sync = Path("/usr/local/sbin/xray-traffic-sync")
     if sync.exists():
@@ -236,7 +256,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
     with tempfile.TemporaryDirectory(prefix=".xray-backup-snapshot-", dir=BACKUP_DIR) as snapshot_dir_raw:
         snapshot_dir = Path(snapshot_dir_raw)
         os.chmod(snapshot_dir, 0o700)
-        with tarfile.open(archive, "w:gz") as tar:
+        with tarfile.open(archive, "w:gz", dereference=True) as tar:
             for arcname, source, required in BACKUP_FILES:
                 if not source.exists():
                     if required:
@@ -269,6 +289,31 @@ def create_backup(path_only=False, quiet=False, sync=True):
                     "size": size,
                 })
 
+            for arcname, source, required in CADDY_CONFIG_FILES:
+                if not source.exists():
+                    if required:
+                        die(f"Required Caddy file not found: {source}")
+                    continue
+                tar.add(source, arcname=arcname, recursive=False)
+                files.append({
+                    "source": str(source),
+                    "archive": arcname,
+                    "size": source.stat().st_size,
+                })
+
+            for arcname, source, required in CADDY_CONFIG_DIRS:
+                if not source.exists():
+                    if required:
+                        die(f"Required Caddy directory not found: {source}")
+                    continue
+                tar.add(source, arcname=arcname, recursive=True)
+                size = xray_caddy.tree_size(source)
+                files.append({
+                    "source": str(source),
+                    "archive": arcname,
+                    "size": size,
+                })
+
             add_json(
                 tar,
                 "manifest.json",
@@ -276,9 +321,10 @@ def create_backup(path_only=False, quiet=False, sync=True):
                     "createdAt": utc_stamp(),
                     "xrayVersion": xray_version(),
                     "hostSpecificServerEnvKeysOmitted": list(HOST_SPECIFIC_SERVER_ENV_KEYS),
+                    "caddyConfig": caddy_config_backup_state(),
                     "caddyRandomTls": caddy_random_tls_backup_state(),
                     "files": files,
-                    "warning": "This archive contains Xray private keys, client UUIDs, traffic data, and activity metadata.",
+                    "warning": "This archive contains Xray private keys, client UUIDs, Trojan passwords, traffic data, activity metadata, and Caddy site configs when present. It does not contain Caddy certificate cache files.",
                 },
             )
 
@@ -288,9 +334,9 @@ def create_backup(path_only=False, quiet=False, sync=True):
     elif not quiet:
         print(f"Backup created: {archive}")
         print(f"Size: {format_size(archive.stat().st_size)}")
-        print("Contains: config.json, portable server.env, and manager.db.")
+        print("Contains: config.json, portable server.env, manager.db, and Caddy config when present.")
         print("Host-specific server.env values such as SERVER_ADDR are not stored; restore keeps the current server values.")
-        print("Keep this file private: it contains Reality private keys and client data.")
+        print("Keep this file private: it contains Reality private keys, Trojan passwords, and client data.")
     return archive
 
 
@@ -354,6 +400,8 @@ def validate_member(member):
     name = member.name
     if name.startswith("/") or ".." in Path(name).parts:
         die(f"Unsafe archive member: {name}")
+    if member.issym() or member.islnk() or member.isdev():
+        die(f"Unsupported archive member type: {name}")
 
 
 def extract_archive(archive):
@@ -459,6 +507,23 @@ def copy_dir_if_exists(temp_dir, arcname, target):
     shutil.copytree(source, target)
     chown_tree_xray(target)
     return True
+
+
+def restore_caddy_config_if_present(temp_dir, validator=None):
+    source_caddyfile = temp_dir / CADDYFILE_ARCNAME
+    source_conf_dir = temp_dir / CADDY_CONF_DIR_ARCNAME
+    if not source_caddyfile.exists() and not source_conf_dir.exists():
+        return []
+    if not source_caddyfile.exists():
+        raise FileNotFoundError(f"Backup contains {CADDY_CONF_DIR_ARCNAME} but not {CADDYFILE_ARCNAME}.")
+    restored = xray_caddy.apply_config_restore(
+        temp_dir,
+        caddyfile_path=CADDYFILE_PATH,
+        conf_dir=CADDY_CONF_DIR,
+    )
+    validate = validator or (lambda: xray_caddy.validate_and_reload_caddy(subprocess.run))
+    validate()
+    return [str(path) for path in restored]
 
 
 def set_caddy_random_tls_enabled(domain, enabled):
@@ -648,12 +713,14 @@ def restore_backup(value):
     temp_dir = extract_archive(archive)
     try:
         restored = apply_restore(temp_dir)
+        restored.extend(restore_caddy_config_if_present(temp_dir))
         test_and_restart()
         random_tls_messages = restore_caddy_random_tls_state(temp_dir)
     except Exception as exc:
         print("Restore failed. Rolling back to pre-restore backup...", file=sys.stderr)
         rollback_dir = extract_archive(pre_backup)
         apply_restore(rollback_dir)
+        restore_caddy_config_if_present(rollback_dir)
         test_and_restart()
         for message in restore_caddy_random_tls_state(rollback_dir):
             print(message)
