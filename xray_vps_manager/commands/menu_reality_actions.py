@@ -22,6 +22,8 @@ from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import (
     DEFAULT_TROJAN_TLS_LOCAL_PORT,
+    DEFAULT_TROJAN_TLS_MAX_VERSION,
+    DEFAULT_TROJAN_TLS_MIN_VERSION,
     DEFAULT_TROJAN_TLS_PUBLIC_PORT,
     DEFAULT_TROJAN_WS_PATH,
     DEFAULT_XHTTP_MODE,
@@ -730,8 +732,11 @@ def create_trojan_connection(call: CommandRunner) -> None:
     print("WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.")
     ws_path = validate_trojan_ws_path(prompt(DEFAULT_TROJAN_WS_PATH, "WS_PATH"))
     fp = choose_fingerprint(current_fingerprint())
-    tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
-    install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
+    tls_min, tls_max = choose_tls_versions(
+        DEFAULT_TROJAN_TLS_MIN_VERSION,
+        DEFAULT_TROJAN_TLS_MAX_VERSION,
+    )
+    install_caddy = ask_yes_no("Установить и настроить Caddy сейчас (production default)", True)
     if install_caddy:
         conflicts = connection_store.public_port_conflicts(config, int(public_port))
         if conflicts:
@@ -759,6 +764,8 @@ def create_trojan_connection(call: CommandRunner) -> None:
     ]
     if install_caddy:
         command.append("--install-caddy")
+    else:
+        command.append("--no-caddy")
     call(command)
 
 

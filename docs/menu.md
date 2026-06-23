@@ -96,6 +96,8 @@ xray-menu
 3 Удалить Trojan-подключение
 4 Переименовать Trojan-подключение
 
+Создание Trojan TLS подключения открывает production-сценарий: локальный Xray Trojan/WebSocket inbound, публичный Caddy site на домене и TLS 1.2+1.3 по умолчанию. Caddy выпускает и обновляет сертификат, а клиенты получают `trojan://` ссылку с `security=tls`, `type=ws`, `path=WS_PATH`, `sni=DOMAIN` и выбранным fingerprint.
+
 Подключения и TLS -> Caddy / TLS:
 1 Состояние и проверка
 2 Site configs
