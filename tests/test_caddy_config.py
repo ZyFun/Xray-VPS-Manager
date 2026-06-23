@@ -272,6 +272,34 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertEqual(item.upstream_transport, "http")
         self.assertEqual(item.match_path, "/private-ws")
 
+    def test_require_site_config_absent_refuses_existing_domain_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf_dir = Path(tmp)
+            path = conf_dir / "vpn.example.com.caddy"
+            path.write_text(
+                caddy.caddy_site_block(
+                    "vpn.example.com",
+                    10100,
+                    upstream_transport="http",
+                    route_path="/private-ws",
+                )
+            )
+
+            with self.assertRaises(FileExistsError) as raised:
+                caddy.require_site_config_absent("vpn.example.com", conf_dir)
+
+        message = str(raised.exception)
+        self.assertIn("Caddy site config already exists for vpn.example.com", message)
+        self.assertIn("127.0.0.1:10100", message)
+        self.assertIn("path=/private-ws", message)
+
+    def test_require_site_config_absent_allows_new_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf_dir = Path(tmp)
+            (conf_dir / "api.example.com.caddy").write_text(caddy.caddy_site_block("api.example.com", 10300))
+
+            caddy.require_site_config_absent("vpn.example.com", conf_dir)
+
     def test_remove_default_http_site_block_preserves_import(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "Caddyfile"

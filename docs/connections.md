@@ -100,7 +100,9 @@ xray-client add-trojan-connection trojan-main 10100 vpn.example.com chrome \
 - `FINGERPRINT` - клиентский fingerprint в ссылке; по умолчанию `chrome`.
 - `--no-caddy` - исключение из production default: создать локальный Trojan/WebSocket inbound без установки или обновления Caddy site.
 
-Команда создаёт локальный Xray inbound на `127.0.0.1:LOCAL_PORT`, добавляет запись подключения в SQLite, проверяет и перезапускает Xray, затем создаёт или обновляет Caddy site config для `DOMAIN`. Caddy site валидируется через `caddy validate`; при ошибке менеджер сообщает backup Xray config и детали ошибки.
+Команда заранее проверяет, что для `DOMAIN` ещё нет Caddy site config. Если site уже существует, создание подключения останавливается до изменения Xray config и SQLite, чтобы не перезаписать рабочий сайт или другое TLS-подключение. Для изменения существующего site используй `Подключения и TLS -> Caddy / TLS -> Site configs`.
+
+Если конфликтов нет, команда создаёт локальный Xray inbound на `127.0.0.1:LOCAL_PORT`, добавляет запись подключения в SQLite, проверяет и перезапускает Xray, затем создаёт новый Caddy site config для `DOMAIN`. Caddy site валидируется через `caddy validate`; при ошибке менеджер сообщает backup Xray config и детали ошибки.
 
 После создания подключения добавь пользователя обычной командой, явно выбрав Trojan connection:
 

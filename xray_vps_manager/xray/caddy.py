@@ -1001,6 +1001,43 @@ def site_config_for_domain(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> Site
     return parse_site_config(site_path)
 
 
+def site_config_conflicts_for_domain(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> list[SiteConfig]:
+    domain = validate_domain(domain)
+    target_path = site_config_path(domain, conf_dir)
+    matches = []
+    seen_paths = set()
+    if target_path.exists():
+        matches.append(parse_site_config(target_path))
+        seen_paths.add(target_path)
+    for path in list_site_config_paths(conf_dir):
+        if path in seen_paths:
+            continue
+        site = parse_site_config(path)
+        if site.domain.lower() == domain.lower():
+            matches.append(site)
+            seen_paths.add(path)
+    return matches
+
+
+def format_site_config_conflict(site: SiteConfig) -> str:
+    upstream = f"127.0.0.1:{site.local_port}" if site.local_port else "unknown upstream"
+    route = f", path={site.match_path}" if site.match_path else ""
+    return f"{site.path} ({upstream}, transport={site.upstream_transport}{route})"
+
+
+def require_site_config_absent(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> None:
+    domain = validate_domain(domain)
+    conflicts = site_config_conflicts_for_domain(domain, conf_dir)
+    if not conflicts:
+        return
+    details = "; ".join(format_site_config_conflict(site) for site in conflicts)
+    raise FileExistsError(
+        f"Caddy site config already exists for {domain}: {details}. "
+        "Creating a new TLS connection would overwrite this site and may break existing traffic. "
+        "Review, update, or delete the existing site config through Caddy / TLS -> Site configs first."
+    )
+
+
 def caddy_site_block(
     domain: str,
     local_port: int,
@@ -1264,6 +1301,7 @@ def setup_caddy_for_xhttp(
     install: bool = True,
     runner=subprocess.run,
 ) -> Path:
+    require_site_config_absent(domain)
     if install:
         install_caddy_if_needed(runner)
     site_path = write_site_config(
@@ -1286,6 +1324,7 @@ def setup_caddy_for_trojan_ws(
     install: bool = True,
     runner=subprocess.run,
 ) -> Path:
+    require_site_config_absent(domain)
     if install:
         install_caddy_if_needed(runner)
     site_path = write_site_config(
