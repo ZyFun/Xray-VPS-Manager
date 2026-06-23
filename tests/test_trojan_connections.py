@@ -154,6 +154,68 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(config["inbounds"][0]["settings"]["clients"][0]["id"], CLIENT_ID)
         self.assertEqual(config["inbounds"][1]["settings"]["clients"][0]["password"], PASSWORD)
 
+    def test_prepare_add_client_can_resolve_single_trojan_protocol(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        trojan = client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-web",
+            "vpn.example.com",
+            local_port=10100,
+            public_port=443,
+            fingerprint_value="chrome",
+            ws_path="/trojan",
+        )
+
+        selected = client_crud.prepare_add_client(config, db, "alice", protocol="trojan")
+
+        self.assertEqual(selected, trojan.tag)
+
+    def test_prepare_add_client_rejects_ambiguous_protocol(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-web",
+            "vpn.example.com",
+            local_port=10100,
+            public_port=443,
+            fingerprint_value="chrome",
+            ws_path="/trojan",
+        )
+        client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-backup",
+            "backup.example.com",
+            local_port=10101,
+            public_port=443,
+            fingerprint_value="firefox",
+            ws_path="/backup-trojan",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Multiple trojan connections"):
+            client_crud.prepare_add_client(config, db, "alice", protocol="trojan")
+
+    def test_prepare_add_client_rejects_connection_and_protocol_together(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-web",
+            "vpn.example.com",
+            local_port=10100,
+            public_port=443,
+            fingerprint_value="chrome",
+            ws_path="/trojan",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Use either --connection"):
+            client_crud.prepare_add_client(config, db, "alice", "vless-reality", protocol="trojan")
+
     def test_add_trojan_caddy_connection_uses_local_ws_inbound_and_public_tls_link(self) -> None:
         config = {"inbounds": [base_vless_inbound()], "outbounds": []}
         db = {"connections": {}, "clients": {}}

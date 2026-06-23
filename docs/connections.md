@@ -106,7 +106,14 @@ xray-client add-trojan-connection trojan-main 10100 vpn.example.com chrome \
 
 Если конфликтов нет, команда создаёт локальный Xray inbound на `127.0.0.1:LOCAL_PORT`, добавляет запись подключения в SQLite, проверяет и перезапускает Xray, затем создаёт новый Caddy site config для `DOMAIN`. Caddy site валидируется через `caddy validate`; при ошибке менеджер сообщает backup Xray config и детали ошибки.
 
-После создания подключения добавь нового пользователя обычной командой, явно выбрав Trojan connection:
+После создания подключения добавь нового пользователя обычной командой. Если Trojan connection на сервере один, можно выбрать его по протоколу:
+
+```bash
+xray-client add alice 30 --protocol trojan --payment paid
+xray-client link alice
+```
+
+Если Trojan-подключений несколько, явно укажи нужный connection:
 
 ```bash
 xray-client add alice 30 --connection trojan-tls --payment paid
@@ -121,7 +128,7 @@ xray-client link alice
 
 Если подключений несколько, меню покажет таблицу VLESS и Trojan connections. Выбери Trojan connection, чтобы получить `trojan://` ссылку.
 
-Если на сервере уже есть несколько подключений, `--connection` обязателен. Для Trojan-клиента менеджер генерирует внутренний UUID и отдельный Trojan password. В активный Xray config попадает только `password`, `email` и `level`; внутренний UUID остаётся в `manager.db`.
+Если на сервере уже есть несколько подключений одного протокола, `--connection` обязателен. Для Trojan-клиента менеджер генерирует внутренний UUID и отдельный Trojan password. В активный Xray config попадает только `password`, `email` и `level`; внутренний UUID остаётся в `manager.db`.
 Если `alice` уже существует, основной путь в меню:
 
 ```text
