@@ -272,6 +272,13 @@ def validate_host(value, label="SNI"):
     return value
 
 
+def validate_absolute_path(value, label="PATH"):
+    path = (value or "").strip()
+    if not path.startswith("/") or "\n" in path or "\r" in path:
+        die(f"{label} must be an absolute one-line path.")
+    return path
+
+
 def validate_fingerprint(value):
     value = (value or "").strip().lower()
     if value not in FINGERPRINTS:
@@ -310,6 +317,13 @@ def validate_grpc_service_name(value):
 def validate_xhttp_path(value):
     try:
         return xray_config.normalize_xhttp_path(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_trojan_ws_path(value):
+    try:
+        return xray_config.normalize_trojan_ws_path(value)
     except ValueError as exc:
         die(str(exc))
 
@@ -500,8 +514,10 @@ def print_connection_title(config, db, tag):
     port = entry.get("port", "")
     sni = entry.get("sni", "")
     security = entry.get("security") or "reality"
+    protocol = entry.get("protocol") or "vless"
+    security_label = f"{protocol}/{security}" if protocol != "vless" else security
     print()
-    print(f"Connection: {name}  |  SECURITY={security}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
+    print(f"Connection: {name}  |  SECURITY={security_label}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
 
 
 def cmd_connection_list():
@@ -631,6 +647,112 @@ def cmd_connection_add(
         print(f"XHTTP_MODE: {result.xhttp_mode}")
         extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
         print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
+    print(f"Backup: {backup}")
+
+
+def cmd_trojan_connection_add(
+    name,
+    port_value,
+    domain_value,
+    cert_file_value="",
+    key_file_value="",
+    fingerprint_value="chrome",
+    transport_value="tcp",
+    ws_path="",
+    public_port_value="",
+    install_caddy=False,
+    tls_min_version="tls1.2",
+    tls_max_version="tls1.2",
+):
+    name = validate_connection_name(name)
+    domain = validate_host(domain_value, "TLS_DOMAIN")
+    fp = validate_fingerprint(fingerprint_value or "chrome")
+    transport = (transport_value or "tcp").strip().lower()
+    if transport not in ("tcp", "ws"):
+        die("Trojan TRANSPORT must be tcp or ws.")
+    config = load_config()
+    db = load_db()
+    try:
+        if transport == "ws":
+            local_port = validate_port(port_value)
+            public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_TROJAN_TLS_PUBLIC_PORT
+            path = validate_trojan_ws_path(ws_path)
+            tls_min_version = validate_tls_version(tls_min_version, "tls1.2")
+            tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
+            if install_caddy:
+                conflicts = client_connections.public_port_conflicts(config, public_port)
+                if conflicts:
+                    tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+                    die(
+                        f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
+                        "Move those connections to another port before installing Caddy."
+                    )
+            result = client_connections.add_trojan_caddy_connection(
+                config,
+                db,
+                name,
+                xray_caddy.validate_domain(domain),
+                local_port=local_port,
+                public_port=public_port,
+                fingerprint_value=fp,
+                ws_path=path,
+                tls_min_version=tls_min_version,
+                tls_max_version=tls_max_version,
+                caddy_enabled=install_caddy,
+            )
+        else:
+            port = validate_port(port_value)
+            cert_file = validate_absolute_path(cert_file_value, "CERT_FILE")
+            key_file = validate_absolute_path(key_file_value, "KEY_FILE")
+            result = client_connections.add_trojan_tls_connection(
+                config,
+                db,
+                name,
+                port,
+                domain,
+                cert_file,
+                key_file,
+                fp,
+            )
+    except (ValueError, RuntimeError) as exc:
+        die(str(exc))
+
+    backup = save_config_restart_xray_and_db(config, db)
+    caddy_site = None
+    if result.transport == "ws" and install_caddy:
+        try:
+            caddy_site = xray_caddy.setup_caddy_for_trojan_ws(
+                result.public_host,
+                result.local_port,
+                result.ws_path,
+                tls_min_version=result.tls_min_version,
+                tls_max_version=result.tls_max_version,
+            )
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            die(
+                "Trojan Caddy connection was added, but Caddy setup failed. "
+                f"Config backup: {backup}. Detail: {exc}"
+            )
+
+    print(f"Added Trojan connection: {result.name}")
+    print(f"Tag: {result.tag}")
+    print("PROTOCOL: trojan")
+    print(f"SECURITY: {result.security}")
+    print(f"TLS_DOMAIN: {result.sni}")
+    print(f"FINGERPRINT: {result.fingerprint}")
+    print(f"TRANSPORT: {result.transport}")
+    if result.transport == "ws":
+        print(f"PUBLIC_PORT: {result.public_port}")
+        print(f"LOCAL_PORT: {result.local_port}")
+        print(f"WS_PATH: {result.ws_path}")
+        print(f"TLS_MIN_VERSION: {result.tls_min_version}")
+        print(f"TLS_MAX_VERSION: {result.tls_max_version}")
+        if caddy_site:
+            print(f"CADDY_SITE: {caddy_site}")
+    else:
+        print(f"PORT: {result.port}")
+        print(f"CERT_FILE: {result.cert_file}")
+        print(f"KEY_FILE: {result.key_file}")
     print(f"Backup: {backup}")
 
 
@@ -1269,6 +1391,8 @@ def usage():
   xray-client connection-list
   xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
   xray-client add-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-trojan-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] --transport ws [--ws-path PATH] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-trojan-connection NAME PORT DOMAIN CERT_FILE KEY_FILE [FINGERPRINT]
   xray-client connection-rename NAME_OR_TAG NEW_NAME
   xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
   xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra
@@ -1440,6 +1564,117 @@ def parse_connection_add_args(args):
     )
 
 
+def parse_trojan_connection_add_args(args):
+    if not args:
+        usage()
+        sys.exit(1)
+    transport = "tcp"
+    ws_path = xray_config.DEFAULT_TROJAN_WS_PATH
+    public_port = ""
+    install_caddy = False
+    tls_min_version = "tls1.2"
+    tls_max_version = "tls1.2"
+    fingerprint_value = ""
+    rest = list(args)
+    positional = []
+    index = 0
+    while index < len(rest):
+        item = rest[index]
+        if item in ("--caddy", "--install-caddy"):
+            transport = "ws"
+            install_caddy = True
+            index += 1
+            continue
+        if item == "--transport":
+            if index + 1 >= len(rest):
+                die("--transport requires tcp or ws")
+            transport = rest[index + 1]
+            index += 2
+            continue
+        if item == "--ws-path":
+            if index + 1 >= len(rest):
+                die("--ws-path requires PATH")
+            ws_path = rest[index + 1]
+            transport = "ws"
+            index += 2
+            continue
+        if item == "--public-port":
+            if index + 1 >= len(rest):
+                die("--public-port requires PORT")
+            public_port = rest[index + 1]
+            transport = "ws"
+            index += 2
+            continue
+        if item == "--fingerprint":
+            if index + 1 >= len(rest):
+                die("--fingerprint requires value")
+            fingerprint_value = rest[index + 1]
+            index += 2
+            continue
+        if item == "--tls-min-version":
+            if index + 1 >= len(rest):
+                die("--tls-min-version requires tls1.2, tls1.3, or default")
+            tls_min_version = rest[index + 1]
+            transport = "ws"
+            index += 2
+            continue
+        if item == "--tls-max-version":
+            if index + 1 >= len(rest):
+                die("--tls-max-version requires tls1.2, tls1.3, or default")
+            tls_max_version = rest[index + 1]
+            transport = "ws"
+            index += 2
+            continue
+        if item.startswith("--"):
+            die(f"Unknown option: {item}")
+        positional.append(item)
+        index += 1
+
+    transport = (transport or "tcp").strip().lower()
+    if transport not in ("tcp", "ws"):
+        die("Trojan --transport requires tcp or ws")
+    if transport == "ws":
+        if len(positional) not in (3, 4):
+            usage()
+            sys.exit(1)
+        if len(positional) == 4:
+            fingerprint_value = positional[3]
+        return (
+            positional[0],
+            positional[1],
+            positional[2],
+            "",
+            "",
+            fingerprint_value or "chrome",
+            "ws",
+            ws_path,
+            public_port,
+            install_caddy,
+            tls_min_version,
+            tls_max_version,
+        )
+
+    if len(positional) not in (5, 6):
+        usage()
+        sys.exit(1)
+    if len(positional) == 6:
+        fingerprint_value = positional[5]
+    return (
+        positional[0],
+        positional[1],
+        positional[2],
+        positional[3],
+        positional[4],
+        fingerprint_value or "chrome",
+        "tcp",
+        "",
+        "",
+        False,
+        tls_min_version,
+        tls_max_version,
+    )
+
+
 def parse_connection_transport_args(args):
     if len(args) < 2:
         usage()
@@ -1536,6 +1771,8 @@ def main():
         cmd_connection_list()
     elif command == "add-connection":
         cmd_connection_add(*parse_connection_add_args(sys.argv[2:]))
+    elif command == "add-trojan-connection":
+        cmd_trojan_connection_add(*parse_trojan_connection_add_args(sys.argv[2:]))
     elif command in ("connection-transport", "set-connection-transport"):
         cmd_connection_transport(*parse_connection_transport_args(sys.argv[2:]))
     elif command in ("connection-xhttp-extra", "set-connection-xhttp-extra"):

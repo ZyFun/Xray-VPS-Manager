@@ -37,7 +37,61 @@ class XrayTestCommandTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(test_command.check_client_db_alignment(diag), "SQLite matches active VLESS connections")
+        self.assertEqual(test_command.check_client_db_alignment(diag), "SQLite matches active managed connections")
+
+    def test_client_db_alignment_accepts_trojan_connections(self) -> None:
+        diag = SimpleNamespace(
+            context={
+                "client_db_source": "SQLite",
+                "client_db": {
+                    "clients": {
+                        "alice": {"connection": "trojan-tls", "enabled": True},
+                    }
+                },
+                "config": {
+                    "inbounds": [
+                        {
+                            "tag": "vless-reality",
+                            "protocol": "vless",
+                            "settings": {"clients": []},
+                            "streamSettings": {"security": "reality"},
+                        },
+                        {
+                            "tag": "trojan-tls",
+                            "protocol": "trojan",
+                            "settings": {"clients": [{"email": "alice|created=2026-06-20T00:00:00Z"}]},
+                            "streamSettings": {"security": "tls"},
+                        },
+                    ]
+                },
+            }
+        )
+
+        self.assertEqual(test_command.check_client_db_alignment(diag), "SQLite matches active managed connections")
+
+    def test_client_db_alignment_warns_for_legacy_trojan_users_section(self) -> None:
+        diag = SimpleNamespace(
+            context={
+                "client_db": {
+                    "clients": {
+                        "alice": {"connection": "trojan-tls", "enabled": True},
+                    }
+                },
+                "config": {
+                    "inbounds": [
+                        {
+                            "tag": "trojan-tls",
+                            "protocol": "trojan",
+                            "settings": {"users": [{"email": "alice|created=2026-06-20T00:00:00Z"}]},
+                            "streamSettings": {"security": "tls"},
+                        },
+                    ]
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "alice: enabled in SQLite but absent from config"):
+            test_command.check_client_db_alignment(diag)
 
     def test_client_db_alignment_still_warns_for_enabled_client_absent_from_config(self) -> None:
         diag = SimpleNamespace(

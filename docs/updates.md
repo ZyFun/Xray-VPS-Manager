@@ -149,7 +149,7 @@ Telegram settings
 xray-test
 ```
 
-`xray-test` проверяет Xray, config.json, Reality-подключения и локальные порты, согласованность клиентов SQLite со всеми активными VLESS inbounds включая TLS/Caddy, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило, глобальный blocklist routing и каскадную конфигурацию.
+`xray-test` проверяет Xray, config.json, Reality-подключения и локальные порты, согласованность клиентов SQLite со всеми активными managed inbounds включая VLESS TLS/Caddy и Trojan TLS/WebSocket через Caddy, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило, глобальный blocklist routing и каскадную конфигурацию.
 Обычный запуск пропускает полный физический проход `PRAGMA quick_check` по SQLite-файлу, потому что на большой базе с activity-логом он может занимать десятки секунд. Для глубокой проверки целостности базы используйте:
 
 ```bash

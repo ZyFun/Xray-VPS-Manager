@@ -27,6 +27,45 @@ class ClientCommandReadTests(unittest.TestCase):
 
         load_traffic_for_read.assert_called_once_with()
 
+    def test_parse_trojan_caddy_connection_args(self) -> None:
+        parsed = client_command.parse_trojan_connection_add_args(
+            [
+                "trojan-main",
+                "10100",
+                "vpn.example.com",
+                "chrome",
+                "--transport",
+                "ws",
+                "--ws-path",
+                "/private-trojan",
+                "--public-port",
+                "443",
+                "--install-caddy",
+                "--tls-min-version",
+                "tls1.2",
+                "--tls-max-version",
+                "tls1.3",
+            ]
+        )
+
+        self.assertEqual(
+            parsed,
+            (
+                "trojan-main",
+                "10100",
+                "vpn.example.com",
+                "",
+                "",
+                "chrome",
+                "ws",
+                "/private-trojan",
+                "443",
+                True,
+                "tls1.2",
+                "tls1.3",
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

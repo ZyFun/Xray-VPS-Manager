@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import subprocess
 
 
@@ -25,6 +26,10 @@ def xray_x25519_keys() -> tuple[str, str]:
 
 def random_short_id() -> str:
     return subprocess.check_output(["openssl", "rand", "-hex", "8"], text=True).strip()
+
+
+def random_trojan_password() -> str:
+    return secrets.token_urlsafe(32)
 
 
 def reality_public_key(private_key: str) -> str:

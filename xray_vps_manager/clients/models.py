@@ -85,12 +85,20 @@ def db_entry_from_client(
     name, email_created = split_email(item.get("email", ""))
     previous = previous or {}
     created = created or previous.get("created", "") or email_created
+    protocol = str(item.get("protocol") or previous.get("protocol") or "").strip().lower()
+    if not protocol and item.get("password"):
+        protocol = "trojan"
     entry: dict[str, Any] = {
-        "id": item.get("id", ""),
+        "id": item.get("id") or previous.get("id", ""),
         "created": created,
         "enabled": enabled,
         "client": dict(item),
     }
+    if protocol:
+        entry["protocol"] = protocol
+        entry["client"].setdefault("protocol", protocol)
+    if entry["id"]:
+        entry["client"].setdefault("id", entry["id"])
     for key in (
         "expiresAt",
         "accessDays",
@@ -117,10 +125,26 @@ def db_entry_from_client(
 def client_from_db_entry(name: str, entry: dict[str, Any]) -> dict[str, Any]:
     created = entry.get("created", "")
     client = dict(entry.get("client") or {})
+    protocol = str(entry.get("protocol") or client.get("protocol") or "").strip().lower()
+    if not protocol and client.get("password"):
+        protocol = "trojan"
+    email = f"{name}|created={created}" if created else name
+
+    if protocol == "trojan":
+        password = str(client.get("password") or "").strip()
+        if not password:
+            raise ValueError(f"Trojan client has no password in database: {name}")
+        return {
+            "password": password,
+            "email": email,
+            "level": int(client.get("level", 0) or 0),
+        }
+
     client.setdefault("id", entry.get("id", ""))
     client.setdefault("flow", "xtls-rprx-vision")
     client.setdefault("level", 0)
-    client["email"] = f"{name}|created={created}" if created else name
+    client["email"] = email
     if not client.get("id"):
         raise ValueError(f"Client has no UUID in database: {name}")
+    client.pop("protocol", None)
     return client

@@ -183,7 +183,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
             diag.context["client_db"]["clients"]["alice"]["connection"] = "missing-connection"
 
             with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
-                with self.assertRaisesRegex(RuntimeError, "missing Reality connection"):
+                with self.assertRaisesRegex(RuntimeError, "missing connection"):
                     test_command.check_sqlite_database(diag)
 
     def test_sqlite_database_requires_read_ready_metadata(self) -> None:
