@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.clients import connections as connection_store
-from xray_vps_manager.clients.repository import db_connections, load_db_sql
+from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.xray import caddy
 from xray_vps_manager.xray.config import find_inbound_by_tag, load_config as load_xray_config
@@ -384,7 +384,7 @@ def tls_connection_options() -> list[dict]:
     db = load_db_sql()
     connection_store.ensure_connections(config, db)
     options = []
-    for tag, entry in db_connections(db).items():
+    for tag, entry in db_managed_connections(db).items():
         if (entry.get("security") or "reality") != "tls":
             continue
         inbound = find_inbound_by_tag(config, tag)

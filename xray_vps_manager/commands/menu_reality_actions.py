@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.clients import connections as connection_store
-from xray_vps_manager.clients.repository import db_connections, load_db_sql, save_db
+from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql, save_db
 from xray_vps_manager.clients.settings import (
     fingerprint as server_fingerprint,
     save_server_env_values,
@@ -171,7 +171,7 @@ def connection_rows(
     rows = []
     for inbound in managed_connection_inbounds(config):
         settings = connection_settings_from_inbound(inbound)
-        entry = db_connections(db).get(settings["tag"], {})
+        entry = db_managed_connections(db).get(settings["tag"], {})
         protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
         if protocol_filter and protocol != protocol_filter:
             continue
@@ -301,7 +301,7 @@ def update_connection_db(
     xhttp_mode=None,
 ) -> None:
     db = load_db_sql()
-    connections = db_connections(db)
+    connections = db_managed_connections(db)
     entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
     if port is not None:
         entry["port"] = port
@@ -1007,7 +1007,7 @@ def current_xhttp_extra(tag: str) -> dict:
     config = load_config()
     db = load_db_sql()
     connection_store.ensure_connections(config, db)
-    entry = db_connections(db).get(tag, {})
+    entry = db_managed_connections(db).get(tag, {})
     if isinstance(entry.get("xhttpExtra"), dict):
         try:
             return normalize_xhttp_extra(entry["xhttpExtra"])
