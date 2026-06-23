@@ -8,7 +8,7 @@ from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.connections import ensure_connections
 from xray_vps_manager.clients.models import db_entry_from_client, split_email
 from xray_vps_manager.clients.payments import payment_type_label
-from xray_vps_manager.clients.repository import db_clients, db_connections
+from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import clients, default_connection_tag, inbound_tag, managed_connection_inbounds
 
@@ -59,7 +59,7 @@ def credential_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str
     ensure_connections(config, db)
     active: dict[tuple[str, str], dict[str, Any]] = {}
     inbound_by_tag = {inbound_tag(inbound): inbound for inbound in managed_connection_inbounds(config)}
-    connection_entries = db_connections(db)
+    connection_entries = db_managed_connections(db)
     for tag, inbound in inbound_by_tag.items():
         for item in clients(inbound):
             name, _created = split_email(item.get("email", ""))

@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.connections import connection_fingerprint, ensure_connections
-from xray_vps_manager.clients.repository import db_clients, db_connections
+from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.clients.settings import server_addr, server_name
 from xray_vps_manager.xray.config import (
     client_flow_for_transport,
@@ -42,7 +42,7 @@ def link_for(
     credential = client_credentials.credential_for_connection(client_entry, connection_tag) if client_entry else None
     inbound = find_inbound_by_tag(config, connection_tag)
     stream = inbound.get("streamSettings", {})
-    entry = db_connections(db).get(connection_tag, {})
+    entry = db_managed_connections(db).get(connection_tag, {})
     protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
     security = entry.get("security") or stream.get("security") or "reality"
     if protocol == "trojan":

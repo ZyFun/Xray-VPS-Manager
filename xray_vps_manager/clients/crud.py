@@ -19,7 +19,7 @@ from xray_vps_manager.clients.models import (
     normalize_payment_type,
     split_email,
 )
-from xray_vps_manager.clients.repository import db_clients, db_connections
+from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.traffic.repository import traffic_entry
 from xray_vps_manager.xray import crypto as xray_crypto
@@ -91,9 +91,9 @@ class MoveClientResult:
 
 def resolve_connection_for_add(config: dict[str, Any], db: dict[str, Any], connection_tag: str | None = None) -> str:
     connections.ensure_connections(config, db)
-    connection_tags = list(db_connections(db))
+    connection_tags = list(db_managed_connections(db))
     if connection_tag:
-        if connection_tag not in db_connections(db):
+        if connection_tag not in db_managed_connections(db):
             raise ValueError(f"Connection not found: {connection_tag}")
         return connection_tag
     if len(connection_tags) == 1:

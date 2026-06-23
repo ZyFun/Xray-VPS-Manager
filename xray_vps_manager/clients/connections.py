@@ -1,4 +1,4 @@
-"""Reality connection records."""
+"""Managed connection records."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 from typing import Callable
 
 from xray_vps_manager.clients import credentials as client_credentials
-from xray_vps_manager.clients.repository import db_clients, db_connections
+from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray import crypto as xray_crypto
@@ -109,7 +109,7 @@ class RenameConnectionResult:
 
 
 def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
-    connections = db_connections(db)
+    connections = db_managed_connections(db)
     env = server_env_values()
     now_stamp = utc_stamp()
     for inbound in reality_inbounds(config):
@@ -256,7 +256,7 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
 
 def connection_entry(config: dict[str, Any], db: dict[str, Any], tag: str) -> dict[str, Any]:
     ensure_connections(config, db)
-    entry = db_connections(db).get(tag)
+    entry = db_managed_connections(db).get(tag)
     if not entry:
         raise ValueError(f"Connection not found: {tag}")
     return entry
@@ -277,7 +277,7 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
     ensure_connections(config, db)
     fallback_fingerprint = fingerprint()
     rows = []
-    for tag, entry in db_connections(db).items():
+    for tag, entry in db_managed_connections(db).items():
         protocol = entry.get("protocol") or "vless"
         security = entry.get("security") or "reality"
         security_label = f"{protocol}/{security}" if protocol != "vless" else security
@@ -517,7 +517,7 @@ def add_connection(
 ) -> AddConnectionResult:
     ensure_connections(config, db)
 
-    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
+    existing_connection_names = {entry.get("name") for entry in db_managed_connections(db).values()}
     if name in existing_connection_names:
         raise ValueError(f"Connection already exists: {name}")
 
@@ -568,7 +568,7 @@ def add_connection(
             if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra")
         }
     )
-    db_connections(db)[tag] = record
+    db_managed_connections(db)[tag] = record
 
     return AddConnectionResult(
         tag=tag,
@@ -605,7 +605,7 @@ def add_tls_xhttp_connection(
 ) -> AddConnectionResult:
     ensure_connections(config, db)
 
-    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
+    existing_connection_names = {entry.get("name") for entry in db_managed_connections(db).values()}
     if name in existing_connection_names:
         raise ValueError(f"Connection already exists: {name}")
 
@@ -655,7 +655,7 @@ def add_tls_xhttp_connection(
             if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra")
         }
     )
-    db_connections(db)[tag] = record
+    db_managed_connections(db)[tag] = record
 
     return AddConnectionResult(
         tag=tag,
@@ -692,7 +692,7 @@ def add_trojan_tls_connection(
 ) -> AddConnectionResult:
     ensure_connections(config, db)
 
-    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
+    existing_connection_names = {entry.get("name") for entry in db_managed_connections(db).values()}
     if name in existing_connection_names:
         raise ValueError(f"Connection already exists: {name}")
 
@@ -724,7 +724,7 @@ def add_trojan_tls_connection(
         "certFile": cert_file,
         "keyFile": key_file,
     }
-    db_connections(db)[tag] = record
+    db_managed_connections(db)[tag] = record
 
     return AddConnectionResult(
         tag=tag,
@@ -758,7 +758,7 @@ def add_trojan_caddy_connection(
 ) -> AddConnectionResult:
     ensure_connections(config, db)
 
-    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
+    existing_connection_names = {entry.get("name") for entry in db_managed_connections(db).values()}
     if name in existing_connection_names:
         raise ValueError(f"Connection already exists: {name}")
 
@@ -796,7 +796,7 @@ def add_trojan_caddy_connection(
         "tlsMinVersion": tls_min_version,
         "tlsMaxVersion": tls_max_version,
     }
-    db_connections(db)[tag] = record
+    db_managed_connections(db)[tag] = record
 
     return AddConnectionResult(
         tag=tag,
@@ -824,7 +824,7 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
     tag = resolve_connection_identifier(config, db, identifier)
     inbound = find_inbound_by_tag(config, tag)
     protocol = inbound.get("protocol") or "vless"
-    security = db_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
+    security = db_managed_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
 
     if protocol == "vless" and len(vless_connection_inbounds(config)) <= 1:
         raise ValueError("Cannot remove the last VLESS connection.")
@@ -839,7 +839,7 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
         if not (inbound_tag(inbound) == tag and inbound.get("protocol") in ("vless", "trojan"))
     ]
 
-    db_connections(db).pop(tag, None)
+    db_managed_connections(db).pop(tag, None)
     for name in removed_client_names:
         entry = db_clients(db).get(name)
         if not isinstance(entry, dict):
@@ -885,12 +885,12 @@ def update_connection_transport(
     ensure_connections(config, db)
     tag = resolve_connection_identifier(config, db, identifier)
     inbound = find_inbound_by_tag(config, tag)
-    security = db_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
+    security = db_managed_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
     if inbound.get("protocol") != "vless":
         raise ValueError("Transport updates are currently supported only for VLESS connections.")
     if security == "tls" and transport != "xhttp":
         raise ValueError("TLS connections support only xhttp transport.")
-    current_entry = db_connections(db).get(tag, {})
+    current_entry = db_managed_connections(db).get(tag, {})
     effective_xhttp_extra = xhttp_extra
     if transport == "xhttp" and xhttp_extra is None and isinstance(current_entry.get("xhttpExtra"), dict):
         effective_xhttp_extra = current_entry["xhttpExtra"]
@@ -910,7 +910,7 @@ def update_connection_transport(
         if name:
             updated_clients.append(name)
 
-    connections = db_connections(db)
+    connections = db_managed_connections(db)
     entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
     for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra"):
         entry.pop(key, None)
@@ -960,7 +960,7 @@ def update_connection_xhttp_extra(
         xhttp_mode=settings.get("xhttpMode") or DEFAULT_XHTTP_MODE,
         xhttp_extra=normalized_extra,
     )
-    entry = db_connections(db).setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
+    entry = db_managed_connections(db).setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
     if updated.get("xhttpExtra"):
         entry["xhttpExtra"] = updated["xhttpExtra"]
     else:
@@ -978,7 +978,7 @@ def rename_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
     if not name:
         raise ValueError("Connection name is required.")
     tag = resolve_connection_identifier(config, db, identifier)
-    connections = db_connections(db)
+    connections = db_managed_connections(db)
     for existing_tag, entry in connections.items():
         if existing_tag != tag and (entry.get("name") or connection_name_from_tag(existing_tag)) == name:
             raise ValueError(f"Connection already exists: {name}")
@@ -1028,7 +1028,7 @@ def resolve_connection_identifier(config: dict[str, Any], db: dict[str, Any], va
     if not identifier:
         raise ValueError("Connection name or tag is required.")
     ensure_connections(config, db)
-    connections = db_connections(db)
+    connections = db_managed_connections(db)
     if identifier in connections:
         return identifier
 
