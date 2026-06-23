@@ -294,8 +294,6 @@ proxy_site_config() {
 # Main XHTTP endpoint: ${UPSTREAM_DOMAIN}:${UPSTREAM_PORT}
 ${DOWNLOAD_DOMAIN} {
 $(tls_site_block)
-    encode zstd gzip
-
     reverse_proxy $(upstream_url) {
         header_up Host ${UPSTREAM_DOMAIN}
         flush_interval -1
