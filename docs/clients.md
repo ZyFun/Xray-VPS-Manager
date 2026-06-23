@@ -167,7 +167,7 @@ xray-client route ИМЯ cascade-us
 xray-client list
 ```
 
-В списке показываются две framed-таблицы. `Clients` агрегирует статус, оплату, страну каскада, online/offline, общий трафик, лимит, срок доступа и количество credentials клиента. `Credentials` показывает конкретные protocol credentials с protocol/security/transport/connection, отдельным online state, traffic и временем обновления traffic.
+В списке показываются две framed-таблицы. `Clients` агрегирует статус, оплату, страну каскада, online/offline, общий трафик, лимит, срок доступа и количество credentials клиента. `Credentials` показывает конкретные protocol credentials с protocol/security/transport/connection, отдельным online state, traffic и временем обновления traffic. Для Caddy-managed подключений `SECURITY` отображается как `tls/caddy`: публичное клиентское подключение идёт по TLS через Caddy, а локальный inbound Xray остаётся без TLS.
 
 ```text
 Clients
@@ -178,12 +178,12 @@ Clients
 +-------+---------+---------+---------+--------+----------------------+----------+-------------+----------------------+------------------+-------+
 
 Credentials
-+--------+----------+----------+-----------+-------------+---------+--------+---------+----------------------+----------------------+
-| CLIENT | PROTOCOL | SECURITY | TRANSPORT | CONNECTION  | STATUS  | ONLINE | TRAFFIC | TRAFFIC UPDATED      | LAST ONLINE          |
-+--------+----------+----------+-----------+-------------+---------+--------+---------+----------------------+----------------------+
-| alice  | vless    | reality  | tcp       | vless-main  | enabled | online | 8.00GB  | 2026-06-23 12:31 UTC | 2026-06-23 12:31 UTC |
-| alice  | trojan   | tls      | ws        | trojan-main | enabled | online | 4.00GB  | 2026-06-23 12:28 UTC | 2026-06-23 12:28 UTC |
-+--------+----------+----------+-----------+-------------+---------+--------+---------+----------------------+----------------------+
++--------+----------+-----------+-----------+-------------+---------+--------+---------+----------------------+----------------------+
+| CLIENT | PROTOCOL | SECURITY  | TRANSPORT | CONNECTION  | STATUS  | ONLINE | TRAFFIC | TRAFFIC UPDATED      | LAST ONLINE          |
++--------+----------+-----------+-----------+-------------+---------+--------+---------+----------------------+----------------------+
+| alice  | vless    | reality   | tcp       | vless-main  | enabled | online | 8.00GB  | 2026-06-23 12:31 UTC | 2026-06-23 12:31 UTC |
+| alice  | trojan   | tls/caddy | ws        | trojan-main | enabled | online | 4.00GB  | 2026-06-23 12:28 UTC | 2026-06-23 12:28 UTC |
++--------+----------+-----------+-----------+-------------+---------+--------+---------+----------------------+----------------------+
 ```
 
 `IN` - трафик от клиента к серверу, `OUT` - трафик от сервера к клиенту.

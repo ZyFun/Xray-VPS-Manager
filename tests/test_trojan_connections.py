@@ -4,6 +4,7 @@ from unittest import mock
 
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import crud as client_crud
+from xray_vps_manager.clients import listing as client_listing
 from xray_vps_manager.clients import links as client_links
 from xray_vps_manager.xray import config as xray_config
 
@@ -204,6 +205,34 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(params["path"], ["/trojan-private"])
         self.assertEqual(params["host"], ["vpn.example.com"])
         self.assertEqual(params["sni"], ["vpn.example.com"])
+
+    def test_trojan_caddy_credential_list_shows_tls_caddy_security(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        connection = client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-web",
+            "vpn.example.com",
+            local_port=10100,
+            public_port=443,
+            fingerprint_value="chrome",
+            ws_path="/trojan-private",
+        )
+        client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag=connection.tag,
+            uuid_factory=lambda: CLIENT_ID,
+            password_factory=lambda: PASSWORD,
+        )
+
+        rows = client_listing.credential_rows(config, db)
+
+        row = next(item for item in rows if item["client"] == "alice" and item["connection"] == connection.tag)
+        self.assertEqual(row["security"], "tls/caddy")
 
     def test_disable_and_enable_trojan_client_uses_clients_section(self) -> None:
         config = {"inbounds": [base_vless_inbound()], "outbounds": []}
