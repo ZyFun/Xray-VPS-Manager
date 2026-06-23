@@ -128,7 +128,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
             ) as quick_check:
                 result = test_command.check_sqlite_database(diag)
 
-            self.assertIn("schema=4", result)
+            self.assertIn("schema=5", result)
             self.assertIn("quick_check=skipped", result)
             self.assertIn("sqliteReady=yes", result)
             self.assertIn("clients=1", result)
@@ -143,7 +143,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
             with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
                 result = test_command.check_sqlite_database(diag, full_integrity=True)
 
-            self.assertIn("schema=4", result)
+            self.assertIn("schema=5", result)
             self.assertIn("quick_check=ok", result)
             self.assertIn("sqliteReady=yes", result)
             self.assertIn("clients=1", result)

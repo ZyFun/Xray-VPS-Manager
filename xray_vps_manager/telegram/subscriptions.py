@@ -8,10 +8,12 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import xhttp_extra_json
 
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+CLIENT_KEY_RE = re.compile(r"\b(?:vpn-key|client-key|xray-key):([0-9a-fA-F-]{36})\b", re.IGNORECASE)
 ACTIVITY_EXCEPTION_LIMIT = 100
 
 
@@ -24,6 +26,14 @@ def find_vless_link(text):
     if not match:
         return ""
     return match.group(0).rstrip(".,;")
+
+
+def find_client_key(text):
+    match = CLIENT_KEY_RE.search(str(text or ""))
+    if not match:
+        return ""
+    value = match.group(1).strip().lower()
+    return value if UUID_RE.fullmatch(value) else ""
 
 
 def parse_vless_link(text):
@@ -79,6 +89,31 @@ def client_entry_id(entry):
     return normalize_value(entry.get("id") or (entry.get("client") or {}).get("id"))
 
 
+def credential_entry_id(credential):
+    if not isinstance(credential, dict):
+        return ""
+    client = credential.get("client") if isinstance(credential.get("client"), dict) else {}
+    return normalize_value(credential.get("id") or client.get("id"))
+
+
+def client_credentials_for_entry(entry):
+    credentials = client_credentials.normalize_entry_credentials(entry)
+    if credentials:
+        return credentials
+    connection_tag = str(entry.get("connection") or "").strip()
+    client_id = client_entry_id(entry)
+    if not connection_tag or not client_id:
+        return {}
+    return {
+        connection_tag: {
+            "id": client_id,
+            "connection": connection_tag,
+            "protocol": "vless",
+            "client": {"id": client_id},
+        }
+    }
+
+
 def expected_connection_params(client_db, entry):
     connection_tag = entry.get("connection", "")
     connection = client_db_connections(client_db).get(connection_tag, {})
@@ -121,19 +156,33 @@ def expected_connection_params(client_db, entry):
     return expected
 
 
+def expected_credential_params(client_db, entry, credential):
+    connection_tag = credential.get("connection", "") or entry.get("connection", "")
+    connection = client_db_connections(client_db).get(connection_tag, {})
+    credential_client = credential.get("client") if isinstance(credential.get("client"), dict) else {}
+    pseudo_entry = dict(entry)
+    pseudo_entry["connection"] = connection_tag
+    pseudo_entry["client"] = credential_client
+    expected = expected_connection_params({"connections": client_db_connections(client_db)}, pseudo_entry)
+    if normalize_value(connection.get("security") or "reality") == "tls":
+        expected["port"] = str(connection.get("publicPort") or connection.get("port", ""))
+    return expected
+
+
 def match_vless_to_client(parsed_link, client_db):
     clients = client_db_clients(client_db)
     same_uuid = []
     for name, entry in clients.items():
-        if client_entry_id(entry) == parsed_link["id"]:
-            same_uuid.append((name, entry))
+        for credential in client_credentials_for_entry(entry).values():
+            if credential_entry_id(credential) == parsed_link["id"]:
+                same_uuid.append((name, entry, credential))
     if not same_uuid:
         return None, "По UUID из ссылки клиент в базе не найден."
 
     matches = []
     mismatch_notes = []
-    for name, entry in same_uuid:
-        expected = expected_connection_params(client_db, entry)
+    for name, entry, credential in same_uuid:
+        expected = expected_credential_params(client_db, entry, credential)
         mismatches = []
         for key, expected_value in expected.items():
             if not expected_value:
@@ -157,6 +206,19 @@ def match_vless_to_client(parsed_link, client_db):
         return None, "По ссылке найдено несколько клиентов. Обратись к администратору."
     detail = "; ".join(mismatch_notes) if mismatch_notes else "параметры подключения не совпали"
     return None, "UUID найден, но параметры VLESS-ссылки не совпадают с текущей базой: " + detail
+
+
+def match_client_key_to_client(client_uuid, client_db):
+    matches = [
+        (name, entry)
+        for name, entry in client_db_clients(client_db).items()
+        if client_entry_id(entry) == normalize_value(client_uuid)
+    ]
+    if len(matches) == 1:
+        return matches[0], ""
+    if len(matches) > 1:
+        return None, "По ключу найдено несколько клиентов. Обратись к администратору."
+    return None, "Клиентский ключ в базе не найден."
 
 
 def client_access_summary(entry, format_access_until, client_db=None):
@@ -454,8 +516,13 @@ def unsubscribe_chat(db, chat_id):
 
 
 def subscribe_chat_to_client(db, chat, text, client_db, chat_label, timestamp):
-    parsed_link = parse_vless_link(text)
-    match, reason = match_vless_to_client(parsed_link, client_db)
+    client_key = find_client_key(text)
+    parsed_link = None
+    if client_key:
+        match, reason = match_client_key_to_client(client_key, client_db)
+    else:
+        parsed_link = parse_vless_link(text)
+        match, reason = match_vless_to_client(parsed_link, client_db)
     if not match:
         raise ValueError(reason)
     name, entry = match
@@ -465,7 +532,8 @@ def subscribe_chat_to_client(db, chat, text, client_db, chat_label, timestamp):
         "clientId": client_entry_id(entry),
         "connection": entry.get("connection", ""),
         "chatLabel": chat_label,
-        "linkHash": parsed_link["hash"],
+        "linkHash": parsed_link["hash"] if parsed_link else "",
+        "clientKey": f"vpn-key:{client_entry_id(entry)}",
         "subscribedAt": timestamp,
         "enabled": True,
         "activityNotificationsEnabled": False,

@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-23 14:21 UTC"
+MENU_UPDATED = "2026-06-23 17:15 UTC"
 
 
 def die(message):
@@ -96,15 +96,16 @@ def client_menu_actions():
     return [
         ("1", "Показать клиентов"),
         ("2", "Добавить клиента"),
-        ("3", "Изменить срок доступа"),
-        ("4", "Изменить статус оплаты"),
-        ("5", "Отключить клиента"),
-        ("6", "Включить клиента"),
-        ("7", "Вывести ссылку клиента"),
-        ("8", "Перенести клиента в другое подключение"),
-        ("9", "Удалить клиента"),
-        ("10", "Проверить просроченных клиентов"),
-        ("11", "Лимиты трафика"),
+        ("3", "Добавить подключение к клиенту"),
+        ("4", "Изменить срок доступа"),
+        ("5", "Изменить статус оплаты"),
+        ("6", "Отключить клиента"),
+        ("7", "Включить клиента"),
+        ("8", "Вывести ссылку клиента"),
+        ("9", "Перенести клиента в другое подключение"),
+        ("10", "Удалить клиента"),
+        ("11", "Проверить просроченных клиентов"),
+        ("12", "Лимиты трафика"),
         ("0", "Назад"),
     ]
 
@@ -501,27 +502,31 @@ def client_menu_handlers():
     return {
         "1": ("Показать клиентов", lambda: menu_client_actions.show_clients(call)),
         "2": ("Добавить клиента", lambda: menu_client_actions.add_client_from_menu(call)),
-        "3": ("Изменить срок доступа", lambda: menu_client_actions.update_selected_client_days(call)),
-        "4": ("Изменить статус оплаты", lambda: menu_client_actions.update_selected_client_payment(call)),
-        "5": (
+        "3": (
+            "Добавить подключение к клиенту",
+            lambda: menu_client_actions.add_connection_to_client_from_menu(call),
+        ),
+        "4": ("Изменить срок доступа", lambda: menu_client_actions.update_selected_client_days(call)),
+        "5": ("Изменить статус оплаты", lambda: menu_client_actions.update_selected_client_payment(call)),
+        "6": (
             "Отключить клиента",
             lambda: menu_client_actions.call_client_command(call, "disable", "отключения", "enabled"),
         ),
-        "6": (
+        "7": (
             "Включить клиента",
             lambda: menu_client_actions.call_client_command(call, "enable", "включения", "disabled"),
         ),
-        "7": (
+        "8": (
             "Вывести ссылку клиента",
             lambda: menu_client_actions.call_client_command(call, "link", "вывода ссылки", "all"),
         ),
-        "8": ("Перенести клиента в другое подключение", lambda: menu_client_actions.move_selected_client(call)),
-        "9": (
+        "9": ("Перенести клиента в другое подключение", lambda: menu_client_actions.move_selected_client(call)),
+        "10": (
             "Удалить клиента",
             lambda: menu_client_actions.call_client_command(call, "remove", "удаления", "all"),
         ),
-        "10": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
-        "11": ("Лимиты трафика", open_client_traffic_limit_menu),
+        "11": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
+        "12": ("Лимиты трафика", open_client_traffic_limit_menu),
     }
 
 

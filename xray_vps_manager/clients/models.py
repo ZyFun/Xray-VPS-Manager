@@ -52,11 +52,29 @@ class RealityConnection:
         )
 
 
+def email_metadata(email: str) -> tuple[str, dict[str, str]]:
+    parts = str(email or "").split("|")
+    name = parts[0]
+    metadata: dict[str, str] = {}
+    for part in parts[1:]:
+        key, separator, value = part.partition("=")
+        if separator and key:
+            metadata[key] = value
+    return name, metadata
+
+
 def split_email(email: str) -> tuple[str, str]:
-    if "|created=" in str(email):
-        name, created = str(email).split("|created=", 1)
-        return name, created
-    return str(email), ""
+    name, metadata = email_metadata(email)
+    return name, metadata.get("created", "")
+
+
+def email_for_client(name: str, created: str = "", *, connection_tag: str = "") -> str:
+    parts = [str(name)]
+    if created:
+        parts.append(f"created={created}")
+    if connection_tag:
+        parts.append(f"connection={connection_tag}")
+    return "|".join(parts)
 
 
 def client_name(item: dict[str, Any]) -> str:
@@ -111,6 +129,7 @@ def db_entry_from_client(
         "trafficLimitExceededBytes",
         "trafficLimitResetAt",
         "paymentType",
+        "credentials",
     ):
         if key in previous:
             entry[key] = previous[key]
@@ -118,7 +137,7 @@ def db_entry_from_client(
     if "connection" in previous:
         entry["connection"] = previous["connection"]
     if not entry["client"].get("email") and name:
-        entry["client"]["email"] = f"{name}|created={created}" if created else name
+        entry["client"]["email"] = email_for_client(name, created)
     return entry
 
 
@@ -128,7 +147,7 @@ def client_from_db_entry(name: str, entry: dict[str, Any]) -> dict[str, Any]:
     protocol = str(entry.get("protocol") or client.get("protocol") or "").strip().lower()
     if not protocol and client.get("password"):
         protocol = "trojan"
-    email = f"{name}|created={created}" if created else name
+    email = email_for_client(name, created)
 
     if protocol == "trojan":
         password = str(client.get("password") or "").strip()

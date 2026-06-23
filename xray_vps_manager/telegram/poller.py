@@ -359,7 +359,7 @@ def handle_user_message(ctx: PollerContext, db, update):
         try_delete_chat_commands(ctx, db, chat_id)
         send_client_menu(ctx, db, chat_id, text)
         return True
-    if subscriptions.find_vless_link(text):
+    if subscriptions.find_vless_link(text) or subscriptions.find_client_key(text):
         _name, entry = subscribe_chat_to_client(ctx, db, chat, text)
         try_set_subscribed_commands(ctx, db, chat_id)
         send_client_menu(

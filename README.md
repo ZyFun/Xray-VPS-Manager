@@ -39,7 +39,7 @@ xray-client link starter
 
 - установка и обновление Xray Core из официальных релизов XTLS/Xray-core;
 - создание одного или нескольких VLESS Reality-подключений с transport `tcp`, `grpc` или `xhttp`, TLS-терминированных XHTTP-подключений через Caddy, Trojan TLS/WebSocket-подключений через Caddy как production default и управление Caddy/TLS site configs из SSH-меню и Telegram-админки;
-- управление клиентами, VLESS/Trojan-ссылками, переносом между VLESS-подключениями, сроками доступа, статусом оплаты и traffic limits;
+- управление клиентами с несколькими credentials, VLESS/Trojan-ссылками, переносом одиночных VLESS credentials между VLESS-подключениями, сроками доступа, статусом оплаты и traffic limits;
 - постоянная SQLite-база `manager.db` для клиентов, трафика, активности, глобальных блокировок, Telegram-настроек, подписок и оплаты;
 - статистика трафика через локальный Xray API, online/offline-статус, суммарная месячная сводка и история по часам/дням за 6 месяцев;
 - каскадные outbound-серверы, выбор маршрута для отдельного клиента, GeoIP warning rules для проверки split tunneling и глобальная блокировка доменов/IP через `blocked`;

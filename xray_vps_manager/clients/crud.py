@@ -7,10 +7,18 @@ from typing import Any
 from typing import Callable
 
 from xray_vps_manager.clients import access
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients import connections
 from xray_vps_manager.clients import limits as client_limits
 from xray_vps_manager.clients import status as client_status
-from xray_vps_manager.clients.models import client_from_db_entry, client_name, db_entry_from_client, normalize_payment_type, split_email
+from xray_vps_manager.clients.models import (
+    client_from_db_entry,
+    client_name,
+    db_entry_from_client,
+    email_for_client,
+    normalize_payment_type,
+    split_email,
+)
 from xray_vps_manager.clients.repository import db_clients, db_connections
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.traffic.repository import traffic_entry
@@ -37,9 +45,11 @@ class EnableTrafficLimitExceeded(ValueError):
 class AddClientResult:
     name: str
     client_id: str
+    credential_id: str
     created: str
     connection_tag: str
     entry: dict[str, Any]
+    added_client: bool
 
 
 @dataclass
@@ -53,6 +63,7 @@ class RemoveClientResult:
 class DisableClientResult:
     name: str
     connection_tag: str
+    connection_tags: list[str]
     disabled_at: str
     entry: dict[str, Any]
 
@@ -61,7 +72,9 @@ class DisableClientResult:
 class EnableClientResult:
     name: str
     client_id: str
+    credential_id: str
     connection_tag: str
+    connection_tags: list[str]
     entry: dict[str, Any]
 
 
@@ -95,9 +108,14 @@ def all_client_names(config: dict[str, Any], db: dict[str, Any]) -> set[str]:
     return names
 
 
+def client_exists(config: dict[str, Any], db: dict[str, Any], name: str) -> bool:
+    return name in all_client_names(config, db)
+
+
 def db_entry_for_existing_client(config: dict[str, Any], db: dict[str, Any], name: str) -> dict[str, Any]:
     entry = db_clients(db).get(name)
     if entry:
+        client_credentials.normalize_entry_credentials(entry)
         return entry
 
     inbound, item = active_client_any(config, name)
@@ -106,6 +124,7 @@ def db_entry_for_existing_client(config: dict[str, Any], db: dict[str, Any], nam
     _, created = split_email(item.get("email", ""))
     entry = db_entry_from_client(item, created=created, enabled=True)
     entry["connection"] = inbound_tag(inbound)
+    client_credentials.normalize_entry_credentials(entry)
     db_clients(db)[name] = entry
     return entry
 
@@ -113,8 +132,56 @@ def db_entry_for_existing_client(config: dict[str, Any], db: dict[str, Any], nam
 def prepare_add_client(config: dict[str, Any], db: dict[str, Any], name: str, connection_tag: str | None = None) -> str:
     selected_tag = resolve_connection_for_add(config, db, connection_tag)
     if name in all_client_names(config, db):
-        raise ValueError(f"Client already exists: {name}")
+        entry = db_entry_for_existing_client(config, db, name)
+        credentials = client_credentials.normalize_entry_credentials(entry)
+        if selected_tag in credentials:
+            raise ValueError(f"Client already has credential for connection: {selected_tag}")
+        _inbound, active_item = client_credentials.active_item_for_connection(config, name, selected_tag)
+        if active_item is not None:
+            raise ValueError(f"Client already has active credential for connection: {selected_tag}")
     return selected_tag
+
+
+def credential_record(
+    *,
+    name: str,
+    inbound: dict[str, Any],
+    connection_tag: str,
+    client_id: str,
+    created: str,
+    password: str = "",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    protocol = str(inbound.get("protocol") or "vless").strip().lower()
+    email = email_for_client(name, created, connection_tag=connection_tag)
+    if protocol == "trojan":
+        client = {
+            "password": password,
+            "level": 0,
+            "email": email,
+        }
+        stored_client = dict(client)
+        stored_client["id"] = client_id
+        stored_client["protocol"] = "trojan"
+    else:
+        client = {
+            "id": client_id,
+            "level": 0,
+            "email": email,
+        }
+        apply_client_transport(client, connection_transport_settings_from_inbound(inbound)["transport"])
+        stored_client = dict(client)
+    credential = {
+        "id": client_id,
+        "connection": connection_tag,
+        "protocol": protocol,
+        "security": client_credentials.security_from_inbound(inbound),
+        "transport": client_credentials.transport_from_inbound(inbound),
+        "enabled": True,
+        "created": created,
+        "client": stored_client,
+        "linkMetadata": {},
+    }
+    return client, credential
 
 
 def add_client(
@@ -130,42 +197,54 @@ def add_client(
     connections.ensure_connections(config, db)
     selected_tag = prepare_add_client(config, db, name, connection_tag)
     inbound = find_inbound_by_tag(config, selected_tag)
-    current = clients(inbound)
-
     created = utc_stamp()
-    client_id = uuid_factory()
-    protocol = inbound.get("protocol") or "vless"
-    if protocol == "trojan":
-        password = password_factory()
-        client = {
-            "password": password,
-            "level": 0,
-            "email": f"{name}|created={created}",
-        }
-        stored_client = dict(client)
-        stored_client["id"] = client_id
-        stored_client["protocol"] = "trojan"
-    else:
-        client = {
+    added_client = name not in all_client_names(config, db)
+
+    if added_client:
+        client_id = uuid_factory()
+        entry = {
             "id": client_id,
-            "level": 0,
-            "email": f"{name}|created={created}",
+            "created": created,
+            "enabled": True,
+            "paymentType": normalize_payment_type(payment_type),
+            "credentials": {},
         }
-        apply_client_transport(client, connection_transport_settings_from_inbound(inbound)["transport"])
-        stored_client = dict(client)
-    current.append(client)
-    entry = db_entry_from_client(stored_client, created=created, enabled=True)
-    entry["connection"] = selected_tag
-    entry["paymentType"] = normalize_payment_type(payment_type)
-    access.set_entry_expiry(entry, access_days)
+        access.set_entry_expiry(entry, access_days)
+    else:
+        entry = db_entry_for_existing_client(config, db, name)
+        client_id = str(entry.get("id") or uuid_factory())
+        entry["id"] = client_id
+        if payment_type:
+            entry["paymentType"] = normalize_payment_type(payment_type)
+
+    credential_id = client_id if added_client else uuid_factory()
+    password = password_factory() if str(inbound.get("protocol") or "vless").strip().lower() == "trojan" else ""
+    xray_client, credential = credential_record(
+        name=name,
+        inbound=inbound,
+        connection_tag=selected_tag,
+        client_id=credential_id,
+        created=created,
+        password=password,
+    )
+    should_enable = entry.get("enabled") is not False and not access.access_expired(entry)
+    credential["enabled"] = should_enable
+    client_credentials.normalize_entry_credentials(entry)
+    client_credentials.db_credentials(entry)[selected_tag] = credential
+    client_credentials.sync_legacy_fields(entry)
+    if should_enable:
+        current = clients(inbound)
+        current.append(xray_client)
     db_clients(db)[name] = entry
 
     return AddClientResult(
         name=name,
         client_id=client_id,
+        credential_id=credential_id,
         created=created,
         connection_tag=selected_tag,
         entry=entry,
+        added_client=added_client,
     )
 
 
@@ -187,34 +266,64 @@ def remove_client(config: dict[str, Any], db: dict[str, Any], name: str) -> Remo
     return RemoveClientResult(name=name, found_active=found_active, found_in_db=found_in_db)
 
 
-def disable_client(config: dict[str, Any], db: dict[str, Any], name: str) -> DisableClientResult:
+def disable_client(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    connection_tag: str | None = None,
+) -> DisableClientResult:
     connections.ensure_connections(config, db)
-    inbound, item = active_client_any(config, name)
-    if item is None:
-        if name in db_clients(db) and db_clients(db)[name].get("enabled") is False:
+    entry = db_entry_for_existing_client(config, db, name)
+    credentials = client_credentials.normalize_entry_credentials(entry)
+    selected_tags = [connection_tag] if connection_tag else list(credentials)
+    if connection_tag and connection_tag not in credentials:
+        raise ValueError(f"Client credential not found for connection: {connection_tag}")
+
+    removed_tags: list[str] = []
+    for tag in selected_tags:
+        removed, item = client_credentials.remove_active_credential(config, name, tag)
+        credential = credentials.get(tag)
+        if credential is None:
+            continue
+        if item is not None:
+            stored = dict(item)
+            if credential.get("protocol") == "trojan":
+                stored["id"] = credential.get("id") or entry.get("id", "")
+                stored["protocol"] = "trojan"
+            credential["client"] = stored
+        if removed or credential.get("enabled") is not False:
+            removed_tags.append(tag)
+        credential["enabled"] = False
+
+    if not removed_tags:
+        if entry.get("enabled") is False:
             raise ValueError(f"Client already disabled: {name}")
         raise ValueError(f"Enabled client not found: {name}")
 
-    _, created = split_email(item.get("email", ""))
-    previous = db_clients(db).get(name, {})
-    if name in db_clients(db):
-        created = previous.get("created", created)
-    entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
-    connection_tag = previous.get("connection") or inbound_tag(inbound)
-    entry["connection"] = connection_tag
+    entry["enabled"] = any(credential.get("enabled") is not False for credential in credentials.values())
     disabled_at = utc_stamp()
-    entry["disabledAt"] = disabled_at
+    if not entry["enabled"]:
+        entry["disabledAt"] = disabled_at
     db_clients(db)[name] = entry
-    set_clients(inbound, [client for client in clients(inbound) if client_name(client) != name])
+    client_credentials.sync_legacy_fields(entry)
 
-    return DisableClientResult(name=name, connection_tag=connection_tag, disabled_at=disabled_at, entry=entry)
+    return DisableClientResult(
+        name=name,
+        connection_tag=removed_tags[0] if len(removed_tags) == 1 else "",
+        connection_tags=removed_tags,
+        disabled_at=disabled_at,
+        entry=entry,
+    )
 
 
-def enable_client(config: dict[str, Any], db: dict[str, Any], traffic_db: dict[str, Any], name: str) -> EnableClientResult:
+def enable_client(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    traffic_db: dict[str, Any],
+    name: str,
+    connection_tag: str | None = None,
+) -> EnableClientResult:
     connections.ensure_connections(config, db)
-    if active_client_any(config, name)[1] is not None:
-        raise ValueError(f"Client already enabled: {name}")
-
     entry = db_clients(db).get(name)
     if not entry:
         raise ValueError(f"Client not found: {name}")
@@ -225,17 +334,34 @@ def enable_client(config: dict[str, Any], db: dict[str, Any], traffic_db: dict[s
     if traffic_status and traffic_status["exceeded"]:
         raise EnableTrafficLimitExceeded(traffic_status)
 
-    client_status.enable_db_client(config, name, entry)
-    client = entry["client"]
-    connection_tag = entry["connection"]
+    credentials = client_credentials.normalize_entry_credentials(entry)
+    selected_tags = [connection_tag] if connection_tag else list(credentials)
+    if connection_tag and connection_tag not in credentials:
+        raise ValueError(f"Client credential not found for connection: {connection_tag}")
+
+    enabled_tags: list[str] = []
+    for tag in selected_tags:
+        credential = credentials[tag]
+        _inbound, active_item = client_credentials.active_item_for_connection(config, name, tag)
+        if active_item is not None and credential.get("enabled") is not False:
+            continue
+        client_credentials.upsert_active_credential(config, name, entry, credential)
+        enabled_tags.append(tag)
+
+    if not enabled_tags:
+        raise ValueError(f"Client already enabled: {name}")
+
     entry["enabled"] = True
     client_status.clear_disabled_state(entry)
+    client_credentials.sync_legacy_fields(entry)
     db_clients(db)[name] = entry
 
     return EnableClientResult(
         name=name,
-        client_id=str(entry.get("id") or client.get("id") or ""),
-        connection_tag=connection_tag,
+        client_id=str(entry.get("id") or ""),
+        credential_id=str(credentials[enabled_tags[0]].get("id") or entry.get("id") or ""),
+        connection_tag=enabled_tags[0] if len(enabled_tags) == 1 else "",
+        connection_tags=enabled_tags,
         entry=entry,
     )
 
@@ -252,6 +378,11 @@ def move_client_to_connection(
     target_protocol = target_inbound.get("protocol") or "vless"
     target_transport = connection_transport_settings_from_inbound(target_inbound)["transport"]
     entry = db_entry_for_existing_client(config, db, name)
+    entry_credentials = client_credentials.normalize_entry_credentials(entry)
+    if len(entry_credentials) > 1:
+        raise ValueError("Client has multiple credentials. Add a new credential or use --connection actions instead.")
+    if target_tag in entry_credentials:
+        raise ValueError(f"Client already has credential for connection: {target_tag}")
 
     source_inbound, active_item = active_client_any(config, name)
     source_tag = inbound_tag(source_inbound) if source_inbound is not None else str(entry.get("connection") or "")
@@ -267,12 +398,14 @@ def move_client_to_connection(
     entry = dict(entry)
     config_changed = False
     enabled = active_item is not None
+    moved_created = entry.get("created", "")
     if active_item is not None:
         if any(client_name(item) == name for item in clients(target_inbound)):
             raise ValueError(f"Target connection already has client: {name}")
         moved_client = dict(active_item)
         if target_protocol == "vless":
             apply_client_transport(moved_client, target_transport)
+        moved_client["email"] = email_for_client(name, moved_created, connection_tag=target_tag)
         set_clients(source_inbound, [
             item for item in clients(source_inbound) if client_name(item) != name
         ])
@@ -285,6 +418,7 @@ def move_client_to_connection(
         moved_client = client_from_db_entry(name, entry)
         if target_protocol == "vless":
             apply_client_transport(moved_client, target_transport)
+        moved_client["email"] = email_for_client(name, moved_created, connection_tag=target_tag)
 
     entry["id"] = moved_client.get("id") or entry.get("id", "")
     entry["client"] = dict(moved_client)
@@ -293,6 +427,22 @@ def move_client_to_connection(
         entry["client"]["protocol"] = "trojan"
         entry["protocol"] = "trojan"
     entry["connection"] = target_tag
+    credentials = client_credentials.normalize_entry_credentials(entry)
+    credential = credentials.pop(source_tag, None)
+    if credential is None:
+        credential = client_credentials.legacy_credential_from_entry(entry) or {}
+    credential["connection"] = target_tag
+    credential["protocol"] = target_protocol
+    credential["security"] = client_credentials.security_from_inbound(target_inbound)
+    credential["transport"] = client_credentials.transport_from_inbound(target_inbound)
+    credential["enabled"] = enabled
+    credential["client"] = dict(moved_client)
+    if target_protocol == "trojan":
+        credential["client"]["id"] = entry.get("id", "")
+        credential["client"]["protocol"] = "trojan"
+    credential["id"] = entry.get("id") or credential.get("id") or credential["client"].get("id", "")
+    credentials[target_tag] = credential
+    client_credentials.sync_legacy_fields(entry)
     db_clients(db)[name] = entry
 
     return MoveClientResult(
