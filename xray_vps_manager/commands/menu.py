@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-22 21:34 UTC"
+MENU_UPDATED = "2026-06-23 00:17 UTC"
 
 
 def die(message):
@@ -122,8 +122,19 @@ def client_traffic_limit_menu_actions():
 def connection_tls_menu_actions():
     return [
         ("1", "Подключения VLESS / Reality"),
-        ("2", "Стартовая ссылка"),
-        ("3", "Caddy / TLS"),
+        ("2", "Подключения Trojan"),
+        ("3", "Стартовая ссылка"),
+        ("4", "Caddy / TLS"),
+        ("0", "Назад"),
+    ]
+
+
+def trojan_menu_actions():
+    return [
+        ("1", "Показать Trojan-подключения"),
+        ("2", "Создать Trojan TLS подключение"),
+        ("3", "Удалить Trojan-подключение"),
+        ("4", "Переименовать Trojan-подключение"),
         ("0", "Назад"),
     ]
 
@@ -210,7 +221,7 @@ def caddy_status_menu_actions():
 
 def caddy_sites_menu_actions():
     return [
-        ("1", "Показать TLS/XHTTP site configs"),
+        ("1", "Показать TLS site configs"),
         ("2", "Показать site config"),
         ("3", "Создать/обновить site из TLS-подключения"),
         ("4", "Создать/обновить site вручную"),
@@ -526,8 +537,18 @@ def client_traffic_limit_menu_handlers():
 def connection_tls_menu_handlers():
     return {
         "1": ("Подключения VLESS / Reality", open_reality_menu),
-        "2": ("Вывести стартовую ссылку", menu_xray_actions.print_initial_link),
-        "3": ("Caddy / TLS", open_caddy_menu),
+        "2": ("Подключения Trojan", open_trojan_menu),
+        "3": ("Вывести стартовую ссылку", menu_xray_actions.print_initial_link),
+        "4": ("Caddy / TLS", open_caddy_menu),
+    }
+
+
+def trojan_menu_handlers():
+    return {
+        "1": ("Показать Trojan-подключения", lambda: menu_reality_actions.show_trojan_settings(call)),
+        "2": ("Создать Trojan TLS подключение", lambda: menu_reality_actions.create_trojan_connection(call)),
+        "3": ("Удалить Trojan-подключение", lambda: menu_reality_actions.delete_trojan_connection(call, confirm)),
+        "4": ("Переименовать Trojan-подключение", lambda: menu_reality_actions.rename_trojan_connection(call)),
     }
 
 
@@ -632,7 +653,7 @@ def caddy_status_menu_handlers():
 
 def caddy_sites_menu_handlers():
     return {
-        "1": ("Показать TLS/XHTTP site configs", menu_caddy_actions.show_sites),
+        "1": ("Показать TLS site configs", menu_caddy_actions.show_sites),
         "2": ("Показать site config", menu_caddy_actions.show_site_config),
         "3": ("Создать/обновить site из TLS-подключения", menu_caddy_actions.create_site_from_tls_connection),
         "4": ("Создать/обновить site вручную", menu_caddy_actions.create_site_manual),
@@ -910,6 +931,10 @@ def open_client_traffic_limit_menu():
 
 def open_connection_tls_menu():
     menu_loop("Подключения и TLS", connection_tls_menu_actions(), connection_tls_menu_handlers())
+
+
+def open_trojan_menu():
+    menu_loop("Подключения Trojan", trojan_menu_actions(), trojan_menu_handlers())
 
 
 def open_reality_menu():

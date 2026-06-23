@@ -15,8 +15,11 @@ from xray_vps_manager.xray.config import (
     DEFAULT_XHTTP_PATH,
     DEFAULT_XHTTP_TLS_LOCAL_PORT,
     DEFAULT_XHTTP_TLS_PUBLIC_PORT,
+    DEFAULT_TROJAN_TLS_PUBLIC_PORT,
+    DEFAULT_TROJAN_WS_PATH,
     INBOUND_TAG,
     TLS_INBOUND_TAG,
+    TROJAN_INBOUND_TAG,
     apply_client_transport,
     apply_reality_transport,
     clients,
@@ -26,10 +29,13 @@ from xray_vps_manager.xray.config import (
     default_connection_tag,
     find_inbound_by_tag,
     inbound_tag,
+    managed_connection_inbounds,
     normalize_xhttp_extra,
+    normalize_trojan_ws_path,
     reality_dest,
     reality_inbounds,
     tls_xhttp_inbounds,
+    trojan_connection_inbounds,
     vless_connection_inbounds,
 )
 from xray_vps_manager.clients.models import client_name
@@ -57,6 +63,9 @@ class AddConnectionResult:
     xhttp_path: str = ""
     xhttp_mode: str = ""
     xhttp_extra: dict[str, Any] | None = None
+    cert_file: str = ""
+    key_file: str = ""
+    ws_path: str = ""
 
 
 @dataclass
@@ -173,10 +182,67 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
             settings["xhttpExtra"] = normalize_xhttp_extra(merged_extra)
         entry.update(settings)
 
-    default_tag = default_connection_tag(config)
-    for inbound in vless_connection_inbounds(config):
+    for inbound in trojan_connection_inbounds(config):
         tag = inbound_tag(inbound)
-        for item in inbound.setdefault("settings", {}).setdefault("clients", []):
+        entry = connections.get(tag)
+        stream = inbound.get("streamSettings", {})
+        network = str(stream.get("network") or "tcp").strip().lower()
+        tls = stream.get("tlsSettings") if isinstance(stream.get("tlsSettings"), dict) else {}
+        certificates = tls.get("certificates") if isinstance(tls.get("certificates"), list) else []
+        certificate = certificates[0] if certificates and isinstance(certificates[0], dict) else {}
+        transport_settings = connection_transport_settings_from_inbound(inbound)
+        if not isinstance(entry, dict):
+            entry = {
+                "tag": tag,
+                "name": connection_name_from_tag(tag),
+                "created": now_stamp,
+                "protocol": "trojan",
+                "security": "tls",
+                "transport": transport_settings.get("transport") or network,
+                "port": int(inbound.get("port", 0) or 0),
+                "sni": "",
+                "dest": "",
+                "fingerprint": env.get("FINGERPRINT") or "chrome",
+                "publicKey": "",
+                "shortId": "",
+            }
+            connections[tag] = entry
+        entry.setdefault("tag", tag)
+        entry.setdefault("name", connection_name_from_tag(tag))
+        entry.setdefault("created", now_stamp)
+        entry["protocol"] = "trojan"
+        entry["security"] = "tls"
+        entry["transport"] = transport_settings.get("transport") or network
+        if entry["transport"] == "ws":
+            entry["localPort"] = int(inbound.get("port", 0) or 0)
+            entry.setdefault("publicHost", entry.get("sni") or "")
+            entry.setdefault("publicPort", int(entry.get("port") or DEFAULT_TROJAN_TLS_PUBLIC_PORT))
+            entry["port"] = int(entry.get("publicPort") or DEFAULT_TROJAN_TLS_PUBLIC_PORT)
+            entry["sni"] = entry.get("publicHost") or entry.get("sni") or ""
+            entry["caddy"] = bool(entry.get("caddy", True))
+            entry["wsPath"] = transport_settings.get("wsPath") or entry.get("wsPath") or DEFAULT_TROJAN_WS_PATH
+        else:
+            entry["transport"] = "tcp"
+            entry["port"] = int(inbound.get("port", 0) or 0)
+            entry.pop("localPort", None)
+            entry.setdefault("publicPort", entry["port"])
+            entry.setdefault("publicHost", entry.get("sni") or "")
+            entry["caddy"] = bool(entry.get("caddy", False))
+            entry.pop("wsPath", None)
+        entry.setdefault("sni", "")
+        entry.setdefault("dest", "")
+        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry.setdefault("publicKey", "")
+        entry.setdefault("shortId", "")
+        if certificate.get("certificateFile"):
+            entry["certFile"] = certificate["certificateFile"]
+        if certificate.get("keyFile"):
+            entry["keyFile"] = certificate["keyFile"]
+
+    default_tag = default_connection_tag(config)
+    for inbound in managed_connection_inbounds(config):
+        tag = inbound_tag(inbound)
+        for item in clients(inbound):
             name = client_name(item)
             if name in db_clients(db):
                 db_clients(db)[name].setdefault("connection", tag)
@@ -209,12 +275,14 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
     fallback_fingerprint = fingerprint()
     rows = []
     for tag, entry in db_connections(db).items():
+        protocol = entry.get("protocol") or "vless"
         security = entry.get("security") or "reality"
+        security_label = f"{protocol}/{security}" if protocol != "vless" else security
         rows.append(
             [
                 entry.get("name", connection_name_from_tag(tag)),
                 tag,
-                security,
+                security_label,
                 entry.get("port", ""),
                 entry.get("sni", ""),
                 entry.get("transport", "tcp"),
@@ -269,12 +337,24 @@ def next_connection_tag(config: dict[str, Any]) -> str:
 
 
 def next_tls_connection_tag(config: dict[str, Any]) -> str:
-    existing = {inbound_tag(inbound) for inbound in vless_connection_inbounds(config)}
+    existing = {inbound_tag(inbound) for inbound in managed_connection_inbounds(config)}
     if TLS_INBOUND_TAG not in existing:
         return TLS_INBOUND_TAG
     index = 2
     while True:
         tag = f"{TLS_INBOUND_TAG}-{index}"
+        if tag not in existing:
+            return tag
+        index += 1
+
+
+def next_trojan_connection_tag(config: dict[str, Any]) -> str:
+    existing = {inbound_tag(inbound) for inbound in managed_connection_inbounds(config)}
+    if TROJAN_INBOUND_TAG not in existing:
+        return TROJAN_INBOUND_TAG
+    index = 2
+    while True:
+        tag = f"{TROJAN_INBOUND_TAG}-{index}"
         if tag not in existing:
             return tag
         index += 1
@@ -323,6 +403,57 @@ def make_reality_inbound(
             "decryption": "none",
         },
         "streamSettings": stream_settings,
+        "sniffing": {
+            "enabled": True,
+            "destOverride": ["http", "tls", "quic"],
+        },
+    }
+
+
+def make_trojan_tls_inbound(tag: str, port: int, cert_file: str, key_file: str) -> dict[str, Any]:
+    return {
+        "tag": tag,
+        "listen": "0.0.0.0",
+        "port": port,
+        "protocol": "trojan",
+        "settings": {
+            "clients": [],
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "tls",
+            "tlsSettings": {
+                "certificates": [
+                    {
+                        "certificateFile": cert_file,
+                        "keyFile": key_file,
+                    }
+                ]
+            },
+        },
+        "sniffing": {
+            "enabled": True,
+            "destOverride": ["http", "tls", "quic"],
+        },
+    }
+
+
+def make_trojan_ws_inbound(tag: str, local_port: int, ws_path: str = "") -> dict[str, Any]:
+    return {
+        "tag": tag,
+        "listen": "127.0.0.1",
+        "port": local_port,
+        "protocol": "trojan",
+        "settings": {
+            "clients": [],
+        },
+        "streamSettings": {
+            "network": "ws",
+            "security": "none",
+            "wsSettings": {
+                "path": normalize_trojan_ws_path(ws_path),
+            },
+        },
         "sniffing": {
             "enabled": True,
             "destOverride": ["http", "tls", "quic"],
@@ -546,15 +677,155 @@ def add_tls_xhttp_connection(
     )
 
 
+def add_trojan_tls_connection(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    port: int,
+    domain: str,
+    cert_file: str,
+    key_file: str,
+    fingerprint_value: str = "chrome",
+) -> AddConnectionResult:
+    ensure_connections(config, db)
+
+    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
+    if name in existing_connection_names:
+        raise ValueError(f"Connection already exists: {name}")
+
+    if port in used_ports(config):
+        raise ValueError(f"PORT is already used by another inbound: {port}")
+
+    fp = (fingerprint_value or "chrome").strip().lower()
+    if fp not in FINGERPRINTS:
+        raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
+
+    tag = next_trojan_connection_tag(config)
+    inbound = make_trojan_tls_inbound(tag, port, cert_file, key_file)
+    config.setdefault("inbounds", []).append(inbound)
+
+    created = utc_stamp()
+    record = {
+        "tag": tag,
+        "name": name,
+        "created": created,
+        "protocol": "trojan",
+        "security": "tls",
+        "transport": "tcp",
+        "port": port,
+        "sni": domain,
+        "dest": "",
+        "fingerprint": fp,
+        "publicKey": "",
+        "shortId": "",
+        "certFile": cert_file,
+        "keyFile": key_file,
+    }
+    db_connections(db)[tag] = record
+
+    return AddConnectionResult(
+        tag=tag,
+        name=name,
+        port=port,
+        sni=domain,
+        dest="",
+        fingerprint=fp,
+        public_key="",
+        short_id="",
+        transport="tcp",
+        security="tls",
+        cert_file=cert_file,
+        key_file=key_file,
+    )
+
+
+def add_trojan_caddy_connection(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    domain: str,
+    *,
+    local_port: int,
+    public_port: int = DEFAULT_TROJAN_TLS_PUBLIC_PORT,
+    fingerprint_value: str = "chrome",
+    ws_path: str = "",
+    tls_min_version: str = "tls1.2",
+    tls_max_version: str = "tls1.2",
+    caddy_enabled: bool = True,
+) -> AddConnectionResult:
+    ensure_connections(config, db)
+
+    existing_connection_names = {entry.get("name") for entry in db_connections(db).values()}
+    if name in existing_connection_names:
+        raise ValueError(f"Connection already exists: {name}")
+
+    if local_port in used_ports(config):
+        raise ValueError(f"LOCAL_PORT is already used by another inbound: {local_port}")
+
+    fp = (fingerprint_value or "chrome").strip().lower()
+    if fp not in FINGERPRINTS:
+        raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
+
+    path = normalize_trojan_ws_path(ws_path)
+    tag = next_trojan_connection_tag(config)
+    inbound = make_trojan_ws_inbound(tag, local_port, path)
+    config.setdefault("inbounds", []).append(inbound)
+
+    created = utc_stamp()
+    record = {
+        "tag": tag,
+        "name": name,
+        "created": created,
+        "protocol": "trojan",
+        "security": "tls",
+        "transport": "ws",
+        "port": public_port,
+        "publicPort": public_port,
+        "localPort": local_port,
+        "publicHost": domain,
+        "sni": domain,
+        "dest": "",
+        "fingerprint": fp,
+        "publicKey": "",
+        "shortId": "",
+        "caddy": bool(caddy_enabled),
+        "wsPath": path,
+        "tlsMinVersion": tls_min_version,
+        "tlsMaxVersion": tls_max_version,
+    }
+    db_connections(db)[tag] = record
+
+    return AddConnectionResult(
+        tag=tag,
+        name=name,
+        port=public_port,
+        sni=domain,
+        dest="",
+        fingerprint=fp,
+        public_key="",
+        short_id="",
+        transport="ws",
+        security="tls",
+        public_host=domain,
+        public_port=public_port,
+        local_port=local_port,
+        caddy_enabled=bool(caddy_enabled),
+        tls_min_version=tls_min_version,
+        tls_max_version=tls_max_version,
+        ws_path=path,
+    )
+
+
 def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: str) -> RemoveConnectionResult:
     ensure_connections(config, db)
     tag = resolve_connection_identifier(config, db, identifier)
     inbound = find_inbound_by_tag(config, tag)
+    protocol = inbound.get("protocol") or "vless"
     security = db_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
 
-    if len(vless_connection_inbounds(config)) <= 1:
+    if protocol == "vless" and len(vless_connection_inbounds(config)) <= 1:
         raise ValueError("Cannot remove the last VLESS connection.")
-    if security == "reality" and len(reality_inbounds(config)) <= 1:
+    if protocol == "vless" and security == "reality" and len(reality_inbounds(config)) <= 1:
         raise ValueError("Cannot remove the last Reality connection.")
 
     display_name = connection_display_name(config, db, tag)
@@ -562,7 +833,7 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
     config["inbounds"] = [
         inbound
         for inbound in config.get("inbounds", [])
-        if not (inbound.get("protocol") == "vless" and inbound_tag(inbound) == tag)
+        if not (inbound_tag(inbound) == tag and inbound.get("protocol") in ("vless", "trojan"))
     ]
 
     db_connections(db).pop(tag, None)
@@ -604,6 +875,8 @@ def update_connection_transport(
     tag = resolve_connection_identifier(config, db, identifier)
     inbound = find_inbound_by_tag(config, tag)
     security = db_connections(db).get(tag, {}).get("security") or inbound.get("streamSettings", {}).get("security") or "reality"
+    if inbound.get("protocol") != "vless":
+        raise ValueError("Transport updates are currently supported only for VLESS connections.")
     if security == "tls" and transport != "xhttp":
         raise ValueError("TLS connections support only xhttp transport.")
     current_entry = db_connections(db).get(tag, {})

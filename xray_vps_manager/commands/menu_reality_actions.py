@@ -21,6 +21,9 @@ from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import (
+    DEFAULT_TROJAN_TLS_LOCAL_PORT,
+    DEFAULT_TROJAN_TLS_PUBLIC_PORT,
+    DEFAULT_TROJAN_WS_PATH,
     DEFAULT_XHTTP_MODE,
     DEFAULT_XHTTP_PATH,
     DEFAULT_XHTTP_TLS_PUBLIC_PORT,
@@ -35,15 +38,16 @@ from xray_vps_manager.xray.config import (
     find_inbound_by_tag,
     inbound_tag,
     load_config as load_xray_config,
+    managed_connection_inbounds,
     normalize_xhttp_download_settings,
     normalize_xhttp_extra,
     normalize_grpc_service_name,
     normalize_reality_transport,
+    normalize_trojan_ws_path,
     normalize_xhttp_mode,
     normalize_xhttp_path,
     reality_dest,
     reality_inbounds,
-    vless_connection_inbounds,
     save_config,
     xhttp_extra_json,
 )
@@ -98,6 +102,13 @@ def validate_host(value: str, label: str = "SNI") -> str:
     return value
 
 
+def validate_absolute_path(value: str, label: str = "PATH") -> str:
+    path = (value or "").strip()
+    if not path.startswith("/") or "\r" in path or "\n" in path:
+        die(f"{label} must be an absolute one-line path.")
+    return path
+
+
 def validate_fingerprint(value: str) -> str:
     value = (value or "").strip().lower()
     if value not in FINGERPRINTS:
@@ -126,6 +137,13 @@ def validate_xhttp_path(value: str) -> str:
         die(str(exc))
 
 
+def validate_trojan_ws_path(value: str) -> str:
+    try:
+        return normalize_trojan_ws_path(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def validate_xhttp_mode(value: str) -> str:
     try:
         return normalize_xhttp_mode(value)
@@ -141,21 +159,30 @@ def current_fingerprint() -> str:
     return value if value in FINGERPRINTS else "chrome"
 
 
-def connection_rows(security_filter: str | None = None) -> list[dict[str, str | int]]:
+def connection_rows(
+    security_filter: str | None = None,
+    protocol_filter: str | None = None,
+) -> list[dict[str, str | int]]:
     config = load_config()
     db = load_db_sql()
     connection_store.ensure_connections(config, db)
     rows = []
-    for inbound in vless_connection_inbounds(config):
+    for inbound in managed_connection_inbounds(config):
         settings = connection_settings_from_inbound(inbound)
         entry = db_connections(db).get(settings["tag"], {})
+        protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
+        if protocol_filter and protocol != protocol_filter:
+            continue
         security = entry.get("security") or ("reality" if settings.get("security") == "reality" else "tls")
         if security_filter and security != security_filter:
             continue
+        security_label = f"{protocol}/{security}" if protocol != "vless" else security
         rows.append({
             "tag": settings["tag"],
             "name": entry.get("name") or connection_name_from_tag(settings["tag"]),
+            "protocol": protocol,
             "security": security,
+            "securityLabel": security_label,
             "port": entry.get("port") or settings["port"],
             "sni": entry.get("sni") or settings["sni"],
             "transport": entry.get("transport") or settings["transport"],
@@ -171,7 +198,7 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
             str(index),
             row["name"],
             row["tag"],
-            row["security"],
+            row.get("securityLabel") or row["security"],
             row["port"],
             row["sni"],
             row["transport"],
@@ -193,10 +220,15 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
     print(border)
 
 
-def choose_connection(action: str, auto_single: bool = True, security_filter: str | None = None) -> str:
-    rows = connection_rows(security_filter=security_filter)
+def choose_connection(
+    action: str,
+    auto_single: bool = True,
+    security_filter: str | None = None,
+    protocol_filter: str | None = None,
+) -> str:
+    rows = connection_rows(security_filter=security_filter, protocol_filter=protocol_filter)
     if not rows:
-        die("No matching VLESS connections found.")
+        die("No matching connections found.")
     if len(rows) == 1 and auto_single:
         return str(rows[0]["tag"])
     print(f"Выбери подключение для действия: {action}.")
@@ -213,7 +245,11 @@ def choose_connection(action: str, auto_single: bool = True, security_filter: st
 
 
 def choose_xhttp_connection(action: str, auto_single: bool = True) -> str:
-    rows = [row for row in connection_rows() if str(row.get("transport") or "").lower() == "xhttp"]
+    rows = [
+        row
+        for row in connection_rows(protocol_filter="vless")
+        if str(row.get("transport") or "").lower() == "xhttp"
+    ]
     if not rows:
         die("No xHTTP connections found.")
     if len(rows) == 1 and auto_single:
@@ -650,6 +686,14 @@ def show_settings(call: CommandRunner) -> None:
     call(["xray-client", "connection-list"])
 
 
+def show_trojan_settings(call: CommandRunner) -> None:
+    rows = connection_rows(protocol_filter="trojan")
+    if not rows:
+        print("Trojan-подключений пока нет.")
+        return
+    print_connection_selection_table(rows)
+
+
 def create_connection(call: CommandRunner) -> None:
     security = choose_security("reality")
     name = input("Имя подключения: ").strip()
@@ -669,6 +713,52 @@ def create_connection(call: CommandRunner) -> None:
     elif transport["transport"] == "xhttp":
         command.extend(["--xhttp-path", transport["xhttp_path"], "--xhttp-mode", transport["xhttp_mode"]])
         command.extend(xhttp_extra_cli_arg(transport.get("xhttp_extra")))
+    call(command)
+
+
+def create_trojan_connection(call: CommandRunner) -> None:
+    config = load_config()
+    print("Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.")
+    print("Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.")
+    name = input("Имя Trojan-подключения: ").strip()
+    default_local_port = connection_store.next_local_port(config, DEFAULT_TROJAN_TLS_LOCAL_PORT)
+    print("LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.")
+    local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
+    print("TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.")
+    domain = validate_host(input("TLS_DOMAIN: ").strip(), "TLS_DOMAIN")
+    public_port = str(validate_port(prompt(DEFAULT_TROJAN_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
+    print("WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.")
+    ws_path = validate_trojan_ws_path(prompt(DEFAULT_TROJAN_WS_PATH, "WS_PATH"))
+    fp = choose_fingerprint(current_fingerprint())
+    tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
+    install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
+    if install_caddy:
+        conflicts = connection_store.public_port_conflicts(config, int(public_port))
+        if conflicts:
+            tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+            print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
+            print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
+            return
+    command = [
+        "xray-client",
+        "add-trojan-connection",
+        name,
+        local_port,
+        domain,
+        fp,
+        "--transport",
+        "ws",
+        "--ws-path",
+        ws_path,
+        "--public-port",
+        public_port,
+        "--tls-min-version",
+        tls_min,
+        "--tls-max-version",
+        tls_max,
+    ]
+    if install_caddy:
+        command.append("--install-caddy")
     call(command)
 
 
@@ -873,7 +963,7 @@ def update_fingerprint() -> None:
 
 def update_transport(call: CommandRunner) -> None:
     config = load_config()
-    tag = choose_connection("обновления TRANSPORT")
+    tag = choose_connection("обновления TRANSPORT", protocol_filter="vless")
     if not tag:
         print("Действие отменено.")
         return
@@ -945,12 +1035,19 @@ def update_xhttp_advanced(call: CommandRunner) -> None:
     refresh_initial_link()
 
 
-def delete_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
-    rows = connection_rows()
+def delete_connection(
+    call: CommandRunner,
+    confirm: ConfirmCallback,
+    protocol_filter: str | None = "vless",
+) -> None:
+    rows = connection_rows(protocol_filter=protocol_filter)
     if len(rows) <= 1:
-        print("Нельзя удалить последнее VLESS-подключение. Сначала создай другое подключение.")
+        if protocol_filter == "vless":
+            print("Нельзя удалить последнее VLESS-подключение. Сначала создай другое подключение.")
+        else:
+            print("Нет подключений для удаления.")
         return
-    tag = choose_connection("удаления подключения", auto_single=False)
+    tag = choose_connection("удаления подключения", auto_single=False, protocol_filter=protocol_filter)
     if not tag:
         print("Действие отменено.")
         return
@@ -966,12 +1063,32 @@ def delete_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
     refresh_initial_link()
 
 
-def rename_connection(call: CommandRunner) -> None:
-    tag = choose_connection("переименования подключения", auto_single=False)
+def delete_trojan_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
+    rows = connection_rows(protocol_filter="trojan")
+    if not rows:
+        print("Trojan-подключений пока нет.")
+        return
+    tag = choose_connection("удаления Trojan-подключения", auto_single=False, protocol_filter="trojan")
     if not tag:
         print("Действие отменено.")
         return
-    rows = connection_rows()
+    row = next((item for item in rows if item["tag"] == tag), None)
+    name = row["name"] if row else tag
+    print()
+    print(f"Будет удалено Trojan-подключение: {name} ({tag})")
+    print("Все клиенты этого подключения также будут удалены вместе с их историей трафика.")
+    if not confirm("Продолжить удаление"):
+        print("Удаление отменено.")
+        return
+    call(["xray-client", "remove-connection", tag])
+
+
+def rename_connection(call: CommandRunner, protocol_filter: str | None = "vless") -> None:
+    tag = choose_connection("переименования подключения", auto_single=False, protocol_filter=protocol_filter)
+    if not tag:
+        print("Действие отменено.")
+        return
+    rows = connection_rows(protocol_filter=protocol_filter)
     row = next((item for item in rows if item["tag"] == tag), None)
     current_name = row["name"] if row else tag
     new_name = input(f"Новое имя подключения [{current_name}]: ").strip()
@@ -979,3 +1096,10 @@ def rename_connection(call: CommandRunner) -> None:
         print("Имя не изменено.")
         return
     call(["xray-client", "connection-rename", tag, new_name])
+
+
+def rename_trojan_connection(call: CommandRunner) -> None:
+    if not connection_rows(protocol_filter="trojan"):
+        print("Trojan-подключений пока нет.")
+        return
+    rename_connection(call, protocol_filter="trojan")

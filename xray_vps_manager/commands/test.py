@@ -146,11 +146,26 @@ def vless_inbounds(config):
     return [inbound for inbound in config.get("inbounds", []) if inbound.get("protocol") == "vless"]
 
 
+def trojan_inbounds(config):
+    return [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if inbound.get("protocol") == "trojan"
+        and inbound_tag(inbound).startswith("trojan-tls")
+    ]
+
+
+def managed_connection_inbounds(config):
+    return vless_inbounds(config) + trojan_inbounds(config)
+
+
 def inbound_tag(inbound):
     return inbound.get("tag") or "vless-reality"
 
 
 def clients(inbound):
+    if inbound.get("protocol") == "trojan":
+        return inbound.get("settings", {}).get("clients", [])
     return inbound.get("settings", {}).get("clients", [])
 
 
@@ -467,7 +482,7 @@ def sqlite_alignment_issues(diag, connection):
             continue
         connection_tag = str(entry.get("connection") or "").strip()
         if connection_tag and connection_tag not in connections_section:
-            issues.append(f"SQLite client has missing Reality connection: {name} -> {connection_tag}")
+            issues.append(f"SQLite client has missing connection: {name} -> {connection_tag}")
 
     sqlite_clients = table_values(connection, "clients", "name")
     sqlite_traffic = table_values(connection, "traffic_totals", "client_name")
@@ -682,7 +697,7 @@ def check_client_list_runtime():
 
 def check_client_db_alignment(diag):
     db = diag.context.get("client_db", {})
-    inbounds = vless_inbounds(diag.context.get("config", {}))
+    inbounds = managed_connection_inbounds(diag.context.get("config", {}))
     known_tags = {inbound_tag(inbound) for inbound in inbounds}
     active_names = set()
     for inbound in inbounds:
@@ -699,7 +714,7 @@ def check_client_db_alignment(diag):
     if problems:
         raise RuntimeError("; ".join(problems[:8]))
     source = diag.context.get("client_db_source", "SQLite")
-    return f"{source} matches active VLESS connections"
+    return f"{source} matches active managed connections"
 
 
 def check_traffic_db_alignment(diag):

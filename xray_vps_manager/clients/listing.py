@@ -9,14 +9,14 @@ from xray_vps_manager.clients.models import split_email
 from xray_vps_manager.clients.payments import payment_type_label
 from xray_vps_manager.clients.repository import db_clients
 from xray_vps_manager.xray import client_routes
-from xray_vps_manager.xray.config import clients, default_connection_tag, inbound_tag, vless_connection_inbounds
+from xray_vps_manager.xray.config import clients, default_connection_tag, inbound_tag, managed_connection_inbounds
 
 
 def client_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     ensure_connections(config, db)
-    for inbound in vless_connection_inbounds(config):
+    for inbound in managed_connection_inbounds(config):
         tag = inbound_tag(inbound)
         for item in clients(inbound):
             raw_email = item.get("email", "")
@@ -28,7 +28,7 @@ def client_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str, An
                 {
                     "name": name or "(no-name)",
                     "created": created or "unknown",
-                    "id": item.get("id", ""),
+                    "id": item.get("id") or entry.get("id", ""),
                     "email": raw_email,
                     "status": "enabled",
                     "paymentType": payment_type_label(entry),

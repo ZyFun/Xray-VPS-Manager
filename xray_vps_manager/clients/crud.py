@@ -22,7 +22,8 @@ from xray_vps_manager.xray.config import (
     find_inbound_by_tag,
     inbound_tag,
     connection_transport_settings_from_inbound,
-    vless_connection_inbounds,
+    managed_connection_inbounds,
+    set_clients,
 )
 
 
@@ -89,7 +90,7 @@ def resolve_connection_for_add(config: dict[str, Any], db: dict[str, Any], conne
 
 def all_client_names(config: dict[str, Any], db: dict[str, Any]) -> set[str]:
     names = set(db_clients(db))
-    for inbound in vless_connection_inbounds(config):
+    for inbound in managed_connection_inbounds(config):
         names.update(client_name(item) for item in clients(inbound) if client_name(item))
     return names
 
@@ -124,6 +125,7 @@ def add_client(
     connection_tag: str | None = None,
     payment_type: str = "free",
     uuid_factory: Callable[[], str] = xray_crypto.xray_uuid,
+    password_factory: Callable[[], str] = xray_crypto.random_trojan_password,
 ) -> AddClientResult:
     connections.ensure_connections(config, db)
     selected_tag = prepare_add_client(config, db, name, connection_tag)
@@ -132,14 +134,27 @@ def add_client(
 
     created = utc_stamp()
     client_id = uuid_factory()
-    client = {
-        "id": client_id,
-        "level": 0,
-        "email": f"{name}|created={created}",
-    }
-    apply_client_transport(client, connection_transport_settings_from_inbound(inbound)["transport"])
+    protocol = inbound.get("protocol") or "vless"
+    if protocol == "trojan":
+        password = password_factory()
+        client = {
+            "password": password,
+            "level": 0,
+            "email": f"{name}|created={created}",
+        }
+        stored_client = dict(client)
+        stored_client["id"] = client_id
+        stored_client["protocol"] = "trojan"
+    else:
+        client = {
+            "id": client_id,
+            "level": 0,
+            "email": f"{name}|created={created}",
+        }
+        apply_client_transport(client, connection_transport_settings_from_inbound(inbound)["transport"])
+        stored_client = dict(client)
     current.append(client)
-    entry = db_entry_from_client(client, created=created, enabled=True)
+    entry = db_entry_from_client(stored_client, created=created, enabled=True)
     entry["connection"] = selected_tag
     entry["paymentType"] = normalize_payment_type(payment_type)
     access.set_entry_expiry(entry, access_days)
@@ -157,12 +172,12 @@ def add_client(
 def remove_client(config: dict[str, Any], db: dict[str, Any], name: str) -> RemoveClientResult:
     connections.ensure_connections(config, db)
     found_active = False
-    for inbound in vless_connection_inbounds(config):
+    for inbound in managed_connection_inbounds(config):
         before = clients(inbound)
         after = [item for item in before if client_name(item) != name]
         if len(after) != len(before):
             found_active = True
-            inbound["settings"]["clients"] = after
+            set_clients(inbound, after)
 
     found_in_db = name in db_clients(db)
     if not found_active and not found_in_db:
@@ -190,7 +205,7 @@ def disable_client(config: dict[str, Any], db: dict[str, Any], name: str) -> Dis
     disabled_at = utc_stamp()
     entry["disabledAt"] = disabled_at
     db_clients(db)[name] = entry
-    inbound["settings"]["clients"] = [client for client in clients(inbound) if client_name(client) != name]
+    set_clients(inbound, [client for client in clients(inbound) if client_name(client) != name])
 
     return DisableClientResult(name=name, connection_tag=connection_tag, disabled_at=disabled_at, entry=entry)
 
@@ -219,7 +234,7 @@ def enable_client(config: dict[str, Any], db: dict[str, Any], traffic_db: dict[s
 
     return EnableClientResult(
         name=name,
-        client_id=client["id"],
+        client_id=str(entry.get("id") or client.get("id") or ""),
         connection_tag=connection_tag,
         entry=entry,
     )
@@ -234,6 +249,7 @@ def move_client_to_connection(
     connections.ensure_connections(config, db)
     target_tag = connections.resolve_connection_identifier(config, db, target_connection_identifier)
     target_inbound = find_inbound_by_tag(config, target_tag)
+    target_protocol = target_inbound.get("protocol") or "vless"
     target_transport = connection_transport_settings_from_inbound(target_inbound)["transport"]
     entry = db_entry_for_existing_client(config, db, name)
 
@@ -243,6 +259,10 @@ def move_client_to_connection(
         raise ValueError(f"Client connection not found: {name}")
     if source_tag == target_tag:
         raise ValueError(f"Client is already in connection: {target_tag}")
+    source_inbound = source_inbound or find_inbound_by_tag(config, source_tag)
+    source_protocol = source_inbound.get("protocol") or entry.get("protocol") or "vless"
+    if source_protocol != target_protocol:
+        raise ValueError("Moving clients between VLESS and Trojan connections is not supported yet.")
 
     entry = dict(entry)
     config_changed = False
@@ -251,10 +271,11 @@ def move_client_to_connection(
         if any(client_name(item) == name for item in clients(target_inbound)):
             raise ValueError(f"Target connection already has client: {name}")
         moved_client = dict(active_item)
-        apply_client_transport(moved_client, target_transport)
-        source_inbound["settings"]["clients"] = [
+        if target_protocol == "vless":
+            apply_client_transport(moved_client, target_transport)
+        set_clients(source_inbound, [
             item for item in clients(source_inbound) if client_name(item) != name
-        ]
+        ])
         clients(target_inbound).append(moved_client)
         entry["enabled"] = True
         config_changed = True
@@ -262,10 +283,15 @@ def move_client_to_connection(
         if entry.get("enabled") is not False:
             raise ValueError(f"Enabled client config not found: {name}")
         moved_client = client_from_db_entry(name, entry)
-        apply_client_transport(moved_client, target_transport)
+        if target_protocol == "vless":
+            apply_client_transport(moved_client, target_transport)
 
-    entry["id"] = moved_client.get("id", entry.get("id", ""))
+    entry["id"] = moved_client.get("id") or entry.get("id", "")
     entry["client"] = dict(moved_client)
+    if target_protocol == "trojan":
+        entry["client"]["id"] = entry["id"]
+        entry["client"]["protocol"] = "trojan"
+        entry["protocol"] = "trojan"
     entry["connection"] = target_tag
     db_clients(db)[name] = entry
 

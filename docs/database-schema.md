@@ -227,9 +227,9 @@ erDiagram
 
 | Таблица | Назначение |
 |---|---|
-| `reality_connections` | VLESS-подключения. Для Reality хранятся порт, SNI, fingerprint, public key и short id; для TLS/XHTTP через Caddy дополнительные поля (`security`, `publicHost`, `publicPort`, `localPort`, `xhttpPath`, `xhttpMode`, `xhttpExtra`, TLS version) лежат в `extra_json`. |
+| `reality_connections` | Managed подключения. Для VLESS Reality хранятся порт, SNI, fingerprint, public key и short id; для TLS/XHTTP через Caddy дополнительные поля (`security`, `publicHost`, `publicPort`, `localPort`, `xhttpPath`, `xhttpMode`, `xhttpExtra`, TLS version) лежат в `extra_json`. Для Trojan через Caddy в `extra_json` хранятся `protocol=trojan`, `security=tls`, `transport=ws`, `publicHost`, `publicPort`, `localPort`, `wsPath`, TLS version и другие protocol-specific поля; legacy direct TLS/TCP может хранить `certFile` и `keyFile`. |
 | `cascade_routes` | Метаданные cascade outbounds: tag, отображаемая страна, label и timestamps. |
-| `clients` | Клиенты, UUID, статус, срок доступа, платежный тип, выбранный cascade route и связанное VLESS-подключение. |
+| `clients` | Клиенты, внутренний UUID менеджера, статус, срок доступа, платежный тип, выбранный cascade route и связанное managed подключение. Для VLESS активный Xray credential использует UUID; для Trojan активный Xray credential использует password, а внутренний UUID остаётся идентификатором клиента в SQLite/Telegram/routing. |
 
 Основная связь:
 

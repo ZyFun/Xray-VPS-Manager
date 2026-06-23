@@ -10,7 +10,7 @@
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /etc/caddy/Caddyfile                     основной Caddy config
-/etc/caddy/conf.d                        TLS/XHTTP site configs Caddy
+/etc/caddy/conf.d                        TLS site configs Caddy
 /usr/local/sbin/xray-client              управление клиентами
 /usr/local/sbin/xray-menu                интерактивное меню
 /usr/local/sbin/xray-set-cascade         управление каскадом
@@ -54,7 +54,7 @@ xray-backup create
 ```
 
 Архивы хранятся на сервере в `/root/xray_backups`.
-Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, глобальные блокировки, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
+Архив содержит Reality private key, UUID клиентов, Trojan passwords, SQLite-базу менеджера, статистику трафика, журнал активности, глобальные блокировки, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
 Перед добавлением `manager.db` в архив `xray-backup create` создаёт временный консистентный SQLite snapshot через SQLite backup API внутри `/root/xray_backups`, а не копирует живой файл базы напрямую. Это защищает архив от повреждения, если фоновые таймеры или бот записывают данные во время создания backup.
 
 Обычный `xray-backup` не включает настройки Caddy и файлы сайта. Для Caddy используются отдельные backup-пункты в меню `Подключения и TLS` -> `Caddy / TLS` -> `Бэкапы`, чтобы восстановление Xray-данных не перезаписывало TLS site configs или сайт неожиданно.
@@ -153,7 +153,7 @@ SQLite-база менеджера хранится в:
 /usr/local/etc/xray/manager.db
 ```
 
-`install.sh` создаёт эту базу сразу. Клиенты, VLESS-подключения, трафик, журнал активности, исключения suspicious, Telegram-настройки, подписки, флаг личных уведомлений активности и настройки оплаты хранятся в `manager.db`.
+`install.sh` создаёт эту базу сразу. Клиенты, VLESS/Trojan-подключения, трафик, журнал активности, исключения suspicious, Telegram-настройки, подписки, флаг личных уведомлений активности и настройки оплаты хранятся в `manager.db`.
 
 Подробная схема таблиц и индексов описана отдельно: [Схема базы данных](database-schema.md).
 

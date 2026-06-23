@@ -237,7 +237,7 @@ def server_tls_summary_text(sites):
     lines = ["Xray VPS Manager: TLS", ""]
     if not sites:
         lines.append("TLS site configs не найдены.")
-        lines.append("Создай TLS/XHTTP-подключение и Caddy site config через SSH-меню, затем вернись сюда.")
+        lines.append("Создай TLS-подключение и Caddy site config через SSH-меню, затем вернись сюда.")
         return "\n".join(lines)
     lines.append("Текущее шифрование:")
     for item in sites:
