@@ -29,6 +29,15 @@ class ClientCommandReadTests(unittest.TestCase):
 
         load_traffic_for_read.assert_called_once_with()
 
+    def test_parse_add_args_supports_protocol_sugar(self) -> None:
+        parsed = client_command.parse_add_args(["alice", "30", "--protocol", "trojan", "--payment", "paid"])
+
+        self.assertEqual(parsed, ("alice", 30, False, None, "trojan", "paid"))
+
+    def test_parse_add_args_rejects_connection_and_protocol_together(self) -> None:
+        with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+            client_command.parse_add_args(["alice", "--connection", "trojan-tls", "--protocol", "trojan"])
+
     def test_connection_list_shows_protocol_column(self) -> None:
         config = {
             "inbounds": [

@@ -1021,14 +1021,14 @@ def db_entry_for_existing_client(config, db, name):
         die(str(exc))
 
 
-def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, payment_type="free"):
+def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, protocol="", payment_type="free"):
     validate_name(name)
     payment_type = normalize_payment_type(payment_type) if payment_type else ""
     config = load_config()
     db = load_db()
     existing_client = client_crud.client_exists(config, db, name)
     try:
-        connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag)
+        connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
     except ValueError as exc:
         die(str(exc))
 
@@ -1430,7 +1430,7 @@ def usage():
   xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
   xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra
   xray-client remove-connection NAME_OR_TAG
-  xray-client add NAME [DAYS] [--connection TAG] [--payment paid|free]
+  xray-client add NAME [DAYS] [--connection TAG|--protocol vless|trojan] [--payment paid|free]
   xray-client disable NAME [--connection TAG]
   xray-client enable NAME [--connection TAG]
   xray-client move-connection NAME CONNECTION_NAME_OR_TAG
@@ -1464,6 +1464,7 @@ def parse_add_args(args):
     name = args[0]
     rest = list(args[1:])
     connection_tag = None
+    protocol = ""
     payment_type = ""
     if "--connection" in rest:
         index = rest.index("--connection")
@@ -1471,6 +1472,17 @@ def parse_add_args(args):
             die("--connection requires TAG")
         connection_tag = rest[index + 1]
         del rest[index:index + 2]
+    if "--protocol" in rest:
+        index = rest.index("--protocol")
+        if index + 1 >= len(rest):
+            die("--protocol requires vless or trojan")
+        try:
+            protocol = client_crud.normalize_connection_protocol(rest[index + 1])
+        except ValueError as exc:
+            die(str(exc))
+        del rest[index:index + 2]
+    if connection_tag and protocol:
+        die("Use either --connection TAG or --protocol vless|trojan.")
     if "--payment" in rest:
         index = rest.index("--payment")
         if index + 1 >= len(rest):
@@ -1481,8 +1493,8 @@ def parse_add_args(args):
         usage()
         sys.exit(1)
     if rest:
-        return name, parse_access_days(rest[0]), False, connection_tag, payment_type
-    return name, None, True, connection_tag, payment_type
+        return name, parse_access_days(rest[0]), False, connection_tag, protocol, payment_type
+    return name, None, True, connection_tag, protocol, payment_type
 
 
 def parse_connection_add_args(args):
@@ -1879,12 +1891,13 @@ def main():
     elif command in ("remove-connection", "delete-connection") and len(sys.argv) == 3:
         cmd_connection_remove(sys.argv[2])
     elif command == "add":
-        name, access_days, prompt_for_access, connection_tag, payment_type = parse_add_args(sys.argv[2:])
+        name, access_days, prompt_for_access, connection_tag, protocol, payment_type = parse_add_args(sys.argv[2:])
         cmd_add(
             name,
             access_days,
             prompt_for_access=prompt_for_access,
             connection_tag=connection_tag,
+            protocol=protocol,
             payment_type=payment_type,
         )
     elif command in ("disable", "off"):

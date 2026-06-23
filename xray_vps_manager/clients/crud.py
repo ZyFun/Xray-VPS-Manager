@@ -89,13 +89,43 @@ class MoveClientResult:
     entry: dict[str, Any]
 
 
-def resolve_connection_for_add(config: dict[str, Any], db: dict[str, Any], connection_tag: str | None = None) -> str:
+def normalize_connection_protocol(protocol: str | None) -> str:
+    value = str(protocol or "").strip().lower()
+    if not value:
+        return ""
+    if value not in ("vless", "trojan"):
+        raise ValueError("PROTOCOL must be vless or trojan.")
+    return value
+
+
+def resolve_connection_for_add(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    connection_tag: str | None = None,
+    *,
+    protocol: str | None = None,
+) -> str:
     connections.ensure_connections(config, db)
-    connection_tags = list(db_managed_connections(db))
+    connection_entries = db_managed_connections(db)
+    connection_tags = list(connection_entries)
+    requested_protocol = normalize_connection_protocol(protocol)
+    if connection_tag and requested_protocol:
+        raise ValueError("Use either --connection TAG or --protocol vless|trojan.")
     if connection_tag:
-        if connection_tag not in db_managed_connections(db):
+        if connection_tag not in connection_entries:
             raise ValueError(f"Connection not found: {connection_tag}")
         return connection_tag
+    if requested_protocol:
+        matches = [
+            tag
+            for tag, entry in connection_entries.items()
+            if str(entry.get("protocol") or "vless").strip().lower() == requested_protocol
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise ValueError(f"No {requested_protocol} connections found.")
+        raise ValueError(f"Multiple {requested_protocol} connections found. Use --connection TAG.")
     if len(connection_tags) == 1:
         return connection_tags[0]
     raise ValueError("Multiple connections found. Use --connection TAG.")
@@ -129,8 +159,15 @@ def db_entry_for_existing_client(config: dict[str, Any], db: dict[str, Any], nam
     return entry
 
 
-def prepare_add_client(config: dict[str, Any], db: dict[str, Any], name: str, connection_tag: str | None = None) -> str:
-    selected_tag = resolve_connection_for_add(config, db, connection_tag)
+def prepare_add_client(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    connection_tag: str | None = None,
+    *,
+    protocol: str | None = None,
+) -> str:
+    selected_tag = resolve_connection_for_add(config, db, connection_tag, protocol=protocol)
     if name in all_client_names(config, db):
         entry = db_entry_for_existing_client(config, db, name)
         credentials = client_credentials.normalize_entry_credentials(entry)

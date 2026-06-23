@@ -25,6 +25,14 @@ xray-client add ИМЯ ДНЕЙ
 xray-client add ИМЯ ДНЕЙ --connection TAG
 ```
 
+Если на сервере ровно одно подключение нужного протокола, можно выбрать его по протоколу:
+
+```bash
+xray-client add ИМЯ ДНЕЙ --protocol trojan
+```
+
+Если подключений этого протокола несколько, команда попросит указать точный `--connection TAG`.
+
 Тип создаваемого credential зависит от выбранного подключения. Для VLESS-подключения создаётся UUID и `vless://` ссылка. Для Trojan TLS/WebSocket-подключения через Caddy создаётся внутренний UUID менеджера, отдельный Trojan password и `trojan://` ссылка; в Xray config активный пользователь хранится в `settings.clients`.
 Внутренний UUID клиента хранится отдельно от protocol credential: один клиент может иметь несколько credentials, например VLESS Reality, VLESS TLS/XHTTP и Trojan TLS/WebSocket. Для VLESS credential используется свой UUID в `vless://` ссылке, для Trojan credential - свой password в `trojan://` ссылке. Внутренний UUID клиента нужен менеджеру для SQLite, маршрутизации, Telegram-подписок и клиентского ключа `vpn-key:UUID`; он не является Trojan-паролем.
 В меню `Клиенты -> Добавить клиента` выбор подключения показывает и VLESS, и Trojan connections, поэтому клиента можно сразу добавить в нужный протокол.
