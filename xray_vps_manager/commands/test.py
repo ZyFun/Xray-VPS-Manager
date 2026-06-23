@@ -3,11 +3,12 @@ import json
 import os
 import re
 import socket
+import ssl
 import stat
 import subprocess
 import sys
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -25,6 +26,7 @@ from xray_vps_manager.db.storage import sqlite_read_ready
 from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import caddy as caddy_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -61,6 +63,7 @@ TRAFFIC_SERVICE_COMMANDS = [
     "ExecStart=/usr/local/sbin/xray-telegram notify-daily-summary --quiet",
 ]
 TELEGRAM_POLLER_SERVICE_COMMAND = "ExecStart=/usr/local/sbin/xray-telegram run-poller"
+TLS_EXPIRY_WARNING_DAYS = 14
 GREEN = "\033[32m"
 RED = "\033[31m"
 YELLOW = "\033[33m"
@@ -990,6 +993,175 @@ def check_activity_blocklist_routing(diag):
     return f"Activity global blocklist routing is active: entries={len(active_items)}"
 
 
+def certificate_not_after(cert):
+    value = cert.get("notAfter") if isinstance(cert, dict) else ""
+    if not value:
+        raise RuntimeError("certificate notAfter is missing")
+    try:
+        return datetime.strptime(value, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise RuntimeError(f"certificate notAfter could not be parsed: {value}") from exc
+
+
+def decode_certificate_file(path):
+    try:
+        return ssl._ssl._test_decode_cert(str(path))
+    except Exception as exc:
+        raise RuntimeError(f"could not parse certificate {path}: {exc}") from exc
+
+
+def certificate_domain_matches(cert, domain):
+    try:
+        ssl.match_hostname(cert, domain)
+    except ssl.CertificateError as exc:
+        raise RuntimeError(f"certificate does not match {domain}: {exc}") from exc
+
+
+def check_certificate_expiry(cert, label, now):
+    expires = certificate_not_after(cert)
+    remaining = expires - now
+    if remaining.total_seconds() <= 0:
+        raise RuntimeError(f"{label}: certificate expired at {expires.isoformat()}")
+    remaining_days = int(remaining.total_seconds() // 86400)
+    if remaining_days < TLS_EXPIRY_WARNING_DAYS:
+        raise RuntimeError(f"{label}: certificate expires soon: {expires.isoformat()} ({remaining_days} day(s))")
+    return remaining_days
+
+
+def check_tls_file_path(path_value, label, *, private=False):
+    path = Path(str(path_value or ""))
+    if not path.is_absolute():
+        raise RuntimeError(f"{label} must be an absolute path: {path_value}")
+    if not path.exists():
+        raise RuntimeError(f"{label} not found: {path}")
+    if not path.is_file():
+        raise RuntimeError(f"{label} is not a regular file: {path}")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o002:
+        raise RuntimeError(f"{label} is world-writable: {path} mode {mode:o}")
+    if private and mode & 0o004:
+        raise RuntimeError(f"{label} is world-readable: {path} mode {mode:o}")
+    return mode
+
+
+def direct_tls_domain_for_tag(diag, tag):
+    connections = diag.context.get("client_db", {}).get("connections", {})
+    entry = connections.get(tag, {}) if isinstance(connections, dict) else {}
+    for key in ("sni", "publicHost", "domain"):
+        value = str(entry.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def direct_tls_certificate_pairs(config):
+    pairs = []
+    for inbound in config.get("inbounds", []):
+        stream = inbound.get("streamSettings") or {}
+        if stream.get("security") != "tls":
+            continue
+        tls = stream.get("tlsSettings") if isinstance(stream.get("tlsSettings"), dict) else {}
+        certificates = tls.get("certificates") if isinstance(tls.get("certificates"), list) else []
+        for index, certificate in enumerate(certificates):
+            if not isinstance(certificate, dict):
+                continue
+            cert_file = certificate.get("certificateFile", "")
+            key_file = certificate.get("keyFile", "")
+            if cert_file or key_file:
+                pairs.append((inbound_tag(inbound), index, cert_file, key_file))
+    return pairs
+
+
+def caddy_expectations(diag):
+    expectations = []
+    connections = diag.context.get("client_db", {}).get("connections", {})
+    if not isinstance(connections, dict):
+        return expectations
+    for tag, entry in connections.items():
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("security") or "") != "tls" or entry.get("caddy") is not True:
+            continue
+        domain = str(entry.get("publicHost") or entry.get("sni") or "").strip()
+        if not domain:
+            continue
+        protocol = str(entry.get("protocol") or "vless").lower()
+        transport = str(entry.get("transport") or "").lower()
+        expected_transport = "http" if protocol == "trojan" or transport == "ws" else "xhttp"
+        expected_path = str(entry.get("wsPath") or entry.get("xhttpPath") or "")
+        local_port = entry.get("localPort")
+        expectations.append(
+            {
+                "tag": str(tag),
+                "domain": domain,
+                "localPort": int(local_port) if str(local_port or "").isdigit() else None,
+                "transport": expected_transport,
+                "path": expected_path,
+            }
+        )
+    return expectations
+
+
+def fetch_remote_tls_certificate(domain, port=443, timeout=6):
+    context = ssl.create_default_context()
+    with socket.create_connection((domain, port), timeout=timeout) as sock:
+        with context.wrap_socket(sock, server_hostname=domain) as tls:
+            return tls.getpeercert()
+
+
+def check_tls_diagnostics(diag, now=None):
+    config = diag.context.get("config", {})
+    now = now or datetime.now(timezone.utc).replace(microsecond=0)
+    issues = []
+    checked_direct = 0
+    checked_caddy = 0
+
+    for tag, index, cert_file, key_file in direct_tls_certificate_pairs(config):
+        label = f"{tag}[{index}]"
+        domain = direct_tls_domain_for_tag(diag, tag)
+        try:
+            check_tls_file_path(cert_file, f"{label} certificateFile")
+            check_tls_file_path(key_file, f"{label} keyFile", private=True)
+            cert = decode_certificate_file(cert_file)
+            check_certificate_expiry(cert, label, now)
+            if domain:
+                certificate_domain_matches(cert, domain)
+            else:
+                issues.append(f"{label}: SNI/domain metadata is missing in SQLite connection")
+        except Exception as exc:
+            issues.append(str(exc))
+        checked_direct += 1
+
+    site_by_domain = {site.domain.lower(): site for site in caddy_config.list_site_configs()}
+    for item in caddy_expectations(diag):
+        domain = item["domain"]
+        site = site_by_domain.get(domain.lower())
+        if not site:
+            issues.append(f"{item['tag']}: Caddy site config not found for {domain}")
+            checked_caddy += 1
+            continue
+        if item["localPort"] and site.local_port != item["localPort"]:
+            issues.append(f"{item['tag']}: Caddy upstream mismatch for {domain}: {site.local_port} != {item['localPort']}")
+        if site.upstream_transport != item["transport"]:
+            issues.append(f"{item['tag']}: Caddy upstream transport mismatch for {domain}: {site.upstream_transport} != {item['transport']}")
+        if item["path"] and site.match_path != item["path"]:
+            issues.append(f"{item['tag']}: Caddy route path mismatch for {domain}: {site.match_path or '-'} != {item['path']}")
+        try:
+            cert = fetch_remote_tls_certificate(domain)
+            check_certificate_expiry(cert, f"{item['tag']} {domain}:443", now)
+            certificate_domain_matches(cert, domain)
+        except Exception as exc:
+            issues.append(f"{item['tag']} {domain}:443 TLS handshake/certificate check failed: {exc}")
+        checked_caddy += 1
+
+    if issues:
+        raise RuntimeError("; ".join(issues[:8]))
+    total = checked_direct + checked_caddy
+    if total == 0:
+        return "TLS certificate diagnostics skipped: no direct TLS certs or managed Caddy TLS connections"
+    return f"TLS certificate diagnostics OK: direct={checked_direct}, caddy={checked_caddy}"
+
+
 def check_file_permissions():
     checked = []
     for path in (
@@ -1045,6 +1217,7 @@ def run_diagnostics(full_integrity=False):
     diag.check("WARP config", lambda: check_warp_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
     diag.check("Activity blocklist routing", lambda: check_activity_blocklist_routing(diag), fatal=False)
+    diag.check("TLS certificate diagnostics", lambda: check_tls_diagnostics(diag), fatal=False)
     diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
     return diag.summary()
 
