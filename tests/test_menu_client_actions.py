@@ -31,6 +31,44 @@ class MenuClientActionsTests(unittest.TestCase):
                 ["xray-client", "add", "alice", "--connection", "trojan-main"],
             )
 
+    def test_client_route_selection_uses_numbered_cascade_table(self) -> None:
+        config = {
+            "outbounds": [
+                {"tag": "direct", "protocol": "freedom"},
+                {"tag": "cascade-de", "protocol": "vless"},
+                {"tag": "cascade-us", "protocol": "vless"},
+            ],
+            "routing": {
+                "rules": [
+                    {"type": "field", "network": "tcp,udp", "outboundTag": "cascade-de"},
+                ]
+            },
+        }
+        db = {
+            "cascadeRoutes": {
+                "cascade-de": {"tag": "cascade-de", "country": "Германия"},
+                "cascade-us": {"tag": "cascade-us", "country": "США"},
+            },
+            "clients": {
+                "alice": {
+                    "selectedCascadeTag": "cascade-de",
+                },
+            },
+        }
+
+        with mock.patch.object(menu_client_actions, "load_config", return_value=config), \
+            mock.patch.object(menu_client_actions, "load_db_sql", return_value=db), \
+            mock.patch("builtins.input", return_value="2"):
+            self.assertEqual(menu_client_actions.choose_client_route("alice"), "cascade-us")
+
+    def test_update_selected_client_route_calls_route_command(self) -> None:
+        call = mock.Mock()
+        with mock.patch.object(menu_client_actions, "choose_client", return_value="alice"), \
+            mock.patch.object(menu_client_actions, "choose_client_route", return_value="cascade-us"):
+            menu_client_actions.update_selected_client_route(call)
+
+        call.assert_called_once_with(["xray-client", "route", "alice", "cascade-us"])
+
     def test_available_connections_skip_client_existing_credentials(self) -> None:
         db = {
             "clients": {

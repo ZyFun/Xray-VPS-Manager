@@ -10,8 +10,10 @@ from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.listing import client_rows as build_client_rows
 from xray_vps_manager.clients.repository import db_clients, load_db_sql
 from xray_vps_manager.commands import menu_reality_actions
-from xray_vps_manager.core.terminal import green, table_border, table_row, visible_len, yellow
+from xray_vps_manager.core.terminal import green, print_table, table_border, table_row, visible_len, yellow
 from xray_vps_manager.core.time import manager_timezone, parse_time
+from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import connection_name_from_tag, load_config as load_xray_config
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
@@ -307,6 +309,69 @@ def call_client_command(call: CommandRunner, command: str, action: str, mode: st
         print("Действие отменено.")
         return
     call(["xray-client", command, name])
+
+
+def client_route_rows_for_selection(name: str) -> list[dict]:
+    config = load_config()
+    db = load_db_sql()
+    client_routes.sync_routes_from_config(config, db)
+    entry = db_clients(db).get(name, {})
+    current_tag = client_routes.selected_route_tag(entry)
+    active_tag = cascade_config.active_cascade_tag(config)
+    rows = []
+    for index, item in enumerate(client_routes.route_options(db, config), start=1):
+        tag = str(item["tag"])
+        rows.append(
+            {
+                "index": index,
+                "display": item.get("display") or "-",
+                "tag": tag,
+                "current": "yes" if tag == current_tag else "-",
+                "active": "yes" if tag == active_tag else "-",
+            }
+        )
+    return rows
+
+
+def print_client_route_selection_table(rows: list[dict]) -> None:
+    values = [
+        [str(row["index"]), row["display"], row["tag"], row["current"], row["active"]]
+        for row in rows
+    ]
+    values.append(["0", "Назад", "", "", ""])
+    print_table(["№", "COUNTRY", "TAG", "CURRENT", "GLOBAL ACTIVE"], values, empty_message=None)
+
+
+def choose_client_route(name: str) -> str:
+    rows = client_route_rows_for_selection(name)
+    if not rows:
+        print("Страны подключения не настроены. Добавь cascade через меню Маршрутизация -> Каскад.")
+        return ""
+
+    print(f"Выбери страну подключения для клиента: {name}.")
+    print_client_route_selection_table(rows)
+    while True:
+        choice = input("Страна: ").strip()
+        if choice == "0":
+            return ""
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return str(rows[index - 1]["tag"])
+        print("Неизвестная страна. Выбери номер из списка или 0 для возврата.")
+
+
+def update_selected_client_route(call: CommandRunner) -> None:
+    name = choose_client("изменения страны подключения", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    tag = choose_client_route(name)
+    if not tag:
+        print("Действие отменено.")
+        return
+    call(["xray-client", "route", name, tag])
+    print("После смены страны переподключи VPN, чтобы новые соединения пошли через выбранный маршрут.")
 
 
 def update_selected_client_days(call: CommandRunner) -> None:

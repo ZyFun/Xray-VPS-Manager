@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-24 10:41 UTC"
+MENU_UPDATED = "2026-06-24 11:53 UTC"
 
 
 def die(message):
@@ -106,6 +106,7 @@ def client_menu_actions():
         ("10", "Удалить клиента"),
         ("11", "Проверить просроченных клиентов"),
         ("12", "Лимиты трафика"),
+        ("13", "Изменить страну подключения"),
         ("0", "Назад"),
     ]
 
@@ -527,6 +528,7 @@ def client_menu_handlers():
         ),
         "11": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
         "12": ("Лимиты трафика", open_client_traffic_limit_menu),
+        "13": ("Изменить страну подключения", lambda: menu_client_actions.update_selected_client_route(call)),
     }
 
 
