@@ -179,6 +179,99 @@ class XrayTestCommandTests(unittest.TestCase):
 
         self.assertEqual(result, "TLS certificate diagnostics OK: direct=0, caddy=1")
 
+    def test_tls_diagnostics_deep_checks_caddy_endpoint_and_public_port(self) -> None:
+        diag = SimpleNamespace(
+            context={
+                "client_db": {
+                    "connections": {
+                        "trojan-tls": {
+                            "protocol": "trojan",
+                            "security": "tls",
+                            "transport": "ws",
+                            "caddy": True,
+                            "publicHost": "vpn.example.com",
+                            "publicPort": 8443,
+                            "localPort": 10100,
+                            "wsPath": "/trojan",
+                        }
+                    }
+                },
+                "config": {"inbounds": []},
+            }
+        )
+        site = caddy.SiteConfig(
+            path=Path("/etc/caddy/conf.d/vpn.example.com.caddy"),
+            domain="vpn.example.com",
+            local_port=10100,
+            tls_min_version="tls1.2",
+            tls_max_version="tls1.3",
+            upstream_transport="http",
+            match_path="/trojan",
+        )
+
+        with mock.patch.object(test_command.caddy_config, "list_site_configs", return_value=[site]), mock.patch.object(
+            test_command, "fetch_remote_tls_certificate", return_value=self.valid_cert()
+        ) as fetch_cert, mock.patch.object(
+            test_command, "probe_caddy_endpoint", return_value="vpn.example.com:8443/trojan WebSocket endpoint responded 101"
+        ) as probe_endpoint:
+            result = test_command.check_tls_diagnostics(
+                diag,
+                now=datetime(2026, 6, 23, tzinfo=timezone.utc),
+                deep=True,
+            )
+
+        self.assertEqual(result, "TLS certificate diagnostics OK: direct=0, caddy=1, endpoint=1")
+        fetch_cert.assert_called_once_with("vpn.example.com", port=8443)
+        probe_endpoint.assert_called_once()
+        self.assertEqual(probe_endpoint.call_args.args[0]["publicPort"], 8443)
+        self.assertEqual(probe_endpoint.call_args.args[0]["protocol"], "trojan")
+
+    def test_caddy_endpoint_probe_accepts_empty_xhttp_404_from_xray(self) -> None:
+        item = {
+            "protocol": "vless",
+            "transport": "xhttp",
+            "domain": "api.example.com",
+            "publicPort": 443,
+            "path": "/api/v1/sync",
+        }
+
+        result = test_command.describe_caddy_endpoint_response(
+            item,
+            404,
+            "HTTP/1.1 404 Not Found",
+            {"server": "Caddy", "content-length": "0"},
+            "",
+        )
+
+        self.assertIn("route reached Xray", result)
+
+    def test_caddy_endpoint_probe_rejects_json_or_html_fallback(self) -> None:
+        item = {
+            "protocol": "vless",
+            "transport": "xhttp",
+            "domain": "api.example.com",
+            "publicPort": 443,
+            "path": "/api/v1/sync",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "fallback-looking 404"):
+            test_command.describe_caddy_endpoint_response(
+                item,
+                404,
+                "HTTP/1.1 404 Not Found",
+                {"content-type": "application/json"},
+                '{"error":"not_found"}',
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "HTML fallback"):
+            test_command.describe_caddy_endpoint_response(
+                item,
+                200,
+                "HTTP/1.1 200 OK",
+                {"content-type": "text/html; charset=utf-8"},
+                "<!doctype html><html>",
+            )
+
     def test_tls_diagnostics_reports_caddy_route_mismatch(self) -> None:
         diag = SimpleNamespace(
             context={
@@ -215,6 +308,29 @@ class XrayTestCommandTests(unittest.TestCase):
                     diag,
                     now=datetime(2026, 6, 23, tzinfo=timezone.utc),
                 )
+
+    def test_deprecated_trojan_websocket_warning_is_clear(self) -> None:
+        diag = SimpleNamespace(
+            context={
+                "config": {
+                    "inbounds": [
+                        {
+                            "tag": "trojan-tls",
+                            "protocol": "trojan",
+                            "streamSettings": {"network": "ws", "security": "none"},
+                        }
+                    ]
+                }
+            }
+        )
+
+        with self.assertRaises(RuntimeError) as raised:
+            test_command.check_deprecated_trojan_websocket_usage(diag)
+
+        message = str(raised.exception)
+        self.assertIn("Trojan (with no Flow, etc.) is deprecated", message)
+        self.assertIn("compatibility/DPI-bypass mode", message)
+        self.assertIn("WebSocket transport (with ALPN http/1.1, etc.) is deprecated", message)
 
     def test_client_db_alignment_warns_for_legacy_trojan_users_section(self) -> None:
         diag = SimpleNamespace(

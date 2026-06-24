@@ -1143,10 +1143,13 @@ def caddy_expectations(diag):
         expected_transport = "http" if protocol == "trojan" or transport == "ws" else "xhttp"
         expected_path = str(entry.get("wsPath") or entry.get("xhttpPath") or "")
         local_port = entry.get("localPort")
+        public_port = entry.get("publicPort") or entry.get("port") or 443
         expectations.append(
             {
                 "tag": str(tag),
+                "protocol": protocol,
                 "domain": domain,
+                "publicPort": int(public_port) if str(public_port or "").isdigit() else 443,
                 "localPort": int(local_port) if str(local_port or "").isdigit() else None,
                 "transport": expected_transport,
                 "path": expected_path,
@@ -1162,12 +1165,95 @@ def fetch_remote_tls_certificate(domain, port=443, timeout=6):
             return tls.getpeercert()
 
 
-def check_tls_diagnostics(diag, now=None):
+def parse_http_response(data):
+    text = data.decode("iso-8859-1", errors="replace")
+    header_text, _, body = text.partition("\r\n\r\n")
+    lines = header_text.splitlines()
+    first_line = lines[0] if lines else ""
+    match = re.match(r"HTTP/\d(?:\.\d)?\s+([0-9]{3})\b", first_line)
+    if not match:
+        raise RuntimeError("endpoint did not return an HTTP status line")
+    headers = {}
+    for line in lines[1:]:
+        key, sep, value = line.partition(":")
+        if sep:
+            headers[key.strip().lower()] = value.strip()
+    return int(match.group(1)), first_line, headers, body
+
+
+def caddy_endpoint_request(item):
+    path = item.get("path") or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    domain = item["domain"]
+    if item.get("protocol") == "trojan" and item.get("transport") == "http":
+        return (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {domain}\r\n"
+            "User-Agent: xray-test\r\n"
+            "Connection: Upgrade\r\n"
+            "Upgrade: websocket\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "Sec-WebSocket-Key: eHlheS10ZXN0LWNoZWNrIQ==\r\n"
+            "\r\n"
+        )
+    return (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {domain}\r\n"
+        "User-Agent: xray-test\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+
+
+def describe_caddy_endpoint_response(item, status, first_line, headers, body):
+    label = f"{item['domain']}:{item.get('publicPort') or 443}{item.get('path') or '/'}"
+    if item.get("protocol") == "trojan" and item.get("transport") == "http":
+        if status != 101:
+            raise RuntimeError(f"{label}: expected WebSocket 101 from Caddy/Xray endpoint, got {first_line}")
+        return f"{label} WebSocket endpoint responded 101"
+    if status == 404:
+        content_type = headers.get("content-type", "").lower()
+        body_text = body.strip()
+        if body_text or "json" in content_type or "html" in content_type:
+            raise RuntimeError(f"{label}: returned fallback-looking 404; Caddy route may not reach Xray upstream")
+        return f"{label} endpoint route reached Xray and returned empty 404 to unsupported probe"
+    if status >= 500:
+        raise RuntimeError(f"{label}: returned {status}; Caddy upstream may be unavailable")
+    content_type = headers.get("content-type", "").lower()
+    if "html" in content_type or "<html" in body[:200].lower():
+        raise RuntimeError(f"{label}: returned HTML fallback; Caddy route may not reach Xray upstream")
+    return f"{label} endpoint responded {status}"
+
+
+def probe_caddy_endpoint(item, timeout=6):
+    domain = item["domain"]
+    port = item.get("publicPort") or 443
+    context = ssl.create_default_context()
+    context.set_alpn_protocols(["http/1.1"])
+    with socket.create_connection((domain, port), timeout=timeout) as sock:
+        with context.wrap_socket(sock, server_hostname=domain) as tls:
+            tls.settimeout(timeout)
+            tls.sendall(caddy_endpoint_request(item).encode("ascii"))
+            response = b""
+            while len(response) < 4096:
+                chunk = tls.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+                if b"\r\n\r\n" in response:
+                    break
+    status, first_line, headers, body = parse_http_response(response)
+    return describe_caddy_endpoint_response(item, status, first_line, headers, body)
+
+
+def check_tls_diagnostics(diag, now=None, *, deep=False):
     config = diag.context.get("config", {})
     now = now or datetime.now(timezone.utc).replace(microsecond=0)
     issues = []
     checked_direct = 0
     checked_caddy = 0
+    checked_endpoints = 0
 
     for tag, index, cert_file, key_file in direct_tls_certificate_pairs(config):
         label = f"{tag}[{index}]"
@@ -1200,11 +1286,17 @@ def check_tls_diagnostics(diag, now=None):
         if item["path"] and site.match_path != item["path"]:
             issues.append(f"{item['tag']}: Caddy route path mismatch for {domain}: {site.match_path or '-'} != {item['path']}")
         try:
-            cert = fetch_remote_tls_certificate(domain)
-            check_certificate_expiry(cert, f"{item['tag']} {domain}:443", now)
+            cert = fetch_remote_tls_certificate(domain, port=item["publicPort"])
+            check_certificate_expiry(cert, f"{item['tag']} {domain}:{item['publicPort']}", now)
             certificate_domain_matches(cert, domain)
         except Exception as exc:
-            issues.append(f"{item['tag']} {domain}:443 TLS handshake/certificate check failed: {exc}")
+            issues.append(f"{item['tag']} {domain}:{item['publicPort']} TLS handshake/certificate check failed: {exc}")
+        if deep:
+            try:
+                probe_caddy_endpoint(item)
+            except Exception as exc:
+                issues.append(f"{item['tag']} Caddy endpoint check failed: {exc}")
+            checked_endpoints += 1
         checked_caddy += 1
 
     if issues:
@@ -1212,7 +1304,30 @@ def check_tls_diagnostics(diag, now=None):
     total = checked_direct + checked_caddy
     if total == 0:
         return "TLS certificate diagnostics skipped: no direct TLS certs or managed Caddy TLS connections"
+    if deep:
+        return f"TLS certificate diagnostics OK: direct={checked_direct}, caddy={checked_caddy}, endpoint={checked_endpoints}"
     return f"TLS certificate diagnostics OK: direct={checked_direct}, caddy={checked_caddy}"
+
+
+def check_deprecated_trojan_websocket_usage(diag):
+    notices = []
+    for inbound in diag.context.get("config", {}).get("inbounds", []):
+        tag = inbound_tag(inbound)
+        protocol = str(inbound.get("protocol") or "").lower()
+        network = str((inbound.get("streamSettings") or {}).get("network") or "").lower()
+        if protocol == "trojan":
+            notices.append(
+                f"{tag}: Xray warns that Trojan (with no Flow, etc.) is deprecated; "
+                "keep it as compatibility/DPI-bypass mode and plan migration when a suitable replacement is ready"
+            )
+        if network == "ws":
+            notices.append(
+                f"{tag}: Xray warns that WebSocket transport (with ALPN http/1.1, etc.) is deprecated; "
+                "track XHTTP H2/H3 migration when client support is ready"
+            )
+    if notices:
+        raise RuntimeError("; ".join(notices[:8]))
+    return "Deprecated Trojan/WebSocket check OK: none"
 
 
 def check_file_permissions():
@@ -1271,7 +1386,9 @@ def run_diagnostics(full_integrity=False):
     diag.check("WARP config", lambda: check_warp_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
     diag.check("Activity blocklist routing", lambda: check_activity_blocklist_routing(diag), fatal=False)
-    diag.check("TLS certificate diagnostics", lambda: check_tls_diagnostics(diag), fatal=False)
+    diag.check("TLS certificate diagnostics", lambda: check_tls_diagnostics(diag, deep=full_integrity), fatal=False)
+    if full_integrity:
+        diag.check("Deprecated Trojan/WebSocket warnings", lambda: check_deprecated_trojan_websocket_usage(diag), fatal=False)
     diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
     return diag.summary()
 
@@ -1281,8 +1398,8 @@ def usage():
   xray-test
   xray-test --all
 
-Default mode skips the full SQLite PRAGMA quick_check scan.
-Use --all when you need a deep SQLite physical integrity check.
+Default mode skips the full SQLite PRAGMA quick_check scan and deep Caddy endpoint probes.
+Use --all when you need a deep SQLite physical integrity check plus Trojan/TLS/Caddy endpoint warnings.
 """)
 
 
