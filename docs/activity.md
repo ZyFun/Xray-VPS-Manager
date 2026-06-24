@@ -136,7 +136,7 @@ xray-activity counters-week 50
 xray-activity counters-growth 50
 ```
 
-Счётчики включают общее количество событий, GeoIP-события, risk-события, blocked-события, количество уникальных host/port и последнее время активности в bucket. Для точного подсчёта уникальных host/port менеджер хранит только хэши значений в `activity_client_counter_uniques`, а не сами адреса.
+Счётчики показываются агрегированно по клиенту и bucket: если у клиента несколько protocol credentials/connections, их события суммируются в одной строке клиента. Счётчики включают общее количество событий, GeoIP-события, risk-события, blocked-события, количество уникальных host/port и последнее время активности в bucket. Для точного подсчёта уникальных host/port менеджер хранит только хэши значений в `activity_client_counter_uniques`, а не сами адреса.
 `xray-activity counters-growth` сравнивает последний дневной bucket клиента со средним по предыдущим дневным bucket-ам за 7-дневное окно и показывает только положительный рост по total events, unique hosts или unique ports.
 
 ## Ошибки Xray и raw logs

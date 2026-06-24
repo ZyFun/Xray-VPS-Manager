@@ -739,35 +739,82 @@ def list_client_counters(
     if client_name:
         clauses.append("client_name = ?")
         params.append(client_name)
-    params.append(max(1, int(limit or 100)))
     rows = connection.execute(
         f"""
-        SELECT *
+        SELECT
+            client_name,
+            bucket_type,
+            bucket_start,
+            SUM(total_events) AS total_events,
+            SUM(geoip_events) AS geoip_events,
+            SUM(suspicious_events) AS suspicious_events,
+            SUM(blocked_events) AS blocked_events,
+            MIN(first_seen_at) AS first_seen_at,
+            MAX(last_seen_at) AS last_seen_at
         FROM activity_client_counters
         WHERE {" AND ".join(clauses)}
+        GROUP BY client_name, bucket_type, bucket_start
         ORDER BY bucket_start DESC, total_events DESC
         LIMIT ?
         """,
-        params,
+        [*params, max(1, int(limit or 100))],
     ).fetchall()
     return [
         {
             "client": row["client_name"],
-            "connection": row["connection_tag"] or "",
+            "connection": "",
             "bucketType": row["bucket_type"],
             "bucketStart": row["bucket_start"],
             "totalEvents": int(row["total_events"] or 0),
             "geoipEvents": int(row["geoip_events"] or 0),
             "suspiciousEvents": int(row["suspicious_events"] or 0),
             "blockedEvents": int(row["blocked_events"] or 0),
-            "uniqueHosts": int(row["unique_hosts"] or 0),
-            "uniquePorts": int(row["unique_ports"] or 0),
+            "uniqueHosts": _client_counter_unique_count(connection, row, "host"),
+            "uniquePorts": _client_counter_unique_count(connection, row, "port"),
             "firstSeen": row["first_seen_at"] or "",
             "lastSeen": row["last_seen_at"] or "",
-            "riskCounts": decode_json(row["risk_counts_json"], {}),
+            "riskCounts": _client_counter_risk_counts(connection, row),
         }
         for row in rows
     ]
+
+
+def _client_counter_unique_count(connection: sqlite3.Connection, row, unique_kind: str) -> int:
+    result = connection.execute(
+        """
+        SELECT COUNT(DISTINCT value_hash) AS count
+        FROM activity_client_counter_uniques
+        WHERE client_name = ? AND bucket_type = ? AND bucket_start = ? AND unique_kind = ?
+        """,
+        (row["client_name"], row["bucket_type"], row["bucket_start"], unique_kind),
+    ).fetchone()
+    return int(result["count"] or 0) if result else 0
+
+
+def _client_counter_risk_counts(connection: sqlite3.Connection, row) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    risk_rows = connection.execute(
+        """
+        SELECT risk_counts_json
+        FROM activity_client_counters
+        WHERE client_name = ? AND bucket_type = ? AND bucket_start = ?
+        """,
+        (row["client_name"], row["bucket_type"], row["bucket_start"]),
+    ).fetchall()
+    for risk_row in risk_rows:
+        risk_counts = decode_json(risk_row["risk_counts_json"], {})
+        if not isinstance(risk_counts, dict):
+            continue
+        for risk, count in risk_counts.items():
+            risk_name = str(risk or "").strip()
+            if not risk_name:
+                continue
+            try:
+                value = int(count or 0)
+            except (TypeError, ValueError):
+                value = 0
+            counts[risk_name] = int(counts.get(risk_name, 0)) + max(0, value)
+    return counts
 
 
 def delete_client_counters_before(connection: sqlite3.Connection, cutoff: str) -> int:

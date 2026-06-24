@@ -215,6 +215,54 @@ class SQLiteRepositoryTests(unittest.TestCase):
         self.assertEqual(errors[0]["eventCount"], 2)
         self.assertEqual(errors[0]["lastSeen"], "2026-06-12T08:06:00Z")
 
+    def test_activity_client_counters_are_aggregated_across_connections(self) -> None:
+        first_event = {
+            "time": "2026-06-12T08:04:00Z",
+            "client": "alice",
+            "email": "alice|created=2026-06-12T08:01:00Z",
+            "connection": "vless-reality",
+            "host": "example.ru",
+            "port": "443",
+            "outbound": "geoip-warning-RU",
+            "risks": ["xray-geoip:RU"],
+        }
+        second_event = {
+            **first_event,
+            "time": "2026-06-12T08:10:00Z",
+            "connection": "trojan-tls",
+            "port": "8443",
+            "outbound": "blocked",
+            "risks": ["blocked", "torrent"],
+        }
+
+        activity.upsert_client_counters(self.connection, first_event, timezone.utc)
+        activity.upsert_client_counters(self.connection, second_event, timezone.utc)
+
+        hourly = activity.list_client_counters(self.connection, bucket_type="hour")
+        daily = activity.list_client_counters(self.connection, bucket_type="day")
+
+        self.assertEqual(len(hourly), 1)
+        self.assertEqual(hourly[0]["client"], "alice")
+        self.assertEqual(hourly[0]["connection"], "")
+        self.assertEqual(hourly[0]["bucketStart"], "2026-06-12T08:00:00+00:00")
+        self.assertEqual(hourly[0]["totalEvents"], 2)
+        self.assertEqual(hourly[0]["geoipEvents"], 1)
+        self.assertEqual(hourly[0]["suspiciousEvents"], 2)
+        self.assertEqual(hourly[0]["blockedEvents"], 1)
+        self.assertEqual(hourly[0]["uniqueHosts"], 1)
+        self.assertEqual(hourly[0]["uniquePorts"], 2)
+        self.assertEqual(hourly[0]["firstSeen"], "2026-06-12T08:04:00Z")
+        self.assertEqual(hourly[0]["lastSeen"], "2026-06-12T08:10:00Z")
+        self.assertEqual(
+            hourly[0]["riskCounts"],
+            {"blocked": 1, "torrent": 1, "xray-geoip:RU": 1},
+        )
+        self.assertEqual(len(daily), 1)
+        self.assertEqual(daily[0]["bucketStart"], "2026-06-12")
+        self.assertEqual(daily[0]["totalEvents"], 2)
+        self.assertEqual(daily[0]["uniqueHosts"], 1)
+        self.assertEqual(daily[0]["uniquePorts"], 2)
+
     def test_activity_window_alerts_create_burst_and_unique_risk_rows(self) -> None:
         limits = {
             "burstEvents": 2,
