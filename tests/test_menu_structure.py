@@ -50,6 +50,8 @@ class MenuStructureTests(unittest.TestCase):
         self.assertIn("9", menu.client_menu_handlers())
         self.assertIn(("12", "Лимиты трафика"), menu.client_menu_actions())
         self.assertIn("12", menu.client_menu_handlers())
+        self.assertIn(("13", "Изменить страну подключения"), menu.client_menu_actions())
+        self.assertIn("13", menu.client_menu_handlers())
 
     def test_routing_activity_service_and_update_actions_are_exposed(self) -> None:
         self.assertIn(("3", "Торренты"), menu.routing_menu_actions())
