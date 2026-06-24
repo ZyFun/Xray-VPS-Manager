@@ -1333,6 +1333,48 @@ def cmd_clear_limit(name):
         print("Status: disabled by previous traffic limit. Use xray-client enable NAME if the client should be enabled now.")
 
 
+def cmd_trojan_password_check():
+    config = load_config()
+    db = load_db_readonly().db
+    rows = client_crud.trojan_password_policy_rows(config, db)
+    if not rows:
+        print("No Trojan credentials.")
+        return
+    table_rows = [
+        [row["client"], row["connection"], row["status"], row["issues"]]
+        for row in rows
+    ]
+    print_table(["CLIENT", "CONNECTION", "STATUS", "ISSUES"], table_rows, empty_message=None)
+    if any(row["status"] != "OK" for row in rows):
+        die("Trojan password policy check failed.")
+
+
+def cmd_rotate_trojan_password(name, connection_tag=None):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_crud.rotate_trojan_password(config, db, name, connection_tag)
+    except ValueError as exc:
+        die(str(exc))
+
+    backup = ""
+    if result.config_changed:
+        backup = save_config_restart_xray_and_db(config, db)
+    else:
+        save_db(db)
+
+    print("Trojan password rotated.")
+    print(f"Client: {name}")
+    print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
+    if backup:
+        print(f"Backup: {backup}")
+    else:
+        print("Backup: not created; credential is not active in config.")
+    print("Client must reimport this Trojan link:")
+    print(link_for(config, result.credential_id, name, result.connection_tag, db))
+
+
 def cmd_limit_list():
     sync_traffic()
     config = load_config()
@@ -1442,6 +1484,8 @@ def usage():
   xray-client remove NAME
   xray-client link NAME [--connection TAG]
   xray-client key NAME
+  xray-client trojan-password-check
+  xray-client rotate-trojan-password NAME [--connection TAG]
   xray-client set-days NAME DAYS
   xray-client extend-days NAME DAYS
   xray-client set-payment NAME paid|free
@@ -1920,6 +1964,11 @@ def main():
         cmd_link(name, connection_tag)
     elif command == "key" and len(sys.argv) == 3:
         cmd_key(sys.argv[2])
+    elif command in ("trojan-password-check", "validate-trojan-passwords") and len(sys.argv) == 2:
+        cmd_trojan_password_check()
+    elif command in ("rotate-trojan-password", "trojan-password-rotate"):
+        name, connection_tag = parse_name_connection_args(sys.argv[2:])
+        cmd_rotate_trojan_password(name, connection_tag)
     elif command in ("set-days", "access-days") and len(sys.argv) == 4:
         cmd_set_days(sys.argv[2], sys.argv[3])
     elif command in ("extend-days", "prolong-days") and len(sys.argv) == 4:
