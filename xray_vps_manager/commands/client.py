@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import copy
 import os
 import re
 import shutil
@@ -828,6 +829,124 @@ def cmd_connection_xhttp_extra(identifier, xhttp_extra_json=None, clear=False):
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
 
 
+def update_trojan_caddy_site(result):
+    if not result.caddy_enabled:
+        return None
+    if result.public_host == result.previous_public_host:
+        return xray_caddy.update_site_config(
+            result.public_host,
+            result.local_port,
+            tls_min_version=result.tls_min_version,
+            tls_max_version=result.tls_max_version,
+            upstream_transport="http",
+            route_path=result.ws_path,
+        )
+
+    old_path = xray_caddy.site_config_path(result.previous_public_host)
+    new_path = xray_caddy.site_config_path(result.public_host)
+    old_backup = xray_caddy.backup_file(old_path)
+    new_backup = xray_caddy.backup_file(new_path)
+    try:
+        xray_caddy.write_site_config(
+            result.public_host,
+            result.local_port,
+            tls_min_version=result.tls_min_version,
+            tls_max_version=result.tls_max_version,
+            upstream_transport="http",
+            route_path=result.ws_path,
+        )
+        if old_path.exists():
+            old_path.unlink()
+        xray_caddy.validate_and_reload_caddy(subprocess.run)
+    except Exception:
+        xray_caddy.restore_file(old_backup, old_path)
+        xray_caddy.restore_file(new_backup, new_path)
+        try:
+            xray_caddy.validate_and_reload_caddy(subprocess.run)
+        except Exception:
+            pass
+        raise
+    return xray_caddy.SiteWriteResult(new_path, old_backup)
+
+
+def cmd_trojan_connection_update(
+    identifier,
+    domain_value=None,
+    local_port_value=None,
+    public_port_value=None,
+    ws_path_value=None,
+    fingerprint_value=None,
+    tls_min_version_value=None,
+    tls_max_version_value=None,
+):
+    domain = xray_caddy.validate_domain(domain_value) if domain_value else None
+    local_port = validate_port(local_port_value) if local_port_value else None
+    public_port = validate_port(public_port_value) if public_port_value else None
+    ws_path = validate_trojan_ws_path(ws_path_value) if ws_path_value else None
+    fp = validate_fingerprint(fingerprint_value) if fingerprint_value else None
+    tls_min = (
+        validate_tls_version(tls_min_version_value, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
+        if tls_min_version_value
+        else None
+    )
+    tls_max = (
+        validate_tls_version(tls_max_version_value, tls_min or xray_config.DEFAULT_TROJAN_TLS_MAX_VERSION)
+        if tls_max_version_value
+        else None
+    )
+
+    config = load_config()
+    db = load_db()
+    original_db = copy.deepcopy(db)
+    try:
+        result = client_connections.update_trojan_connection(
+            config,
+            db,
+            identifier,
+            domain=domain,
+            local_port=local_port,
+            public_port=public_port,
+            ws_path=ws_path,
+            fingerprint_value=fp,
+            tls_min_version=tls_min,
+            tls_max_version=tls_max,
+        )
+        if result.caddy_enabled and result.public_host != result.previous_public_host:
+            xray_caddy.require_site_config_absent(result.public_host)
+    except (OSError, ValueError, RuntimeError) as exc:
+        die(str(exc))
+
+    backup = save_config_restart_xray_and_db(config, db)
+    caddy_result = None
+    try:
+        caddy_result = update_trojan_caddy_site(result)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        restore_config_backup(backup)
+        save_db(original_db)
+        die(
+            "Trojan connection was updated, but Caddy update failed. "
+            f"Rolled back Xray config and database. Detail: {exc}"
+        )
+
+    print(f"Trojan connection updated: {result.display_name}")
+    print(f"Tag: {result.tag}")
+    print(f"TLS_DOMAIN: {result.public_host}")
+    print(f"PUBLIC_PORT: {result.public_port}")
+    print(f"LOCAL_PORT: {result.local_port}")
+    print(f"WS_PATH: {result.ws_path}")
+    print(f"FINGERPRINT: {result.fingerprint or '-'}")
+    print(f"TLS_MIN_VERSION: {result.tls_min_version}")
+    print(f"TLS_MAX_VERSION: {result.tls_max_version}")
+    if caddy_result:
+        print(f"CADDY_SITE: {caddy_result.path}")
+    elif result.caddy_enabled:
+        print("CADDY_SITE: not updated")
+    else:
+        print("CADDY_SITE: disabled for this connection")
+    print(f"Backup: {backup}")
+    print("Выведи клиентам новые Trojan-ссылки через xray-client link NAME: параметры подключения изменились.")
+
+
 def cmd_connection_rename(identifier, new_name):
     new_name = validate_connection_name(new_name)
     config = load_config()
@@ -1473,6 +1592,7 @@ def usage():
   xray-client add-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
   xray-client add-trojan-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] [--ws-path PATH] [--public-port PORT] [--no-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
   xray-client add-trojan-connection NAME PORT DOMAIN CERT_FILE KEY_FILE [FINGERPRINT] [--transport tcp]
+  xray-client update-trojan-connection NAME_OR_TAG [--domain DOMAIN] [--local-port PORT] [--public-port PORT] [--ws-path PATH] [--fingerprint FINGERPRINT] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
   xray-client connection-rename NAME_OR_TAG NEW_NAME
   xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
   xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra
@@ -1788,6 +1908,82 @@ def parse_trojan_connection_add_args(args):
     )
 
 
+def parse_trojan_connection_update_args(args):
+    if len(args) < 2:
+        usage()
+        sys.exit(1)
+    identifier = args[0]
+    domain = None
+    local_port = None
+    public_port = None
+    ws_path = None
+    fingerprint_value = None
+    tls_min_version = None
+    tls_max_version = None
+    rest = list(args[1:])
+    index = 0
+    while index < len(rest):
+        item = rest[index]
+        if item in ("--domain", "--tls-domain"):
+            if index + 1 >= len(rest):
+                die("--domain requires DOMAIN")
+            domain = rest[index + 1]
+            index += 2
+            continue
+        if item == "--local-port":
+            if index + 1 >= len(rest):
+                die("--local-port requires PORT")
+            local_port = rest[index + 1]
+            index += 2
+            continue
+        if item == "--public-port":
+            if index + 1 >= len(rest):
+                die("--public-port requires PORT")
+            public_port = rest[index + 1]
+            index += 2
+            continue
+        if item == "--ws-path":
+            if index + 1 >= len(rest):
+                die("--ws-path requires PATH")
+            ws_path = rest[index + 1]
+            index += 2
+            continue
+        if item == "--fingerprint":
+            if index + 1 >= len(rest):
+                die("--fingerprint requires value")
+            fingerprint_value = rest[index + 1]
+            index += 2
+            continue
+        if item == "--tls-min-version":
+            if index + 1 >= len(rest):
+                die("--tls-min-version requires tls1.2, tls1.3, or default")
+            tls_min_version = rest[index + 1]
+            index += 2
+            continue
+        if item == "--tls-max-version":
+            if index + 1 >= len(rest):
+                die("--tls-max-version requires tls1.2, tls1.3, or default")
+            tls_max_version = rest[index + 1]
+            index += 2
+            continue
+        die(f"Unknown option: {item}")
+
+    update_values = (domain, local_port, public_port, ws_path, fingerprint_value, tls_min_version, tls_max_version)
+    if all(value is None for value in update_values):
+        usage()
+        sys.exit(1)
+    return (
+        identifier,
+        domain,
+        local_port,
+        public_port,
+        ws_path,
+        fingerprint_value,
+        tls_min_version,
+        tls_max_version,
+    )
+
+
 def parse_connection_transport_args(args):
     if len(args) < 2:
         usage()
@@ -1931,6 +2127,8 @@ def main():
         cmd_connection_add(*parse_connection_add_args(sys.argv[2:]))
     elif command == "add-trojan-connection":
         cmd_trojan_connection_add(*parse_trojan_connection_add_args(sys.argv[2:]))
+    elif command in ("update-trojan-connection", "trojan-connection-update"):
+        cmd_trojan_connection_update(*parse_trojan_connection_update_args(sys.argv[2:]))
     elif command in ("connection-transport", "set-connection-transport"):
         cmd_connection_transport(*parse_connection_transport_args(sys.argv[2:]))
     elif command in ("connection-xhttp-extra", "set-connection-xhttp-extra"):

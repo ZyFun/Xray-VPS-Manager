@@ -362,6 +362,83 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(params["host"], ["vpn.example.com"])
         self.assertEqual(params["sni"], ["vpn.example.com"])
 
+    def test_update_trojan_caddy_connection_updates_inbound_metadata_and_link(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        connection = client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-web",
+            "vpn.example.com",
+            local_port=10100,
+            public_port=443,
+            fingerprint_value="chrome",
+            ws_path="/trojan-private",
+        )
+        client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag=connection.tag,
+            uuid_factory=lambda: CLIENT_ID,
+            password_factory=lambda: PASSWORD,
+        )
+
+        result = client_connections.update_trojan_connection(
+            config,
+            db,
+            connection.tag,
+            domain="edge.example.com",
+            local_port=10101,
+            public_port=8443,
+            ws_path="/new-trojan",
+            fingerprint_value="firefox",
+            tls_min_version="tls1.2",
+            tls_max_version="tls1.3",
+        )
+
+        inbound = config["inbounds"][1]
+        self.assertEqual(result.public_host, "edge.example.com")
+        self.assertEqual(inbound["port"], 10101)
+        self.assertEqual(inbound["streamSettings"]["wsSettings"]["path"], "/new-trojan")
+        self.assertEqual(db["connections"][connection.tag]["publicHost"], "edge.example.com")
+        self.assertEqual(db["connections"][connection.tag]["publicPort"], 8443)
+        self.assertEqual(db["connections"][connection.tag]["localPort"], 10101)
+        self.assertEqual(db["connections"][connection.tag]["wsPath"], "/new-trojan")
+        self.assertEqual(db["connections"][connection.tag]["fingerprint"], "firefox")
+        self.assertEqual(db["connections"][connection.tag]["tlsMinVersion"], "tls1.2")
+        self.assertEqual(db["connections"][connection.tag]["tlsMaxVersion"], "tls1.3")
+
+        with mock.patch.object(client_links, "server_name", return_value="Xray"):
+            link = client_links.link_for(config, CLIENT_ID, "alice", connection.tag, db)
+
+        parsed = urlsplit(link)
+        params = parse_qs(parsed.query)
+        self.assertEqual(parsed.hostname, "edge.example.com")
+        self.assertEqual(parsed.port, 8443)
+        self.assertEqual(params["path"], ["/new-trojan"])
+        self.assertEqual(params["host"], ["edge.example.com"])
+        self.assertEqual(params["sni"], ["edge.example.com"])
+        self.assertEqual(params["fp"], ["firefox"])
+
+    def test_update_trojan_connection_rejects_direct_tls_tcp(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        connection = client_connections.add_trojan_tls_connection(
+            config,
+            db,
+            "trojan-main",
+            8443,
+            "vpn.example.com",
+            "/etc/ssl/vpn/fullchain.pem",
+            "/etc/ssl/vpn/privkey.pem",
+            "chrome",
+        )
+
+        with self.assertRaisesRegex(ValueError, "only WebSocket/Caddy"):
+            client_connections.update_trojan_connection(config, db, connection.tag, ws_path="/new-trojan")
+
     def test_trojan_caddy_credential_list_shows_tls_caddy_security(self) -> None:
         config = {"inbounds": [base_vless_inbound()], "outbounds": []}
         db = {"connections": {}, "clients": {}}
