@@ -3,11 +3,13 @@
 [← README](../README.md)
 
 
-Показать доступные VLESS-подключения:
+Показать доступные managed подключения VLESS и Trojan:
 
 ```bash
 xray-client connection-list
 ```
+
+В таблице `connection-list` протокол выводится отдельной колонкой `PROTOCOL`, а `SECURITY` показывает только тип защиты подключения (`reality`, `tls` и т.д.), без смешивания с протоколом.
 
 Создать дополнительное подключение:
 
@@ -47,6 +49,122 @@ xray-client connection-xhttp-extra ИМЯ_ИЛИ_TAG --clear-xhttp-extra
 ```bash
 xray-client connection-rename ИМЯ_ИЛИ_TAG НОВОЕ_ИМЯ
 ```
+
+## Trojan через Caddy
+
+Основной поддерживаемый способ работы с Trojan в менеджере - через Caddy: Caddy слушает публичный домен на `443`, выпускает и обновляет TLS-сертификат, принимает WebSocket-запрос по отдельному path и проксирует его на локальный Xray inbound `protocol=trojan`.
+Trojan/WebSocket используется как compatibility/DPI-bypass режим, а не как долгосрочный целевой default всей системы. Новое Trojan-подключение через CLI и меню создаётся как WebSocket за Caddy, с TLS 1.2+1.3 и автоматической настройкой Caddy site config.
+
+```text
+client -> vpn.example.com:443 -> Caddy /trojan -> 127.0.0.1:10100 -> Xray Trojan WS
+```
+
+Менеджер хранит Trojan-пользователей в `settings.clients`, выдаёт `trojan://` ссылки и использует внутренний UUID клиента для SQLite, маршрутизации и Telegram. В самом Xray Trojan credential аутентифицируется по `password`, а `email` используется для stats/routing и включает connection metadata.
+
+DNS-запись домена должна заранее указывать на сервер:
+
+```text
+A vpn.example.com -> SERVER_PUBLIC_IP
+```
+
+Caddy должен иметь возможность слушать `80/tcp` и `443/tcp`: порт `80` нужен для ACME HTTP challenge и редиректов, порт `443` - для клиентского TLS/WebSocket подключения.
+
+Путь в меню:
+
+```text
+Подключения и TLS -> Подключения Trojan -> Создать Trojan TLS подключение
+```
+
+Мастер спрашивает имя подключения, локальный порт Xray, TLS-домен, публичный порт Caddy, WebSocket path, fingerprint и TLS-профиль Caddy. Production default - Caddy/WebSocket с TLS 1.2+1.3; сертификат и ключ вручную указывать не нужно: Caddy сам управляет ACME lifecycle.
+
+Создать Trojan Caddy/WebSocket-подключение через CLI. `--transport ws` и `--install-caddy` указывать не нужно: это значения по умолчанию.
+
+```bash
+xray-client add-trojan-connection trojan-main 10100 vpn.example.com chrome
+```
+
+Если нужно явно задать WebSocket path, публичный порт Caddy или TLS-профиль:
+
+```bash
+xray-client add-trojan-connection trojan-main 10100 vpn.example.com chrome \
+  --ws-path /private-trojan \
+  --public-port 443 \
+  --tls-min-version tls1.2 \
+  --tls-max-version tls1.3
+```
+
+Поля:
+
+- `LOCAL_PORT` - локальный порт Xray inbound на `127.0.0.1`.
+- `DOMAIN` - публичный TLS/SNI домен, который будет указан в клиентской ссылке.
+- `--ws-path` - WebSocket path, который попадёт в Caddy route и `trojan://` ссылку.
+- `--public-port` - публичный порт Caddy, обычно `443`.
+- `FINGERPRINT` - клиентский fingerprint в ссылке; по умолчанию `chrome`.
+- `--no-caddy` - исключение из основного режима Trojan в менеджере: создать локальный Trojan/WebSocket inbound без установки или обновления Caddy site.
+
+Команда заранее проверяет, что для `DOMAIN` ещё нет Caddy site config. Если site уже существует, создание подключения останавливается до изменения Xray config и SQLite, чтобы не перезаписать рабочий сайт или другое TLS-подключение. Для изменения существующего site используй `Подключения и TLS -> Caddy / TLS -> Site configs`.
+
+Если конфликтов нет, команда создаёт локальный Xray inbound на `127.0.0.1:LOCAL_PORT`, добавляет запись подключения в SQLite, проверяет и перезапускает Xray, затем создаёт новый Caddy site config для `DOMAIN`. Caddy site валидируется через `caddy validate`; при ошибке менеджер сообщает backup Xray config и детали ошибки.
+
+После создания подключения добавь нового пользователя обычной командой. Если Trojan connection на сервере один, можно выбрать его по протоколу:
+
+```bash
+xray-client add alice 30 --protocol trojan --payment paid
+xray-client link alice
+```
+
+Если Trojan-подключений несколько, явно укажи нужный connection:
+
+```bash
+xray-client add alice 30 --connection trojan-tls --payment paid
+xray-client link alice
+```
+
+Через меню новый клиент добавляется так же:
+
+```text
+Клиенты -> Добавить клиента
+```
+
+Если подключений несколько, меню покажет таблицу VLESS и Trojan connections. Выбери Trojan connection, чтобы получить `trojan://` ссылку.
+
+Если на сервере уже есть несколько подключений одного протокола, `--connection` обязателен. Для Trojan-клиента менеджер генерирует внутренний UUID и отдельный Trojan password. В активный Xray config попадает только `password`, `email` и `level`; внутренний UUID остаётся в `manager.db`.
+Если `alice` уже существует, основной путь в меню:
+
+```text
+Клиенты -> Добавить подключение к клиенту
+```
+
+Этот пункт выбирает существующего клиента из таблицы, затем показывает только connections, которых у клиента ещё нет. CLI-команда `xray-client add alice --connection trojan-tls` остаётся совместимым способом добавить новый Trojan credential без создания отдельного клиента. Клиентский UUID останется прежним, а Trojan password будет отдельным credential secret.
+
+Ссылку нужно выдать заново, если изменились домен, публичный порт, `WS_PATH`, fingerprint или TLS-параметры клиентской ссылки. Если менялся только серверный Caddy site config без изменения этих параметров, уже импортированную ссылку обычно менять не нужно.
+
+Для managed Trojan WebSocket/Caddy connection эти параметры можно обновить одной CLI-командой:
+
+```bash
+xray-client update-trojan-connection trojan-tls \
+  --domain vpn.example.com \
+  --local-port 10101 \
+  --public-port 443 \
+  --ws-path /trojan2 \
+  --fingerprint firefox \
+  --tls-min-version tls1.2 \
+  --tls-max-version tls1.3
+```
+
+Команда обновляет SQLite metadata, локальный Trojan inbound в Xray config и Caddy site config для этого домена. Если меняется домен site config, старый Caddy site заменяется новым с rollback при ошибке `caddy validate` или reload. После успешного изменения параметров подключения выдай клиентам новые ссылки через `xray-client link NAME`, потому что старая `trojan://` ссылка продолжит указывать на прежний домен, порт, path или fingerprint.
+
+Legacy-режим direct TLS/TCP с ручными cert/key path сохранён для совместимости и автоматизации, но не является основным способом:
+
+```bash
+xray-client add-trojan-connection trojan-direct 8443 vpn.example.com /etc/ssl/vpn/fullchain.pem /etc/ssl/vpn/privkey.pem chrome --transport tcp
+```
+
+Ограничения:
+
+- перенос клиента между VLESS и Trojan подключениями пока запрещён, потому что у протоколов разные credentials;
+- Telegram-подписки привязываются к внутреннему UUID клиента через `vpn-key:UUID` или VLESS-ссылку; распознавание `trojan://` ссылки по password остаётся отдельной задачей;
+- старый формат Trojan пользователей `settings.users` не используется: для Xray 26 активные Trojan credentials должны лежать в `settings.clients`.
 
 ## XHTTP через TLS и Caddy
 
@@ -111,11 +229,33 @@ api.example.com {
 Подключения и TLS -> Caddy / TLS
 ```
 
-В этом разделе Caddy разделён на подменю: `Состояние и проверка`, `Site configs`, `Управление сервисом` и `Бэкапы`. Через них можно установить Caddy, проверить config, посмотреть `Caddyfile` и site configs, создать или обновить site config из существующего TLS/XHTTP-подключения, создать site вручную, изменить TLS version, upstream local port или домен site, удалить site config, убрать дефолтный site `:80`, проверить TLS handshake, посмотреть логи, выполнить reload/restart Caddy, а также открыть backup для Caddy config и файлов сайта. При создании или изменении site config TLS выбирается из списка профилей: Caddy default, TLS 1.2, TLS 1.2 + TLS 1.3, TLS 1.3. Смена TLS version редактирует только TLS-директиву существующего site config, поэтому подходит и для статического сайта без upstream local port. Изменения site config валидируются через `caddy validate`; при ошибке менеджер откатывает изменённый файл из backup.
+В этом разделе Caddy разделён на подменю: `Состояние и проверка`, `Site configs`, `Управление сервисом` и `Бэкапы`. Через них можно установить Caddy, проверить config, посмотреть `Caddyfile` и site configs, создать или обновить site config из существующего TLS-подключения, создать site вручную, изменить TLS version, upstream local port или домен site, удалить site config, убрать дефолтный site `:80`, проверить TLS handshake, посмотреть логи, выполнить reload/restart Caddy, а также открыть backup для Caddy config и файлов сайта. Для VLESS/XHTTP site config проксирует `h2c://127.0.0.1:LOCAL_PORT`, для Trojan/WebSocket - выбранный `WS_PATH` на `127.0.0.1:LOCAL_PORT`. При создании или изменении site config TLS выбирается из списка профилей: Caddy default, TLS 1.2, TLS 1.2 + TLS 1.3, TLS 1.3. Смена TLS version редактирует только TLS-директиву существующего site config, поэтому подходит и для статического сайта без upstream local port. Изменения site config валидируются через `caddy validate`; при ошибке менеджер откатывает изменённый файл из backup.
+
+`xray-test` дополнительно выполняет warning-level TLS certificate diagnostics: для legacy direct TLS/TCP он проверяет `certificateFile`, `keyFile`, базовые права, срок действия сертификата и соответствие `SNI`; для managed Caddy/TLS-подключений сверяет Caddy site config с SQLite metadata и делает live TLS handshake к `DOMAIN:PUBLIC_PORT`. В режиме `xray-test --all` диагностика глубже проверяет Caddy endpoint: для Trojan/WebSocket отправляет пробный WebSocket upgrade на `WS_PATH`, для TLS/XHTTP проверяет HTTP route и отдельно предупреждает о deprecated Trojan/WebSocket в Xray.
 
 Через Telegram-владельца тот же TLS-профиль можно сменить в `/admin -> Настройки сервера -> TLS`. Бот показывает текущий профиль для каждого Caddy site config и время последнего изменения файла, затем применяет выбранный профиль с проверкой и reload Caddy.
 
-Обычный `xray-backup` не включает Caddy config и файлы сайта. Для `/etc/caddy/Caddyfile`, `/etc/caddy/conf.d` и папки сайта используй `Подключения и TLS -> Caddy / TLS -> Бэкапы`.
+Обычный `xray-backup` включает `/etc/caddy/Caddyfile` и `/etc/caddy/conf.d`, если Caddy настроен, чтобы TLS/Caddy-подключения восстанавливались вместе с Xray config и `manager.db`. Файлы сайта и config-only операции Caddy доступны отдельно через `Подключения и TLS -> Caddy / TLS -> Бэкапы`.
+
+## Типовые проблемы
+
+Если после изменения TLS, Caddy, VLESS/XHTTP или Trojan/WebSocket подключение не работает, сначала запусти безопасную диагностику:
+
+```bash
+xray-test --all
+```
+
+Эта команда не меняет конфигурацию и не перезапускает сервисы. Она проверяет Xray config, SQLite, TLS certificate diagnostics, Caddy site configs, Caddy endpoint probes и выводит warning-level подсказки по deprecated Trojan/WebSocket.
+
+Типовые проблемы:
+
+- Несовпадение сертификата: клиентская ссылка использует один `sni`/`TLS_DOMAIN`, а Caddy или direct TLS сертификат выпущен на другой домен. Проверь `xray-client connection-list`, `Подключения и TLS -> Caddy / TLS -> Site configs` и вывод `xray-test --all`. Для Caddy-подключений сертификат должен соответствовать публичному домену подключения, а DNS должен указывать на сервер.
+- Конфликт порта: публичный `443` может слушать только один сервис. Для Trojan/WebSocket и TLS/XHTTP через Caddy публичный `443` должен принадлежать Caddy, а Xray inbound должен слушать локальный `127.0.0.1:LOCAL_PORT`. Если Reality/VLESS уже занимает `443`, перенеси его на другой порт перед настройкой Caddy.
+- Неподдерживаемый клиент: не каждый VPN-клиент одинаково поддерживает Trojan/WebSocket, VLESS XHTTP, XHTTP `downloadSettings`, XMUX и новые параметры Xray. Если ссылка импортируется, но соединение не поднимается, проверь поддержку конкретного transport/security в клиенте и выдай свежую ссылку через `xray-client link NAME`.
+- Нет статистики трафика: трафик появляется после первого успешного соединения и очередного `xray-traffic-sync`. Проверь, что credential включён, email активного Xray client совпадает с записью в SQLite, `xray-traffic-sync --quiet` проходит без ошибок, а `xray-test --all` не показывает рассинхрон `SQLite matches active managed connections`.
+- Telegram не принимает ссылку: Telegram-бот больше не принимает `vless://` или `trojan://` для привязки подписки. Для подключения к боту клиенту нужен ключ доступа формата `vpn-key:00000000-0000-0000-0000-000000000000`, который можно выдать через `xray-client key NAME` или админ-панель Telegram. Protocol-ссылки выдаются отдельно через `xray-client link NAME` или кнопку `Получить VPN-ссылку` уже после привязки.
+
+Если менялись домен, публичный порт, `WS_PATH`, `XHTTP_PATH`, fingerprint, TLS profile или XHTTP advanced profile, старую клиентскую ссылку лучше считать устаревшей и выдать новую.
 
 ## Отдельный Caddy-Endpoint Для downloadSettings
 
@@ -157,8 +297,6 @@ bash install-caddy-download-proxy.sh
 
 ```caddyfile
 cdn.example.com {
-    encode zstd gzip
-
     reverse_proxy https://api.example.com {
         header_up Host api.example.com
         flush_interval -1
@@ -168,6 +306,8 @@ cdn.example.com {
     }
 }
 ```
+
+Для xHTTP download endpoint не включай `encode zstd gzip`: сжатие Caddy может нарушить streaming-ответ `downloadSettings` и привести к обрыву клиентского TLS-туннеля.
 
 После настройки нужно вставить JSON из `caddy-menu -> Показать JSON downloadSettings` в расширенные настройки xHTTP-подключения и выдать клиентам новые ссылки. Это client-side часть профиля: уже импортированные старые ссылки не узнают о новом download endpoint автоматически.
 
@@ -190,3 +330,4 @@ xray-client remove-connection ИМЯ_ИЛИ_TAG
 Удаление убирает VLESS inbound из `config.json`, запись подключения из `manager.db`, всех клиентов этого подключения и их историю трафика.
 Последнее VLESS-подключение удалить нельзя.
 Последнее Reality-подключение удалить нельзя.
+Удаление Trojan-подключения убирает Trojan inbound, запись подключения и credentials этого подключения. Если у клиента были другие credentials, сам клиент остаётся в базе; если это был последний credential клиента, клиент удаляется вместе с подключением. Последнее VLESS/Reality-подключение остаётся защищено от удаления.

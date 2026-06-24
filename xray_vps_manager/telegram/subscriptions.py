@@ -8,11 +8,15 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import xhttp_extra_json
 
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+CLIENT_KEY_RE = re.compile(r"\b(?:vpn-key|client-key|xray-key):([0-9a-fA-F-]{36})\b", re.IGNORECASE)
+PROTOCOL_LINK_RE = re.compile(r"(?:vless|trojan)://[^\s<>()]+", re.IGNORECASE)
 ACTIVITY_EXCEPTION_LIMIT = 100
+ACCESS_KEY_PLACEHOLDER = "vpn-key:00000000-0000-0000-0000-000000000000"
 
 
 def normalize_value(value):
@@ -24,6 +28,21 @@ def find_vless_link(text):
     if not match:
         return ""
     return match.group(0).rstrip(".,;")
+
+
+def find_protocol_link(text):
+    match = PROTOCOL_LINK_RE.search(str(text or ""))
+    if not match:
+        return ""
+    return match.group(0).rstrip(".,;")
+
+
+def find_client_key(text):
+    match = CLIENT_KEY_RE.search(str(text or ""))
+    if not match:
+        return ""
+    value = match.group(1).strip().lower()
+    return value if UUID_RE.fullmatch(value) else ""
 
 
 def parse_vless_link(text):
@@ -79,6 +98,31 @@ def client_entry_id(entry):
     return normalize_value(entry.get("id") or (entry.get("client") or {}).get("id"))
 
 
+def credential_entry_id(credential):
+    if not isinstance(credential, dict):
+        return ""
+    client = credential.get("client") if isinstance(credential.get("client"), dict) else {}
+    return normalize_value(credential.get("id") or client.get("id"))
+
+
+def client_credentials_for_entry(entry):
+    credentials = client_credentials.normalize_entry_credentials(entry)
+    if credentials:
+        return credentials
+    connection_tag = str(entry.get("connection") or "").strip()
+    client_id = client_entry_id(entry)
+    if not connection_tag or not client_id:
+        return {}
+    return {
+        connection_tag: {
+            "id": client_id,
+            "connection": connection_tag,
+            "protocol": "vless",
+            "client": {"id": client_id},
+        }
+    }
+
+
 def expected_connection_params(client_db, entry):
     connection_tag = entry.get("connection", "")
     connection = client_db_connections(client_db).get(connection_tag, {})
@@ -121,19 +165,33 @@ def expected_connection_params(client_db, entry):
     return expected
 
 
+def expected_credential_params(client_db, entry, credential):
+    connection_tag = credential.get("connection", "") or entry.get("connection", "")
+    connection = client_db_connections(client_db).get(connection_tag, {})
+    credential_client = credential.get("client") if isinstance(credential.get("client"), dict) else {}
+    pseudo_entry = dict(entry)
+    pseudo_entry["connection"] = connection_tag
+    pseudo_entry["client"] = credential_client
+    expected = expected_connection_params({"connections": client_db_connections(client_db)}, pseudo_entry)
+    if normalize_value(connection.get("security") or "reality") == "tls":
+        expected["port"] = str(connection.get("publicPort") or connection.get("port", ""))
+    return expected
+
+
 def match_vless_to_client(parsed_link, client_db):
     clients = client_db_clients(client_db)
     same_uuid = []
     for name, entry in clients.items():
-        if client_entry_id(entry) == parsed_link["id"]:
-            same_uuid.append((name, entry))
+        for credential in client_credentials_for_entry(entry).values():
+            if credential_entry_id(credential) == parsed_link["id"]:
+                same_uuid.append((name, entry, credential))
     if not same_uuid:
         return None, "По UUID из ссылки клиент в базе не найден."
 
     matches = []
     mismatch_notes = []
-    for name, entry in same_uuid:
-        expected = expected_connection_params(client_db, entry)
+    for name, entry, credential in same_uuid:
+        expected = expected_credential_params(client_db, entry, credential)
         mismatches = []
         for key, expected_value in expected.items():
             if not expected_value:
@@ -159,6 +217,19 @@ def match_vless_to_client(parsed_link, client_db):
     return None, "UUID найден, но параметры VLESS-ссылки не совпадают с текущей базой: " + detail
 
 
+def match_client_key_to_client(client_uuid, client_db):
+    matches = [
+        (name, entry)
+        for name, entry in client_db_clients(client_db).items()
+        if client_entry_id(entry) == normalize_value(client_uuid)
+    ]
+    if len(matches) == 1:
+        return matches[0], ""
+    if len(matches) > 1:
+        return None, "По ключу найдено несколько клиентов. Обратись к администратору."
+    return None, "Клиентский ключ в базе не найден."
+
+
 def client_access_summary(entry, format_access_until, client_db=None):
     status = "отключён" if entry.get("enabled") is False else "включён"
     reason = entry.get("disabledReason", "")
@@ -176,13 +247,13 @@ def client_access_summary(entry, format_access_until, client_db=None):
 def subscription_entry_for_chat(db, chat_id, client_db):
     subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
     if not subscription:
-        return None, None, "Ты пока не подписан на напоминания. Сначала отправь свою VLESS-ссылку."
+        return None, None, f"Ты пока не подписан на напоминания. Сначала отправь ключ доступа формата {ACCESS_KEY_PLACEHOLDER}."
     name = subscription.get("client", "")
     entry = client_db_clients(client_db).get(name)
     if not entry:
-        return None, None, "Подписка найдена, но клиента уже нет в базе. Отправь актуальную VLESS-ссылку или обратись к администратору."
+        return None, None, f"Подписка найдена, но клиента уже нет в базе. Отправь актуальный ключ доступа формата {ACCESS_KEY_PLACEHOLDER} или обратись к администратору."
     if subscription.get("clientId") and normalize_value(subscription.get("clientId")) != client_entry_id(entry):
-        return None, None, "Подписка устарела: клиент был пересоздан. Отправь актуальную VLESS-ссылку заново."
+        return None, None, f"Подписка устарела: клиент был пересоздан. Отправь актуальный ключ доступа формата {ACCESS_KEY_PLACEHOLDER} заново."
     return name, entry, ""
 
 
@@ -194,7 +265,7 @@ def chat_has_subscription(db, chat_id):
 def subscription_status_for_chat(db, chat_id, client_db, format_access_until):
     subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
     if not subscription:
-        return "Ты пока не подписан на напоминания. Отправь свою VLESS-ссылку, чтобы подключить уведомления."
+        return f"Ты пока не подписан на напоминания. Отправь ключ доступа формата {ACCESS_KEY_PLACEHOLDER}, чтобы подключить уведомления."
     _name, entry, error = subscription_entry_for_chat(db, chat_id, client_db)
     if error:
         return error
@@ -208,7 +279,7 @@ def activity_notifications_enabled(subscription):
 def activity_notification_status_for_chat(db, chat_id, client_db, *, owner_chat=False):
     subscription = db.get("clientSubscriptions", {}).get(str(chat_id))
     if not subscription:
-        return "Ты пока не подписан на бота. Сначала отправь свою VLESS-ссылку."
+        return f"Ты пока не подписан на бота. Сначала отправь ключ доступа формата {ACCESS_KEY_PLACEHOLDER}."
     _name, _entry, error = subscription_entry_for_chat(db, chat_id, client_db)
     if error:
         return error
@@ -381,6 +452,10 @@ def activity_exception_matches(db, chat_id, item):
 
 
 def neutral_vless_fragment(link, server_fragment):
+    return neutral_link_fragment(link, server_fragment)
+
+
+def neutral_link_fragment(link, server_fragment):
     raw = str(link or "").strip()
     if not raw:
         return raw
@@ -392,34 +467,87 @@ def telegram_html_escape(value):
     return html.escape(str(value or ""), quote=False)
 
 
-def current_vless_link_value_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment):
+def connection_links_from_output(output):
+    links = []
+    for line in str(output or "").splitlines():
+        value = line.strip()
+        if value.lower().startswith(("vless://", "trojan://")):
+            links.append(value)
+    return links
+
+
+def first_connection_link(output):
+    links = connection_links_from_output(output)
+    return links[0] if links else ""
+
+
+def access_key_from_output(output):
+    match = re.search(r"\b(?:Access key:\s*)?(vpn-key:[0-9a-fA-F-]{36})\b", str(output or ""), re.IGNORECASE)
+    return match.group(1).lower() if match else ""
+
+
+def credential_options_for_entry(client_db, entry):
+    connections = client_db_connections(client_db)
+    options = []
+    for tag, credential in client_credentials_for_entry(entry).items():
+        connection = connections.get(tag, {}) if isinstance(connections.get(tag, {}), dict) else {}
+        protocol = normalize_value(credential.get("protocol") or connection.get("protocol") or "vless")
+        name = str(connection.get("name") or tag)
+        transport = normalize_value(connection.get("transport") or credential.get("transport") or "")
+        security = normalize_value(connection.get("security") or credential.get("security") or "")
+        parts = [protocol.upper(), name]
+        details = [value for value in (security, transport) if value]
+        if details:
+            parts.append("/".join(details))
+        options.append(
+            {
+                "connection": str(tag),
+                "protocol": protocol,
+                "name": name,
+                "label": " · ".join(parts),
+            }
+        )
+    return sorted(options, key=lambda item: (item["protocol"], item["name"], item["connection"]))
+
+
+def credential_options_for_client(client_db, name):
+    entry = client_db_clients(client_db).get(name)
+    if not isinstance(entry, dict):
+        return []
+    return credential_options_for_entry(client_db, entry)
+
+
+def current_link_value_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment, connection_tag=""):
     name, _entry, error = subscription_entry_for_chat(db, chat_id, client_db)
     if error:
         return "", error
     xray_client = Path(xray_client)
     if not xray_client.exists():
         return "", "xray-client не найден на сервере. Обратись к администратору."
-    result = run_capture([str(xray_client), "link", name], timeout=20)
+    command = [str(xray_client), "link", name]
+    if connection_tag:
+        command.extend(["--connection", str(connection_tag)])
+    result = run_capture(command, timeout=20)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
-        return "", "Не удалось получить актуальную VLESS-ссылку: " + detail
-    link = ""
-    for line in result.stdout.splitlines():
-        if line.strip().startswith("vless://"):
-            link = line.strip()
-            break
+        return "", "Не удалось получить актуальную ссылку подключения: " + detail
+    link = first_connection_link(result.stdout)
     if not link:
-        return "", "Не удалось получить актуальную VLESS-ссылку: xray-client не вернул ссылку."
-    return neutral_vless_fragment(link, server_fragment), ""
+        return "", "Не удалось получить актуальную ссылку подключения: xray-client не вернул ссылку."
+    return neutral_link_fragment(link, server_fragment), ""
+
+
+def current_vless_link_value_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment):
+    return current_link_value_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment)
 
 
 def current_vless_link_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment):
-    link, error = current_vless_link_value_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment)
+    link, error = current_link_value_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment)
     if error:
         return error
     return "\n".join(
         [
-            "Актуальная VLESS-ссылка:",
+            "Актуальная ссылка подключения:",
             "",
             link,
             "",
@@ -429,13 +557,25 @@ def current_vless_link_for_chat(db, chat_id, client_db, xray_client, run_capture
 
 
 def current_vless_link_code_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment):
-    link, error = current_vless_link_value_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment)
+    return current_link_code_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment)
+
+
+def current_link_code_for_chat(db, chat_id, client_db, xray_client, run_capture, server_fragment, connection_tag=""):
+    link, error = current_link_value_for_chat(
+        db,
+        chat_id,
+        client_db,
+        xray_client,
+        run_capture,
+        server_fragment,
+        connection_tag=connection_tag,
+    )
     if error:
         return error, None
     return (
         "\n".join(
             [
-                "Актуальная VLESS-ссылка:",
+                "Актуальная ссылка подключения:",
                 "",
                 f"<pre><code>{telegram_html_escape(link)}</code></pre>",
                 "",
@@ -454,8 +594,15 @@ def unsubscribe_chat(db, chat_id):
 
 
 def subscribe_chat_to_client(db, chat, text, client_db, chat_label, timestamp):
-    parsed_link = parse_vless_link(text)
-    match, reason = match_vless_to_client(parsed_link, client_db)
+    client_key = find_client_key(text)
+    if not client_key:
+        if find_protocol_link(text):
+            raise ValueError(
+                "Для подключения уведомлений отправь ключ доступа формата "
+                f"{ACCESS_KEY_PLACEHOLDER}. Протокольные ссылки больше не используются для привязки бота."
+            )
+        raise ValueError(f"Ключ доступа не найден. Отправь ключ формата {ACCESS_KEY_PLACEHOLDER}.")
+    match, reason = match_client_key_to_client(client_key, client_db)
     if not match:
         raise ValueError(reason)
     name, entry = match
@@ -465,7 +612,8 @@ def subscribe_chat_to_client(db, chat, text, client_db, chat_label, timestamp):
         "clientId": client_entry_id(entry),
         "connection": entry.get("connection", ""),
         "chatLabel": chat_label,
-        "linkHash": parsed_link["hash"],
+        "linkHash": "",
+        "clientKey": f"vpn-key:{client_entry_id(entry)}",
         "subscribedAt": timestamp,
         "enabled": True,
         "activityNotificationsEnabled": False,

@@ -1,4 +1,4 @@
-"""Repository facade for client and Reality connection state."""
+"""Repository facade for client and managed connection state."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.payments import normalize_payment_type
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
@@ -27,8 +28,13 @@ def db_clients(db: dict[str, Any]) -> dict[str, Any]:
     return db.setdefault("clients", {})
 
 
-def db_connections(db: dict[str, Any]) -> dict[str, Any]:
+def db_managed_connections(db: dict[str, Any]) -> dict[str, Any]:
     return db.setdefault("connections", {})
+
+
+def db_connections(db: dict[str, Any]) -> dict[str, Any]:
+    """Compatibility alias for the legacy Reality-named helper."""
+    return db_managed_connections(db)
 
 
 def db_cascade_routes(db: dict[str, Any]) -> dict[str, Any]:
@@ -40,6 +46,7 @@ def normalize_client_defaults(db: dict[str, Any]) -> dict[str, Any]:
         if isinstance(entry, dict):
             entry["paymentType"] = normalize_payment_type(entry.get("paymentType", "free"))
             entry.setdefault("selectedCascadeTag", "")
+            client_credentials.normalize_entry_credentials(entry)
     return db
 
 
@@ -116,7 +123,7 @@ def write_db_to_sqlite_for_write(
                 raise RuntimeError("SQLite database is not marked ready")
             return False
 
-        connections = db_connections(db)
+        connections = db_managed_connections(db)
         clients = db_clients(db)
         with database.transaction(connection):
             for tag, record in connections.items():

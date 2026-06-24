@@ -85,8 +85,7 @@ def period_day_rows(entry: dict | None, start: date, end: date, formatter: Traff
     return rows
 
 
-def month_total(entry: dict | None, month_key: str, today: date | None = None) -> tuple[int, int]:
-    start, end = month_bounds(month_key, today=today)
+def period_total(entry: dict | None, start: date, end: date) -> tuple[int, int]:
     incoming = 0
     outgoing = 0
     for day in iter_dates(start, end):
@@ -96,8 +95,12 @@ def month_total(entry: dict | None, month_key: str, today: date | None = None) -
     return incoming, outgoing
 
 
+def month_total(entry: dict | None, month_key: str, today: date | None = None) -> tuple[int, int]:
+    start, end = month_bounds(month_key, today=today)
+    return period_total(entry, start, end)
+
+
 def all_time_total(entry: dict | None) -> tuple[int, int]:
     if not isinstance(entry, dict):
         return 0, 0
     return int(entry.get("incoming", 0) or 0), int(entry.get("outgoing", 0) or 0)
-

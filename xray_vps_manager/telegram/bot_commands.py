@@ -12,7 +12,7 @@ UNSUBSCRIBED_COMMANDS = [
 SUBSCRIBED_COMMANDS = [
     {"command": "start", "description": "Открыть меню"},
     {"command": "status", "description": "Показать подписку"},
-    {"command": "link", "description": "Получить VLESS-ссылку"},
+    {"command": "link", "description": "Получить VPN-ссылку"},
     {"command": "traffic", "description": "Показать статистику трафика"},
     {"command": "help", "description": "Помощь"},
     {"command": "unsubscribe", "description": "Отписаться от бота"},

@@ -221,9 +221,25 @@ class TelegramAdminTests(unittest.TestCase):
     def test_admin_client_link_selection_sends_current_link_as_html_code_block(self) -> None:
         db = {"adminState": {}}
         client_db = {
+            "connections": {
+                "vless-main": {
+                    "tag": "vless-main",
+                    "name": "main",
+                    "protocol": "vless",
+                    "security": "reality",
+                    "transport": "tcp",
+                },
+                "vless-reality": {
+                    "tag": "vless-reality",
+                    "name": "backup",
+                    "protocol": "vless",
+                    "security": "reality",
+                    "transport": "tcp",
+                },
+            },
             "clients": {
-                "alice": {},
-                "bob": {},
+                "alice": {"id": "00000000-0000-0000-0000-000000000001", "connection": "vless-main"},
+                "bob": {"id": "00000000-0000-0000-0000-000000000002", "connection": "vless-reality"},
             }
         }
         events = []
@@ -241,7 +257,7 @@ class TelegramAdminTests(unittest.TestCase):
         self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link"))
         self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link:1"))
 
-        self.assertIn({"run": ["/usr/local/sbin/xray-client", "link", "bob"], "timeout": 20}, events)
+        self.assertIn({"run": ["/usr/local/sbin/xray-client", "link", "bob", "--connection", "vless-reality"], "timeout": 20}, events)
         self.assertNotIn("111", db.get("adminState", {}))
         message = [event for event in events if "text" in event][-1]
         self.assertEqual(message["parse_mode"], "HTML")
@@ -253,11 +269,107 @@ class TelegramAdminTests(unittest.TestCase):
         self.assertNotIn("InternalBob", message["text"])
         self.assertNotIn("Клиент: bob", message["text"])
 
+    def test_admin_client_link_selection_asks_connection_when_client_has_multiple_credentials(self) -> None:
+        db = {"adminState": {}}
+        client_db = {
+            "connections": {
+                "vless-main": {
+                    "tag": "vless-main",
+                    "name": "main",
+                    "protocol": "vless",
+                    "security": "reality",
+                    "transport": "tcp",
+                },
+                "trojan-tls": {
+                    "tag": "trojan-tls",
+                    "name": "caddy",
+                    "protocol": "trojan",
+                    "security": "tls",
+                    "transport": "ws",
+                },
+            },
+            "clients": {
+                "alice": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "connection": "vless-main",
+                    "credentials": {
+                        "vless-main": {
+                            "id": "00000000-0000-0000-0000-000000000001",
+                            "connection": "vless-main",
+                            "protocol": "vless",
+                        },
+                        "trojan-tls": {
+                            "id": "00000000-0000-0000-0000-000000000003",
+                            "connection": "trojan-tls",
+                            "protocol": "trojan",
+                        },
+                    },
+                }
+            },
+        }
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append({"run": command, "timeout": timeout})
+            return SimpleNamespace(
+                returncode=0,
+                stdout="trojan://secret@example.com:443?security=tls&type=ws&path=/trojan#Internal",
+                stderr="",
+            )
+
+        ctx = self.make_context(events, client_db=client_db, run_capture=run_capture, server_name_fragment=lambda: "Demo")
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link:0"))
+
+        pending = db["adminState"]["111"]
+        self.assertEqual(pending["action"], "client-link-credential-select")
+        trojan_index = next(
+            index for index, option in enumerate(pending["options"])
+            if option["connection"] == "trojan-tls"
+        )
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", f"admin:client-link-credential:{trojan_index}"))
+
+        self.assertIn({"run": ["/usr/local/sbin/xray-client", "link", "alice", "--connection", "trojan-tls"], "timeout": 20}, events)
+        message = [event for event in events if "text" in event][-1]
+        self.assertEqual(message["parse_mode"], "HTML")
+        self.assertIn(
+            "<pre><code>trojan://secret@example.com:443?security=tls&amp;type=ws&amp;path=/trojan#Demo</code></pre>",
+            message["text"],
+        )
+        self.assertNotIn("Internal", message["text"])
+
+    def test_admin_client_key_selection_sends_only_access_key(self) -> None:
+        db = {"adminState": {}}
+        client_db = {"clients": {"alice": {"id": "00000000-0000-0000-0000-000000000001"}}}
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append({"run": command, "timeout": timeout})
+            return SimpleNamespace(returncode=0, stdout="vpn-key:00000000-0000-0000-0000-000000000001", stderr="")
+
+        ctx = self.make_context(events, client_db=client_db, run_capture=run_capture)
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-key"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-key:0"))
+
+        self.assertIn({"run": ["/usr/local/sbin/xray-client", "key", "alice"], "timeout": 20}, events)
+        message = [event for event in events if "text" in event][-1]
+        self.assertEqual(message["parse_mode"], "HTML")
+        self.assertIn(
+            "<pre><code>vpn-key:00000000-0000-0000-0000-000000000001</code></pre>",
+            message["text"],
+        )
+        self.assertNotIn("vless://", message["text"])
+        self.assertNotIn("trojan://", message["text"])
+
     def test_add_client_success_sends_key_as_html_code_block(self) -> None:
         db = {"botUsername": "ExampleVpnBot", "adminState": {}}
         client_db = {
             "clients": {
                 "alice": {
+                    "id": "00000000-0000-0000-0000-000000000001",
                     "expiresAt": "2026-07-14T00:00:00+03:00",
                     "paymentType": "paid",
                 }
@@ -269,7 +381,11 @@ class TelegramAdminTests(unittest.TestCase):
             events.append({"run": command, "timeout": timeout})
             return SimpleNamespace(
                 returncode=0,
-                stdout="vless://alice@example.com:443?type=tcp&security=reality#Xray",
+                stdout=(
+                    "Added client: alice\n"
+                    "Access key: vpn-key:00000000-0000-0000-0000-000000000001\n"
+                    "vless://alice@example.com:443?type=tcp&security=reality#Xray"
+                ),
                 stderr="",
             )
 
@@ -287,6 +403,10 @@ class TelegramAdminTests(unittest.TestCase):
         self.assertEqual(message["parse_mode"], "HTML")
         self.assertIn(
             "<pre><code>vless://alice@example.com:443?type=tcp&amp;security=reality#Xray</code></pre>",
+            message["text"],
+        )
+        self.assertIn(
+            "<pre><code>vpn-key:00000000-0000-0000-0000-000000000001</code></pre>",
             message["text"],
         )
 

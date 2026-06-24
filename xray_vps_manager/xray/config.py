@@ -15,6 +15,7 @@ from xray_vps_manager.core.paths import CONFIG_PATH
 
 INBOUND_TAG = "vless-reality"
 TLS_INBOUND_TAG = "vless-tls"
+TROJAN_INBOUND_TAG = "trojan-tls"
 DEFAULT_CONNECTION_NAME = "default"
 REALITY_TRANSPORTS = ("tcp", "grpc", "xhttp")
 DEFAULT_REALITY_TRANSPORT = "tcp"
@@ -23,6 +24,11 @@ DEFAULT_XHTTP_PATH = "/vless-xhttp"
 DEFAULT_XHTTP_MODE = "auto"
 DEFAULT_XHTTP_TLS_LOCAL_PORT = 10000
 DEFAULT_XHTTP_TLS_PUBLIC_PORT = 443
+DEFAULT_TROJAN_TLS_LOCAL_PORT = 10100
+DEFAULT_TROJAN_TLS_PUBLIC_PORT = 443
+DEFAULT_TROJAN_WS_PATH = "/trojan"
+DEFAULT_TROJAN_TLS_MIN_VERSION = "tls1.2"
+DEFAULT_TROJAN_TLS_MAX_VERSION = "tls1.3"
 XHTTP_MODES = ("auto", "packet-up", "stream-up", "stream-one")
 XHTTP_XMUX_KEYS = (
     "maxConcurrency",
@@ -129,6 +135,23 @@ def vless_connection_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def trojan_connection_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if inbound.get("protocol") == "trojan"
+        and inbound_tag(inbound).startswith(TROJAN_INBOUND_TAG)
+    ]
+
+
+def managed_connection_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:
+    return vless_connection_inbounds(config) + [
+        inbound
+        for inbound in trojan_connection_inbounds(config)
+        if inbound not in vless_connection_inbounds(config)
+    ]
+
+
 def inbound_tag(inbound: dict[str, Any]) -> str:
     return inbound.get("tag") or INBOUND_TAG
 
@@ -145,10 +168,10 @@ def find_inbound(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def find_inbound_by_tag(config: dict[str, Any], tag: str) -> dict[str, Any]:
-    for inbound in vless_connection_inbounds(config):
+    for inbound in managed_connection_inbounds(config):
         if inbound_tag(inbound) == tag:
             return inbound
-    raise ValueError(f"VLESS connection not found: {tag}")
+    raise ValueError(f"Connection not found: {tag}")
 
 
 def default_connection_tag(config: dict[str, Any]) -> str:
@@ -158,7 +181,10 @@ def default_connection_tag(config: dict[str, Any]) -> str:
     inbounds = vless_connection_inbounds(config)
     if inbounds:
         return inbound_tag(inbounds[0])
-    raise ValueError("VLESS connection inbound not found.")
+    inbounds = managed_connection_inbounds(config)
+    if inbounds:
+        return inbound_tag(inbounds[0])
+    raise ValueError("Managed connection inbound not found.")
 
 
 def connection_name_from_tag(tag: str) -> str:
@@ -170,6 +196,10 @@ def connection_name_from_tag(tag: str) -> str:
         return tag.replace("vless-reality-", "")
     if tag.startswith("vless-tls-"):
         return tag.replace("vless-tls-", "")
+    if tag == TROJAN_INBOUND_TAG:
+        return "trojan"
+    if tag.startswith("trojan-tls-"):
+        return tag.replace("trojan-tls-", "")
     return tag
 
 
@@ -195,6 +225,13 @@ def normalize_xhttp_path(value: str | None) -> str:
     path = (value or DEFAULT_XHTTP_PATH).strip()
     if not path.startswith("/") or any(char.isspace() for char in path) or len(path) > 256:
         raise ValueError("XHTTP path must start with /, contain no spaces, and be at most 256 chars.")
+    return path
+
+
+def normalize_trojan_ws_path(value: str | None) -> str:
+    path = (value or DEFAULT_TROJAN_WS_PATH).strip()
+    if not path.startswith("/") or any(char.isspace() for char in path) or len(path) > 256:
+        raise ValueError("Trojan WebSocket path must start with /, contain no spaces, and be at most 256 chars.")
     return path
 
 
@@ -567,6 +604,13 @@ def reality_transport_settings_from_stream(stream: dict[str, Any]) -> dict[str, 
 
 
 def connection_transport_settings_from_stream(stream: dict[str, Any]) -> dict[str, Any]:
+    network = str(stream.get("network") or DEFAULT_REALITY_TRANSPORT).strip().lower()
+    if network == "ws":
+        ws = stream.get("wsSettings") or {}
+        return {
+            "transport": "ws",
+            "wsPath": normalize_trojan_ws_path(ws.get("path")),
+        }
     return reality_transport_settings_from_stream(stream)
 
 
@@ -646,7 +690,21 @@ def connection_settings_from_inbound(inbound: dict[str, Any]) -> dict[str, Any]:
 
 def clients(inbound: dict[str, Any]) -> list[dict[str, Any]]:
     settings = inbound.setdefault("settings", {})
+    if inbound.get("protocol") == "trojan":
+        if "clients" not in settings and "users" in settings:
+            settings["clients"] = settings.get("users") or []
+        settings.pop("users", None)
+        return settings.setdefault("clients", [])
     return settings.setdefault("clients", [])
+
+
+def set_clients(inbound: dict[str, Any], items: list[dict[str, Any]]) -> None:
+    settings = inbound.setdefault("settings", {})
+    if inbound.get("protocol") == "trojan":
+        settings["clients"] = items
+        settings.pop("users", None)
+    else:
+        settings["clients"] = items
 
 
 def active_client(inbound: dict[str, Any], name: str) -> dict[str, Any] | None:
@@ -657,7 +715,7 @@ def active_client(inbound: dict[str, Any], name: str) -> dict[str, Any] | None:
 
 
 def active_client_any(config: dict[str, Any], name: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    for inbound in vless_connection_inbounds(config):
+    for inbound in managed_connection_inbounds(config):
         item = active_client(inbound, name)
         if item is not None:
             return inbound, item

@@ -1,4 +1,4 @@
-"""Caddy helpers for TLS-terminated XHTTP connections."""
+"""Caddy helpers for TLS-terminated Xray connections."""
 
 from __future__ import annotations
 
@@ -36,7 +36,10 @@ CADDY_CONF_DIR_ARCNAME = "etc/caddy/conf.d"
 CADDY_SITE_ARCNAME = "site"
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 TLS_VERSIONS = {"default", "tls1.2", "tls1.3"}
-REVERSE_PROXY_RE = re.compile(r"reverse_proxy\s+h2c://127\.0\.0\.1:(?P<port>[0-9]+)")
+REVERSE_PROXY_RE = re.compile(
+    r"reverse_proxy(?:\s+@[A-Za-z0-9_.-]+)?\s+(?P<scheme>h2c://)?127\.0\.0\.1:(?P<port>[0-9]+)"
+)
+PATH_MATCHER_RE = re.compile(r"^\s*@[A-Za-z0-9_.-]+\s+path\s+(?P<path>/\S+)\s*(?:#.*)?$", re.MULTILINE)
 PROTOCOLS_RE = re.compile(r"protocols\s+(?P<min>tls1\.[23])\s+(?P<max>tls1\.[23])")
 PROTOCOLS_LINE_RE = re.compile(r"^\s*protocols\s+tls1\.[23]\s+tls1\.[23]\s*(?:#.*)?$")
 ROOT_DIRECTIVE_RE = re.compile(r"(?m)^\s*root\s+(?:\*\s+)?(?P<path>/\S+)")
@@ -68,6 +71,8 @@ class SiteConfig:
     tls_min_version: str
     tls_max_version: str
     modified_at: str = ""
+    upstream_transport: str = "xhttp"
+    match_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,30 @@ def validate_domain(value: str) -> str:
     if not domain or "/" in domain or ":" in domain or not DOMAIN_RE.fullmatch(domain):
         raise ValueError("TLS domain must be a domain without https://, path, or port.")
     return domain
+
+
+def validate_http_path(value: str | None) -> str:
+    path = (value or "").strip()
+    if not path.startswith("/") or any(char.isspace() for char in path) or len(path) > 256:
+        raise ValueError("HTTP path must start with /, contain no spaces, and be at most 256 chars.")
+    return path
+
+
+def caddy_fallback_block(domain: str) -> str:
+    if domain.startswith("api."):
+        return (
+            "    handle {\n"
+            "        header Content-Type application/json\n"
+            "        respond \"{\\\"error\\\":\\\"not_found\\\"}\" 404\n"
+            "    }\n"
+        )
+    return (
+        "    handle {\n"
+        "        root * /usr/share/caddy\n"
+        "        try_files {path} /index.html\n"
+        "        file_server\n"
+        "    }\n"
+    )
 
 
 def normalize_tls_version(value: str | None, default: str = "tls1.2") -> str:
@@ -915,10 +944,48 @@ def first_site_address(text: str) -> str:
     return ""
 
 
+def first_path_matcher_path(text: str) -> str:
+    inline_match = PATH_MATCHER_RE.search(text)
+    if inline_match:
+        return inline_match.group("path")
+
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not re.fullmatch(r"@[A-Za-z0-9_.-]+\s*\{", stripped):
+            index += 1
+            continue
+        depth = line_brace_delta(lines[index])
+        index += 1
+        while index < len(lines) and depth > 0:
+            inner = lines[index].strip()
+            if inner.startswith("path "):
+                parts = inner.split()
+                if len(parts) >= 2:
+                    return parts[1]
+            depth += line_brace_delta(lines[index])
+            index += 1
+    return ""
+
+
+def xhttp_route_match_path(route_path: str) -> str:
+    path = validate_http_path(route_path)
+    return path if path.endswith("*") else f"{path}*"
+
+
+def normalized_site_match_path(path: str, upstream_transport: str) -> str:
+    if upstream_transport == "xhttp" and path.endswith("*"):
+        return path[:-1]
+    return path
+
+
 def parse_site_config(path: Path) -> SiteConfig:
     text = path.read_text() if path.exists() else ""
     domain = first_site_address(text) or path.stem
     port_match = REVERSE_PROXY_RE.search(text)
+    upstream_transport = "xhttp" if port_match and port_match.group("scheme") else "http"
+    route_path = normalized_site_match_path(first_path_matcher_path(text), upstream_transport)
     protocols_match = PROTOCOLS_RE.search(text)
     modified_at = ""
     if path.exists():
@@ -930,6 +997,8 @@ def parse_site_config(path: Path) -> SiteConfig:
         tls_min_version=protocols_match.group("min") if protocols_match else "default",
         tls_max_version=protocols_match.group("max") if protocols_match else "default",
         modified_at=modified_at,
+        upstream_transport=upstream_transport,
+        match_path=route_path,
     )
 
 
@@ -944,15 +1013,59 @@ def site_config_for_domain(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> Site
     return parse_site_config(site_path)
 
 
+def site_config_conflicts_for_domain(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> list[SiteConfig]:
+    domain = validate_domain(domain)
+    target_path = site_config_path(domain, conf_dir)
+    matches = []
+    seen_paths = set()
+    if target_path.exists():
+        matches.append(parse_site_config(target_path))
+        seen_paths.add(target_path)
+    for path in list_site_config_paths(conf_dir):
+        if path in seen_paths:
+            continue
+        site = parse_site_config(path)
+        if site.domain.lower() == domain.lower():
+            matches.append(site)
+            seen_paths.add(path)
+    return matches
+
+
+def format_site_config_conflict(site: SiteConfig) -> str:
+    upstream = f"127.0.0.1:{site.local_port}" if site.local_port else "unknown upstream"
+    route = f", path={site.match_path}" if site.match_path else ""
+    return f"{site.path} ({upstream}, transport={site.upstream_transport}{route})"
+
+
+def require_site_config_absent(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> None:
+    domain = validate_domain(domain)
+    conflicts = site_config_conflicts_for_domain(domain, conf_dir)
+    if not conflicts:
+        return
+    details = "; ".join(format_site_config_conflict(site) for site in conflicts)
+    raise FileExistsError(
+        f"Caddy site config already exists for {domain}: {details}. "
+        "Creating a new TLS connection would overwrite this site and may break existing traffic. "
+        "Review, update, or delete the existing site config through Caddy / TLS -> Site configs first."
+    )
+
+
 def caddy_site_block(
     domain: str,
     local_port: int,
     *,
     tls_min_version: str = "tls1.2",
     tls_max_version: str = "tls1.2",
+    upstream_transport: str = "xhttp",
+    route_path: str = "",
 ) -> str:
     domain = validate_domain(domain)
     tls_min_version, tls_max_version = normalize_tls_version_pair(tls_min_version, tls_max_version)
+    upstream_transport = (upstream_transport or "xhttp").strip().lower()
+    if upstream_transport not in ("xhttp", "http"):
+        raise ValueError("Caddy upstream transport must be xhttp or http.")
+    if route_path:
+        route_path = validate_http_path(route_path)
     tls_block = ""
     if tls_min_version != "default":
         tls_block = (
@@ -960,10 +1073,37 @@ def caddy_site_block(
             f"        protocols {tls_min_version} {tls_max_version}\n"
             "    }\n\n"
         )
+    upstream = f"h2c://127.0.0.1:{local_port}" if upstream_transport == "xhttp" else f"127.0.0.1:{local_port}"
+    fallback_block = caddy_fallback_block(domain)
+    if route_path and upstream_transport == "http":
+        proxy_block = (
+            "    @xray_path {\n"
+            f"        path {route_path}\n"
+            "        header Connection *Upgrade*\n"
+            "        header Upgrade websocket\n"
+            "    }\n"
+            "    handle @xray_path {\n"
+            f"        reverse_proxy {upstream}\n"
+            "    }\n"
+            "\n"
+            f"{fallback_block}"
+        )
+    elif route_path:
+        match_path = xhttp_route_match_path(route_path)
+        proxy_block = (
+            f"    @xray_path path {match_path}\n"
+            "    handle @xray_path {\n"
+            f"        reverse_proxy {upstream}\n"
+            "    }\n"
+            "\n"
+            f"{fallback_block}"
+        )
+    else:
+        proxy_block = f"    reverse_proxy {upstream}\n"
     return (
         f"{domain} {{\n"
         f"{tls_block}"
-        f"    reverse_proxy h2c://127.0.0.1:{local_port}\n"
+        f"{proxy_block}"
         "}\n"
     )
 
@@ -987,6 +1127,8 @@ def write_site_config(
     *,
     tls_min_version: str = "tls1.2",
     tls_max_version: str = "tls1.2",
+    upstream_transport: str = "xhttp",
+    route_path: str = "",
     conf_dir: Path = CADDY_CONF_DIR,
     caddyfile_path: Path = CADDYFILE_PATH,
 ) -> Path:
@@ -1000,6 +1142,8 @@ def write_site_config(
             local_port,
             tls_min_version=tls_min_version,
             tls_max_version=tls_max_version,
+            upstream_transport=upstream_transport,
+            route_path=route_path,
         )
     )
     os.chmod(site_path, 0o644)
@@ -1012,13 +1156,22 @@ def update_site_config(
     *,
     tls_min_version: str = "tls1.2",
     tls_max_version: str = "tls1.2",
+    upstream_transport: str = "xhttp",
+    route_path: str = "",
     runner=subprocess.run,
 ) -> SiteWriteResult:
     domain = validate_domain(domain)
     site_path = site_config_path(domain)
     backup = backup_file(site_path)
     try:
-        written = write_site_config(domain, local_port, tls_min_version=tls_min_version, tls_max_version=tls_max_version)
+        written = write_site_config(
+            domain,
+            local_port,
+            tls_min_version=tls_min_version,
+            tls_max_version=tls_max_version,
+            upstream_transport=upstream_transport,
+            route_path=route_path,
+        )
         validate_and_reload_caddy(runner)
     except Exception:
         restore_file(backup, site_path)
@@ -1074,7 +1227,15 @@ def apply_random_tls_switch(
         site = site_config_for_domain(config.domain)
         local_port = site.local_port or config.local_port
         tls_min, tls_max = choose_random_tls_pair(site.tls_min_version, site.tls_max_version, chooser=chooser)
-        result = update_site_config(config.domain, local_port, tls_min_version=tls_min, tls_max_version=tls_max, runner=runner)
+        result = update_site_config(
+            config.domain,
+            local_port,
+            tls_min_version=tls_min,
+            tls_max_version=tls_max,
+            upstream_transport=site.upstream_transport,
+            route_path=site.match_path,
+            runner=runner,
+        )
     return RandomTlsApplyResult(
         domain=config.domain,
         previous_tls_min_version=site.tls_min_version,
@@ -1153,6 +1314,7 @@ def setup_caddy_for_xhttp(
     install: bool = True,
     runner=subprocess.run,
 ) -> Path:
+    require_site_config_absent(domain)
     if install:
         install_caddy_if_needed(runner)
     site_path = write_site_config(
@@ -1160,6 +1322,31 @@ def setup_caddy_for_xhttp(
         local_port,
         tls_min_version=tls_min_version,
         tls_max_version=tls_max_version,
+    )
+    validate_and_reload_caddy(runner)
+    return site_path
+
+
+def setup_caddy_for_trojan_ws(
+    domain: str,
+    local_port: int,
+    ws_path: str,
+    *,
+    tls_min_version: str = "tls1.2",
+    tls_max_version: str = "tls1.2",
+    install: bool = True,
+    runner=subprocess.run,
+) -> Path:
+    require_site_config_absent(domain)
+    if install:
+        install_caddy_if_needed(runner)
+    site_path = write_site_config(
+        domain,
+        local_port,
+        tls_min_version=tls_min_version,
+        tls_max_version=tls_max_version,
+        upstream_transport="http",
+        route_path=ws_path,
     )
     validate_and_reload_caddy(runner)
     return site_path

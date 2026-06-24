@@ -51,6 +51,7 @@ class CaddyDownloadProxyScriptTests(unittest.TestCase):
         self.assertIn("tls_server_name ${UPSTREAM_DOMAIN}", content)
         self.assertIn("flush_interval -1", content)
         self.assertIn("import ${CADDY_CONF_DIR}/*.caddy", content)
+        self.assertNotIn("encode zstd gzip", content)
 
     def test_configure_flow_is_interactive_and_descriptive(self) -> None:
         content = INSTALLER.read_text(encoding="utf-8")

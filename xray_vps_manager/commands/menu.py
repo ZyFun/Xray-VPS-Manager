@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-22 21:34 UTC"
+MENU_UPDATED = "2026-06-24 14:03 UTC"
 
 
 def die(message):
@@ -96,15 +96,17 @@ def client_menu_actions():
     return [
         ("1", "Показать клиентов"),
         ("2", "Добавить клиента"),
-        ("3", "Изменить срок доступа"),
-        ("4", "Изменить статус оплаты"),
-        ("5", "Отключить клиента"),
-        ("6", "Включить клиента"),
-        ("7", "Вывести ссылку клиента"),
-        ("8", "Перенести клиента в другое подключение"),
-        ("9", "Удалить клиента"),
-        ("10", "Проверить просроченных клиентов"),
-        ("11", "Лимиты трафика"),
+        ("3", "Добавить подключение к клиенту"),
+        ("4", "Изменить срок доступа"),
+        ("5", "Изменить статус оплаты"),
+        ("6", "Отключить клиента"),
+        ("7", "Включить клиента"),
+        ("8", "Вывести ссылку клиента"),
+        ("9", "Перенести клиента в другое подключение"),
+        ("10", "Удалить клиента"),
+        ("11", "Проверить просроченных клиентов"),
+        ("12", "Лимиты трафика"),
+        ("13", "Изменить страну подключения"),
         ("0", "Назад"),
     ]
 
@@ -122,8 +124,19 @@ def client_traffic_limit_menu_actions():
 def connection_tls_menu_actions():
     return [
         ("1", "Подключения VLESS / Reality"),
-        ("2", "Стартовая ссылка"),
-        ("3", "Caddy / TLS"),
+        ("2", "Подключения Trojan"),
+        ("3", "Стартовая ссылка"),
+        ("4", "Caddy / TLS"),
+        ("0", "Назад"),
+    ]
+
+
+def trojan_menu_actions():
+    return [
+        ("1", "Показать Trojan-подключения"),
+        ("2", "Создать Trojan TLS подключение"),
+        ("3", "Удалить Trojan-подключение"),
+        ("4", "Переименовать Trojan-подключение"),
         ("0", "Назад"),
     ]
 
@@ -210,7 +223,7 @@ def caddy_status_menu_actions():
 
 def caddy_sites_menu_actions():
     return [
-        ("1", "Показать TLS/XHTTP site configs"),
+        ("1", "Показать TLS site configs"),
         ("2", "Показать site config"),
         ("3", "Создать/обновить site из TLS-подключения"),
         ("4", "Создать/обновить site вручную"),
@@ -490,27 +503,32 @@ def client_menu_handlers():
     return {
         "1": ("Показать клиентов", lambda: menu_client_actions.show_clients(call)),
         "2": ("Добавить клиента", lambda: menu_client_actions.add_client_from_menu(call)),
-        "3": ("Изменить срок доступа", lambda: menu_client_actions.update_selected_client_days(call)),
-        "4": ("Изменить статус оплаты", lambda: menu_client_actions.update_selected_client_payment(call)),
-        "5": (
+        "3": (
+            "Добавить подключение к клиенту",
+            lambda: menu_client_actions.add_connection_to_client_from_menu(call),
+        ),
+        "4": ("Изменить срок доступа", lambda: menu_client_actions.update_selected_client_days(call)),
+        "5": ("Изменить статус оплаты", lambda: menu_client_actions.update_selected_client_payment(call)),
+        "6": (
             "Отключить клиента",
             lambda: menu_client_actions.call_client_command(call, "disable", "отключения", "enabled"),
         ),
-        "6": (
+        "7": (
             "Включить клиента",
             lambda: menu_client_actions.call_client_command(call, "enable", "включения", "disabled"),
         ),
-        "7": (
+        "8": (
             "Вывести ссылку клиента",
             lambda: menu_client_actions.call_client_command(call, "link", "вывода ссылки", "all"),
         ),
-        "8": ("Перенести клиента в другое подключение", lambda: menu_client_actions.move_selected_client(call)),
-        "9": (
+        "9": ("Перенести клиента в другое подключение", lambda: menu_client_actions.move_selected_client(call)),
+        "10": (
             "Удалить клиента",
             lambda: menu_client_actions.call_client_command(call, "remove", "удаления", "all"),
         ),
-        "10": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
-        "11": ("Лимиты трафика", open_client_traffic_limit_menu),
+        "11": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
+        "12": ("Лимиты трафика", open_client_traffic_limit_menu),
+        "13": ("Изменить страну подключения", lambda: menu_client_actions.update_selected_client_route(call)),
     }
 
 
@@ -526,8 +544,18 @@ def client_traffic_limit_menu_handlers():
 def connection_tls_menu_handlers():
     return {
         "1": ("Подключения VLESS / Reality", open_reality_menu),
-        "2": ("Вывести стартовую ссылку", menu_xray_actions.print_initial_link),
-        "3": ("Caddy / TLS", open_caddy_menu),
+        "2": ("Подключения Trojan", open_trojan_menu),
+        "3": ("Вывести стартовую ссылку", menu_xray_actions.print_initial_link),
+        "4": ("Caddy / TLS", open_caddy_menu),
+    }
+
+
+def trojan_menu_handlers():
+    return {
+        "1": ("Показать Trojan-подключения", lambda: menu_reality_actions.show_trojan_settings(call)),
+        "2": ("Создать Trojan TLS подключение", lambda: menu_reality_actions.create_trojan_connection(call)),
+        "3": ("Удалить Trojan-подключение", lambda: menu_reality_actions.delete_trojan_connection(call, confirm)),
+        "4": ("Переименовать Trojan-подключение", lambda: menu_reality_actions.rename_trojan_connection(call)),
     }
 
 
@@ -632,7 +660,7 @@ def caddy_status_menu_handlers():
 
 def caddy_sites_menu_handlers():
     return {
-        "1": ("Показать TLS/XHTTP site configs", menu_caddy_actions.show_sites),
+        "1": ("Показать TLS site configs", menu_caddy_actions.show_sites),
         "2": ("Показать site config", menu_caddy_actions.show_site_config),
         "3": ("Создать/обновить site из TLS-подключения", menu_caddy_actions.create_site_from_tls_connection),
         "4": ("Создать/обновить site вручную", menu_caddy_actions.create_site_manual),
@@ -910,6 +938,10 @@ def open_client_traffic_limit_menu():
 
 def open_connection_tls_menu():
     menu_loop("Подключения и TLS", connection_tls_menu_actions(), connection_tls_menu_handlers())
+
+
+def open_trojan_menu():
+    menu_loop("Подключения Trojan", trojan_menu_actions(), trojan_menu_handlers())
 
 
 def open_reality_menu():

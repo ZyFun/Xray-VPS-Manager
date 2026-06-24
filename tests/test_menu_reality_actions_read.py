@@ -58,6 +58,61 @@ class MenuRealityActionsReadTests(unittest.TestCase):
             },
         )
 
+    def test_create_trojan_connection_builds_cli_command(self) -> None:
+        inputs = iter(["trojan-main", "", "vpn.example.com", "", "/private-trojan", "1", "", "y"])
+        calls = []
+
+        with mock.patch.object(menu_reality_actions, "current_fingerprint", return_value="chrome"), \
+            mock.patch.object(menu_reality_actions, "load_config", return_value={"inbounds": []}), \
+            mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), \
+            redirect_stdout(StringIO()):
+            menu_reality_actions.create_trojan_connection(lambda command: calls.append(command))
+
+        self.assertEqual(
+            calls,
+            [
+                [
+                    "xray-client",
+                    "add-trojan-connection",
+                    "trojan-main",
+                    "10100",
+                    "vpn.example.com",
+                    "chrome",
+                    "--transport",
+                    "ws",
+                    "--ws-path",
+                    "/private-trojan",
+                    "--public-port",
+                    "443",
+                    "--tls-min-version",
+                    "tls1.2",
+                    "--tls-max-version",
+                    "tls1.3",
+                    "--install-caddy",
+                ]
+            ],
+        )
+
+    def test_create_trojan_connection_refuses_existing_caddy_site(self) -> None:
+        inputs = iter(["trojan-main", "", "vpn.example.com", "", "/private-trojan", "1", "", "y"])
+        calls = []
+        output = StringIO()
+
+        with mock.patch.object(menu_reality_actions, "current_fingerprint", return_value="chrome"), \
+            mock.patch.object(menu_reality_actions, "load_config", return_value={"inbounds": []}), \
+            mock.patch.object(
+                menu_reality_actions.xray_caddy,
+                "require_site_config_absent",
+                side_effect=FileExistsError("existing site"),
+            ), \
+            mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), \
+            redirect_stdout(output):
+            menu_reality_actions.create_trojan_connection(lambda command: calls.append(command))
+
+        self.assertEqual(calls, [])
+        self.assertIn("existing site", output.getvalue())
+        self.assertIn("Caddy / TLS -> Site configs", output.getvalue())
+
     def test_choose_transport_can_collect_xhttp_advanced_defaults(self) -> None:
         inputs = iter(["3", "/private-xhttp", "1", "y", "", "", "n", "n", "n", "", "", "", "", "", "", "n"])
 

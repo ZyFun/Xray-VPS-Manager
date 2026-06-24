@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.connections import connection_fingerprint, ensure_connections
-from xray_vps_manager.clients.repository import db_clients, db_connections
+from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.clients.settings import server_addr, server_name
 from xray_vps_manager.xray.config import (
     client_flow_for_transport,
@@ -34,11 +35,44 @@ def link_for(
             db_loader = load_db
         db = db_loader()
     ensure_connections(config, db)
-    connection_tag = connection_tag or db_clients(db).get(name, {}).get("connection") or default_connection_tag(config)
+    client_entry = db_clients(db).get(name, {})
+    if client_entry:
+        client_credentials.normalize_entry_credentials(client_entry)
+    connection_tag = connection_tag or client_entry.get("connection") or default_connection_tag(config)
+    credential = client_credentials.credential_for_connection(client_entry, connection_tag) if client_entry else None
     inbound = find_inbound_by_tag(config, connection_tag)
     stream = inbound.get("streamSettings", {})
-    entry = db_connections(db).get(connection_tag, {})
+    entry = db_managed_connections(db).get(connection_tag, {})
+    protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
     security = entry.get("security") or stream.get("security") or "reality"
+    if protocol == "trojan":
+        client = credential.get("client") if isinstance(credential, dict) else {}
+        password = str(client.get("password") or "").strip()
+        if not password:
+            raise ValueError(f"Trojan password not found for client: {name}")
+        host = entry.get("publicHost") or entry.get("sni") or server_addr()
+        port = int(entry.get("publicPort") or entry.get("port") or inbound.get("port") or 443)
+        sni = entry.get("sni") or host
+        transport_settings = connection_transport_settings_from_inbound(inbound)
+        transport = str(entry.get("transport") or transport_settings.get("transport") or "tcp").strip().lower()
+        params = {
+            "security": "tls" if security == "none" else security,
+            "type": transport,
+        }
+        if sni:
+            params["sni"] = sni
+        if transport == "ws":
+            params["path"] = entry.get("wsPath") or transport_settings.get("wsPath") or "/trojan"
+            params["host"] = host
+        fingerprint = (entry.get("fingerprint") or "").strip()
+        if fingerprint:
+            params["fp"] = fingerprint
+        query = "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params.items())
+        return f"trojan://{quote(password, safe='')}@{host}:{port}?{query}#{quote(server_name(), safe='')}"
+
+    if credential:
+        client_id = str(credential.get("id") or (credential.get("client") or {}).get("id") or client_id)
+
     if security == "tls":
         transport_settings = connection_transport_settings_from_inbound(inbound)
         transport = transport_settings["transport"]

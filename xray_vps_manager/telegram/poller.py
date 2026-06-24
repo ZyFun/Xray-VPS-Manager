@@ -273,7 +273,7 @@ def subscribe_prompt_for_chat(ctx: PollerContext, db, chat_id):
 
 
 def current_vless_link_code_for_chat(ctx: PollerContext, db, chat_id):
-    return subscriptions.current_vless_link_code_for_chat(
+    return subscriptions.current_link_code_for_chat(
         db,
         chat_id,
         ctx.load_client_db(),
@@ -281,6 +281,83 @@ def current_vless_link_code_for_chat(ctx: PollerContext, db, chat_id):
         ctx.run_capture,
         ctx.server_name_fragment(),
     )
+
+
+def client_link_selection_state(db):
+    state = client_callback_state(db)
+    selections = state.setdefault("linkCredentialSelections", {})
+    if not isinstance(selections, dict):
+        selections = {}
+        state["linkCredentialSelections"] = selections
+    return selections
+
+
+def set_client_link_selection(ctx: PollerContext, db, chat_id, name, options):
+    selections = client_link_selection_state(db)
+    selections[str(chat_id)] = {
+        "client": str(name or ""),
+        "options": list(options),
+        "updatedAt": ctx.utc_stamp(),
+    }
+    ctx.save_db_sections(db, ("clientSubscriptionState",))
+
+
+def clear_client_link_selection(ctx: PollerContext, db, chat_id):
+    selections = client_link_selection_state(db)
+    if selections.pop(str(chat_id), None) is not None:
+        ctx.save_db_sections(db, ("clientSubscriptionState",))
+
+
+def selected_client_link_option(db, chat_id, index_value):
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return {}
+    entry = client_link_selection_state(db).get(str(chat_id), {})
+    options = entry.get("options", []) if isinstance(entry, dict) else []
+    if index < 0 or index >= len(options):
+        return {}
+    item = options[index]
+    return item if isinstance(item, dict) else {}
+
+
+def send_current_link_for_option(ctx: PollerContext, db, chat_id, option):
+    connection_tag = str(option.get("connection") or "")
+    text, parse_mode = subscriptions.current_link_code_for_chat(
+        db,
+        chat_id,
+        ctx.load_client_db(),
+        ctx.xray_client,
+        ctx.run_capture,
+        ctx.server_name_fragment(),
+        connection_tag=connection_tag,
+    )
+    clear_client_link_selection(ctx, db, chat_id)
+    send_client_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
+
+
+def send_client_link_for_chat(ctx: PollerContext, db, chat_id):
+    client_db = ctx.load_client_db()
+    name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
+    if error:
+        send_client_menu(ctx, db, chat_id, error)
+        return True
+    options = subscriptions.credential_options_for_entry(client_db, entry)
+    if not options:
+        send_client_menu(ctx, db, chat_id, "Для этого клиента нет активных подключений. Обратись к администратору.")
+        return True
+    if len(options) == 1:
+        send_current_link_for_option(ctx, db, chat_id, options[0])
+        return True
+    set_client_link_selection(ctx, db, chat_id, name, options)
+    response = ctx.send_chat_message(
+        db,
+        chat_id,
+        "Выбери подключение, для которого нужна VPN-ссылка.",
+        reply_markup=keyboards.client_link_credential_keyboard(options),
+    )
+    register_client_message(ctx, db, chat_id, response)
+    return True
 
 
 def traffic_report_for_chat(ctx: PollerContext, db, chat_id, kind):
@@ -348,9 +425,7 @@ def handle_user_message(ctx: PollerContext, db, update):
         send_client_menu(ctx, db, chat_id, subscription_status_for_chat(ctx, db, chat_id))
         return True
     if command == "/link":
-        text, parse_mode = current_vless_link_code_for_chat(ctx, db, chat_id)
-        send_client_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
-        return True
+        return send_client_link_for_chat(ctx, db, chat_id)
     if command == "/traffic":
         send_client_traffic_menu(ctx, db, chat_id)
         return True
@@ -359,8 +434,12 @@ def handle_user_message(ctx: PollerContext, db, update):
         try_delete_chat_commands(ctx, db, chat_id)
         send_client_menu(ctx, db, chat_id, text)
         return True
-    if subscriptions.find_vless_link(text):
-        _name, entry = subscribe_chat_to_client(ctx, db, chat, text)
+    if subscriptions.find_client_key(text):
+        try:
+            _name, entry = subscribe_chat_to_client(ctx, db, chat, text)
+        except ValueError as exc:
+            send_client_menu(ctx, db, chat_id, str(exc))
+            return True
         try_set_subscribed_commands(ctx, db, chat_id)
         send_client_menu(
             ctx,
@@ -371,10 +450,24 @@ def handle_user_message(ctx: PollerContext, db, update):
             + "\n\nНапоминания придут в 08:00 за 5 дней и за 1 день до окончания доступа.",
         )
         return True
+    if subscriptions.find_protocol_link(text):
+        send_client_menu(
+            ctx,
+            db,
+            chat_id,
+            "Протокольные ссылки больше не используются для привязки бота.\n\n"
+            f"Отправь ключ доступа формата {subscriptions.ACCESS_KEY_PLACEHOLDER}.",
+        )
+        return True
     if subscriptions.chat_has_subscription(db, chat_id):
         send_client_menu(ctx, db, chat_id, client_home_text(ctx, db, chat_id))
     else:
-        send_client_menu(ctx, db, chat_id, "Я не нашёл VLESS-ссылку. Отправь свою ссылку целиком или нажми кнопку ниже.")
+        send_client_menu(
+            ctx,
+            db,
+            chat_id,
+            f"Я не нашёл ключ доступа. Отправь ключ формата {subscriptions.ACCESS_KEY_PLACEHOLDER} или нажми кнопку ниже.",
+        )
     return True
 
 
@@ -417,8 +510,15 @@ def handle_callback_query(ctx: PollerContext, db, update):
         return True
     if data == "client:link":
         ctx.answer_callback_query(db, callback_id)
-        text, parse_mode = current_vless_link_code_for_chat(ctx, db, chat_id)
-        send_client_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
+        return send_client_link_for_chat(ctx, db, chat_id)
+    if data.startswith("client:link-credential:"):
+        option = selected_client_link_option(db, chat_id, data.rsplit(":", 1)[1])
+        if not option:
+            ctx.answer_callback_query(db, callback_id, "Список устарел")
+            send_client_menu(ctx, db, chat_id, "Список подключений устарел. Открой получение VPN-ссылки заново.")
+            return True
+        ctx.answer_callback_query(db, callback_id)
+        send_current_link_for_option(ctx, db, chat_id, option)
         return True
     if data == "client:traffic":
         ctx.answer_callback_query(db, callback_id)

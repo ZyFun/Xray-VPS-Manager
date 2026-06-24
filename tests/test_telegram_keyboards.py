@@ -9,7 +9,7 @@ class TelegramKeyboardTests(unittest.TestCase):
 
         self.assertIn({"text": "Статистика трафика", "callback_data": "client:traffic"}, buttons)
         self.assertIn({"text": "Статус подписки", "callback_data": "client:status"}, buttons)
-        self.assertIn({"text": "Получить VLESS-ссылку", "callback_data": "client:link"}, buttons)
+        self.assertIn({"text": "Получить VPN-ссылку", "callback_data": "client:link"}, buttons)
         self.assertIn({"text": "Страна подключения", "callback_data": "client:country"}, buttons)
         self.assertIn({"text": "Уведомления активности", "callback_data": "client:activity"}, buttons)
 
@@ -161,9 +161,10 @@ class TelegramKeyboardTests(unittest.TestCase):
         buttons = [button for row in rows for button in row]
 
         self.assertEqual(buttons[0], {"text": "Добавить клиента", "callback_data": "admin:client-add"})
-        self.assertEqual(buttons[1], {"text": "Получить VLESS-ссылку", "callback_data": "admin:client-link"})
-        self.assertEqual(buttons[2], {"text": "Подписки клиентов", "callback_data": "admin:subscribers"})
-        self.assertEqual(buttons[3], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
+        self.assertEqual(buttons[1], {"text": "Получить VPN-ссылку", "callback_data": "admin:client-link"})
+        self.assertEqual(buttons[2], {"text": "Получить ключ доступа", "callback_data": "admin:client-key"})
+        self.assertEqual(buttons[3], {"text": "Подписки клиентов", "callback_data": "admin:subscribers"})
+        self.assertEqual(buttons[4], {"text": "Продлить подписку", "callback_data": "admin:client-extend"})
         self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:menu"})
 
     def test_admin_client_link_keyboard_uses_client_indexes(self) -> None:
@@ -172,6 +173,32 @@ class TelegramKeyboardTests(unittest.TestCase):
 
         self.assertEqual(buttons[0], {"text": "alice", "callback_data": "admin:client-link:0"})
         self.assertEqual(buttons[1], {"text": "bob", "callback_data": "admin:client-link:1"})
+        self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:clients"})
+
+    def test_link_credential_keyboards_use_connection_indexes(self) -> None:
+        options = [
+            {"label": "VLESS · main · reality/tcp"},
+            {"label": "TROJAN · caddy · tls/ws"},
+        ]
+
+        client_buttons = [
+            button for row in keyboards.client_link_credential_keyboard(options)["inline_keyboard"] for button in row
+        ]
+        admin_buttons = [
+            button for row in keyboards.admin_client_link_credential_keyboard(options)["inline_keyboard"] for button in row
+        ]
+
+        self.assertEqual(client_buttons[0], {"text": "VLESS · main · reality/tcp", "callback_data": "client:link-credential:0"})
+        self.assertEqual(client_buttons[1], {"text": "TROJAN · caddy · tls/ws", "callback_data": "client:link-credential:1"})
+        self.assertEqual(admin_buttons[0], {"text": "VLESS · main · reality/tcp", "callback_data": "admin:client-link-credential:0"})
+        self.assertEqual(admin_buttons[1], {"text": "TROJAN · caddy · tls/ws", "callback_data": "admin:client-link-credential:1"})
+
+    def test_admin_client_key_keyboard_uses_client_indexes(self) -> None:
+        rows = keyboards.admin_client_key_keyboard(["alice", "bob"])["inline_keyboard"]
+        buttons = [button for row in rows for button in row]
+
+        self.assertEqual(buttons[0], {"text": "alice", "callback_data": "admin:client-key:0"})
+        self.assertEqual(buttons[1], {"text": "bob", "callback_data": "admin:client-key:1"})
         self.assertEqual(buttons[-1], {"text": "Назад", "callback_data": "admin:clients"})
 
     def test_admin_payments_keyboard_contains_read_only_payment_sections(self) -> None:

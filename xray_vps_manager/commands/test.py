@@ -3,16 +3,18 @@ import json
 import os
 import re
 import socket
+import ssl
 import stat
 import subprocess
 import sys
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.activity import time as activity_time
+from xray_vps_manager.clients import diagnostics as client_diagnostics
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db import schema as sqlite_schema
 from xray_vps_manager.db.repositories import activity as sqlite_activity
@@ -25,6 +27,7 @@ from xray_vps_manager.db.storage import sqlite_read_ready
 from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import caddy as caddy_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -61,6 +64,7 @@ TRAFFIC_SERVICE_COMMANDS = [
     "ExecStart=/usr/local/sbin/xray-telegram notify-daily-summary --quiet",
 ]
 TELEGRAM_POLLER_SERVICE_COMMAND = "ExecStart=/usr/local/sbin/xray-telegram run-poller"
+TLS_EXPIRY_WARNING_DAYS = 14
 GREEN = "\033[32m"
 RED = "\033[31m"
 YELLOW = "\033[33m"
@@ -146,11 +150,26 @@ def vless_inbounds(config):
     return [inbound for inbound in config.get("inbounds", []) if inbound.get("protocol") == "vless"]
 
 
+def trojan_inbounds(config):
+    return [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if inbound.get("protocol") == "trojan"
+        and inbound_tag(inbound).startswith("trojan-tls")
+    ]
+
+
+def managed_connection_inbounds(config):
+    return vless_inbounds(config) + trojan_inbounds(config)
+
+
 def inbound_tag(inbound):
     return inbound.get("tag") or "vless-reality"
 
 
 def clients(inbound):
+    if inbound.get("protocol") == "trojan":
+        return inbound.get("settings", {}).get("clients", [])
     return inbound.get("settings", {}).get("clients", [])
 
 
@@ -467,7 +486,7 @@ def sqlite_alignment_issues(diag, connection):
             continue
         connection_tag = str(entry.get("connection") or "").strip()
         if connection_tag and connection_tag not in connections_section:
-            issues.append(f"SQLite client has missing Reality connection: {name} -> {connection_tag}")
+            issues.append(f"SQLite client has missing connection: {name} -> {connection_tag}")
 
     sqlite_clients = table_values(connection, "clients", "name")
     sqlite_traffic = table_values(connection, "traffic_totals", "client_name")
@@ -530,10 +549,10 @@ def check_reality_inbounds(diag):
 
     seen_tags = set()
     seen_ports = set()
-    names = set()
     summary = []
     for inbound in inbounds:
         tag = inbound_tag(inbound)
+        names = set()
         if tag in seen_tags:
             raise RuntimeError(f"duplicate inbound tag: {tag}")
         seen_tags.add(tag)
@@ -581,7 +600,7 @@ def check_reality_inbounds(diag):
                 raise RuntimeError(f"{tag}: {network} client must not use Vision flow")
             name = client_name(email)
             if name in names:
-                raise RuntimeError(f"duplicate active client name: {name}")
+                raise RuntimeError(f"{tag}: duplicate active client name: {name}")
             names.add(name)
         summary.append(f"{tag}:{port}")
 
@@ -589,6 +608,25 @@ def check_reality_inbounds(diag):
     diag.context["reality_tags"] = seen_tags
     diag.context["reality_ports"] = sorted(seen_ports)
     return "Reality connections OK: " + ", ".join(summary)
+
+
+def check_duplicate_active_client_names(diag):
+    rows = client_diagnostics.active_managed_client_rows(
+        managed_connection_inbounds(diag.context.get("config", {}))
+    )
+    cross_protocol = client_diagnostics.cross_protocol_duplicate_rows(rows)
+    client_db = diag.context.get("client_db", {})
+    db_clients = client_db.get("clients", {}) if isinstance(client_db.get("clients", {}), dict) else {}
+    issues = client_diagnostics.duplicate_active_client_name_issues(rows, db_clients)
+    if issues:
+        raise RuntimeError("; ".join(issues[:8]))
+    if not cross_protocol:
+        return "Active VLESS/Trojan duplicate client names OK: none"
+    summary = []
+    for name, rows in sorted(cross_protocol.items()):
+        tags = ", ".join(f"{row['connection']}:{row['protocol']}" for row in rows)
+        summary.append(f"{name} ({tags})")
+    return "Active VLESS/Trojan duplicate client names OK: " + "; ".join(summary[:8])
 
 
 def check_reality_ports(diag):
@@ -682,7 +720,7 @@ def check_client_list_runtime():
 
 def check_client_db_alignment(diag):
     db = diag.context.get("client_db", {})
-    inbounds = vless_inbounds(diag.context.get("config", {}))
+    inbounds = managed_connection_inbounds(diag.context.get("config", {}))
     known_tags = {inbound_tag(inbound) for inbound in inbounds}
     active_names = set()
     for inbound in inbounds:
@@ -699,7 +737,7 @@ def check_client_db_alignment(diag):
     if problems:
         raise RuntimeError("; ".join(problems[:8]))
     source = diag.context.get("client_db_source", "SQLite")
-    return f"{source} matches active VLESS connections"
+    return f"{source} matches active managed connections"
 
 
 def check_traffic_db_alignment(diag):
@@ -975,6 +1013,323 @@ def check_activity_blocklist_routing(diag):
     return f"Activity global blocklist routing is active: entries={len(active_items)}"
 
 
+def certificate_not_after(cert):
+    value = cert.get("notAfter") if isinstance(cert, dict) else ""
+    if not value:
+        raise RuntimeError("certificate notAfter is missing")
+    try:
+        return datetime.strptime(value, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise RuntimeError(f"certificate notAfter could not be parsed: {value}") from exc
+
+
+def decode_certificate_file(path):
+    try:
+        return ssl._ssl._test_decode_cert(str(path))
+    except Exception as exc:
+        raise RuntimeError(f"could not parse certificate {path}: {exc}") from exc
+
+
+def certificate_domain_names(cert):
+    names = [
+        value
+        for key, value in cert.get("subjectAltName", ())
+        if str(key).lower() == "dns" and value
+    ]
+    if names:
+        return names
+    for subject in cert.get("subject", ()):
+        for key, value in subject:
+            if str(key).lower() == "commonname" and value:
+                names.append(value)
+    return names
+
+
+def certificate_dns_name_matches(pattern, domain):
+    pattern = str(pattern or "").strip().lower().rstrip(".")
+    domain = str(domain or "").strip().lower().rstrip(".")
+    if pattern == domain:
+        return True
+    if not pattern.startswith("*."):
+        return False
+    suffix = pattern[1:]
+    return domain.endswith(suffix) and domain.count(".") == suffix.count(".")
+
+
+def certificate_domain_matches(cert, domain):
+    matcher = getattr(ssl, "match_hostname", None)
+    if matcher is None:
+        names = certificate_domain_names(cert)
+        if any(certificate_dns_name_matches(name, domain) for name in names):
+            return
+        detail = ", ".join(names) if names else "no DNS names"
+        raise RuntimeError(f"certificate does not match {domain}: {detail}")
+    try:
+        matcher(cert, domain)
+    except ssl.CertificateError as exc:
+        raise RuntimeError(f"certificate does not match {domain}: {exc}") from exc
+
+
+def check_certificate_expiry(cert, label, now):
+    expires = certificate_not_after(cert)
+    remaining = expires - now
+    if remaining.total_seconds() <= 0:
+        raise RuntimeError(f"{label}: certificate expired at {expires.isoformat()}")
+    remaining_days = int(remaining.total_seconds() // 86400)
+    if remaining_days < TLS_EXPIRY_WARNING_DAYS:
+        raise RuntimeError(f"{label}: certificate expires soon: {expires.isoformat()} ({remaining_days} day(s))")
+    return remaining_days
+
+
+def check_tls_file_path(path_value, label, *, private=False):
+    path = Path(str(path_value or ""))
+    if not path.is_absolute():
+        raise RuntimeError(f"{label} must be an absolute path: {path_value}")
+    if not path.exists():
+        raise RuntimeError(f"{label} not found: {path}")
+    if not path.is_file():
+        raise RuntimeError(f"{label} is not a regular file: {path}")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o002:
+        raise RuntimeError(f"{label} is world-writable: {path} mode {mode:o}")
+    if private and mode & 0o004:
+        raise RuntimeError(f"{label} is world-readable: {path} mode {mode:o}")
+    return mode
+
+
+def direct_tls_domain_for_tag(diag, tag):
+    connections = diag.context.get("client_db", {}).get("connections", {})
+    entry = connections.get(tag, {}) if isinstance(connections, dict) else {}
+    for key in ("sni", "publicHost", "domain"):
+        value = str(entry.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def direct_tls_certificate_pairs(config):
+    pairs = []
+    for inbound in config.get("inbounds", []):
+        stream = inbound.get("streamSettings") or {}
+        if stream.get("security") != "tls":
+            continue
+        tls = stream.get("tlsSettings") if isinstance(stream.get("tlsSettings"), dict) else {}
+        certificates = tls.get("certificates") if isinstance(tls.get("certificates"), list) else []
+        for index, certificate in enumerate(certificates):
+            if not isinstance(certificate, dict):
+                continue
+            cert_file = certificate.get("certificateFile", "")
+            key_file = certificate.get("keyFile", "")
+            if cert_file or key_file:
+                pairs.append((inbound_tag(inbound), index, cert_file, key_file))
+    return pairs
+
+
+def caddy_expectations(diag):
+    expectations = []
+    connections = diag.context.get("client_db", {}).get("connections", {})
+    if not isinstance(connections, dict):
+        return expectations
+    for tag, entry in connections.items():
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("security") or "") != "tls" or entry.get("caddy") is not True:
+            continue
+        domain = str(entry.get("publicHost") or entry.get("sni") or "").strip()
+        if not domain:
+            continue
+        protocol = str(entry.get("protocol") or "vless").lower()
+        transport = str(entry.get("transport") or "").lower()
+        expected_transport = "http" if protocol == "trojan" or transport == "ws" else "xhttp"
+        expected_path = str(entry.get("wsPath") or entry.get("xhttpPath") or "")
+        local_port = entry.get("localPort")
+        public_port = entry.get("publicPort") or entry.get("port") or 443
+        expectations.append(
+            {
+                "tag": str(tag),
+                "protocol": protocol,
+                "domain": domain,
+                "publicPort": int(public_port) if str(public_port or "").isdigit() else 443,
+                "localPort": int(local_port) if str(local_port or "").isdigit() else None,
+                "transport": expected_transport,
+                "path": expected_path,
+            }
+        )
+    return expectations
+
+
+def fetch_remote_tls_certificate(domain, port=443, timeout=6):
+    context = ssl.create_default_context()
+    with socket.create_connection((domain, port), timeout=timeout) as sock:
+        with context.wrap_socket(sock, server_hostname=domain) as tls:
+            return tls.getpeercert()
+
+
+def parse_http_response(data):
+    text = data.decode("iso-8859-1", errors="replace")
+    header_text, _, body = text.partition("\r\n\r\n")
+    lines = header_text.splitlines()
+    first_line = lines[0] if lines else ""
+    match = re.match(r"HTTP/\d(?:\.\d)?\s+([0-9]{3})\b", first_line)
+    if not match:
+        raise RuntimeError("endpoint did not return an HTTP status line")
+    headers = {}
+    for line in lines[1:]:
+        key, sep, value = line.partition(":")
+        if sep:
+            headers[key.strip().lower()] = value.strip()
+    return int(match.group(1)), first_line, headers, body
+
+
+def caddy_endpoint_request(item):
+    path = item.get("path") or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    domain = item["domain"]
+    if item.get("protocol") == "trojan" and item.get("transport") == "http":
+        return (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {domain}\r\n"
+            "User-Agent: xray-test\r\n"
+            "Connection: Upgrade\r\n"
+            "Upgrade: websocket\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "Sec-WebSocket-Key: eHlheS10ZXN0LWNoZWNrIQ==\r\n"
+            "\r\n"
+        )
+    return (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {domain}\r\n"
+        "User-Agent: xray-test\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+
+
+def describe_caddy_endpoint_response(item, status, first_line, headers, body):
+    label = f"{item['domain']}:{item.get('publicPort') or 443}{item.get('path') or '/'}"
+    if item.get("protocol") == "trojan" and item.get("transport") == "http":
+        if status != 101:
+            raise RuntimeError(f"{label}: expected WebSocket 101 from Caddy/Xray endpoint, got {first_line}")
+        return f"{label} WebSocket endpoint responded 101"
+    if status == 404:
+        content_type = headers.get("content-type", "").lower()
+        body_text = body.strip()
+        if body_text or "json" in content_type or "html" in content_type:
+            raise RuntimeError(f"{label}: returned fallback-looking 404; Caddy route may not reach Xray upstream")
+        return f"{label} endpoint route reached Xray and returned empty 404 to unsupported probe"
+    if status >= 500:
+        raise RuntimeError(f"{label}: returned {status}; Caddy upstream may be unavailable")
+    content_type = headers.get("content-type", "").lower()
+    if "html" in content_type or "<html" in body[:200].lower():
+        raise RuntimeError(f"{label}: returned HTML fallback; Caddy route may not reach Xray upstream")
+    return f"{label} endpoint responded {status}"
+
+
+def probe_caddy_endpoint(item, timeout=6):
+    domain = item["domain"]
+    port = item.get("publicPort") or 443
+    context = ssl.create_default_context()
+    context.set_alpn_protocols(["http/1.1"])
+    with socket.create_connection((domain, port), timeout=timeout) as sock:
+        with context.wrap_socket(sock, server_hostname=domain) as tls:
+            tls.settimeout(timeout)
+            tls.sendall(caddy_endpoint_request(item).encode("ascii"))
+            response = b""
+            while len(response) < 4096:
+                chunk = tls.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+                if b"\r\n\r\n" in response:
+                    break
+    status, first_line, headers, body = parse_http_response(response)
+    return describe_caddy_endpoint_response(item, status, first_line, headers, body)
+
+
+def check_tls_diagnostics(diag, now=None, *, deep=False):
+    config = diag.context.get("config", {})
+    now = now or datetime.now(timezone.utc).replace(microsecond=0)
+    issues = []
+    checked_direct = 0
+    checked_caddy = 0
+    checked_endpoints = 0
+
+    for tag, index, cert_file, key_file in direct_tls_certificate_pairs(config):
+        label = f"{tag}[{index}]"
+        domain = direct_tls_domain_for_tag(diag, tag)
+        try:
+            check_tls_file_path(cert_file, f"{label} certificateFile")
+            check_tls_file_path(key_file, f"{label} keyFile", private=True)
+            cert = decode_certificate_file(cert_file)
+            check_certificate_expiry(cert, label, now)
+            if domain:
+                certificate_domain_matches(cert, domain)
+            else:
+                issues.append(f"{label}: SNI/domain metadata is missing in SQLite connection")
+        except Exception as exc:
+            issues.append(str(exc))
+        checked_direct += 1
+
+    site_by_domain = {site.domain.lower(): site for site in caddy_config.list_site_configs()}
+    for item in caddy_expectations(diag):
+        domain = item["domain"]
+        site = site_by_domain.get(domain.lower())
+        if not site:
+            issues.append(f"{item['tag']}: Caddy site config not found for {domain}")
+            checked_caddy += 1
+            continue
+        if item["localPort"] and site.local_port != item["localPort"]:
+            issues.append(f"{item['tag']}: Caddy upstream mismatch for {domain}: {site.local_port} != {item['localPort']}")
+        if site.upstream_transport != item["transport"]:
+            issues.append(f"{item['tag']}: Caddy upstream transport mismatch for {domain}: {site.upstream_transport} != {item['transport']}")
+        if item["path"] and site.match_path != item["path"]:
+            issues.append(f"{item['tag']}: Caddy route path mismatch for {domain}: {site.match_path or '-'} != {item['path']}")
+        try:
+            cert = fetch_remote_tls_certificate(domain, port=item["publicPort"])
+            check_certificate_expiry(cert, f"{item['tag']} {domain}:{item['publicPort']}", now)
+            certificate_domain_matches(cert, domain)
+        except Exception as exc:
+            issues.append(f"{item['tag']} {domain}:{item['publicPort']} TLS handshake/certificate check failed: {exc}")
+        if deep:
+            try:
+                probe_caddy_endpoint(item)
+            except Exception as exc:
+                issues.append(f"{item['tag']} Caddy endpoint check failed: {exc}")
+            checked_endpoints += 1
+        checked_caddy += 1
+
+    if issues:
+        raise RuntimeError("; ".join(issues[:8]))
+    total = checked_direct + checked_caddy
+    if total == 0:
+        return "TLS certificate diagnostics skipped: no direct TLS certs or managed Caddy TLS connections"
+    if deep:
+        return f"TLS certificate diagnostics OK: direct={checked_direct}, caddy={checked_caddy}, endpoint={checked_endpoints}"
+    return f"TLS certificate diagnostics OK: direct={checked_direct}, caddy={checked_caddy}"
+
+
+def check_deprecated_trojan_websocket_usage(diag):
+    notices = []
+    for inbound in diag.context.get("config", {}).get("inbounds", []):
+        tag = inbound_tag(inbound)
+        protocol = str(inbound.get("protocol") or "").lower()
+        network = str((inbound.get("streamSettings") or {}).get("network") or "").lower()
+        if protocol == "trojan":
+            notices.append(
+                f"{tag}: Xray warns that Trojan (with no Flow, etc.) is deprecated; "
+                "keep it as compatibility/DPI-bypass mode and plan migration when a suitable replacement is ready"
+            )
+        if network == "ws":
+            notices.append(
+                f"{tag}: Xray warns that WebSocket transport (with ALPN http/1.1, etc.) is deprecated; "
+                "track XHTTP H2/H3 migration when client support is ready"
+            )
+    if notices:
+        raise RuntimeError("; ".join(notices[:8]))
+    return "Deprecated Trojan/WebSocket check OK: none"
+
+
 def check_file_permissions():
     checked = []
     for path in (
@@ -1009,6 +1364,7 @@ def run_diagnostics(full_integrity=False):
     diag.check("server.env", lambda: check_server_env(diag))
     diag.check("Manager timezone", lambda: check_manager_timezone(diag))
     diag.check("Reality connections", lambda: check_reality_inbounds(diag))
+    diag.check("Duplicate active client names", lambda: check_duplicate_active_client_names(diag), fatal=False)
     diag.check("Xray config test", check_config_test)
     diag.check("xray.service", check_xray_service)
     diag.check("Reality TCP ports", lambda: check_reality_ports(diag))
@@ -1030,6 +1386,9 @@ def run_diagnostics(full_integrity=False):
     diag.check("WARP config", lambda: check_warp_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
     diag.check("Activity blocklist routing", lambda: check_activity_blocklist_routing(diag), fatal=False)
+    diag.check("TLS certificate diagnostics", lambda: check_tls_diagnostics(diag, deep=full_integrity), fatal=False)
+    if full_integrity:
+        diag.check("Deprecated Trojan/WebSocket warnings", lambda: check_deprecated_trojan_websocket_usage(diag), fatal=False)
     diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
     return diag.summary()
 
@@ -1039,8 +1398,8 @@ def usage():
   xray-test
   xray-test --all
 
-Default mode skips the full SQLite PRAGMA quick_check scan.
-Use --all when you need a deep SQLite physical integrity check.
+Default mode skips the full SQLite PRAGMA quick_check scan and deep Caddy endpoint probes.
+Use --all when you need a deep SQLite physical integrity check plus Trojan/TLS/Caddy endpoint warnings.
 """)
 
 

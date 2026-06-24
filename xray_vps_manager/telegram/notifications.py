@@ -399,8 +399,8 @@ def notify_access_updated(ctx: NotificationContext, name, quiet=False):
     return 0
 
 
-def maintenance_notice_message(ctx: NotificationContext, db, template_id):
-    return messages.maintenance_notice_message(db, template_id, ctx.bot_name)
+def maintenance_notice_message(ctx: NotificationContext, db, template_id, extra_text=""):
+    return messages.maintenance_notice_message(db, template_id, ctx.bot_name, extra_text=extra_text)
 
 
 def normalize_maintenance_template_id(value):

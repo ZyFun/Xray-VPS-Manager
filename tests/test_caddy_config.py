@@ -30,6 +30,63 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertNotIn("protocols", block)
         self.assertIn("reverse_proxy h2c://127.0.0.1:10000", block)
 
+    def test_site_block_can_proxy_trojan_websocket_path(self) -> None:
+        block = caddy.caddy_site_block(
+            "vpn.example.com",
+            10100,
+            tls_min_version="tls1.2",
+            tls_max_version="tls1.3",
+            upstream_transport="http",
+            route_path="/trojan-private",
+        )
+
+        self.assertIn("vpn.example.com {", block)
+        self.assertIn("protocols tls1.2 tls1.3", block)
+        self.assertIn("@xray_path {", block)
+        self.assertIn("path /trojan-private", block)
+        self.assertIn("header Connection *Upgrade*", block)
+        self.assertIn("header Upgrade websocket", block)
+        self.assertIn("handle @xray_path {", block)
+        self.assertIn("reverse_proxy 127.0.0.1:10100", block)
+        self.assertIn("try_files {path} /index.html", block)
+        self.assertIn("file_server", block)
+
+    def test_site_block_can_proxy_xhttp_path_with_static_fallback(self) -> None:
+        block = caddy.caddy_site_block(
+            "files.example.com",
+            10300,
+            upstream_transport="xhttp",
+            route_path="/api/v1/sync",
+        )
+
+        self.assertIn("@xray_path path /api/v1/sync*", block)
+        self.assertIn("reverse_proxy h2c://127.0.0.1:10300", block)
+        self.assertIn("try_files {path} /index.html", block)
+        self.assertIn("file_server", block)
+
+    def test_site_block_does_not_duplicate_xhttp_path_wildcard(self) -> None:
+        block = caddy.caddy_site_block(
+            "files.example.com",
+            10300,
+            upstream_transport="xhttp",
+            route_path="/api/v1/sync*",
+        )
+
+        self.assertIn("@xray_path path /api/v1/sync*", block)
+        self.assertNotIn("/api/v1/sync**", block)
+
+    def test_site_block_uses_json_fallback_for_api_subdomain(self) -> None:
+        block = caddy.caddy_site_block(
+            "api.example.com",
+            10300,
+            upstream_transport="xhttp",
+            route_path="/api/v1/sync",
+        )
+
+        self.assertIn("header Content-Type application/json", block)
+        self.assertIn('respond "{\\"error\\":\\"not_found\\"}" 404', block)
+        self.assertNotIn("try_files {path} /index.html", block)
+
     def test_update_site_tls_config_preserves_static_site_from_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -163,6 +220,8 @@ class CaddyConfigTests(unittest.TestCase):
             10300,
             tls_min_version="tls1.3",
             tls_max_version="tls1.3",
+            upstream_transport="xhttp",
+            route_path="",
             runner=caddy.subprocess.run,
         )
         self.assertEqual(result.previous_tls_min_version, "tls1.2")
@@ -179,7 +238,96 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertEqual(item.local_port, 10300)
         self.assertEqual(item.tls_min_version, "tls1.2")
         self.assertEqual(item.tls_max_version, "tls1.2")
+        self.assertEqual(item.upstream_transport, "xhttp")
+        self.assertEqual(item.match_path, "")
         self.assertRegex(item.modified_at, r"^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC$")
+
+    def test_parse_site_config_reads_trojan_websocket_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vpn.example.com.caddy"
+            path.write_text(
+                caddy.caddy_site_block(
+                    "vpn.example.com",
+                    10100,
+                    upstream_transport="http",
+                    route_path="/trojan-private",
+                )
+            )
+
+            item = caddy.parse_site_config(path)
+
+        self.assertEqual(item.domain, "vpn.example.com")
+        self.assertEqual(item.local_port, 10100)
+        self.assertEqual(item.upstream_transport, "http")
+        self.assertEqual(item.match_path, "/trojan-private")
+
+    def test_parse_site_config_normalizes_xhttp_wildcard_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "files.example.com.caddy"
+            path.write_text(
+                "files.example.com {\n"
+                "    @xray_path path /api/v1/sync*\n"
+                "    handle @xray_path {\n"
+                "        reverse_proxy h2c://127.0.0.1:10300\n"
+                "    }\n"
+                "}\n"
+            )
+
+            item = caddy.parse_site_config(path)
+
+        self.assertEqual(item.local_port, 10300)
+        self.assertEqual(item.upstream_transport, "xhttp")
+        self.assertEqual(item.match_path, "/api/v1/sync")
+
+    def test_parse_site_config_reads_block_path_matcher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vpn.example.com.caddy"
+            path.write_text(
+                "vpn.example.com {\n"
+                "    @xray_path {\n"
+                "        path /private-ws\n"
+                "        header Connection *Upgrade*\n"
+                "        header Upgrade websocket\n"
+                "    }\n"
+                "    handle @xray_path {\n"
+                "        reverse_proxy 127.0.0.1:10100\n"
+                "    }\n"
+                "}\n"
+            )
+
+            item = caddy.parse_site_config(path)
+
+        self.assertEqual(item.local_port, 10100)
+        self.assertEqual(item.upstream_transport, "http")
+        self.assertEqual(item.match_path, "/private-ws")
+
+    def test_require_site_config_absent_refuses_existing_domain_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf_dir = Path(tmp)
+            path = conf_dir / "vpn.example.com.caddy"
+            path.write_text(
+                caddy.caddy_site_block(
+                    "vpn.example.com",
+                    10100,
+                    upstream_transport="http",
+                    route_path="/private-ws",
+                )
+            )
+
+            with self.assertRaises(FileExistsError) as raised:
+                caddy.require_site_config_absent("vpn.example.com", conf_dir)
+
+        message = str(raised.exception)
+        self.assertIn("Caddy site config already exists for vpn.example.com", message)
+        self.assertIn("127.0.0.1:10100", message)
+        self.assertIn("path=/private-ws", message)
+
+    def test_require_site_config_absent_allows_new_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conf_dir = Path(tmp)
+            (conf_dir / "api.example.com.caddy").write_text(caddy.caddy_site_block("api.example.com", 10300))
+
+            caddy.require_site_config_absent("vpn.example.com", conf_dir)
 
     def test_remove_default_http_site_block_preserves_import(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

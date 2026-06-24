@@ -10,6 +10,11 @@ from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import reports as activity_reports
 from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.activity import time as activity_time
+from xray_vps_manager.clients import credentials as client_credentials
+from xray_vps_manager.clients import repository as client_repository
+
+
+UNKNOWN_CONNECTION = "-"
 
 
 def iter_events(name, start, end):
@@ -20,14 +25,61 @@ def known_clients_for_reports(start=None, end=None):
     return {name: {} for name in activity_repository.event_client_names_for_read(start, end)}
 
 
+def known_credential_connections(name: str) -> list[str]:
+    try:
+        entry = client_repository.db_clients(client_repository.load_db_sql()).get(name)
+    except Exception:
+        return []
+    if not isinstance(entry, dict):
+        return []
+    return sorted(client_credentials.normalize_entry_credentials(entry))
+
+
+def credential_rows(
+    events: list[dict],
+    exceptions: list[dict],
+    known_connections: list[str] | None = None,
+) -> list[list]:
+    grouped: dict[str, list[dict]] = {connection: [] for connection in known_connections or []}
+    for event in events:
+        connection = str(event.get("connection") or UNKNOWN_CONNECTION)
+        grouped.setdefault(connection, []).append(event)
+
+    rows = []
+    total_events = 0
+    for connection in sorted(grouped):
+        aggregate = activity_reports.aggregate_events(grouped[connection], exceptions=exceptions)
+        total_events += aggregate["events"]
+        rows.append(
+            [
+                connection,
+                aggregate["events"],
+                len(aggregate["hosts"]),
+                activity_reports.top_items(aggregate["ports"]),
+                activity_reports.top_items(aggregate["outbounds"]),
+                activity_reports.top_items(aggregate["risks"]),
+                activity_reports.top_items(aggregate["exceptions"]),
+                activity_reports.top_items(aggregate["hosts"]),
+            ]
+        )
+    if rows:
+        rows.append(["TOTAL", total_events, "-", "-", "-", "-", "-", "-"])
+    return rows
+
+
 def client_report(name: str, days_value: str = "7") -> dict:
     days = int(days_value or "7", 10)
     start, end = activity_time.date_range_from_days(days)
     exceptions = activity_exceptions.exception_items_for_read()
+    period_events = list(iter_events(name, start, end))
+    known_connections = known_credential_connections(name)
     rows = []
     total_events = 0
     for day in activity_time.iter_dates(start, end):
-        aggregate = activity_reports.aggregate_events(iter_events(name, day, day), exceptions=exceptions)
+        aggregate = activity_reports.aggregate_events(
+            [event for event in period_events if str(event.get("time") or "").startswith(day.isoformat())],
+            exceptions=exceptions,
+        )
         total_events += aggregate["events"]
         rows.append(
             [
@@ -46,6 +98,7 @@ def client_report(name: str, days_value: str = "7") -> dict:
         "start": start,
         "end": end,
         "rows": rows,
+        "credentialRows": credential_rows(period_events, exceptions, known_connections),
         "totalEvents": total_events,
     }
 

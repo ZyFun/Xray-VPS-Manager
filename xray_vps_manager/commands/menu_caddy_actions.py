@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.clients import connections as connection_store
-from xray_vps_manager.clients.repository import db_connections, load_db_sql
+from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.xray import caddy
 from xray_vps_manager.xray.config import find_inbound_by_tag, load_config as load_xray_config
@@ -348,9 +348,24 @@ def prompt_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2"
         print(f"Выбери номер 1-{len(caddy.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
 
 
-def apply_site_write(domain: str, local_port: int, tls_min: str, tls_max: str) -> None:
+def apply_site_write(
+    domain: str,
+    local_port: int,
+    tls_min: str,
+    tls_max: str,
+    *,
+    upstream_transport: str = "xhttp",
+    route_path: str = "",
+) -> None:
     try:
-        result = caddy.update_site_config(domain, local_port, tls_min_version=tls_min, tls_max_version=tls_max)
+        result = caddy.update_site_config(
+            domain,
+            local_port,
+            tls_min_version=tls_min,
+            tls_max_version=tls_max,
+            upstream_transport=upstream_transport,
+            route_path=route_path,
+        )
     except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError) as exc:
         die(f"Caddy config failed. Previous site config was restored. Detail: {exc}")
     print(f"Caddy site updated: {result.path}")
@@ -369,19 +384,32 @@ def tls_connection_options() -> list[dict]:
     db = load_db_sql()
     connection_store.ensure_connections(config, db)
     options = []
-    for tag, entry in db_connections(db).items():
+    for tag, entry in db_managed_connections(db).items():
         if (entry.get("security") or "reality") != "tls":
             continue
         inbound = find_inbound_by_tag(config, tag)
+        protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
+        transport = entry.get("transport") or inbound.get("streamSettings", {}).get("network") or "xhttp"
+        if not ((protocol == "vless" and transport == "xhttp") or (protocol == "trojan" and transport == "ws")):
+            continue
+        route_path = ""
+        if protocol == "trojan" and transport == "ws":
+            route_path = entry.get("wsPath") or ""
+        elif protocol == "vless" and transport == "xhttp":
+            route_path = entry.get("xhttpPath") or ""
         options.append(
             {
                 "tag": tag,
                 "name": entry.get("name") or tag,
+                "protocol": protocol,
+                "transport": transport,
                 "domain": entry.get("publicHost") or entry.get("sni") or "",
                 "publicPort": int(entry.get("publicPort") or entry.get("port") or 443),
                 "localPort": int(entry.get("localPort") or inbound.get("port") or 0),
                 "tlsMin": entry.get("tlsMinVersion") or "tls1.2",
                 "tlsMax": entry.get("tlsMaxVersion") or "tls1.2",
+                "routePath": route_path,
+                "upstreamTransport": "http" if protocol == "trojan" and transport == "ws" else "xhttp",
             }
         )
     return options
@@ -390,15 +418,23 @@ def tls_connection_options() -> list[dict]:
 def choose_tls_connection() -> dict | None:
     options = tls_connection_options()
     if not options:
-        print("TLS/XHTTP connections not found.")
+        print("TLS connections not found.")
         return None
     rows = [
-        [str(index), item["name"], item["tag"], item["domain"], item["publicPort"], item["localPort"]]
+        [
+            str(index),
+            item["name"],
+            item["tag"],
+            f"{item['protocol']}/{item['transport']}",
+            item["domain"],
+            item["publicPort"],
+            item["localPort"],
+        ]
         for index, item in enumerate(options, start=1)
     ]
-    rows.append(["0", "Назад", "", "", "", ""])
-    print("Выбери TLS/XHTTP подключение.")
-    print_table(["№", "NAME", "TAG", "DOMAIN", "PUBLIC", "LOCAL"], rows, empty_message=None)
+    rows.append(["0", "Назад", "", "", "", "", ""])
+    print("Выбери TLS подключение.")
+    print_table(["№", "NAME", "TAG", "TYPE", "DOMAIN", "PUBLIC", "LOCAL"], rows, empty_message=None)
     while True:
         choice = input("Подключение: ").strip()
         if choice == "0":
@@ -416,7 +452,14 @@ def create_site_from_tls_connection() -> None:
         return
     domain = caddy.validate_domain(item["domain"])
     tls_min, tls_max = prompt_tls_versions(item["tlsMin"], item["tlsMax"])
-    apply_site_write(domain, item["localPort"], tls_min, tls_max)
+    apply_site_write(
+        domain,
+        item["localPort"],
+        tls_min,
+        tls_max,
+        upstream_transport=item["upstreamTransport"],
+        route_path=item["routePath"],
+    )
 
 
 def create_site_manual() -> None:
@@ -443,7 +486,14 @@ def update_site_upstream() -> None:
         return
     current_port = site.local_port or 10300
     local_port = validate_port(prompt(current_port, "LOCAL_PORT upstream"))
-    apply_site_write(site.domain, local_port, site.tls_min_version, site.tls_max_version)
+    apply_site_write(
+        site.domain,
+        local_port,
+        site.tls_min_version,
+        site.tls_max_version,
+        upstream_transport=site.upstream_transport,
+        route_path=site.match_path,
+    )
 
 
 def update_site_domain() -> None:
@@ -466,7 +516,14 @@ def update_site_domain() -> None:
     old_backup = caddy.backup_file(old_path)
     new_backup = caddy.backup_file(new_path)
     try:
-        caddy.write_site_config(new_domain, site.local_port, tls_min_version=site.tls_min_version, tls_max_version=site.tls_max_version)
+        caddy.write_site_config(
+            new_domain,
+            site.local_port,
+            tls_min_version=site.tls_min_version,
+            tls_max_version=site.tls_max_version,
+            upstream_transport=site.upstream_transport,
+            route_path=site.match_path,
+        )
         if old_path.exists():
             old_path.unlink()
         caddy.validate_and_reload_caddy(subprocess.run)

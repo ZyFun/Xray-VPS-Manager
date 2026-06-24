@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.models import client_from_db_entry
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray import cascade as cascade_config
@@ -157,6 +158,17 @@ def client_email(name: str, entry: dict[str, Any]) -> str:
     return client_from_db_entry(name, entry).get("email", name)
 
 
+def client_emails(name: str, entry: dict[str, Any]) -> list[str]:
+    emails: list[str] = []
+    for credential in client_credentials.sorted_credentials(entry):
+        email = client_credentials.credential_email(name, entry, credential)
+        if email and email not in emails:
+            emails.append(email)
+    if emails:
+        return emails
+    return [client_email(name, entry)]
+
+
 def ensure_routing_service(config: dict[str, Any]) -> bool:
     api = config.setdefault("api", {})
     services = api.setdefault("services", [])
@@ -193,9 +205,9 @@ def upsert_balancer(config: dict[str, Any], balancer_tag: str, selected_tag: str
     selected.pop("strategy", None)
 
 
-def insert_client_rule_before_catchall(config: dict[str, Any], email: str, balancer_tag: str) -> None:
+def insert_client_rule_before_catchall(config: dict[str, Any], emails: list[str], balancer_tag: str) -> None:
     rules = cascade_config.routing_rules(config)
-    rule = {"type": "field", "user": [email], "balancerTag": balancer_tag}
+    rule = {"type": "field", "user": emails, "balancerTag": balancer_tag}
     index = len(rules)
     for current_index, current in enumerate(rules):
         if cascade_config.is_catchall_rule(current):
@@ -213,7 +225,7 @@ def ensure_client_route_config(config: dict[str, Any], name: str, entry: dict[st
     balancer_tag = client_balancer_tag(name, entry)
     remove_existing_client_rule(config, balancer_tag)
     upsert_balancer(config, balancer_tag, selected)
-    insert_client_rule_before_catchall(config, client_email(name, entry), balancer_tag)
+    insert_client_rule_before_catchall(config, client_emails(name, entry), balancer_tag)
     entry["selectedCascadeTag"] = selected
     after = repr(config.get("api", {})) + repr(config.get("routing", {}))
     return before != after

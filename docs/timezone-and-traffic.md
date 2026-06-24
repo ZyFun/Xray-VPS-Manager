@@ -124,6 +124,8 @@ xray-client traffic-month ИМЯ 2026-06
 xray-client traffic-period ИМЯ 2026-06-01 2026-06-30
 ```
 
+Если у клиента несколько credentials, команды `traffic-day`, `traffic-week`, `traffic-month` и `traffic-period` после общей таблицы дополнительно выводят блок `Credentials`. В нём видно разрез за выбранный период по каждому protocol credential: `PROTOCOL`, `SECURITY`, `TRANSPORT`, `CONNECTION`, `STATUS`, `IN`, `OUT` и `TOTAL`. Это помогает отличить расход VLESS, Trojan и других подключений одного клиента.
+
 Проверить и отключить клиентов с истёкшим сроком вручную:
 
 ```bash
