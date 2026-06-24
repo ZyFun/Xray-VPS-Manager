@@ -478,13 +478,19 @@ class TelegramPollerTests(unittest.TestCase):
         def run_capture(command, timeout=20, **_kwargs):
             events.append(("run", command, timeout))
             client_db["clients"]["alice"] = {
+                "id": "00000000-0000-0000-0000-000000000001",
                 "expiresAt": "2026-07-14T00:00:00+03:00",
                 "paymentType": "paid",
                 "connection": "vless-reality",
             }
             return SimpleNamespace(
                 returncode=0,
-                stdout="Added client: alice\nAmount per paid client: 500 ₽\nvless://alice-key@example.com:443?type=tcp#Xray",
+                stdout=(
+                    "Added client: alice\n"
+                    "Access key: vpn-key:00000000-0000-0000-0000-000000000001\n"
+                    "Amount per paid client: 500 ₽\n"
+                    "vless://alice-key@example.com:443?type=tcp#Xray"
+                ),
                 stderr="",
             )
 
@@ -503,8 +509,9 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertNotIn("111", db.get("adminState", {}))
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Клиент добавлен.", sent[2])
-        self.assertIn("Ваш VPN-ключ:\n<pre><code>vless://alice-key@example.com:443?type=tcp#Xray</code></pre>", sent[2])
-        self.assertIn("По этому же ключу @ExampleVpnBot будет показывать статус подписки", sent[2])
+        self.assertIn("Ссылка подключения:\n<pre><code>vless://alice-key@example.com:443?type=tcp#Xray</code></pre>", sent[2])
+        self.assertIn("Ключ доступа для бота:\n<pre><code>vpn-key:00000000-0000-0000-0000-000000000001</code></pre>", sent[2])
+        self.assertIn("По ключу доступа @ExampleVpnBot будет показывать статус подписки", sent[2])
         self.assertIn("Не забудь открыть @ExampleVpnBot и подключить уведомления.", sent[2])
         self.assertIn("Доступ до: 2026-07-14T00:00:00+03:00", sent[2])
         self.assertIn("Сумма оплаты: 500 ₽", sent[2])
@@ -566,11 +573,19 @@ class TelegramPollerTests(unittest.TestCase):
         def run_capture(command, timeout=20, **_kwargs):
             events.append(("run", command, timeout))
             client_db["clients"]["bob"] = {
+                "id": "00000000-0000-0000-0000-000000000002",
                 "expiresAt": "",
                 "paymentType": "free",
                 "connection": "vless-reality-2",
             }
-            return SimpleNamespace(returncode=0, stdout="vless://bob-key@example.com:8443?type=tcp#Xray", stderr="")
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "Access key: vpn-key:00000000-0000-0000-0000-000000000002\n"
+                    "vless://bob-key@example.com:8443?type=tcp#Xray"
+                ),
+                stderr="",
+            )
 
         ctx = self.make_context(db, updates, events, client_db=client_db, run_capture=run_capture)
 
@@ -1057,7 +1072,7 @@ class TelegramPollerTests(unittest.TestCase):
         guard = db["clientSubscriptionState"]["callbackGuards"]["222"]
         self.assertEqual(guard["activeMessageId"], 91)
 
-    def test_vless_subscription_sets_subscribed_command_menu(self) -> None:
+    def test_access_key_subscription_sets_subscribed_command_menu(self) -> None:
         db = {
             "enabled": True,
             "token": "token",
@@ -1066,16 +1081,11 @@ class TelegramPollerTests(unittest.TestCase):
             "clientSubscriptions": {},
         }
         client_uuid = "00000000-0000-0000-0000-000000000001"
-        link = (
-            f"vless://{client_uuid}@vpn.example:443?"
-            "security=reality&encryption=none&pbk=public-key&fp=chrome&type=tcp"
-            "&flow=xtls-rprx-vision&sni=example.com&sid=abcd"
-        )
         updates = [
             {
                 "update_id": 46,
                 "message": {
-                    "text": link,
+                    "text": f"vpn-key:{client_uuid}",
                     "chat": {"id": "222", "type": "private", "username": "client"},
                 },
             }
@@ -1086,20 +1096,10 @@ class TelegramPollerTests(unittest.TestCase):
             updates,
             events,
             client_db={
-                "connections": {
-                    "vless-reality": {
-                        "port": 443,
-                        "publicKey": "public-key",
-                        "sni": "example.com",
-                        "shortId": "abcd",
-                        "fingerprint": "chrome",
-                    }
-                },
                 "clients": {
                     "alice": {
                         "id": client_uuid,
                         "connection": "vless-reality",
-                        "client": {"id": client_uuid, "flow": "xtls-rprx-vision"},
                     }
                 },
             },
@@ -1111,6 +1111,33 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertEqual(api_calls[0][1], "setMyCommands")
         self.assertEqual(api_calls[0][2]["scope"], {"type": "chat", "chat_id": "222"})
         self.assertIn({"command": "unsubscribe", "description": "Отписаться от бота"}, api_calls[0][2]["commands"])
+
+    def test_protocol_link_subscription_is_rejected_with_access_key_hint(self) -> None:
+        db = {
+            "enabled": True,
+            "token": "token",
+            "chatId": "111",
+            "clientSubscriptionState": {"userUpdateOffset": 46, "expiryReminders": {}},
+            "clientSubscriptions": {},
+        }
+        updates = [
+            {
+                "update_id": 47,
+                "message": {
+                    "text": "vless://00000000-0000-0000-0000-000000000001@vpn.example:443?security=reality",
+                    "chat": {"id": "222", "type": "private", "username": "client"},
+                },
+            }
+        ]
+        events = []
+        ctx = self.make_context(db, updates, events)
+
+        self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+
+        sent = [event for event in events if event[0] == "send"][-1]
+        self.assertIn("Протокольные ссылки больше не используются", sent[2])
+        self.assertIn("vpn-key:00000000-0000-0000-0000-000000000000", sent[2])
+        self.assertEqual(db.get("clientSubscriptions"), {})
 
     def test_plain_text_from_subscribed_client_shows_status(self) -> None:
         db = {
@@ -1147,7 +1174,7 @@ class TelegramPollerTests(unittest.TestCase):
 
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Текущая подписка:", sent[2])
-        self.assertNotIn("Я не нашёл VLESS-ссылку", sent[2])
+        self.assertNotIn("Я не нашёл ключ доступа", sent[2])
 
     def test_help_command_sends_client_help_text(self) -> None:
         db = {
@@ -1173,7 +1200,7 @@ class TelegramPollerTests(unittest.TestCase):
 
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Vireika: помощь", sent[2])
-        self.assertIn("• получить актуальную VLESS-ссылку;", sent[2])
+        self.assertIn("• получить актуальную VPN-ссылку;", sent[2])
         self.assertIn("• сменить страну подключения;", sent[2])
         self.assertIn("После смены страны переподключи VPN", sent[2])
         self.assertNotIn("Привет. Я бот Vireika.", sent[2])

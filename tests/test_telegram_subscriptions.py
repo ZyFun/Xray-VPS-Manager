@@ -159,6 +159,46 @@ class TelegramSubscriptionTests(unittest.TestCase):
         self.assertEqual(reason, "")
         self.assertEqual(match[0], "internal_alice")
 
+    def test_subscribe_chat_to_client_uses_access_key_only(self) -> None:
+        db = {"clientSubscriptions": {}}
+        client_db = {
+            "clients": {
+                "internal_alice": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "connection": "trojan-tls",
+                }
+            }
+        }
+
+        name, entry = subscriptions.subscribe_chat_to_client(
+            db,
+            {"id": "222"},
+            "мой ключ vpn-key:00000000-0000-0000-0000-000000000001",
+            client_db,
+            "@alice",
+            "2026-06-24T10:00:00Z",
+        )
+
+        self.assertEqual(name, "internal_alice")
+        self.assertEqual(entry["connection"], "trojan-tls")
+        self.assertEqual(db["clientSubscriptions"]["222"]["clientKey"], "vpn-key:00000000-0000-0000-0000-000000000001")
+        self.assertEqual(db["clientSubscriptions"]["222"]["linkHash"], "")
+
+    def test_subscribe_chat_to_client_rejects_protocol_links(self) -> None:
+        db = {"clientSubscriptions": {}}
+
+        with self.assertRaisesRegex(ValueError, "Протокольные ссылки больше не используются"):
+            subscriptions.subscribe_chat_to_client(
+                db,
+                {"id": "222"},
+                "trojan://secret@example.com:443?security=tls",
+                {"clients": {}},
+                "@alice",
+                "2026-06-24T10:00:00Z",
+            )
+
+        self.assertEqual(db["clientSubscriptions"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

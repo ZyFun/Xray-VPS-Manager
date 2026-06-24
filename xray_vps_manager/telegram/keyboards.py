@@ -17,7 +17,7 @@ def is_subscribed_chat(db, chat_id):
 def subscribed_client_menu_keyboard():
     return [
         [{"text": "Статус подписки", "callback_data": "client:status"}],
-        [{"text": "Получить VLESS-ссылку", "callback_data": "client:link"}],
+        [{"text": "Получить VPN-ссылку", "callback_data": "client:link"}],
         [{"text": "Страна подключения", "callback_data": "client:country"}],
         [{"text": "Статистика трафика", "callback_data": "client:traffic"}],
         [{"text": "Уведомления активности", "callback_data": "client:activity"}],
@@ -113,6 +113,17 @@ def client_country_keyboard(options, current_tag=""):
     return {"inline_keyboard": rows}
 
 
+def client_link_credential_keyboard(options):
+    rows = []
+    for index, item in enumerate(options):
+        label = str(item.get("label") or item.get("name") or item.get("connection") or "Подключение")
+        if len(label) > 58:
+            label = label[:55].rstrip() + "..."
+        rows.append([{"text": label, "callback_data": f"client:link-credential:{index}"}])
+    rows.append([{"text": "Назад", "callback_data": "client:menu"}])
+    return {"inline_keyboard": rows}
+
+
 def client_keyboard_for_chat(db, chat_id):
     rows = list(client_menu_keyboard(subscribed=is_subscribed_chat(db, chat_id)))
     if is_owner_chat(db, chat_id):
@@ -160,7 +171,8 @@ def admin_clients_keyboard():
     return {
         "inline_keyboard": [
             [{"text": "Добавить клиента", "callback_data": "admin:client-add"}],
-            [{"text": "Получить VLESS-ссылку", "callback_data": "admin:client-link"}],
+            [{"text": "Получить VPN-ссылку", "callback_data": "admin:client-link"}],
+            [{"text": "Получить ключ доступа", "callback_data": "admin:client-key"}],
             [{"text": "Подписки клиентов", "callback_data": "admin:subscribers"}],
             [{"text": "Продлить подписку", "callback_data": "admin:client-extend"}],
             [{"text": "Назад", "callback_data": "admin:menu"}],
@@ -171,6 +183,26 @@ def admin_clients_keyboard():
 def admin_client_link_keyboard(client_names):
     rows = [
         [{"text": str(name), "callback_data": f"admin:client-link:{index}"}]
+        for index, name in enumerate(client_names)
+    ]
+    rows.append([{"text": "Назад", "callback_data": "admin:clients"}])
+    return {"inline_keyboard": rows}
+
+
+def admin_client_link_credential_keyboard(options):
+    rows = []
+    for index, item in enumerate(options):
+        label = str(item.get("label") or item.get("name") or item.get("connection") or "Подключение")
+        if len(label) > 58:
+            label = label[:55].rstrip() + "..."
+        rows.append([{"text": label, "callback_data": f"admin:client-link-credential:{index}"}])
+    rows.append([{"text": "Назад", "callback_data": "admin:client-link"}])
+    return {"inline_keyboard": rows}
+
+
+def admin_client_key_keyboard(client_names):
+    rows = [
+        [{"text": str(name), "callback_data": f"admin:client-key:{index}"}]
         for index, name in enumerate(client_names)
     ]
     rows.append([{"text": "Назад", "callback_data": "admin:clients"}])
@@ -319,6 +351,16 @@ def admin_notice_confirm_keyboard(kind):
                 {"text": "Отправить", "callback_data": f"admin:notice-send:{kind}"},
                 {"text": "Отмена", "callback_data": "admin:notice-cancel"},
             ],
+            [{"text": "Назад", "callback_data": "admin:notices"}],
+        ]
+    }
+
+
+def admin_notice_done_extra_keyboard():
+    return {
+        "inline_keyboard": [
+            [{"text": "Без доп. текста", "callback_data": "admin:notice:done-preview"}],
+            [{"text": "Отмена", "callback_data": "admin:notice-cancel"}],
             [{"text": "Назад", "callback_data": "admin:notices"}],
         ]
     }

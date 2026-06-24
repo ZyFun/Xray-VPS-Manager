@@ -8,6 +8,7 @@ import re
 from xray_vps_manager.telegram import payments
 
 TELEGRAM_MESSAGE_LIMIT = 3900
+ACCESS_KEY_PLACEHOLDER = "vpn-key:00000000-0000-0000-0000-000000000000"
 
 MAINTENANCE_NOTICE_TEMPLATES = {
     "start": {
@@ -53,14 +54,14 @@ def subscription_intro_text(db, bot_name):
         f"Привет. Я бот {bot_name(db)}.\n\n"
         "Я помогу не забыть о переводе за совместную аренду сервера.\n\n"
         "Чтобы подключить напоминания, нажми кнопку «Подключить уведомления» "
-        "или просто отправь сюда свою VLESS-ссылку или клиентский ключ. "
-        "По ней я определю твой ключ и включу уведомления."
+        f"или просто отправь сюда ключ доступа формата {ACCESS_KEY_PLACEHOLDER}. "
+        "По нему я определю твой VPN-ключ и включу уведомления."
     )
 
 
 def subscribe_prompt_text():
     return (
-        "Отправь сюда свою VLESS-ссылку целиком или клиентский ключ вида vpn-key:UUID.\n\n"
+        f"Отправь сюда ключ доступа формата {ACCESS_KEY_PLACEHOLDER}.\n\n"
         "Я определю клиента и включу уведомления."
     )
 
@@ -71,7 +72,7 @@ def client_help_text(db, bot_name):
         "Я рядом, чтобы было проще следить за доступом к VPN.\n\n"
         "Здесь можно:\n"
         "• проверить статус подписки;\n"
-        "• получить актуальную VLESS-ссылку;\n"
+        "• получить актуальную VPN-ссылку;\n"
         "• сменить страну подключения;\n"
         "• посмотреть статистику трафика;\n"
         "• включить или отключить личные уведомления активности;\n"
@@ -100,7 +101,7 @@ def admin_status_intro_text():
 def admin_clients_intro_text():
     return (
         "Xray VPS Manager: клиенты\n\n"
-        "Здесь можно добавить клиента, получить актуальную VLESS-ссылку, посмотреть Telegram-подписки и продлить доступ."
+        "Здесь можно добавить клиента, получить актуальную VPN-ссылку или ключ доступа, посмотреть Telegram-подписки и продлить доступ."
     )
 
 
@@ -202,17 +203,20 @@ def telegram_html_escape(value):
     return html.escape(str(value or ""), quote=False)
 
 
-def build_client_added_message(db, vless_link, access_until, payment_type, payment_amount_label, bot_name):
+def build_client_added_message(db, connection_link, access_key, access_until, payment_type, payment_amount_label, bot_name):
     bot_label = bot_reference(db, bot_name)
     lines = [
         "Клиент добавлен.",
         "",
         "Можно переслать это сообщение пользователю:",
         "",
-        "Ваш VPN-ключ:",
-        f"<pre><code>{telegram_html_escape(str(vless_link or '').strip())}</code></pre>",
+        "Ссылка подключения:",
+        f"<pre><code>{telegram_html_escape(str(connection_link or '').strip())}</code></pre>",
         "",
-        f"По этому же ключу {bot_label} будет показывать статус подписки и напоминать о продлении.",
+        "Ключ доступа для бота:",
+        f"<pre><code>{telegram_html_escape(str(access_key or '').strip())}</code></pre>",
+        "",
+        f"По ключу доступа {bot_label} будет показывать статус подписки и напоминать о продлении.",
         bot_notification_hint(db),
         "",
         f"Доступ до: {access_until}",
@@ -241,9 +245,13 @@ def normalize_maintenance_template_id(value):
     return aliases.get(raw, raw)
 
 
-def maintenance_notice_message(db, template_id, bot_name):
+def maintenance_notice_message(db, template_id, bot_name, extra_text=""):
     template_id = normalize_maintenance_template_id(template_id)
     template = MAINTENANCE_NOTICE_TEMPLATES.get(template_id)
     if not template:
         raise ValueError("Неизвестный шаблон уведомления о работах.")
-    return "\n".join(line.format(bot=bot_name(db)) for line in template["lines"])
+    lines = [line.format(bot=bot_name(db)) for line in template["lines"]]
+    extra = str(extra_text or "").strip()
+    if template_id == "done" and extra:
+        lines.extend(["", "Что было сделано:", "", extra])
+    return "\n".join(lines)
