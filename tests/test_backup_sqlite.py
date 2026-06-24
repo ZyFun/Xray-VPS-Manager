@@ -389,6 +389,87 @@ class BackupSQLiteTests(unittest.TestCase):
             self.assertEqual(manager_db_target.read_text(), "restored")
             self.assertIn(str(manager_db_target), restored)
 
+    def test_restore_direct_tls_certificate_permissions_updates_existing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            cert = root / "fullchain.pem"
+            key = root / "privkey.pem"
+            cert.write_text("cert")
+            key.write_text("key")
+            cert.chmod(0o600)
+            key.chmod(0o600)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "inbounds": [
+                            {
+                                "tag": "trojan-tls-2",
+                                "streamSettings": {
+                                    "security": "tls",
+                                    "tlsSettings": {
+                                        "certificates": [
+                                            {
+                                                "certificateFile": str(cert),
+                                                "keyFile": str(key),
+                                            }
+                                        ]
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                )
+            )
+
+            with mock.patch.object(backup, "chown_xray") as chown_xray:
+                messages = backup.restore_direct_tls_certificate_permissions(config_path)
+
+            self.assertEqual(
+                messages,
+                ["Direct TLS certificate permissions restored: certificateFile=1, keyFile=1"],
+            )
+            self.assertEqual(cert.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(key.stat().st_mode & 0o777, 0o640)
+            chown_xray.assert_has_calls([mock.call(cert), mock.call(key)])
+
+    def test_restore_direct_tls_certificate_permissions_warns_for_missing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "inbounds": [
+                            {
+                                "tag": "trojan-direct",
+                                "streamSettings": {
+                                    "security": "tls",
+                                    "tlsSettings": {
+                                        "certificates": [
+                                            {
+                                                "certificateFile": str(root / "missing-fullchain.pem"),
+                                                "keyFile": str(root / "missing-privkey.pem"),
+                                            }
+                                        ]
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                )
+            )
+
+            messages = backup.restore_direct_tls_certificate_permissions(config_path)
+
+            self.assertEqual(
+                messages,
+                [
+                    f"WARNING: Direct TLS trojan-direct[0] certificateFile file not found after restore: {root / 'missing-fullchain.pem'}",
+                    f"WARNING: Direct TLS trojan-direct[0] keyFile file not found after restore: {root / 'missing-privkey.pem'}",
+                ],
+            )
+
     def test_restore_caddy_config_if_present_restores_and_validates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -550,6 +631,28 @@ class BackupSQLiteTests(unittest.TestCase):
 
             self.assertEqual(messages, [])
             self.assertEqual(calls, [])
+
+    def test_restore_caddy_random_tls_state_treats_missing_legacy_unit_as_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_dir = Path(tmp_dir)
+            (temp_dir / "manifest.json").write_text(json.dumps({"caddyRandomTls": {"configured": False}}))
+
+            def fake_systemctl(args, timeout=20):
+                if args == ["disable", "--now", "xray-caddy-random-tls.timer"]:
+                    return backup.subprocess.CompletedProcess(
+                        ["systemctl", *args],
+                        1,
+                        "",
+                        "Failed to disable unit: Unit file xray-caddy-random-tls.timer does not exist.",
+                    )
+                return backup.subprocess.CompletedProcess(["systemctl", *args], 0, "", "")
+
+            with mock.patch.object(backup.xray_caddy, "list_random_tls_configs", return_value=[]), mock.patch.object(
+                backup, "run_systemctl", side_effect=fake_systemctl
+            ):
+                messages = backup.restore_caddy_random_tls_state(temp_dir)
+
+            self.assertEqual(messages, ["Caddy TLS randomizer timer restored: disabled"])
 
     def test_backup_manager_database_before_restore_creates_sqlite_copy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

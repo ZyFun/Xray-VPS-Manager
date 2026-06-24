@@ -181,7 +181,10 @@ def default_connection_tag(config: dict[str, Any]) -> str:
     inbounds = vless_connection_inbounds(config)
     if inbounds:
         return inbound_tag(inbounds[0])
-    raise ValueError("VLESS connection inbound not found.")
+    inbounds = managed_connection_inbounds(config)
+    if inbounds:
+        return inbound_tag(inbounds[0])
+    raise ValueError("Managed connection inbound not found.")
 
 
 def connection_name_from_tag(tag: str) -> str:
