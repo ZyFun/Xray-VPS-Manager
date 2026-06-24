@@ -106,6 +106,62 @@ class ClientCommandReadTests(unittest.TestCase):
         self.assertIn("trojan-tls", text)
         self.assertIn("OK", text)
 
+    def test_traffic_period_prints_credential_breakdown_for_multi_credential_client(self) -> None:
+        traffic_db = {
+            "clients": {
+                "alice": {
+                    "history": {"2026-06-12": {"08": {"incoming": 1024, "outgoing": 2048}}},
+                }
+            },
+            "credentials": {
+                "alice": {
+                    "vless-reality": {
+                        "history": {"2026-06-12": {"08": {"incoming": 1024, "outgoing": 2048}}},
+                    },
+                    "trojan-tls": {
+                        "history": {"2026-06-12": {"09": {"incoming": 4096, "outgoing": 8192}}},
+                    },
+                }
+            },
+        }
+        credential_rows = [
+            {
+                "name": "alice",
+                "client": "alice",
+                "protocol": "vless",
+                "security": "reality",
+                "transport": "tcp",
+                "connection": "vless-reality",
+                "status": "enabled",
+            },
+            {
+                "name": "alice",
+                "client": "alice",
+                "protocol": "trojan",
+                "security": "tls/caddy",
+                "transport": "ws",
+                "connection": "trojan-tls",
+                "status": "enabled",
+            },
+        ]
+        output = StringIO()
+
+        with mock.patch.object(
+            client_command,
+            "traffic_report_context",
+            return_value=({}, {}, traffic_db, traffic_db["clients"]["alice"]),
+        ), \
+            mock.patch.object(client_command, "traffic_credential_rows", return_value=credential_rows), \
+            mock.patch.object(client_command.client_settings, "manager_timezone_label", return_value="UTC"), \
+            redirect_stdout(output):
+            client_command.cmd_traffic_period("alice", "2026-06-12", "2026-06-12")
+
+        text = output.getvalue()
+        self.assertIn("Credentials", text)
+        self.assertIn("vless-reality", text)
+        self.assertIn("trojan-tls", text)
+        self.assertIn("15.00KB", text)
+
     def test_rotate_trojan_password_prints_reissued_link(self) -> None:
         result = client_command.client_crud.RotateTrojanPasswordResult(
             name="alice",

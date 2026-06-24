@@ -10,7 +10,7 @@ from typing import Any
 from xray_vps_manager.traffic import history
 from xray_vps_manager.traffic import settings as traffic_settings
 from xray_vps_manager.traffic.formatting import format_traffic
-from xray_vps_manager.traffic.repository import traffic_entry
+from xray_vps_manager.traffic.repository import credential_traffic_entry, traffic_entry
 
 
 def month_bounds(month_key: str, today: date | None = None) -> tuple[date, date]:
@@ -23,6 +23,48 @@ def day_hour_rows(entry: dict[str, Any] | None, day: date) -> list[list[str]]:
 
 def period_day_rows(entry: dict[str, Any] | None, start: date, end: date) -> list[list[str]]:
     return history.period_day_rows(entry, start, end, format_traffic)
+
+
+def credential_period_rows(
+    credential_rows: list[dict[str, Any]],
+    traffic_db: dict[str, Any],
+    start: date,
+    end: date,
+) -> list[list[str]]:
+    table_rows: list[list[str]] = []
+    total_in = 0
+    total_out = 0
+    for row in credential_rows:
+        entry = credential_traffic_entry(traffic_db, row["name"], row["connection"])
+        incoming, outgoing = history.period_total(entry, start, end)
+        total_in += incoming
+        total_out += outgoing
+        table_rows.append(
+            [
+                row["protocol"],
+                row.get("security") or "-",
+                row.get("transport") or "-",
+                row["connection"],
+                row["status"],
+                format_traffic(incoming),
+                format_traffic(outgoing),
+                format_traffic(incoming + outgoing),
+            ]
+        )
+    if table_rows:
+        table_rows.append(
+            [
+                "TOTAL",
+                "-",
+                "-",
+                "-",
+                "-",
+                format_traffic(total_in),
+                format_traffic(total_out),
+                format_traffic(total_in + total_out),
+            ]
+        )
+    return table_rows
 
 
 def month_summary_rows(
