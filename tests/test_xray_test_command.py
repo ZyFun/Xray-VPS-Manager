@@ -234,6 +234,164 @@ class XrayTestCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "alice: enabled in SQLite but absent from config"):
             test_command.check_client_db_alignment(diag)
 
+    def test_reality_inbounds_allow_same_client_on_different_connections(self) -> None:
+        client_id = "00000000-0000-0000-0000-000000000001"
+        diag = SimpleNamespace(
+            context={
+                "config": {
+                    "inbounds": [
+                        {
+                            "tag": "vless-reality",
+                            "port": 443,
+                            "protocol": "vless",
+                            "settings": {
+                                "clients": [
+                                    {
+                                        "id": client_id,
+                                        "email": "alice|created=2026-06-20T00:00:00Z|connection=vless-reality",
+                                        "flow": "xtls-rprx-vision",
+                                    }
+                                ]
+                            },
+                            "streamSettings": {
+                                "security": "reality",
+                                "realitySettings": {
+                                    "serverNames": ["example.com"],
+                                    "dest": "example.com:443",
+                                    "privateKey": "private",
+                                    "shortIds": ["abcd"],
+                                },
+                            },
+                        },
+                        {
+                            "tag": "vless-reality-2",
+                            "port": 8443,
+                            "protocol": "vless",
+                            "settings": {
+                                "clients": [
+                                    {
+                                        "id": client_id,
+                                        "email": "alice|created=2026-06-20T00:00:00Z|connection=vless-reality-2",
+                                        "flow": "xtls-rprx-vision",
+                                    }
+                                ]
+                            },
+                            "streamSettings": {
+                                "security": "reality",
+                                "realitySettings": {
+                                    "serverNames": ["mirror.example.com"],
+                                    "dest": "mirror.example.com:443",
+                                    "privateKey": "private",
+                                    "shortIds": ["ef01"],
+                                },
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+
+        result = test_command.check_reality_inbounds(diag)
+
+        self.assertIn("vless-reality:443", result)
+        self.assertIn("vless-reality-2:8443", result)
+
+    def test_duplicate_active_client_names_accepts_vless_and_trojan_credentials(self) -> None:
+        vless_email = "alice|created=2026-06-20T00:00:00Z|connection=vless-reality"
+        trojan_email = "alice|created=2026-06-21T00:00:00Z|connection=trojan-tls"
+        diag = SimpleNamespace(
+            context={
+                "client_db": {
+                    "clients": {
+                        "alice": {
+                            "id": "00000000-0000-0000-0000-000000000001",
+                            "created": "2026-06-20T00:00:00Z",
+                            "connection": "vless-reality",
+                            "client": {"id": "00000000-0000-0000-0000-000000000001", "email": vless_email},
+                            "credentials": {
+                                "vless-reality": {
+                                    "connection": "vless-reality",
+                                    "protocol": "vless",
+                                    "client": {"id": "00000000-0000-0000-0000-000000000001", "email": vless_email},
+                                },
+                                "trojan-tls": {
+                                    "connection": "trojan-tls",
+                                    "protocol": "trojan",
+                                    "client": {"password": "secret", "email": trojan_email},
+                                },
+                            },
+                        }
+                    }
+                },
+                "config": {
+                    "inbounds": [
+                        {
+                            "tag": "vless-reality",
+                            "protocol": "vless",
+                            "settings": {"clients": [{"email": vless_email}]},
+                            "streamSettings": {"security": "reality"},
+                        },
+                        {
+                            "tag": "trojan-tls",
+                            "protocol": "trojan",
+                            "settings": {"clients": [{"email": trojan_email}]},
+                            "streamSettings": {"security": "tls"},
+                        },
+                    ]
+                },
+            }
+        )
+
+        result = test_command.check_duplicate_active_client_names(diag)
+
+        self.assertIn("alice", result)
+        self.assertIn("vless-reality:vless", result)
+        self.assertIn("trojan-tls:trojan", result)
+
+    def test_duplicate_active_client_names_reports_missing_sqlite_credential(self) -> None:
+        vless_email = "alice|created=2026-06-20T00:00:00Z|connection=vless-reality"
+        trojan_email = "alice|created=2026-06-21T00:00:00Z|connection=trojan-tls"
+        diag = SimpleNamespace(
+            context={
+                "client_db": {
+                    "clients": {
+                        "alice": {
+                            "id": "00000000-0000-0000-0000-000000000001",
+                            "created": "2026-06-20T00:00:00Z",
+                            "connection": "vless-reality",
+                            "client": {"id": "00000000-0000-0000-0000-000000000001", "email": vless_email},
+                            "credentials": {
+                                "vless-reality": {
+                                    "connection": "vless-reality",
+                                    "protocol": "vless",
+                                    "client": {"id": "00000000-0000-0000-0000-000000000001", "email": vless_email},
+                                },
+                            },
+                        }
+                    }
+                },
+                "config": {
+                    "inbounds": [
+                        {
+                            "tag": "vless-reality",
+                            "protocol": "vless",
+                            "settings": {"clients": [{"email": vless_email}]},
+                            "streamSettings": {"security": "reality"},
+                        },
+                        {
+                            "tag": "trojan-tls",
+                            "protocol": "trojan",
+                            "settings": {"clients": [{"email": trojan_email}]},
+                            "streamSettings": {"security": "tls"},
+                        },
+                    ]
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "trojan-tls"):
+            test_command.check_duplicate_active_client_names(diag)
+
     def test_client_db_alignment_still_warns_for_enabled_client_absent_from_config(self) -> None:
         diag = SimpleNamespace(
             context={
