@@ -86,6 +86,14 @@ def report_client(name, days_value="7"):
     print(f"Activity report for client: {report['name']}")
     print(f"Period: {report['start'].isoformat()} - {report['end'].isoformat()} UTC")
     print_table(["DATE", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "EXCEPTIONS", "TOP HOSTS"], report["rows"])
+    credential_rows = report.get("credentialRows") or []
+    if len([row for row in credential_rows if row and row[0] != "TOTAL"]) > 1:
+        print()
+        print("Credentials")
+        print_table(
+            ["CONNECTION", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "EXCEPTIONS", "TOP HOSTS"],
+            credential_rows,
+        )
     print(f"Total events: {report['totalEvents']}")
 
 

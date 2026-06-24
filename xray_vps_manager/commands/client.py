@@ -1099,30 +1099,50 @@ def cmd_traffic_summary(month_value=None):
     print_table(["NAME", "STATUS", "CONNECTION", "IN", "OUT", "TOTAL", "LIMIT", "ALL TIME"], table_rows, empty_message=None)
 
 
+def traffic_credential_rows(config, db, name):
+    return [row for row in client_listing.credential_rows(config, db) if row["client"] == name]
+
+
+def print_traffic_credential_period(config, db, traffic_db, name, start, end):
+    credentials = traffic_credential_rows(config, db, name)
+    if len(credentials) <= 1:
+        return
+    print()
+    print("Credentials")
+    print_table(
+        ["PROTOCOL", "SECURITY", "TRANSPORT", "CONNECTION", "STATUS", "IN", "OUT", "TOTAL"],
+        traffic_reports.credential_period_rows(credentials, traffic_db, start, end),
+        empty_message=None,
+    )
+
+
 def cmd_traffic_day(name, day_value=None):
     day = parse_date_value(day_value or client_access.local_now().date().isoformat())
-    _, _, _, entry = traffic_report_context(name)
+    config, db, traffic_db, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Day: {day.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_table(["HOUR", "IN", "OUT", "TOTAL"], traffic_reports.day_hour_rows(entry, day), empty_message=None)
+    print_traffic_credential_period(config, db, traffic_db, name, day, day)
 
 
 def cmd_traffic_week(name, start_value=None):
     start = parse_date_value(start_value or (client_access.local_now().date() - timedelta(days=6)).isoformat(), "START_DATE")
     end = start + timedelta(days=6)
-    _, _, _, entry = traffic_report_context(name)
+    config, db, traffic_db, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
+    print_traffic_credential_period(config, db, traffic_db, name, start, end)
 
 
 def cmd_traffic_month(name, month_value=None):
     month_key = parse_month_value(month_value)
     start, end = traffic_reports.month_bounds(month_key, today=client_access.local_now().date())
-    _, _, _, entry = traffic_report_context(name)
+    config, db, traffic_db, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Month: {month_key} (timezone: {client_settings.manager_timezone_label()})")
     print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
+    print_traffic_credential_period(config, db, traffic_db, name, start, end)
 
 
 def cmd_traffic_period(name, start_value, end_value):
@@ -1130,10 +1150,11 @@ def cmd_traffic_period(name, start_value, end_value):
     end = parse_date_value(end_value, "END_DATE")
     if end < start:
         die("END_DATE must be the same as or later than START_DATE.")
-    _, _, _, entry = traffic_report_context(name)
+    config, db, traffic_db, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
+    print_traffic_credential_period(config, db, traffic_db, name, start, end)
 
 
 def db_entry_for_existing_client(config, db, name):
