@@ -21,13 +21,15 @@ curl -fsSL -o /tmp/xray-bootstrap.sh https://github.com/ZyFun/Xray-VPS-Manager/r
 bash /tmp/xray-bootstrap.sh
 ```
 
+В интерактивном режиме можно выбрать начальный протокол для стартового клиента: `vless`, `trojan` или `both`. Быстрая установка через pipe остаётся VLESS Reality по умолчанию.
+
 После установки открой меню:
 
 ```bash
 xray-menu
 ```
 
-Стартовая ссылка выводится в конце установки и сохраняется в `/root/xray-reality-client.txt`. Повторно вывести ссылку стартового клиента можно командой:
+Стартовая ссылка выводится в конце установки и сохраняется в `/root/xray-reality-client.txt`. Если при установке выбран `both`, файл содержит и `VLESS_CLIENT_URI`, и `TROJAN_CLIENT_URI`. Повторно вывести ссылку стартового клиента можно командой:
 
 ```bash
 xray-client link starter

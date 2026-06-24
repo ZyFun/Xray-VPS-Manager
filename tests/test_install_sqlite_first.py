@@ -27,6 +27,7 @@ class InstallSQLiteFirstTests(unittest.TestCase):
         self.assertIn("settings.set_metadata(connection, \"jsonImport.completed\", \"true\")", content)
         self.assertIn("connections.upsert_connection(", content)
         self.assertIn("clients.upsert_client(", content)
+        self.assertIn("client_crud.add_client(", content)
         self.assertIn("chown root:xray /usr/local/etc/xray/manager.db", content)
         self.assertNotIn("cat >/usr/local/etc/xray/clients.json", content)
         self.assertNotIn("activity-exceptions.json", content)
@@ -44,7 +45,37 @@ class InstallSQLiteFirstTests(unittest.TestCase):
         self.assertIn("apt_get_with_lock_retry()", content)
         self.assertIn("Could not get lock|Unable to lock|Could not open lock", content)
         self.assertIn("apt_get_with_lock_retry update", content)
-        self.assertIn("apt_get_with_lock_retry install -y ca-certificates curl unzip openssl python3 tzdata", content)
+        self.assertIn("install_packages=(ca-certificates curl unzip openssl python3 tzdata)", content)
+        self.assertIn("install_packages+=(caddy)", content)
+        self.assertIn('apt_get_with_lock_retry install -y "${install_packages[@]}"', content)
+
+    def test_install_script_supports_initial_protocol_choice(self) -> None:
+        content = INSTALL_SH.read_text()
+
+        self.assertIn('INITIAL_PROTOCOL="${INITIAL_PROTOCOL:-vless}"', content)
+        self.assertIn("prompt_initial_protocol()", content)
+        self.assertIn('echo "  1) vless', content)
+        self.assertIn('echo "  2) trojan', content)
+        self.assertIn('echo "  3) both', content)
+        self.assertIn('INITIAL_PROTOCOL="both"', content)
+        self.assertIn('PORT must not be 443 when INITIAL_PROTOCOL=both', content)
+        self.assertIn("TROJAN_DOMAIN", content)
+        self.assertIn("TROJAN_WS_PATH", content)
+
+    def test_install_script_initial_trojan_uses_caddy_and_multi_credential_db(self) -> None:
+        content = INSTALL_SH.read_text()
+
+        self.assertIn('"tag": "trojan-tls"', content)
+        self.assertIn('"protocol": "trojan"', content)
+        self.assertIn('"listen": "127.0.0.1"', content)
+        self.assertIn('"security": "none"', content)
+        self.assertIn('caddy.setup_caddy_for_trojan_ws(', content)
+        self.assertIn('"protocol": "trojan"', content)
+        self.assertIn('"caddy": True', content)
+        self.assertIn("TROJAN_CLIENT_URI=", content)
+        self.assertIn("VLESS_CLIENT_URI=", content)
+        self.assertIn('client_uri_security="TLS"', content)
+        self.assertIn('client_uri_transport="ws"', content)
 
     def test_install_script_supports_alternative_xray_sources(self) -> None:
         content = INSTALL_SH.read_text()
