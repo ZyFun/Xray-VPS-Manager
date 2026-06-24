@@ -97,6 +97,7 @@ def print_traffic_selection_table(rows: list[dict]) -> None:
         for index, row in enumerate(rows, start=1)
     ]
     values.append(["0", "Назад", "", "", "", "", "", ""])
+    values.append(["S", "Настройки TOTAL", "", "", "", "", "", ""])
     widths = [
         max(visible_len(headers[column]), *(visible_len(row[column]) for row in values))
         for column in range(len(headers))
@@ -136,6 +137,8 @@ def choose_traffic_client() -> str:
         choice = input("Клиент: ").strip()
         if choice == "0":
             return ""
+        if choice.lower() == "s":
+            return "__total_traffic_settings__"
         if re.fullmatch(r"[0-9]+", choice):
             index = int(choice, 10)
             if 1 <= index <= len(rows):

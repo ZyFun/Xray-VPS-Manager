@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from xray_vps_manager.activity import repository
 from xray_vps_manager.activity import settings
 from xray_vps_manager.activity import sync
 from xray_vps_manager.activity import time as activity_time
-from xray_vps_manager.activity.constants import CONFIG_PATH
+from xray_vps_manager.activity.constants import CONFIG_PATH, DETAIL_MODE_ALL, DETAIL_MODE_OFF
 
 
 def load_activity_db() -> dict:
@@ -51,6 +53,55 @@ def set_retention_days(value: str) -> tuple[int, int]:
     return days, removed
 
 
+def _set_env_value(key: str, value: str) -> None:
+    env = settings.with_activity_defaults(settings.server_env_values())
+    env[key] = value
+    settings.write_server_env(env)
+
+
+def _cutoff_for_retention(days: int):
+    cutoff_date = activity_time.today_utc_date() - timedelta(days=days - 1)
+    return datetime.combine(cutoff_date, datetime.min.time(), tzinfo=timezone.utc)
+
+
+def set_alert_retention_days(value: str) -> tuple[int, int]:
+    days = settings.parse_retention_days(value)
+    _set_env_value("ACTIVITY_ALERT_RETENTION_DAYS", str(days))
+    removed = repository.prune_alerts_for_write(_cutoff_for_retention(days), strict=True)
+    return days, removed
+
+
+def set_alert_detection_enabled(value: bool) -> bool:
+    _set_env_value("ACTIVITY_ALERTS_ENABLED", "true" if value else "false")
+    return value
+
+
+def set_xray_error_event_retention_days(value: str) -> tuple[int, int]:
+    days = settings.parse_retention_days(value)
+    _set_env_value("XRAY_ERROR_EVENT_RETENTION_DAYS", str(days))
+    removed = repository.prune_xray_errors_for_write(_cutoff_for_retention(days), strict=True)
+    return days, removed
+
+
+def set_raw_log_retention_days(kind: str, value: str) -> int:
+    days = settings.parse_retention_days(value)
+    if kind == "access":
+        _set_env_value("XRAY_ACCESS_LOG_RETENTION_DAYS", str(days))
+        return days
+    if kind == "error":
+        _set_env_value("XRAY_ERROR_LOG_RETENTION_DAYS", str(days))
+        return days
+    raise ValueError("Raw log kind must be access or error.")
+
+
+def set_raw_log_rotate_time(value: str) -> str:
+    parsed = str(value or "").strip()
+    if settings.raw_log_rotate_time({"XRAY_RAW_LOG_ROTATE_TIME": parsed}) != parsed:
+        raise ValueError("Rotate time must be in HH:MM format.")
+    _set_env_value("XRAY_RAW_LOG_ROTATE_TIME", parsed)
+    return parsed
+
+
 def set_risk_limits(
     burst_events: str,
     burst_window_minutes: str,
@@ -78,8 +129,10 @@ def risk_limit_rows() -> list[list[object]]:
 def enable_activity() -> list[str]:
     repository.ensure_dirs()
     set_enabled(True)
+    repository.set_detail_mode_for_write(DETAIL_MODE_ALL)
     db = load_activity_db()
     db["enabled"] = True
+    db["detailMode"] = DETAIL_MODE_ALL
     db["retentionDays"] = settings.retention_days()
     sync.initialize_access_offset(db)
     repository.save_activity_db(db)
@@ -94,10 +147,12 @@ def enable_activity() -> list[str]:
 
 def disable_activity() -> list[str]:
     set_enabled(False)
+    repository.set_detail_mode_for_write(DETAIL_MODE_OFF)
     db = load_activity_db()
     db["enabled"] = False
+    db["detailMode"] = DETAIL_MODE_OFF
     repository.save_activity_db(db)
     return [
-        "Activity log parsing disabled.",
-        "Xray access log config was not changed. Existing activity logs were kept.",
+        "Detailed activity logging disabled.",
+        "Alert-log, lightweight counters, and Xray access log config were not changed. Existing activity logs were kept.",
     ]

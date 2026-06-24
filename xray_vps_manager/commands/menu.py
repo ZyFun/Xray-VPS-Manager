@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-24 14:03 UTC"
+MENU_UPDATED = "2026-06-24 21:13 UTC"
 
 
 def die(message):
@@ -286,8 +286,9 @@ def service_diagnostics_menu_actions():
         ("4", "Проверить timers"),
         ("5", "Прогнать все тесты сервера"),
         ("6", "SQLite: статус базы"),
-        ("7", "Показать часовой пояс"),
-        ("8", "Изменить часовой пояс"),
+        ("7", "Ошибки Xray"),
+        ("8", "Показать часовой пояс"),
+        ("9", "Изменить часовой пояс"),
         ("0", "Назад"),
     ]
 
@@ -349,12 +350,14 @@ def warp_menu_actions():
 def traffic_menu_actions():
     return [
         ("1", "Просмотр трафика"),
-        ("2", "Отчёт activity по клиенту"),
-        ("3", "Подозрительная активность"),
-        ("4", "Экспорт activity по клиенту"),
-        ("5", "Архивы экспорта activity"),
-        ("6", "Настройки журнала активности"),
-        ("7", "Настройки суммарного трафика"),
+        ("2", "Подробная активность"),
+        ("3", "Предупреждения активности"),
+        ("4", "Лёгкая статистика клиентов"),
+        ("5", "Ошибки Xray"),
+        ("6", "Сырые Xray логи"),
+        ("7", "Блокировки IP/доменов"),
+        ("8", "Экспорт activity"),
+        ("9", "Настройки"),
         ("0", "Назад"),
     ]
 
@@ -381,9 +384,60 @@ def traffic_report_actions():
 
 def suspicious_menu_actions():
     return [
-        ("1", "Сводка suspicious"),
-        ("2", "GeoIP-риски подробно"),
-        ("3", "Настройки исключений"),
+        ("1", "Сводка alert-log"),
+        ("2", "GeoIP/RU события"),
+        ("3", "Suspicious события"),
+        ("4", "Исключения"),
+        ("5", "Retention alert-log"),
+        ("6", "Проверить Telegram-уведомления сейчас"),
+        ("0", "Назад"),
+    ]
+
+
+def detailed_activity_menu_actions():
+    return [
+        ("1", "Статус"),
+        ("2", "Режим: выключено / все / выбранные"),
+        ("3", "Выбрать клиентов для подробной записи"),
+        ("4", "Отчёт по клиенту"),
+        ("5", "Backfill из raw access.log"),
+        ("6", "Экспорт подробной активности"),
+        ("7", "Retention подробного журнала"),
+        ("0", "Назад"),
+    ]
+
+
+def activity_counters_menu_actions():
+    return [
+        ("1", "Сводка по клиентам за сегодня"),
+        ("2", "Сводка по клиентам за 7 дней"),
+        ("3", "Почасовая статистика клиента"),
+        ("4", "Дневная статистика клиента"),
+        ("5", "Клиенты с ростом total/unique hosts/unique ports"),
+        ("0", "Назад"),
+    ]
+
+
+def xray_errors_menu_actions():
+    return [
+        ("1", "Сводка ошибок"),
+        ("2", "Ошибки за 7 дней"),
+        ("3", "Последние Error/Warning"),
+        ("4", "Детали ошибки"),
+        ("5", "Срок хранения ошибок"),
+        ("0", "Назад"),
+    ]
+
+
+def raw_logs_menu_actions():
+    return [
+        ("1", "Статус raw logs"),
+        ("2", "Ротировать сейчас"),
+        ("3", "Архивы raw logs"),
+        ("4", "Синхронизировать timer"),
+        ("5", "Срок хранения access.log"),
+        ("6", "Срок хранения error.log"),
+        ("7", "Время ротации"),
         ("0", "Назад"),
     ]
 
@@ -435,12 +489,13 @@ def activity_export_menu_actions():
 
 def activity_settings_menu_actions():
     return [
-        ("1", "Статус журнала активности"),
-        ("2", "Включить парсинг activity log"),
-        ("3", "Отключить парсинг activity log"),
-        ("4", "Синхронизировать сейчас"),
-        ("5", "Изменить срок хранения журнала"),
+        ("1", "Общий статус activity pipeline"),
+        ("2", "Alert detection"),
+        ("3", "GeoIP warnings status"),
+        ("4", "Retention overview"),
+        ("5", "Принудительно синхронизировать сейчас"),
         ("6", "Настроить лимиты suspicious"),
+        ("7", "Настройки суммарного трафика"),
         ("0", "Назад"),
     ]
 
@@ -632,8 +687,9 @@ def service_diagnostics_menu_handlers():
         "4": ("Проверить timers", lambda: menu_xray_actions.check_timers(call)),
         "5": ("Прогнать все тесты сервера", lambda: menu_xray_actions.run_all_tests(call)),
         "6": ("SQLite: статус базы", lambda: menu_xray_actions.sqlite_status(call)),
-        "7": ("Показать часовой пояс", lambda: menu_timezone_actions.show_timezone(call)),
-        "8": ("Изменить часовой пояс", lambda: menu_timezone_actions.update_timezone(call)),
+        "7": ("Ошибки Xray", open_xray_errors_menu),
+        "8": ("Показать часовой пояс", lambda: menu_timezone_actions.show_timezone(call)),
+        "9": ("Изменить часовой пояс", lambda: menu_timezone_actions.update_timezone(call)),
     }
 
 
@@ -755,18 +811,14 @@ def updates_menu_handlers():
 def traffic_menu_handlers():
     return {
         "1": ("Просмотр трафика", open_traffic_menu),
-        "2": (
-            "Отчёт activity по клиенту",
-            lambda: menu_activity_actions.activity_client_report(menu_client_actions.choose_client, call),
-        ),
-        "3": ("Подозрительная активность", open_activity_suspicious_menu),
-        "4": (
-            "Экспорт activity по клиенту",
-            lambda: menu_activity_export_actions.activity_export_report(menu_client_actions.choose_client, call),
-        ),
-        "5": ("Архивы экспорта activity", open_activity_export_menu),
-        "6": ("Настройки журнала активности", open_activity_settings_menu),
-        "7": ("Настройки суммарного трафика", open_total_traffic_settings_menu),
+        "2": ("Подробная активность", open_detailed_activity_menu),
+        "3": ("Предупреждения активности", open_activity_suspicious_menu),
+        "4": ("Лёгкая статистика клиентов", open_activity_counters_menu),
+        "5": ("Ошибки Xray", open_xray_errors_menu),
+        "6": ("Сырые Xray логи", open_raw_logs_menu),
+        "7": ("Блокировки IP/доменов", open_activity_blocklist_menu),
+        "8": ("Экспорт activity", open_activity_export_menu),
+        "9": ("Настройки", open_activity_settings_menu),
     }
 
 
@@ -828,9 +880,77 @@ def telegram_menu_handlers():
 
 def suspicious_menu_handlers():
     return {
-        "1": ("Сводка suspicious", lambda: menu_activity_actions.activity_suspicious_report(call)),
-        "2": ("GeoIP-риски подробно", lambda: menu_activity_actions.activity_geoip_risk_details(call)),
-        "3": ("Настройки исключений", open_activity_exception_menu),
+        "1": ("Сводка alert-log", lambda: menu_activity_actions.show_alert_log(call)),
+        "2": ("GeoIP/RU события", lambda: menu_activity_actions.show_geoip_alert_log(call)),
+        "3": ("Suspicious события", lambda: menu_activity_actions.activity_suspicious_report(call)),
+        "4": ("Исключения", open_activity_exception_menu),
+        "5": ("Retention alert-log", lambda: menu_activity_actions.update_activity_alert_retention(call)),
+        "6": ("Проверить Telegram-уведомления сейчас", lambda: menu_telegram_actions.notify_geoip_now(call)),
+    }
+
+
+def detailed_activity_menu_handlers():
+    return {
+        "1": ("Статус", lambda: menu_activity_actions.show_detail_mode(call)),
+        "2": ("Режим: выключено / все / выбранные", lambda: menu_activity_actions.update_detail_mode(call)),
+        "3": (
+            "Выбрать клиентов для подробной записи",
+            lambda: menu_activity_actions.choose_detail_clients(menu_client_actions.choose_client, call),
+        ),
+        "4": (
+            "Отчёт по клиенту",
+            lambda: menu_activity_actions.activity_client_report(menu_client_actions.choose_client, call),
+        ),
+        "5": (
+            "Backfill из raw access.log",
+            lambda: menu_activity_actions.activity_backfill_from_menu(menu_client_actions.choose_client, call, confirm),
+        ),
+        "6": (
+            "Экспорт подробной активности",
+            lambda: menu_activity_export_actions.activity_export_report(menu_client_actions.choose_client, call),
+        ),
+        "7": ("Retention подробного журнала", lambda: menu_activity_actions.update_activity_retention(call)),
+    }
+
+
+def activity_counters_menu_handlers():
+    return {
+        "1": ("Сводка по клиентам за сегодня", lambda: menu_activity_actions.show_activity_counters_today(call)),
+        "2": ("Сводка по клиентам за 7 дней", lambda: menu_activity_actions.show_activity_counters_week(call)),
+        "3": (
+            "Почасовая статистика клиента",
+            lambda: menu_activity_actions.show_activity_counters_hour_client(menu_client_actions.choose_client, call),
+        ),
+        "4": (
+            "Дневная статистика клиента",
+            lambda: menu_activity_actions.show_activity_counters_day_client(menu_client_actions.choose_client, call),
+        ),
+        "5": (
+            "Клиенты с ростом total/unique hosts/unique ports",
+            lambda: menu_activity_actions.show_activity_counter_growth(call),
+        ),
+    }
+
+
+def xray_errors_menu_handlers():
+    return {
+        "1": ("Сводка ошибок", lambda: menu_activity_actions.show_xray_error_summary(call)),
+        "2": ("Ошибки за 7 дней", lambda: menu_activity_actions.show_xray_errors_7_days(call)),
+        "3": ("Последние Error/Warning", lambda: menu_activity_actions.show_xray_error_warning_errors(call)),
+        "4": ("Детали ошибки", lambda: menu_activity_actions.show_xray_error_detail(call)),
+        "5": ("Срок хранения ошибок", lambda: menu_activity_actions.update_xray_error_retention(call)),
+    }
+
+
+def raw_logs_menu_handlers():
+    return {
+        "1": ("Статус raw logs", lambda: menu_activity_actions.show_raw_logs(call)),
+        "2": ("Ротировать сейчас", lambda: menu_activity_actions.rotate_raw_logs_now(call)),
+        "3": ("Архивы raw logs", lambda: menu_activity_actions.show_raw_log_archives(call)),
+        "4": ("Синхронизировать timer", lambda: menu_activity_actions.sync_raw_log_timer(call)),
+        "5": ("Срок хранения access.log", lambda: menu_activity_actions.update_raw_access_log_retention(call)),
+        "6": ("Срок хранения error.log", lambda: menu_activity_actions.update_raw_error_log_retention(call)),
+        "7": ("Время ротации", lambda: menu_activity_actions.update_raw_log_rotate_time(call)),
     }
 
 
@@ -894,12 +1014,13 @@ def activity_export_menu_handlers():
 
 def activity_settings_menu_handlers():
     return {
-        "1": ("Статус журнала активности", lambda: menu_activity_actions.show_activity_status(call)),
-        "2": ("Включить парсинг activity log", lambda: menu_activity_actions.enable_activity_parser(call)),
-        "3": ("Отключить парсинг activity log", lambda: menu_activity_actions.disable_activity_parser(call)),
-        "4": ("Синхронизировать сейчас", lambda: menu_activity_actions.sync_activity_now(call)),
-        "5": ("Изменить срок хранения журнала", lambda: menu_activity_actions.update_activity_retention(call)),
+        "1": ("Общий статус activity pipeline", lambda: menu_activity_actions.show_activity_status(call)),
+        "2": ("Alert detection", lambda: menu_activity_actions.update_alert_detection(call)),
+        "3": ("GeoIP warnings status", lambda: menu_activity_actions.show_geoip_status(call)),
+        "4": ("Retention overview", lambda: menu_activity_actions.show_retention_overview(call)),
+        "5": ("Принудительно синхронизировать сейчас", lambda: menu_activity_actions.sync_activity_now(call)),
         "6": ("Настроить лимиты suspicious", lambda: menu_activity_actions.update_activity_risk_limits(call)),
+        "7": ("Настройки суммарного трафика", open_total_traffic_settings_menu),
     }
 
 
@@ -1025,7 +1146,23 @@ def open_telegram_menu():
 
 
 def open_activity_suspicious_menu():
-    menu_loop("Подозрительная активность", suspicious_menu_actions(), suspicious_menu_handlers())
+    menu_loop("Предупреждения активности", suspicious_menu_actions(), suspicious_menu_handlers())
+
+
+def open_detailed_activity_menu():
+    menu_loop("Подробная активность", detailed_activity_menu_actions(), detailed_activity_menu_handlers())
+
+
+def open_activity_counters_menu():
+    menu_loop("Лёгкая статистика клиентов", activity_counters_menu_actions(), activity_counters_menu_handlers())
+
+
+def open_xray_errors_menu():
+    menu_loop("Ошибки Xray", xray_errors_menu_actions(), xray_errors_menu_handlers())
+
+
+def open_raw_logs_menu():
+    menu_loop("Сырые Xray логи", raw_logs_menu_actions(), raw_logs_menu_handlers())
 
 
 def open_activity_exception_menu():
@@ -1037,12 +1174,12 @@ def open_activity_blocklist_menu():
 
 
 def open_activity_export_menu():
-    menu_loop("Архивы экспорта activity", activity_export_menu_actions(), activity_export_menu_handlers())
+    menu_loop("Экспорт activity", activity_export_menu_actions(), activity_export_menu_handlers())
 
 
 def open_activity_settings_menu():
     menu_loop(
-        "Настройки журнала активности",
+        "Настройки activity pipeline",
         activity_settings_menu_actions(),
         activity_settings_menu_handlers(),
     )
@@ -1074,6 +1211,9 @@ def open_traffic_menu():
         name = menu_traffic_actions.choose_traffic_client()
         if not name:
             return
+        if name == "__total_traffic_settings__":
+            open_total_traffic_settings_menu()
+            continue
         open_client_traffic_menu(name)
 
 

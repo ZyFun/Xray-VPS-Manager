@@ -66,6 +66,219 @@ def sync_activity_now(call: CommandRunner) -> None:
     call(["xray-activity", "sync"])
 
 
+def update_alert_detection(call: CommandRunner) -> None:
+    print("ACTIVITY_ALERTS_ENABLED: отдельный alert-log и Telegram GeoIP/suspicious уведомления.")
+    print("Значения: on/off. Подробный detailed log этим не меняется.")
+    value = input("Alert detection [on/off] (Enter - отмена): ").strip().lower()
+    if not value:
+        print("Изменение отменено.")
+        return
+    call(["xray-activity", "alert-detection", value])
+
+
+def show_geoip_status(call: CommandRunner) -> None:
+    call(["xray-activity", "geoip-status"])
+
+
+def show_retention_overview(call: CommandRunner) -> None:
+    call(["xray-activity", "retention-overview"])
+
+
+def show_detail_mode(call: CommandRunner) -> None:
+    call(["xray-activity", "detail-mode"])
+
+
+def update_detail_mode(call: CommandRunner) -> None:
+    print("Режим detailed activity:")
+    print("1 - выключено")
+    print("2 - все клиенты")
+    print("3 - выбранные клиенты")
+    choice = input("Выбор режима (Enter - отмена): ").strip()
+    mapping = {
+        "1": "off",
+        "2": "all",
+        "3": "selected",
+    }
+    if not choice:
+        print("Изменение отменено.")
+        return
+    mode = mapping.get(choice)
+    if not mode:
+        print("Неизвестный режим.")
+        return
+    call(["xray-activity", "detail-mode", mode])
+
+
+def set_detail_mode_all(call: CommandRunner) -> None:
+    call(["xray-activity", "detail-mode", "all"])
+
+
+def set_detail_mode_off(call: CommandRunner) -> None:
+    call(["xray-activity", "detail-mode", "off"])
+
+
+def set_detail_mode_selected(call: CommandRunner) -> None:
+    call(["xray-activity", "detail-mode", "selected"])
+
+
+def choose_detail_clients(choose_client: ClientChooser, call: CommandRunner) -> None:
+    selected: list[str] = []
+    while True:
+        name = choose_client("подробной записи активности", "all")
+        if not name:
+            break
+        if name not in selected:
+            selected.append(name)
+        answer = input("Добавить ещё клиента? [y/N]: ").strip().lower()
+        if answer not in ("y", "yes"):
+            break
+    if not selected:
+        print("Список выбранных клиентов не изменён.")
+        return
+    call(["xray-activity", "detail-clients", "set", *selected])
+    call(["xray-activity", "detail-mode", "selected"])
+
+
+def clear_detail_clients(call: CommandRunner) -> None:
+    call(["xray-activity", "detail-clients", "clear"])
+
+
+def show_alert_log(call: CommandRunner) -> None:
+    call(["xray-activity", "alerts", "50"])
+
+
+def show_geoip_alert_log(call: CommandRunner) -> None:
+    call(["xray-activity", "alerts", "50", "geoip"])
+
+
+def show_activity_counters_day(call: CommandRunner) -> None:
+    call(["xray-activity", "counters", "day", "50"])
+
+
+def show_activity_counters_hour(call: CommandRunner) -> None:
+    call(["xray-activity", "counters", "hour", "50"])
+
+
+def show_activity_counters_today(call: CommandRunner) -> None:
+    call(["xray-activity", "counters-today", "50"])
+
+
+def show_activity_counters_week(call: CommandRunner) -> None:
+    call(["xray-activity", "counters-week", "50"])
+
+
+def show_activity_counters_hour_client(choose_client: ClientChooser, call: CommandRunner) -> None:
+    name = choose_client("почасовой статистики activity", "all")
+    if not name:
+        return
+    call(["xray-activity", "counters", "hour", "50", name])
+
+
+def show_activity_counters_day_client(choose_client: ClientChooser, call: CommandRunner) -> None:
+    name = choose_client("дневной статистики activity", "all")
+    if not name:
+        return
+    call(["xray-activity", "counters", "day", "50", name])
+
+
+def show_activity_counter_growth(call: CommandRunner) -> None:
+    call(["xray-activity", "counters-growth", "50"])
+
+
+def show_xray_errors(call: CommandRunner) -> None:
+    call(["xray-activity", "errors", "50"])
+
+
+def show_xray_error_warnings(call: CommandRunner) -> None:
+    call(["xray-activity", "errors", "50", "warning"])
+
+
+def show_xray_error_summary(call: CommandRunner) -> None:
+    call(["xray-activity", "errors-summary", "7"])
+
+
+def show_xray_errors_7_days(call: CommandRunner) -> None:
+    call(["xray-activity", "errors-days", "7", "50"])
+
+
+def show_xray_error_warning_errors(call: CommandRunner) -> None:
+    call(["xray-activity", "errors-days", "7", "50", "warning,error"])
+
+
+def show_xray_error_detail(call: CommandRunner) -> None:
+    value = input("ID ошибки (Enter - отмена): ").strip()
+    if not value:
+        print("Действие отменено.")
+        return
+    call(["xray-activity", "error-detail", value])
+
+
+def show_raw_logs(call: CommandRunner) -> None:
+    call(["xray-activity", "raw-logs"])
+
+
+def show_raw_log_archives(call: CommandRunner) -> None:
+    call(["xray-activity", "raw-log-archives"])
+
+
+def rotate_raw_logs_now(call: CommandRunner) -> None:
+    call(["xray-activity", "rotate-raw-logs"])
+
+
+def sync_raw_log_timer(call: CommandRunner) -> None:
+    call(["xray-activity", "raw-log-timer-sync"])
+
+
+def update_activity_alert_retention(call: CommandRunner) -> None:
+    print("ACTIVITY_ALERT_RETENTION_DAYS: сколько дней хранить отдельный alert-log.")
+    print("По умолчанию 90 дней.")
+    value = input("ACTIVITY_ALERT_RETENTION_DAYS (Enter - отмена): ").strip()
+    if not value:
+        print("Изменение отменено.")
+        return
+    call(["xray-activity", "alert-retention", value])
+
+
+def update_xray_error_retention(call: CommandRunner) -> None:
+    print("XRAY_ERROR_EVENT_RETENTION_DAYS: сколько дней хранить нормализованные ошибки Xray/manager.")
+    print("По умолчанию 180 дней.")
+    value = input("XRAY_ERROR_EVENT_RETENTION_DAYS (Enter - отмена): ").strip()
+    if not value:
+        print("Изменение отменено.")
+        return
+    call(["xray-activity", "error-retention", value])
+
+
+def update_raw_access_log_retention(call: CommandRunner) -> None:
+    print("XRAY_ACCESS_LOG_RETENTION_DAYS: сколько дней хранить сырой access.log и архивы.")
+    print("По умолчанию 180 дней.")
+    value = input("XRAY_ACCESS_LOG_RETENTION_DAYS (Enter - отмена): ").strip()
+    if not value:
+        print("Изменение отменено.")
+        return
+    call(["xray-activity", "raw-log-retention", "access", value])
+
+
+def update_raw_error_log_retention(call: CommandRunner) -> None:
+    print("XRAY_ERROR_LOG_RETENTION_DAYS: сколько дней хранить сырой error.log и архивы.")
+    print("По умолчанию 180 дней.")
+    value = input("XRAY_ERROR_LOG_RETENTION_DAYS (Enter - отмена): ").strip()
+    if not value:
+        print("Изменение отменено.")
+        return
+    call(["xray-activity", "raw-log-retention", "error", value])
+
+
+def update_raw_log_rotate_time(call: CommandRunner) -> None:
+    print("XRAY_RAW_LOG_ROTATE_TIME: время ротации в MANAGER_TIMEZONE, формат HH:MM.")
+    print("По умолчанию 03:00.")
+    value = input("XRAY_RAW_LOG_ROTATE_TIME (Enter - отмена): ").strip()
+    if not value:
+        print("Изменение отменено.")
+        return
+    call(["xray-activity", "raw-log-rotate-time", value])
+
+
 def die(message: str) -> None:
     raise SystemExit(message)
 
@@ -211,6 +424,21 @@ def activity_client_report(choose_client: ClientChooser, call: CommandRunner) ->
         print("Действие отменено.")
         return
     call(["xray-activity", "client", name, ask_activity_days(7)])
+
+
+def activity_backfill_from_menu(choose_client: ClientChooser, call: CommandRunner, confirm: Callable[[str], bool]) -> None:
+    target = choose_client("backfill detailed activity", "all")
+    if not target:
+        print("Действие отменено.")
+        return
+    start = input("START_DATE YYYY-MM-DD: ").strip()
+    end = input("END_DATE YYYY-MM-DD: ").strip()
+    if not start or not end:
+        print("Действие отменено.")
+        return
+    call(["xray-activity", "backfill", target, start, end, "--dry-run"])
+    if confirm("Импортировать найденные события в detailed activity?"):
+        call(["xray-activity", "backfill", target, start, end, "--apply", "--yes"])
 
 
 def activity_suspicious_report(call: CommandRunner) -> None:

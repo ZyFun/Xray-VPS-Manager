@@ -1603,6 +1603,13 @@ def cmd_set_timezone(value):
     print(f"Current time: {client_access.local_now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     if normalized:
         print(f"Normalized access deadlines: {normalized}")
+    try:
+        from xray_vps_manager.activity import raw_logs as activity_raw_logs
+
+        result = activity_raw_logs.sync_raw_log_timer()
+        print(f"Raw log rotation timer: {result['onCalendar']}")
+    except Exception as exc:
+        print(f"WARN: raw log rotation timer sync failed: {exc}", file=sys.stderr)
 
 
 def usage():

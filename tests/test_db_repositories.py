@@ -1,3 +1,4 @@
+from datetime import timezone
 import unittest
 
 from xray_vps_manager.db import database
@@ -153,6 +154,119 @@ class SQLiteRepositoryTests(unittest.TestCase):
             activity.list_exceptions(self.connection),
             [{"value": "*.example.com", "kind": "mask", "source": "manual", "createdAt": "2026-06-12T08:05:00Z"}],
         )
+
+    def test_activity_alert_counters_capture_and_error_events(self) -> None:
+        event = {
+            "time": "2026-06-12T08:04:00Z",
+            "client": "alice",
+            "email": "alice|created=2026-06-12T08:01:00Z",
+            "connection": "vless-reality",
+            "host": "example.ru",
+            "port": "443",
+            "outbound": "geoip-warning-RU",
+            "risks": ["xray-geoip:RU"],
+        }
+
+        self.assertEqual(activity.set_detail_mode(self.connection, "selected"), "selected")
+        activity.set_detail_clients(self.connection, ["alice"])
+        self.assertEqual(
+            activity.detail_capture_status(self.connection),
+            {"mode": "selected", "selectedClients": ["alice"]},
+        )
+
+        activity.upsert_client_counters(self.connection, event, timezone.utc)
+        activity.upsert_client_counters(self.connection, event, timezone.utc)
+        alert_id = activity.add_alert_event(self.connection, event, "xray-geoip:RU")
+        activity.add_alert_event(self.connection, event, "xray-geoip:RU")
+
+        counters = activity.list_client_counters(self.connection, bucket_type="hour")
+        alerts = list(activity.iter_geoip_alerts_after(self.connection, after_id=0, after_time="2026-06-12T08:00:00Z"))
+
+        self.assertEqual(counters[0]["totalEvents"], 2)
+        self.assertEqual(counters[0]["geoipEvents"], 2)
+        self.assertEqual(counters[0]["uniqueHosts"], 1)
+        self.assertEqual(counters[0]["uniquePorts"], 1)
+        self.assertEqual(counters[0]["riskCounts"], {"xray-geoip:RU": 2})
+        self.assertEqual(alerts[0]["alertId"], alert_id)
+        self.assertEqual(alerts[0]["event_count"], 2)
+
+        error_id = activity.upsert_xray_error_event(
+            self.connection,
+            {
+                "event_time": "2026-06-12T08:05:00Z",
+                "level": "error",
+                "source": "manager",
+                "component": "xray-logrotate",
+                "message": "try-restart xray.service failed",
+            },
+        )
+        activity.upsert_xray_error_event(
+            self.connection,
+            {
+                "event_time": "2026-06-12T08:06:00Z",
+                "level": "error",
+                "source": "manager",
+                "component": "xray-logrotate",
+                "message": "try-restart xray.service failed",
+            },
+        )
+        errors = activity.list_xray_error_events(self.connection)
+        self.assertEqual(errors[0]["id"], error_id)
+        self.assertEqual(errors[0]["eventCount"], 2)
+        self.assertEqual(errors[0]["lastSeen"], "2026-06-12T08:06:00Z")
+
+    def test_activity_window_alerts_create_burst_and_unique_risk_rows(self) -> None:
+        limits = {
+            "burstEvents": 2,
+            "burstWindowMinutes": 15,
+            "uniqueHosts": 2,
+            "uniquePorts": 2,
+        }
+        events = [
+            {
+                "time": "2026-06-12T08:00:00Z",
+                "client": "alice",
+                "connection": "vless-reality",
+                "host": "one.example",
+                "port": "443",
+            },
+            {
+                "time": "2026-06-12T08:01:00Z",
+                "client": "alice",
+                "connection": "vless-reality",
+                "host": "two.example",
+                "port": "8443",
+            },
+        ]
+
+        ids = []
+        for event in events:
+            ids.extend(activity.add_window_alerts_for_event(self.connection, event, limits, timezone.utc))
+
+        alerts = activity.list_alert_events(self.connection, limit=10)
+        risks = {row["risk"]: row for row in alerts}
+        self.assertEqual(set(risks), {"burst", "unique-hosts", "unique-ports"})
+        self.assertEqual(risks["burst"]["event_count"], 2)
+        self.assertEqual(risks["unique-hosts"]["event_count"], 2)
+        self.assertEqual(risks["unique-ports"]["event_count"], 2)
+        self.assertEqual(len(ids), 3)
+
+    def test_xray_error_events_can_filter_multiple_levels(self) -> None:
+        for level in ("info", "warning", "error"):
+            activity.upsert_xray_error_event(
+                self.connection,
+                {
+                    "event_time": f"2026-06-12T08:0{len(level)}:00Z",
+                    "level": level,
+                    "source": "xray-error-log",
+                    "component": "core",
+                    "message": f"{level} message",
+                },
+            )
+
+        rows = activity.list_xray_error_events(self.connection, level="warning,error")
+
+        self.assertEqual({row["level"] for row in rows}, {"warning", "error"})
 
     def test_activity_blocklist_repository_roundtrip_and_stats(self) -> None:
         item = activity_blocklist.upsert_block(

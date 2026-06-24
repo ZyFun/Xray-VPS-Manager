@@ -77,6 +77,112 @@ class ActivityClientReportsTests(unittest.TestCase):
             ],
         )
 
+    def test_suspicious_report_uses_alert_log_events_when_detailed_log_is_empty(self) -> None:
+        alerts = [
+            {
+                "time": "2026-06-12T08:00:00Z",
+                "client": "alice",
+                "host": "example.ru",
+                "port": "443",
+                "risk": "xray-geoip:RU",
+                "risks": ["xray-geoip:RU"],
+                "event_count": 3,
+            },
+            {
+                "time": "2026-06-12T08:05:00Z",
+                "client": "alice",
+                "risk": "burst",
+                "risks": ["burst"],
+                "event_count": 10,
+            },
+        ]
+
+        with mock.patch.object(client_reports.activity_time, "date_range_from_days", return_value=(date(2026, 6, 12), date(2026, 6, 12))), \
+            mock.patch.object(client_reports.activity_exceptions, "exception_items_for_read", return_value=[]), \
+            mock.patch.object(client_reports.activity_repository, "alert_events_for_read", return_value=alerts):
+            report = client_reports.suspicious_report("1")
+
+        self.assertEqual(report["rows"][0][0], "alice")
+        self.assertEqual(report["rows"][0][2], 13)
+        self.assertIn("burst(10)", report["rows"][0][1])
+        self.assertIn("xray-geoip:RU(3)", report["rows"][0][1])
+        self.assertIn("detailed activity", report["rows"][0][6])
+
+    def test_geoip_risk_details_uses_alert_log_when_detailed_log_is_empty(self) -> None:
+        alerts = [
+            {
+                "time": "2026-06-12T08:00:00Z",
+                "last_seen_at": "2026-06-12T08:05:00Z",
+                "client": "alice",
+                "host": "example.ru",
+                "port": "443",
+                "outbound": "geoip-warning-RU",
+                "risk": "xray-geoip:RU",
+                "risks": ["xray-geoip:RU"],
+                "event_count": 3,
+            }
+        ]
+
+        with (
+            mock.patch.object(
+                client_reports.activity_time,
+                "date_range_from_days",
+                return_value=(date(2026, 6, 12), date(2026, 6, 12)),
+            ),
+            mock.patch.object(client_reports.activity_exceptions, "exception_items_for_read", return_value=[]),
+            mock.patch.object(client_reports.activity_repository, "alert_events_for_read", return_value=alerts),
+            mock.patch.object(client_reports, "known_clients_for_reports") as known_clients_for_reports,
+            mock.patch.object(client_reports, "iter_events") as iter_events,
+        ):
+            report = client_reports.geoip_risk_details("1")
+
+        self.assertEqual(report["clients"][0]["name"], "alice")
+        self.assertEqual(report["clients"][0]["rows"][0][2], "example.ru")
+        self.assertEqual(report["clients"][0]["rows"][0][4], "RU")
+        known_clients_for_reports.assert_not_called()
+        iter_events.assert_not_called()
+
+    def test_counter_growth_rows_compare_latest_bucket_with_previous_average(self) -> None:
+        rows = [
+            {
+                "client": "alice",
+                "bucketStart": "2026-06-10",
+                "totalEvents": 10,
+                "uniqueHosts": 4,
+                "uniquePorts": 2,
+            },
+            {
+                "client": "alice",
+                "bucketStart": "2026-06-11",
+                "totalEvents": 30,
+                "uniqueHosts": 9,
+                "uniquePorts": 5,
+            },
+            {
+                "client": "bob",
+                "bucketStart": "2026-06-10",
+                "totalEvents": 100,
+                "uniqueHosts": 20,
+                "uniquePorts": 8,
+            },
+            {
+                "client": "bob",
+                "bucketStart": "2026-06-11",
+                "totalEvents": 90,
+                "uniqueHosts": 18,
+                "uniquePorts": 7,
+            },
+        ]
+
+        growth = client_reports.counter_growth_rows(rows, limit=10)
+
+        self.assertEqual([row["client"] for row in growth], ["alice"])
+        self.assertEqual(growth[0]["bucketStart"], "2026-06-11")
+        self.assertEqual(growth[0]["baselineBuckets"], 1)
+        self.assertEqual(growth[0]["totalEventsDelta"], 20)
+        self.assertEqual(growth[0]["uniqueHostsDelta"], 5)
+        self.assertEqual(growth[0]["uniquePortsDelta"], 3)
+
     def test_report_client_prints_credential_table_for_multi_credential_report(self) -> None:
         output = StringIO()
 

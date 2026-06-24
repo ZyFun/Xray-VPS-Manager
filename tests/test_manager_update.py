@@ -25,6 +25,8 @@ class ManagerUpdateTests(unittest.TestCase):
     def test_release_source_requires_bootstrap(self) -> None:
         self.assertIn("bootstrap.sh", manager_update.SOURCE_ITEMS)
         self.assertIn("bootstrap.sh", manager_update.REQUIRED_RELEASE_ITEMS)
+        self.assertIn("xray-raw-log-rotate.timer", manager_update.MANAGER_SYSTEMD_UNITS)
+        self.assertIn("xray-raw-log-rotate.service", manager_update.MANAGER_SYSTEMD_UNITS)
 
     def test_safe_extract_archive_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -94,7 +96,28 @@ class ManagerUpdateTests(unittest.TestCase):
             ["/bin/systemctl", "try-restart", "xray-telegram-poller.service"],
             calls,
         )
+        self.assertIn(
+            ["/bin/systemctl", "try-restart", "xray-raw-log-rotate.timer"],
+            calls,
+        )
         self.assertEqual(calls[-1], ["/bin/systemctl", "reset-failed", *manager_update.MANAGER_SYSTEMD_UNITS])
+
+    def test_sync_raw_log_units_calls_installed_activity_wrapper_with_systemctl(self) -> None:
+        calls = []
+
+        def fake_run(command: list[str], timeout: int = 60):
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sbin_dir = Path(tmp_dir)
+            (sbin_dir / "xray-activity").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            with mock.patch.object(manager_update, "SBIN_DIR", sbin_dir), \
+                mock.patch.object(manager_update, "run", side_effect=fake_run), \
+                redirect_stdout(io.StringIO()):
+                manager_update.sync_raw_log_units()
+
+        self.assertEqual(calls, [[str(sbin_dir / "xray-activity"), "raw-log-timer-sync"]])
 
     def test_restore_wrappers_does_not_rewrite_unrelated_sbin_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

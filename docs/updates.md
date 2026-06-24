@@ -134,7 +134,7 @@ traffic history
 Telegram settings
 ```
 
-Перед заменой файлов создаётся backup в `/usr/local/lib/xray-vps-manager-backups`. После update или rollback выполняется `systemctl daemon-reload`, затем `try-restart` для manager-owned units: `xray-traffic-sync.timer`, `xray-client-expire.timer`, `xray-traffic-sync.service`, `xray-client-expire.service` и `xray-telegram-poller.service`. Xray Core при этом не перезапускается, чтобы не рвать клиентские соединения без необходимости.
+Перед заменой файлов создаётся backup в `/usr/local/lib/xray-vps-manager-backups`. После update или rollback менеджер пересобирает raw-log rotation units через `xray-activity raw-log-timer-sync`, затем выполняет `systemctl daemon-reload` и `try-restart` для manager-owned units: `xray-traffic-sync.timer`, `xray-raw-log-rotate.timer`, `xray-client-expire.timer`, `xray-traffic-sync.service`, `xray-raw-log-rotate.service`, `xray-client-expire.service` и `xray-telegram-poller.service`. Xray Core при этом не перезапускается, чтобы не рвать клиентские соединения без необходимости.
 
 После обновления проверяется запуск `xray-vps-manager --help`, `xray-manager-update --help` и, если не передан `--no-test`, выполняется `xray-test`. Если проверка не проходит, менеджер пытается восстановить предыдущую версию из backup.
 
