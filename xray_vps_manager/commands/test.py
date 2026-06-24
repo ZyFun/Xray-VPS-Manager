@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.activity import time as activity_time
+from xray_vps_manager.clients import diagnostics as client_diagnostics
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db import schema as sqlite_schema
 from xray_vps_manager.db.repositories import activity as sqlite_activity
@@ -548,10 +549,10 @@ def check_reality_inbounds(diag):
 
     seen_tags = set()
     seen_ports = set()
-    names = set()
     summary = []
     for inbound in inbounds:
         tag = inbound_tag(inbound)
+        names = set()
         if tag in seen_tags:
             raise RuntimeError(f"duplicate inbound tag: {tag}")
         seen_tags.add(tag)
@@ -599,7 +600,7 @@ def check_reality_inbounds(diag):
                 raise RuntimeError(f"{tag}: {network} client must not use Vision flow")
             name = client_name(email)
             if name in names:
-                raise RuntimeError(f"duplicate active client name: {name}")
+                raise RuntimeError(f"{tag}: duplicate active client name: {name}")
             names.add(name)
         summary.append(f"{tag}:{port}")
 
@@ -607,6 +608,25 @@ def check_reality_inbounds(diag):
     diag.context["reality_tags"] = seen_tags
     diag.context["reality_ports"] = sorted(seen_ports)
     return "Reality connections OK: " + ", ".join(summary)
+
+
+def check_duplicate_active_client_names(diag):
+    rows = client_diagnostics.active_managed_client_rows(
+        managed_connection_inbounds(diag.context.get("config", {}))
+    )
+    cross_protocol = client_diagnostics.cross_protocol_duplicate_rows(rows)
+    client_db = diag.context.get("client_db", {})
+    db_clients = client_db.get("clients", {}) if isinstance(client_db.get("clients", {}), dict) else {}
+    issues = client_diagnostics.duplicate_active_client_name_issues(rows, db_clients)
+    if issues:
+        raise RuntimeError("; ".join(issues[:8]))
+    if not cross_protocol:
+        return "Active VLESS/Trojan duplicate client names OK: none"
+    summary = []
+    for name, rows in sorted(cross_protocol.items()):
+        tags = ", ".join(f"{row['connection']}:{row['protocol']}" for row in rows)
+        summary.append(f"{name} ({tags})")
+    return "Active VLESS/Trojan duplicate client names OK: " + "; ".join(summary[:8])
 
 
 def check_reality_ports(diag):
@@ -1196,6 +1216,7 @@ def run_diagnostics(full_integrity=False):
     diag.check("server.env", lambda: check_server_env(diag))
     diag.check("Manager timezone", lambda: check_manager_timezone(diag))
     diag.check("Reality connections", lambda: check_reality_inbounds(diag))
+    diag.check("Duplicate active client names", lambda: check_duplicate_active_client_names(diag), fatal=False)
     diag.check("Xray config test", check_config_test)
     diag.check("xray.service", check_xray_service)
     diag.check("Reality TCP ports", lambda: check_reality_ports(diag))
