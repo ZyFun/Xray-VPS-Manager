@@ -52,8 +52,8 @@ xray-client connection-rename ИМЯ_ИЛИ_TAG НОВОЕ_ИМЯ
 
 ## Trojan через Caddy
 
-Основной способ работы с Trojan - через Caddy: Caddy слушает публичный домен на `443`, выпускает и обновляет TLS-сертификат, принимает WebSocket-запрос по отдельному path и проксирует его на локальный Xray inbound `protocol=trojan`.
-Это production default менеджера: новое Trojan-подключение через CLI и меню создаётся как WebSocket за Caddy, с TLS 1.2+1.3 и автоматической настройкой Caddy site config.
+Основной поддерживаемый способ работы с Trojan в менеджере - через Caddy: Caddy слушает публичный домен на `443`, выпускает и обновляет TLS-сертификат, принимает WebSocket-запрос по отдельному path и проксирует его на локальный Xray inbound `protocol=trojan`.
+Trojan/WebSocket используется как compatibility/DPI-bypass режим, а не как долгосрочный целевой default всей системы. Новое Trojan-подключение через CLI и меню создаётся как WebSocket за Caddy, с TLS 1.2+1.3 и автоматической настройкой Caddy site config.
 
 ```text
 client -> vpn.example.com:443 -> Caddy /trojan -> 127.0.0.1:10100 -> Xray Trojan WS
@@ -100,7 +100,7 @@ xray-client add-trojan-connection trojan-main 10100 vpn.example.com chrome \
 - `--ws-path` - WebSocket path, который попадёт в Caddy route и `trojan://` ссылку.
 - `--public-port` - публичный порт Caddy, обычно `443`.
 - `FINGERPRINT` - клиентский fingerprint в ссылке; по умолчанию `chrome`.
-- `--no-caddy` - исключение из production default: создать локальный Trojan/WebSocket inbound без установки или обновления Caddy site.
+- `--no-caddy` - исключение из основного режима Trojan в менеджере: создать локальный Trojan/WebSocket inbound без установки или обновления Caddy site.
 
 Команда заранее проверяет, что для `DOMAIN` ещё нет Caddy site config. Если site уже существует, создание подключения останавливается до изменения Xray config и SQLite, чтобы не перезаписать рабочий сайт или другое TLS-подключение. Для изменения существующего site используй `Подключения и TLS -> Caddy / TLS -> Site configs`.
 
@@ -231,7 +231,7 @@ api.example.com {
 
 В этом разделе Caddy разделён на подменю: `Состояние и проверка`, `Site configs`, `Управление сервисом` и `Бэкапы`. Через них можно установить Caddy, проверить config, посмотреть `Caddyfile` и site configs, создать или обновить site config из существующего TLS-подключения, создать site вручную, изменить TLS version, upstream local port или домен site, удалить site config, убрать дефолтный site `:80`, проверить TLS handshake, посмотреть логи, выполнить reload/restart Caddy, а также открыть backup для Caddy config и файлов сайта. Для VLESS/XHTTP site config проксирует `h2c://127.0.0.1:LOCAL_PORT`, для Trojan/WebSocket - выбранный `WS_PATH` на `127.0.0.1:LOCAL_PORT`. При создании или изменении site config TLS выбирается из списка профилей: Caddy default, TLS 1.2, TLS 1.2 + TLS 1.3, TLS 1.3. Смена TLS version редактирует только TLS-директиву существующего site config, поэтому подходит и для статического сайта без upstream local port. Изменения site config валидируются через `caddy validate`; при ошибке менеджер откатывает изменённый файл из backup.
 
-`xray-test` дополнительно выполняет warning-level TLS certificate diagnostics: для legacy direct TLS/TCP он проверяет `certificateFile`, `keyFile`, базовые права, срок действия сертификата и соответствие `SNI`; для managed Caddy/TLS-подключений сверяет Caddy site config с SQLite metadata и делает live TLS handshake к `DOMAIN:443`.
+`xray-test` дополнительно выполняет warning-level TLS certificate diagnostics: для legacy direct TLS/TCP он проверяет `certificateFile`, `keyFile`, базовые права, срок действия сертификата и соответствие `SNI`; для managed Caddy/TLS-подключений сверяет Caddy site config с SQLite metadata и делает live TLS handshake к `DOMAIN:PUBLIC_PORT`. В режиме `xray-test --all` диагностика глубже проверяет Caddy endpoint: для Trojan/WebSocket отправляет пробный WebSocket upgrade на `WS_PATH`, для TLS/XHTTP проверяет HTTP route и отдельно предупреждает о deprecated Trojan/WebSocket в Xray.
 
 Через Telegram-владельца тот же TLS-профиль можно сменить в `/admin -> Настройки сервера -> TLS`. Бот показывает текущий профиль для каждого Caddy site config и время последнего изменения файла, затем применяет выбранный профиль с проверкой и reload Caddy.
 
