@@ -11,7 +11,8 @@ from xray_vps_manager.xray import config as xray_config
 
 CLIENT_ID = "00000000-0000-0000-0000-000000000001"
 SECOND_CLIENT_ID = "00000000-0000-0000-0000-000000000002"
-PASSWORD = "trojan-secret"
+PASSWORD = "trojanSecretToken0123456789ABCDEFG"
+ROTATED_PASSWORD = "rotatedTrojanToken0123456789ABCDEFG"
 
 
 def base_vless_inbound() -> dict:
@@ -102,6 +103,99 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(params["type"], ["tcp"])
         self.assertEqual(params["sni"], ["vpn.example.com"])
         self.assertEqual(params["fp"], ["chrome"])
+
+    def test_add_client_to_trojan_connection_rejects_weak_password(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        connection = client_connections.add_trojan_tls_connection(
+            config,
+            db,
+            "trojan-main",
+            8443,
+            "vpn.example.com",
+            "/etc/ssl/vpn/fullchain.pem",
+            "/etc/ssl/vpn/privkey.pem",
+            "chrome",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Trojan password policy"):
+            client_crud.add_client(
+                config,
+                db,
+                "alice",
+                access_days=None,
+                connection_tag=connection.tag,
+                uuid_factory=lambda: CLIENT_ID,
+                password_factory=lambda: "short",
+            )
+
+    def test_rotate_trojan_password_updates_sqlite_config_and_link(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        connection = client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-web",
+            "vpn.example.com",
+            local_port=10100,
+            public_port=443,
+            fingerprint_value="chrome",
+            ws_path="/trojan-private",
+        )
+        client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag=connection.tag,
+            uuid_factory=lambda: CLIENT_ID,
+            password_factory=lambda: PASSWORD,
+        )
+
+        result = client_crud.rotate_trojan_password(
+            config,
+            db,
+            "alice",
+            connection.tag,
+            password_factory=lambda: ROTATED_PASSWORD,
+        )
+
+        self.assertTrue(result.config_changed)
+        self.assertEqual(result.client_id, CLIENT_ID)
+        self.assertEqual(db["clients"]["alice"]["credentials"][connection.tag]["client"]["password"], ROTATED_PASSWORD)
+        self.assertEqual(config["inbounds"][1]["settings"]["clients"][0]["password"], ROTATED_PASSWORD)
+        with mock.patch.object(client_links, "server_name", return_value="Xray"):
+            link = client_links.link_for(config, result.credential_id, "alice", connection.tag, db)
+        self.assertEqual(unquote(urlsplit(link).username or ""), ROTATED_PASSWORD)
+
+    def test_trojan_password_policy_rows_report_mismatch(self) -> None:
+        config = {"inbounds": [base_vless_inbound()], "outbounds": []}
+        db = {"connections": {}, "clients": {}}
+        connection = client_connections.add_trojan_caddy_connection(
+            config,
+            db,
+            "trojan-web",
+            "vpn.example.com",
+            local_port=10100,
+            public_port=443,
+            fingerprint_value="chrome",
+            ws_path="/trojan-private",
+        )
+        client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag=connection.tag,
+            uuid_factory=lambda: CLIENT_ID,
+            password_factory=lambda: PASSWORD,
+        )
+        config["inbounds"][1]["settings"]["clients"][0]["password"] = ROTATED_PASSWORD
+
+        rows = client_crud.trojan_password_policy_rows(config, db)
+
+        self.assertEqual(rows[0]["status"], "FAIL")
+        self.assertIn("active config password differs", rows[0]["issues"])
 
     def test_existing_vless_client_can_receive_trojan_credential(self) -> None:
         config = {"inbounds": [base_vless_inbound()], "outbounds": []}

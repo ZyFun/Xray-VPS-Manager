@@ -89,6 +89,16 @@ class MoveClientResult:
     entry: dict[str, Any]
 
 
+@dataclass
+class RotateTrojanPasswordResult:
+    name: str
+    client_id: str
+    credential_id: str
+    connection_tag: str
+    entry: dict[str, Any]
+    config_changed: bool
+
+
 def normalize_connection_protocol(protocol: str | None) -> str:
     value = str(protocol or "").strip().lower()
     if not value:
@@ -191,6 +201,7 @@ def credential_record(
     protocol = str(inbound.get("protocol") or "vless").strip().lower()
     email = email_for_client(name, created, connection_tag=connection_tag)
     if protocol == "trojan":
+        password = client_credentials.validate_trojan_password(password)
         client = {
             "password": password,
             "level": 0,
@@ -401,6 +412,116 @@ def enable_client(
         connection_tags=enabled_tags,
         entry=entry,
     )
+
+
+def trojan_credential_tags(config: dict[str, Any], entry: dict[str, Any]) -> list[str]:
+    credentials = client_credentials.normalize_entry_credentials(entry)
+    tags = []
+    for tag, credential in credentials.items():
+        inbound = find_inbound_by_tag(config, tag)
+        protocol = str(credential.get("protocol") or inbound.get("protocol") or "").strip().lower()
+        if protocol == "trojan":
+            tags.append(tag)
+    return tags
+
+
+def resolve_trojan_credential_tag(
+    config: dict[str, Any],
+    entry: dict[str, Any],
+    connection_tag: str | None = None,
+) -> str:
+    credentials = client_credentials.normalize_entry_credentials(entry)
+    if connection_tag:
+        if connection_tag not in credentials:
+            raise ValueError(f"Client credential not found for connection: {connection_tag}")
+        inbound = find_inbound_by_tag(config, connection_tag)
+        protocol = str(credentials[connection_tag].get("protocol") or inbound.get("protocol") or "").strip().lower()
+        if protocol != "trojan":
+            raise ValueError(f"Credential is not Trojan: {connection_tag}")
+        return connection_tag
+
+    tags = trojan_credential_tags(config, entry)
+    if not tags:
+        raise ValueError("Client has no Trojan credentials.")
+    if len(tags) > 1:
+        raise ValueError("Client has multiple Trojan credentials. Use --connection TAG.")
+    return tags[0]
+
+
+def rotate_trojan_password(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    name: str,
+    connection_tag: str | None = None,
+    password_factory: Callable[[], str] = xray_crypto.random_trojan_password,
+) -> RotateTrojanPasswordResult:
+    connections.ensure_connections(config, db)
+    entry = db_entry_for_existing_client(config, db, name)
+    selected_tag = resolve_trojan_credential_tag(config, entry, connection_tag)
+    credentials = client_credentials.normalize_entry_credentials(entry)
+    credential = credentials[selected_tag]
+    password = client_credentials.validate_trojan_password(password_factory())
+
+    client = dict(credential.get("client") or {})
+    client["password"] = password
+    client["protocol"] = "trojan"
+    client.setdefault("id", credential.get("id") or entry.get("id", ""))
+    credential["client"] = client
+    credential["protocol"] = "trojan"
+    credential["enabled"] = credential.get("enabled") is not False
+
+    _inbound, active_item = client_credentials.active_item_for_connection(config, name, selected_tag)
+    config_changed = False
+    if active_item is not None:
+        active_item["password"] = password
+        config_changed = True
+
+    client_credentials.sync_legacy_fields(entry)
+    db_clients(db)[name] = entry
+
+    return RotateTrojanPasswordResult(
+        name=name,
+        client_id=str(entry.get("id") or ""),
+        credential_id=str(credential.get("id") or entry.get("id") or ""),
+        connection_tag=selected_tag,
+        entry=entry,
+        config_changed=config_changed,
+    )
+
+
+def trojan_password_policy_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str, str]]:
+    connections.ensure_connections(config, db)
+    rows: list[dict[str, str]] = []
+    for name, entry in db_clients(db).items():
+        credentials = client_credentials.normalize_entry_credentials(entry)
+        for tag, credential in credentials.items():
+            try:
+                inbound = find_inbound_by_tag(config, tag)
+                inbound_protocol = str(inbound.get("protocol") or "").strip().lower()
+            except ValueError:
+                inbound = None
+                inbound_protocol = ""
+            protocol = str(credential.get("protocol") or inbound_protocol or "").strip().lower()
+            if protocol != "trojan":
+                continue
+            client = credential.get("client") if isinstance(credential.get("client"), dict) else {}
+            password = str(client.get("password") or "")
+            issues = client_credentials.trojan_password_policy_issues(password)
+            if inbound is None:
+                issues.append("connection inbound is missing")
+            else:
+                _active_inbound, active_item = client_credentials.active_item_for_connection(config, name, tag)
+                if active_item is not None and active_item.get("password") != password:
+                    issues.append("active config password differs from SQLite")
+            rows.append(
+                {
+                    "client": name,
+                    "connection": tag,
+                    "status": "FAIL" if issues else "OK",
+                    "issues": ", ".join(issues) if issues else "-",
+                }
+            )
+    return rows
 
 
 def move_client_to_connection(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from xray_vps_manager.clients.models import client_name, email_for_client
@@ -14,6 +15,10 @@ from xray_vps_manager.xray.config import (
     managed_connection_inbounds,
 )
 
+TROJAN_PASSWORD_MIN_LENGTH = 32
+TROJAN_PASSWORD_MAX_LENGTH = 128
+TROJAN_PASSWORD_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 def db_credentials(entry: dict[str, Any]) -> dict[str, dict[str, Any]]:
     credentials = entry.setdefault("credentials", {})
@@ -25,6 +30,28 @@ def db_credentials(entry: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def credential_key(connection_tag: str) -> str:
     return str(connection_tag or "").strip()
+
+
+def trojan_password_policy_issues(password: str) -> list[str]:
+    value = str(password or "")
+    issues = []
+    if len(value) < TROJAN_PASSWORD_MIN_LENGTH:
+        issues.append(f"shorter than {TROJAN_PASSWORD_MIN_LENGTH} chars")
+    if len(value) > TROJAN_PASSWORD_MAX_LENGTH:
+        issues.append(f"longer than {TROJAN_PASSWORD_MAX_LENGTH} chars")
+    if value.strip() != value or any(char.isspace() for char in value):
+        issues.append("contains whitespace")
+    if value and not TROJAN_PASSWORD_RE.fullmatch(value):
+        issues.append("contains non URL-safe chars")
+    return issues
+
+
+def validate_trojan_password(password: str) -> str:
+    value = str(password or "")
+    issues = trojan_password_policy_issues(value)
+    if issues:
+        raise ValueError("Trojan password policy violation: " + ", ".join(issues))
+    return value
 
 
 def protocol_from_inbound(inbound: dict[str, Any] | None) -> str:
@@ -160,8 +187,10 @@ def xray_client_for_credential(name: str, entry: dict[str, Any], credential: dic
     email = credential_email(name, entry, credential)
     if protocol == "trojan":
         password = str(client.get("password") or "").strip()
-        if not password:
-            raise ValueError(f"Trojan credential has no password in database: {name}")
+        try:
+            validate_trojan_password(password)
+        except ValueError as exc:
+            raise ValueError(f"Trojan credential has invalid password in database: {name}: {exc}") from exc
         return {
             "password": password,
             "email": email,

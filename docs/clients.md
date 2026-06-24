@@ -154,6 +154,22 @@ xray-client key ИМЯ
 
 Ключ имеет вид `vpn-key:UUID` и привязан к клиенту целиком, а не к одному credential.
 
+Проверить Trojan password policy:
+
+```bash
+xray-client trojan-password-check
+```
+
+Менеджер считает корректным Trojan password длиной 32-128 URL-safe символов. Проверка также показывает рассинхрон, если пароль активного Xray config отличается от значения в SQLite.
+
+Сменить Trojan password для клиента:
+
+```bash
+xray-client rotate-trojan-password ИМЯ --connection TAG
+```
+
+Если у клиента только один Trojan credential, `--connection TAG` можно не указывать. Команда меняет только Trojan password выбранного credential, не меняет внутренний `vpn-key:UUID` и сразу печатает новую `trojan://` ссылку. Старую Trojan-ссылку после rotate нужно заменить у клиента.
+
 Синхронизировать per-client cascade routing rules и balancers в `config.json`:
 
 ```bash

@@ -1,6 +1,7 @@
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from types import SimpleNamespace
 from unittest import mock
 
 from xray_vps_manager.commands import client as client_command
@@ -79,6 +80,56 @@ class ClientCommandReadTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn(f"Access key: vpn-key:{client_id}", text)
         self.assertIn("trojan://secret@vpn.example.com:443?type=ws#Xray", text)
+
+    def test_trojan_password_check_prints_policy_rows(self) -> None:
+        output = StringIO()
+
+        with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
+            mock.patch.object(client_command, "load_db_readonly", return_value=SimpleNamespace(db={})), \
+            mock.patch.object(
+                client_command.client_crud,
+                "trojan_password_policy_rows",
+                return_value=[
+                    {
+                        "client": "alice",
+                        "connection": "trojan-tls",
+                        "status": "OK",
+                        "issues": "-",
+                    }
+                ],
+            ), \
+            redirect_stdout(output):
+            client_command.cmd_trojan_password_check()
+
+        text = output.getvalue()
+        self.assertIn("alice", text)
+        self.assertIn("trojan-tls", text)
+        self.assertIn("OK", text)
+
+    def test_rotate_trojan_password_prints_reissued_link(self) -> None:
+        result = client_command.client_crud.RotateTrojanPasswordResult(
+            name="alice",
+            client_id="00000000-0000-0000-0000-000000000001",
+            credential_id="00000000-0000-0000-0000-000000000002",
+            connection_tag="trojan-tls",
+            entry={},
+            config_changed=True,
+        )
+        output = StringIO()
+
+        with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
+            mock.patch.object(client_command, "load_db", return_value={"connections": {}, "clients": {}}), \
+            mock.patch.object(client_command.client_crud, "rotate_trojan_password", return_value=result), \
+            mock.patch.object(client_command, "save_config_restart_xray_and_db", return_value="/tmp/config.bak"), \
+            mock.patch.object(client_command, "connection_display_name", return_value="Trojan"), \
+            mock.patch.object(client_command, "link_for", return_value="trojan://new@vpn.example.com:443?type=ws#Xray"), \
+            redirect_stdout(output):
+            client_command.cmd_rotate_trojan_password("alice", "trojan-tls")
+
+        text = output.getvalue()
+        self.assertIn("Trojan password rotated.", text)
+        self.assertIn("Client must reimport this Trojan link:", text)
+        self.assertIn("trojan://new@vpn.example.com:443?type=ws#Xray", text)
 
     def test_connection_list_shows_protocol_column(self) -> None:
         config = {
