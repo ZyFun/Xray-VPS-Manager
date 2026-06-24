@@ -457,9 +457,12 @@ def check_sqlite_database(diag, full_integrity=False):
             "clients": table_count(connection, "clients"),
             "traffic": table_count(connection, "traffic_totals"),
             "activityEvents": table_count(connection, "activity_events"),
+            "activityAlerts": table_count(connection, "activity_alert_events"),
+            "activityCounters": table_count(connection, "activity_client_counters"),
             "activityExceptions": table_count(connection, "activity_exceptions"),
             "activityBlocklist": table_count(connection, "activity_blocklist"),
             "activityBlocklistHits": table_count(connection, "activity_blocklist_hits"),
+            "xrayErrors": table_count(connection, "xray_error_events"),
             "telegramSubscriptions": table_count(connection, "telegram_subscriptions"),
         }
         diag.context["sqlite_counts"] = counts
@@ -671,10 +674,14 @@ def check_stats_runtime():
 
 
 def check_timers():
-    inactive = [unit for unit in ("xray-traffic-sync.timer", "xray-client-expire.timer") if not is_active(unit)]
+    inactive = [
+        unit
+        for unit in ("xray-traffic-sync.timer", "xray-raw-log-rotate.timer", "xray-client-expire.timer")
+        if not is_active(unit)
+    ]
     if inactive:
         raise RuntimeError("inactive timers: " + ", ".join(inactive))
-    return "traffic and expiry timers active"
+    return "traffic, raw-log rotation, and expiry timers active"
 
 
 def check_traffic_sync_service():

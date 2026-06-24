@@ -45,7 +45,7 @@ class SQLiteCommandTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             output = stdout.getvalue()
-            self.assertIn("Schema: 5", output)
+            self.assertIn("Schema: 6", output)
             self.assertIn("Quick check: ok", output)
             self.assertIn("SQLite ready: yes", output)
             self.assertIn("activity_blocklist: 0", output)

@@ -76,7 +76,12 @@ def first_event_status(
 
 
 def status_rows() -> tuple[list[list[object]], list[str]]:
-    db = repository.load_activity_db(settings.retention_days(), settings.activity_enabled())
+    legacy_enabled = settings.activity_enabled()
+    db = repository.load_activity_db(settings.retention_days(), legacy_enabled)
+    try:
+        capture_status = repository.detail_capture_status_for_read(legacy_enabled=legacy_enabled)
+    except SQLiteReadUnavailable:
+        capture_status = {"mode": "all" if legacy_enabled else "off", "selectedClients": []}
     config = repository.load_json(CONFIG_PATH, {})
     access = config.get("log", {}).get("access", "")
     exceptions = activity_exceptions.exception_items_for_read()
@@ -86,8 +91,16 @@ def status_rows() -> tuple[list[list[object]], list[str]]:
     geoip_code = settings.xray_geoip_warning_code()
     geoip_path = activity_parser.geoip_path()
     rows = [
-        ["Parser enabled", "yes" if settings.activity_enabled() else "no"],
-        ["Retention", f"{settings.retention_days()} days"],
+        ["Detailed mode", capture_status.get("mode") or "off"],
+        ["Selected detailed clients", len(capture_status.get("selectedClients") or [])],
+        ["Detailed retention", f"{settings.retention_days()} days"],
+        ["Alert-log", "enabled" if settings.alerts_enabled() else "disabled"],
+        ["Alert retention", f"{settings.alert_retention_days()} days"],
+        ["Lightweight counters", "enabled"],
+        ["Xray error event retention", f"{settings.xray_error_event_retention_days()} days"],
+        ["Raw access.log retention", f"{settings.xray_access_log_retention_days()} days"],
+        ["Raw error.log retention", f"{settings.xray_error_log_retention_days()} days"],
+        ["Raw log rotate time", settings.raw_log_rotate_time()],
         ["Suspicious burst", f"{limits['burstEvents']} events / {limits['burstWindowMinutes']} min"],
         ["Suspicious hosts", limits["uniqueHosts"]],
         ["Suspicious ports", limits["uniquePorts"]],
@@ -101,6 +114,8 @@ def status_rows() -> tuple[list[list[object]], list[str]]:
         ["Last sync", db.get("lastSync", "never")],
     ]
     warnings = []
-    if not settings.activity_enabled():
-        warnings.append("Activity log parser is disabled. Enable it from menu or run: xray-activity enable")
+    if capture_status.get("mode") == "off":
+        warnings.append("Detailed activity logging is disabled. Alert-log and lightweight counters continue to work.")
+    if capture_status.get("mode") == "selected" and not capture_status.get("selectedClients"):
+        warnings.append("Detailed activity mode is selected, but no clients are selected.")
     return rows, warnings

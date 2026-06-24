@@ -5,6 +5,11 @@ from __future__ import annotations
 import re
 
 from xray_vps_manager.activity.constants import (
+    DEFAULT_ALERT_RETENTION_DAYS,
+    DEFAULT_XRAY_ACCESS_LOG_RETENTION_DAYS,
+    DEFAULT_XRAY_ERROR_LOG_RETENTION_DAYS,
+    DEFAULT_XRAY_ERROR_RETENTION_DAYS,
+    DEFAULT_XRAY_RAW_LOG_ROTATE_TIME,
     DEFAULT_RETENTION_DAYS,
     DEFAULT_RISK_BURST_EVENTS,
     DEFAULT_RISK_BURST_WINDOW_MINUTES,
@@ -31,12 +36,23 @@ def with_activity_defaults(env: dict[str, str]) -> dict[str, str]:
     env.setdefault("ACTIVITY_RISK_UNIQUE_HOSTS", str(DEFAULT_RISK_UNIQUE_HOSTS))
     env.setdefault("ACTIVITY_RISK_UNIQUE_PORTS", str(DEFAULT_RISK_UNIQUE_PORTS))
     env.setdefault("ACTIVITY_XRAY_GEOIP_WARNING_CODE", "")
+    env.setdefault("ACTIVITY_ALERTS_ENABLED", "true")
+    env.setdefault("ACTIVITY_ALERT_RETENTION_DAYS", str(DEFAULT_ALERT_RETENTION_DAYS))
+    env.setdefault("XRAY_ERROR_EVENT_RETENTION_DAYS", str(DEFAULT_XRAY_ERROR_RETENTION_DAYS))
+    env.setdefault("XRAY_ACCESS_LOG_RETENTION_DAYS", str(DEFAULT_XRAY_ACCESS_LOG_RETENTION_DAYS))
+    env.setdefault("XRAY_ERROR_LOG_RETENTION_DAYS", str(DEFAULT_XRAY_ERROR_LOG_RETENTION_DAYS))
+    env.setdefault("XRAY_RAW_LOG_ROTATE_TIME", DEFAULT_XRAY_RAW_LOG_ROTATE_TIME)
     return env
 
 
 def activity_enabled(env: dict[str, str] | None = None) -> bool:
     env = env if env is not None else server_env_values()
     return (env.get("ACTIVITY_LOGGING_ENABLED") or "false").strip().lower() in ("1", "true", "yes", "y")
+
+
+def alerts_enabled(env: dict[str, str] | None = None) -> bool:
+    env = env if env is not None else server_env_values()
+    return (env.get("ACTIVITY_ALERTS_ENABLED") or "true").strip().lower() not in ("0", "false", "no", "n", "off")
 
 
 def xray_geoip_warning_code(env: dict[str, str] | None = None) -> str:
@@ -52,6 +68,43 @@ def retention_days(env: dict[str, str] | None = None) -> int:
     except ValueError:
         return DEFAULT_RETENTION_DAYS
     return max(1, value)
+
+
+def _retention_value(env: dict[str, str], name: str, default: int) -> int:
+    raw = (env.get(name) or str(default)).strip()
+    try:
+        value = int(raw, 10)
+    except ValueError:
+        return default
+    return max(1, value)
+
+
+def alert_retention_days(env: dict[str, str] | None = None) -> int:
+    env = env if env is not None else server_env_values()
+    return _retention_value(env, "ACTIVITY_ALERT_RETENTION_DAYS", DEFAULT_ALERT_RETENTION_DAYS)
+
+
+def xray_error_event_retention_days(env: dict[str, str] | None = None) -> int:
+    env = env if env is not None else server_env_values()
+    return _retention_value(env, "XRAY_ERROR_EVENT_RETENTION_DAYS", DEFAULT_XRAY_ERROR_RETENTION_DAYS)
+
+
+def xray_access_log_retention_days(env: dict[str, str] | None = None) -> int:
+    env = env if env is not None else server_env_values()
+    return _retention_value(env, "XRAY_ACCESS_LOG_RETENTION_DAYS", DEFAULT_XRAY_ACCESS_LOG_RETENTION_DAYS)
+
+
+def xray_error_log_retention_days(env: dict[str, str] | None = None) -> int:
+    env = env if env is not None else server_env_values()
+    return _retention_value(env, "XRAY_ERROR_LOG_RETENTION_DAYS", DEFAULT_XRAY_ERROR_LOG_RETENTION_DAYS)
+
+
+def raw_log_rotate_time(env: dict[str, str] | None = None) -> str:
+    env = env if env is not None else server_env_values()
+    value = (env.get("XRAY_RAW_LOG_ROTATE_TIME") or DEFAULT_XRAY_RAW_LOG_ROTATE_TIME).strip()
+    if not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value):
+        return DEFAULT_XRAY_RAW_LOG_ROTATE_TIME
+    return value
 
 
 def parse_retention_days(value: str) -> int:

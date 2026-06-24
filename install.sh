@@ -1087,6 +1087,12 @@ ACTIVITY_RISK_BURST_WINDOW_MINUTES=15
 ACTIVITY_RISK_UNIQUE_HOSTS=500
 ACTIVITY_RISK_UNIQUE_PORTS=20
 ACTIVITY_XRAY_GEOIP_WARNING_CODE=
+ACTIVITY_ALERTS_ENABLED=true
+ACTIVITY_ALERT_RETENTION_DAYS=90
+XRAY_ERROR_EVENT_RETENTION_DAYS=180
+XRAY_ACCESS_LOG_RETENTION_DAYS=180
+XRAY_ERROR_LOG_RETENTION_DAYS=180
+XRAY_RAW_LOG_ROTATE_TIME=03:00
 EOF
 
 chown root:xray /usr/local/etc/xray/config.json /usr/local/etc/xray/server.env
@@ -1441,6 +1447,8 @@ Unit=xray-traffic-sync.service
 WantedBy=timers.target
 EOF
 
+xray-activity raw-log-timer-sync --no-systemctl
+
 cat >/etc/systemd/system/xray-client-expire.service <<'EOF'
 [Unit]
 Description=Disable expired Xray clients
@@ -1471,6 +1479,7 @@ systemctl daemon-reload
 systemctl enable --now xray
 systemctl restart xray
 systemctl enable --now xray-traffic-sync.timer
+systemctl enable --now xray-raw-log-rotate.timer
 systemctl enable --now xray-client-expire.timer
 systemctl enable --now xray-telegram-poller.service
 xray-traffic-sync --quiet || true
