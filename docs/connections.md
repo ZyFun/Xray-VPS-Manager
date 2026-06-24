@@ -237,6 +237,26 @@ api.example.com {
 
 Обычный `xray-backup` включает `/etc/caddy/Caddyfile` и `/etc/caddy/conf.d`, если Caddy настроен, чтобы TLS/Caddy-подключения восстанавливались вместе с Xray config и `manager.db`. Файлы сайта и config-only операции Caddy доступны отдельно через `Подключения и TLS -> Caddy / TLS -> Бэкапы`.
 
+## Типовые проблемы
+
+Если после изменения TLS, Caddy, VLESS/XHTTP или Trojan/WebSocket подключение не работает, сначала запусти безопасную диагностику:
+
+```bash
+xray-test --all
+```
+
+Эта команда не меняет конфигурацию и не перезапускает сервисы. Она проверяет Xray config, SQLite, TLS certificate diagnostics, Caddy site configs, Caddy endpoint probes и выводит warning-level подсказки по deprecated Trojan/WebSocket.
+
+Типовые проблемы:
+
+- Несовпадение сертификата: клиентская ссылка использует один `sni`/`TLS_DOMAIN`, а Caddy или direct TLS сертификат выпущен на другой домен. Проверь `xray-client connection-list`, `Подключения и TLS -> Caddy / TLS -> Site configs` и вывод `xray-test --all`. Для Caddy-подключений сертификат должен соответствовать публичному домену подключения, а DNS должен указывать на сервер.
+- Конфликт порта: публичный `443` может слушать только один сервис. Для Trojan/WebSocket и TLS/XHTTP через Caddy публичный `443` должен принадлежать Caddy, а Xray inbound должен слушать локальный `127.0.0.1:LOCAL_PORT`. Если Reality/VLESS уже занимает `443`, перенеси его на другой порт перед настройкой Caddy.
+- Неподдерживаемый клиент: не каждый VPN-клиент одинаково поддерживает Trojan/WebSocket, VLESS XHTTP, XHTTP `downloadSettings`, XMUX и новые параметры Xray. Если ссылка импортируется, но соединение не поднимается, проверь поддержку конкретного transport/security в клиенте и выдай свежую ссылку через `xray-client link NAME`.
+- Нет статистики трафика: трафик появляется после первого успешного соединения и очередного `xray-traffic-sync`. Проверь, что credential включён, email активного Xray client совпадает с записью в SQLite, `xray-traffic-sync --quiet` проходит без ошибок, а `xray-test --all` не показывает рассинхрон `SQLite matches active managed connections`.
+- Telegram не принимает ссылку: Telegram-бот больше не принимает `vless://` или `trojan://` для привязки подписки. Для подключения к боту клиенту нужен ключ доступа формата `vpn-key:00000000-0000-0000-0000-000000000000`, который можно выдать через `xray-client key NAME` или админ-панель Telegram. Protocol-ссылки выдаются отдельно через `xray-client link NAME` или кнопку `Получить VPN-ссылку` уже после привязки.
+
+Если менялись домен, публичный порт, `WS_PATH`, `XHTTP_PATH`, fingerprint, TLS profile или XHTTP advanced profile, старую клиентскую ссылку лучше считать устаревшей и выдать новую.
+
 ## Отдельный Caddy-Endpoint Для downloadSettings
 
 Для `downloadSettings` можно поднять второй сервер, на котором работает только Caddy. Он принимает клиентский download/downstream на отдельном домене и проксирует запросы на основной XHTTP/TLS endpoint:
