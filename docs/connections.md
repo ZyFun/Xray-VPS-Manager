@@ -139,6 +139,21 @@ xray-client link alice
 
 Ссылку нужно выдать заново, если изменились домен, публичный порт, `WS_PATH`, fingerprint или TLS-параметры клиентской ссылки. Если менялся только серверный Caddy site config без изменения этих параметров, уже импортированную ссылку обычно менять не нужно.
 
+Для managed Trojan WebSocket/Caddy connection эти параметры можно обновить одной CLI-командой:
+
+```bash
+xray-client update-trojan-connection trojan-tls \
+  --domain vpn.example.com \
+  --local-port 10101 \
+  --public-port 443 \
+  --ws-path /trojan2 \
+  --fingerprint firefox \
+  --tls-min-version tls1.2 \
+  --tls-max-version tls1.3
+```
+
+Команда обновляет SQLite metadata, локальный Trojan inbound в Xray config и Caddy site config для этого домена. Если меняется домен site config, старый Caddy site заменяется новым с rollback при ошибке `caddy validate` или reload. После успешного изменения параметров подключения выдай клиентам новые ссылки через `xray-client link NAME`, потому что старая `trojan://` ссылка продолжит указывать на прежний домен, порт, path или fingerprint.
+
 Legacy-режим direct TLS/TCP с ручными cert/key path сохранён для совместимости и автоматизации, но не является основным способом:
 
 ```bash

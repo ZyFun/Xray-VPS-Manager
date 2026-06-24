@@ -270,6 +270,108 @@ class ClientCommandReadTests(unittest.TestCase):
         self.assertEqual(parsed[6], "tcp")
         self.assertFalse(parsed[9])
 
+    def test_parse_trojan_connection_update_args(self) -> None:
+        parsed = client_command.parse_trojan_connection_update_args(
+            [
+                "trojan-tls",
+                "--domain",
+                "vpn.example.com",
+                "--local-port",
+                "10101",
+                "--public-port",
+                "443",
+                "--ws-path",
+                "/trojan2",
+                "--fingerprint",
+                "firefox",
+                "--tls-min-version",
+                "tls1.2",
+                "--tls-max-version",
+                "tls1.3",
+            ]
+        )
+
+        self.assertEqual(
+            parsed,
+            (
+                "trojan-tls",
+                "vpn.example.com",
+                "10101",
+                "443",
+                "/trojan2",
+                "firefox",
+                "tls1.2",
+                "tls1.3",
+            ),
+        )
+
+    def test_cmd_trojan_connection_update_refreshes_caddy_site(self) -> None:
+        result = client_command.client_connections.UpdateTrojanConnectionResult(
+            tag="trojan-tls",
+            display_name="Trojan",
+            public_host="vpn.example.com",
+            public_port=443,
+            local_port=10101,
+            ws_path="/trojan2",
+            fingerprint="firefox",
+            tls_min_version="tls1.2",
+            tls_max_version="tls1.3",
+            caddy_enabled=True,
+            previous_public_host="vpn.example.com",
+            previous_public_port=443,
+            previous_local_port=10100,
+            previous_ws_path="/trojan",
+            previous_fingerprint="chrome",
+            previous_tls_min_version="tls1.2",
+            previous_tls_max_version="tls1.3",
+        )
+        output = StringIO()
+
+        with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
+            mock.patch.object(client_command, "load_db", return_value={"connections": {}, "clients": {}}), \
+            mock.patch.object(client_command.client_connections, "update_trojan_connection", return_value=result) as update_connection, \
+            mock.patch.object(client_command, "save_config_restart_xray_and_db", return_value="/tmp/config.bak"), \
+            mock.patch.object(
+                client_command.xray_caddy,
+                "update_site_config",
+                return_value=SimpleNamespace(path="/etc/caddy/conf.d/vpn.example.com.caddy"),
+            ) as update_site, \
+            redirect_stdout(output):
+            client_command.cmd_trojan_connection_update(
+                "trojan-tls",
+                domain_value="vpn.example.com",
+                local_port_value="10101",
+                public_port_value="443",
+                ws_path_value="/trojan2",
+                fingerprint_value="firefox",
+                tls_min_version_value="tls1.2",
+                tls_max_version_value="tls1.3",
+            )
+
+        update_connection.assert_called_once_with(
+            {"inbounds": []},
+            {"connections": {}, "clients": {}},
+            "trojan-tls",
+            domain="vpn.example.com",
+            local_port=10101,
+            public_port=443,
+            ws_path="/trojan2",
+            fingerprint_value="firefox",
+            tls_min_version="tls1.2",
+            tls_max_version="tls1.3",
+        )
+        update_site.assert_called_once_with(
+            "vpn.example.com",
+            10101,
+            tls_min_version="tls1.2",
+            tls_max_version="tls1.3",
+            upstream_transport="http",
+            route_path="/trojan2",
+        )
+        text = output.getvalue()
+        self.assertIn("Trojan connection updated: Trojan", text)
+        self.assertIn("Выведи клиентам новые Trojan-ссылки", text)
+
     def test_trojan_caddy_site_conflict_stops_before_config_save(self) -> None:
         with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
             mock.patch.object(client_command, "load_db", return_value={"connections": {}, "clients": {}}), \

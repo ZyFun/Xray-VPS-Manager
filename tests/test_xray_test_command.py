@@ -16,6 +16,12 @@ class XrayTestCommandTests(unittest.TestCase):
             "subjectAltName": (("DNS", domain),),
         }
 
+    def test_certificate_domain_match_fallback_without_ssl_match_hostname(self) -> None:
+        with mock.patch.object(test_command.ssl, "match_hostname", new=None, create=True):
+            test_command.certificate_domain_matches(self.valid_cert("*.example.com"), "vpn.example.com")
+            with self.assertRaisesRegex(RuntimeError, "certificate does not match"):
+                test_command.certificate_domain_matches(self.valid_cert("*.example.com"), "vpn.other.com")
+
     def test_client_db_alignment_accepts_tls_vless_connections(self) -> None:
         diag = SimpleNamespace(
             context={

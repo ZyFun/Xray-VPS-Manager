@@ -10,6 +10,7 @@ from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
 from xray_vps_manager.core.time import utc_stamp
+from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import (
     DEFAULT_XHTTP_MODE,
@@ -99,6 +100,27 @@ class UpdateConnectionXhttpExtraResult:
     tag: str
     display_name: str
     xhttp_extra: dict[str, Any]
+
+
+@dataclass
+class UpdateTrojanConnectionResult:
+    tag: str
+    display_name: str
+    public_host: str
+    public_port: int
+    local_port: int
+    ws_path: str
+    fingerprint: str
+    tls_min_version: str
+    tls_max_version: str
+    caddy_enabled: bool
+    previous_public_host: str
+    previous_public_port: int
+    previous_local_port: int
+    previous_ws_path: str
+    previous_fingerprint: str
+    previous_tls_min_version: str
+    previous_tls_max_version: str
 
 
 @dataclass
@@ -969,6 +991,116 @@ def update_connection_xhttp_extra(
         tag=tag,
         display_name=connection_display_name(config, db, tag),
         xhttp_extra=entry.get("xhttpExtra", {}),
+    )
+
+
+def port_used_by_other_inbound(config: dict[str, Any], tag: str, port: int) -> bool:
+    return any(inbound_tag(inbound) != tag and inbound.get("port") == port for inbound in config.get("inbounds", []))
+
+
+def validate_connection_fingerprint(value: str) -> str:
+    fp = (value or "").strip().lower()
+    if not fp:
+        return fp
+    if fp not in FINGERPRINTS:
+        raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
+    return fp
+
+
+def update_trojan_connection(
+    config: dict[str, Any],
+    db: dict[str, Any],
+    identifier: str,
+    *,
+    domain: str | None = None,
+    local_port: int | None = None,
+    public_port: int | None = None,
+    ws_path: str | None = None,
+    fingerprint_value: str | None = None,
+    tls_min_version: str | None = None,
+    tls_max_version: str | None = None,
+) -> UpdateTrojanConnectionResult:
+    ensure_connections(config, db)
+    tag = resolve_connection_identifier(config, db, identifier)
+    inbound = find_inbound_by_tag(config, tag)
+    entry = db_managed_connections(db).setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
+    protocol = str(entry.get("protocol") or inbound.get("protocol") or "").strip().lower()
+    if protocol != "trojan":
+        raise ValueError("Trojan connection update requires a Trojan connection.")
+
+    settings = connection_transport_settings_from_inbound(inbound)
+    transport = str(entry.get("transport") or settings.get("transport") or "").strip().lower()
+    if transport != "ws":
+        raise ValueError("Trojan update currently supports only WebSocket/Caddy connections.")
+
+    previous_public_host = str(entry.get("publicHost") or entry.get("sni") or "")
+    previous_public_port = int(entry.get("publicPort") or entry.get("port") or DEFAULT_TROJAN_TLS_PUBLIC_PORT)
+    previous_local_port = int(entry.get("localPort") or inbound.get("port") or 0)
+    previous_ws_path = settings.get("wsPath") or entry.get("wsPath") or DEFAULT_TROJAN_WS_PATH
+    previous_fingerprint = str(entry.get("fingerprint") or "").strip().lower()
+    previous_tls_min = str(entry.get("tlsMinVersion") or DEFAULT_TROJAN_TLS_MIN_VERSION)
+    previous_tls_max = str(entry.get("tlsMaxVersion") or DEFAULT_TROJAN_TLS_MAX_VERSION)
+
+    next_public_host = xray_caddy.validate_domain(domain or previous_public_host)
+    next_public_port = public_port if public_port is not None else previous_public_port
+    next_local_port = local_port if local_port is not None else previous_local_port
+    next_ws_path = normalize_trojan_ws_path(ws_path) if ws_path is not None else previous_ws_path
+    next_fingerprint = (
+        validate_connection_fingerprint(fingerprint_value)
+        if fingerprint_value is not None
+        else previous_fingerprint
+    )
+    next_tls_min = tls_min_version if tls_min_version is not None else previous_tls_min
+    next_tls_max = tls_max_version if tls_max_version is not None else previous_tls_max
+    next_tls_min, next_tls_max = xray_caddy.normalize_tls_version_pair(next_tls_min, next_tls_max)
+
+    if port_used_by_other_inbound(config, tag, next_local_port):
+        raise ValueError(f"LOCAL_PORT is already used by another inbound: {next_local_port}")
+    conflicts = public_port_conflicts(config, next_public_port)
+    if conflicts:
+        tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+        raise ValueError(
+            f"Caddy cannot listen on public port {next_public_port}: "
+            f"it is already used by Xray inbound(s): {tags}."
+        )
+
+    inbound["port"] = next_local_port
+    stream = inbound.setdefault("streamSettings", {})
+    stream["network"] = "ws"
+    stream["security"] = "none"
+    stream.setdefault("wsSettings", {})["path"] = next_ws_path
+
+    entry["protocol"] = "trojan"
+    entry["security"] = "tls"
+    entry["transport"] = "ws"
+    entry["publicHost"] = next_public_host
+    entry["sni"] = next_public_host
+    entry["publicPort"] = next_public_port
+    entry["port"] = next_public_port
+    entry["localPort"] = next_local_port
+    entry["wsPath"] = next_ws_path
+    entry["fingerprint"] = next_fingerprint
+    entry["tlsMinVersion"] = next_tls_min
+    entry["tlsMaxVersion"] = next_tls_max
+
+    return UpdateTrojanConnectionResult(
+        tag=tag,
+        display_name=connection_display_name(config, db, tag),
+        public_host=next_public_host,
+        public_port=next_public_port,
+        local_port=next_local_port,
+        ws_path=next_ws_path,
+        fingerprint=next_fingerprint,
+        tls_min_version=next_tls_min,
+        tls_max_version=next_tls_max,
+        caddy_enabled=bool(entry.get("caddy", True)),
+        previous_public_host=previous_public_host,
+        previous_public_port=previous_public_port,
+        previous_local_port=previous_local_port,
+        previous_ws_path=previous_ws_path,
+        previous_fingerprint=previous_fingerprint,
+        previous_tls_min_version=previous_tls_min,
+        previous_tls_max_version=previous_tls_max,
     )
 
 

@@ -1030,9 +1030,42 @@ def decode_certificate_file(path):
         raise RuntimeError(f"could not parse certificate {path}: {exc}") from exc
 
 
+def certificate_domain_names(cert):
+    names = [
+        value
+        for key, value in cert.get("subjectAltName", ())
+        if str(key).lower() == "dns" and value
+    ]
+    if names:
+        return names
+    for subject in cert.get("subject", ()):
+        for key, value in subject:
+            if str(key).lower() == "commonname" and value:
+                names.append(value)
+    return names
+
+
+def certificate_dns_name_matches(pattern, domain):
+    pattern = str(pattern or "").strip().lower().rstrip(".")
+    domain = str(domain or "").strip().lower().rstrip(".")
+    if pattern == domain:
+        return True
+    if not pattern.startswith("*."):
+        return False
+    suffix = pattern[1:]
+    return domain.endswith(suffix) and domain.count(".") == suffix.count(".")
+
+
 def certificate_domain_matches(cert, domain):
+    matcher = getattr(ssl, "match_hostname", None)
+    if matcher is None:
+        names = certificate_domain_names(cert)
+        if any(certificate_dns_name_matches(name, domain) for name in names):
+            return
+        detail = ", ".join(names) if names else "no DNS names"
+        raise RuntimeError(f"certificate does not match {domain}: {detail}")
     try:
-        ssl.match_hostname(cert, domain)
+        matcher(cert, domain)
     except ssl.CertificateError as exc:
         raise RuntimeError(f"certificate does not match {domain}: {exc}") from exc
 
