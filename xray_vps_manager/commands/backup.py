@@ -146,6 +146,73 @@ def compact_output(result):
     return (result.stderr or result.stdout or f"exit {result.returncode}").strip()
 
 
+def systemctl_unit_missing(result):
+    output = compact_output(result).lower()
+    return result.returncode != 0 and "unit file" in output and "does not exist" in output
+
+
+def direct_tls_certificate_files(config):
+    items = []
+    for inbound in config.get("inbounds", []):
+        stream = inbound.get("streamSettings") if isinstance(inbound.get("streamSettings"), dict) else {}
+        if stream.get("security") != "tls":
+            continue
+        tls = stream.get("tlsSettings") if isinstance(stream.get("tlsSettings"), dict) else {}
+        certificates = tls.get("certificates") if isinstance(tls.get("certificates"), list) else []
+        tag = inbound.get("tag") or "unknown"
+        for index, certificate in enumerate(certificates):
+            if not isinstance(certificate, dict):
+                continue
+            for field, mode in (("certificateFile", 0o644), ("keyFile", 0o640)):
+                value = str(certificate.get(field) or "").strip()
+                if value:
+                    items.append((tag, index, field, Path(value), mode))
+    return items
+
+
+def restore_direct_tls_certificate_permissions(config_path=CONFIG_PATH):
+    if not config_path.exists():
+        return []
+    try:
+        config = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"WARNING: Direct TLS certificate permissions were not checked: {exc}"]
+
+    messages = []
+    restored = {"certificateFile": 0, "keyFile": 0}
+    seen = set()
+    for tag, index, field, path, mode in direct_tls_certificate_files(config):
+        label = f"{tag}[{index}] {field}"
+        key = (field, str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        if not path.is_absolute():
+            messages.append(f"WARNING: Direct TLS {label} path is not absolute: {path}")
+            continue
+        if not path.exists():
+            messages.append(f"WARNING: Direct TLS {label} file not found after restore: {path}")
+            continue
+        if not path.is_file():
+            messages.append(f"WARNING: Direct TLS {label} is not a regular file after restore: {path}")
+            continue
+        try:
+            chown_xray(path)
+            os.chmod(path, mode)
+        except OSError as exc:
+            messages.append(f"WARNING: Direct TLS {label} permissions were not updated: {exc}")
+            continue
+        restored[field] += 1
+
+    if restored["certificateFile"] or restored["keyFile"]:
+        messages.insert(
+            0,
+            "Direct TLS certificate permissions restored: "
+            f"certificateFile={restored['certificateFile']}, keyFile={restored['keyFile']}",
+        )
+    return messages
+
+
 def run_systemctl(args, timeout=20):
     command = ["systemctl", *args]
     try:
@@ -601,7 +668,7 @@ def restore_caddy_random_tls_state(temp_dir):
         for config in xray_caddy.list_random_tls_configs(CADDY_RANDOM_TLS_CONFIG_DIR):
             set_caddy_random_tls_enabled(config.domain, False)
         result = disable_legacy_caddy_random_tls()
-        if result.returncode == 0:
+        if result.returncode == 0 or systemctl_unit_missing(result):
             messages.append("Caddy TLS randomizer timer restored: disabled")
         else:
             messages.append(f"Caddy TLS randomizer disable failed: {compact_output(result)}")
@@ -714,6 +781,8 @@ def restore_backup(value):
     try:
         restored = apply_restore(temp_dir)
         restored.extend(restore_caddy_config_if_present(temp_dir))
+        for message in restore_direct_tls_certificate_permissions(CONFIG_PATH):
+            print(message)
         test_and_restart()
         random_tls_messages = restore_caddy_random_tls_state(temp_dir)
     except Exception as exc:
@@ -721,6 +790,8 @@ def restore_backup(value):
         rollback_dir = extract_archive(pre_backup)
         apply_restore(rollback_dir)
         restore_caddy_config_if_present(rollback_dir)
+        for message in restore_direct_tls_certificate_permissions(CONFIG_PATH):
+            print(message)
         test_and_restart()
         for message in restore_caddy_random_tls_state(rollback_dir):
             print(message)

@@ -104,6 +104,42 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(params["sni"], ["vpn.example.com"])
         self.assertEqual(params["fp"], ["chrome"])
 
+    def test_add_client_to_trojan_only_config_does_not_require_vless(self) -> None:
+        config = {"inbounds": [client_connections.make_trojan_ws_inbound("trojan-tls", 10100, "/trojan")], "outbounds": []}
+        db = {
+            "connections": {
+                "trojan-tls": {
+                    "tag": "trojan-tls",
+                    "name": "trojan",
+                    "protocol": "trojan",
+                    "security": "tls",
+                    "transport": "ws",
+                    "port": 443,
+                    "publicPort": 443,
+                    "localPort": 10100,
+                    "publicHost": "vpn.example.com",
+                    "sni": "vpn.example.com",
+                    "caddy": True,
+                    "wsPath": "/trojan",
+                }
+            },
+            "clients": {},
+        }
+
+        result = client_crud.add_client(
+            config,
+            db,
+            "alice",
+            access_days=None,
+            connection_tag="trojan-tls",
+            uuid_factory=lambda: CLIENT_ID,
+            password_factory=lambda: PASSWORD,
+        )
+
+        self.assertEqual(result.connection_tag, "trojan-tls")
+        self.assertEqual(db["clients"]["alice"]["id"], CLIENT_ID)
+        self.assertEqual(config["inbounds"][0]["settings"]["clients"][0]["password"], PASSWORD)
+
     def test_add_client_to_trojan_connection_rejects_weak_password(self) -> None:
         config = {"inbounds": [base_vless_inbound()], "outbounds": []}
         db = {"connections": {}, "clients": {}}

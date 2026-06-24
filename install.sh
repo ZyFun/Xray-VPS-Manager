@@ -868,25 +868,26 @@ client_flow_query=""
 starter_flow=""
 transport_settings_json=""
 transport_link_query=""
-case "$REALITY_TRANSPORT" in
-  tcp)
-    client_flow_json='              "flow": "xtls-rprx-vision",'
-    client_flow_query="&flow=xtls-rprx-vision"
-    starter_flow="xtls-rprx-vision"
-    ;;
-  grpc)
-    transport_settings_json=$(cat <<JSON
+if initial_has_vless; then
+  case "$REALITY_TRANSPORT" in
+    tcp)
+      client_flow_json='              "flow": "xtls-rprx-vision",'
+      client_flow_query="&flow=xtls-rprx-vision"
+      starter_flow="xtls-rprx-vision"
+      ;;
+    grpc)
+      transport_settings_json=$(cat <<JSON
 ,
         "grpcSettings": {
           "serviceName": "${GRPC_SERVICE_NAME}"
         }
 JSON
 )
-    transport_link_query="&serviceName=${GRPC_SERVICE_NAME}"
-    ;;
-  xhttp)
-    xhttp_path_query="${XHTTP_PATH//\//%2F}"
-    transport_settings_json=$(cat <<JSON
+      transport_link_query="&serviceName=${GRPC_SERVICE_NAME}"
+      ;;
+    xhttp)
+      xhttp_path_query="${XHTTP_PATH//\//%2F}"
+      transport_settings_json=$(cat <<JSON
 ,
         "xhttpSettings": {
           "path": "${XHTTP_PATH}",
@@ -894,9 +895,10 @@ JSON
         }
 JSON
 )
-    transport_link_query="&path=${xhttp_path_query}&mode=${XHTTP_MODE}"
-    ;;
-esac
+      transport_link_query="&path=${xhttp_path_query}&mode=${XHTTP_MODE}"
+      ;;
+  esac
+fi
 
 vless_inbound_json=""
 trojan_inbound_json=""

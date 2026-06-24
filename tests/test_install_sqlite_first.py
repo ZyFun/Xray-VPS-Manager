@@ -76,6 +76,7 @@ class InstallSQLiteFirstTests(unittest.TestCase):
         self.assertIn("VLESS_CLIENT_URI=", content)
         self.assertIn('client_uri_security="TLS"', content)
         self.assertIn('client_uri_transport="ws"', content)
+        self.assertIn('if initial_has_vless; then\n  case "$REALITY_TRANSPORT" in', content)
 
     def test_install_script_supports_alternative_xray_sources(self) -> None:
         content = INSTALL_SH.read_text()
