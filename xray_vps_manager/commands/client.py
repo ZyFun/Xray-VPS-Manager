@@ -372,6 +372,10 @@ def link_for(config, client_id, name, connection_tag=None, db=None):
         die(str(exc))
 
 
+def access_key_for_client_id(client_id):
+    return f"vpn-key:{client_id}"
+
+
 def query_user_stats():
     try:
         result = run_capture(
@@ -1046,6 +1050,7 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
     print(f"Payment type: {client_payments.payment_type_label(result.entry)}")
     print(f"Created: {result.created}")
     print(f"Access until: {client_access.format_access_until(result.entry.get('expiresAt', ''))}")
+    print(f"Access key: {access_key_for_client_id(result.client_id)}")
     print(f"Backup: {backup}")
     print_payment_summary()
     print(link_for(config, result.credential_id, name, result.connection_tag, db))
@@ -1864,7 +1869,7 @@ def cmd_key(name):
     client_id = str(entry.get("id") or "").strip()
     if not client_id:
         die(f"Client has no internal UUID: {name}")
-    print(f"vpn-key:{client_id}")
+    print(access_key_for_client_id(client_id))
 
 
 def main():
