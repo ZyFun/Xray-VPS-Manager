@@ -7,6 +7,8 @@ import subprocess
 from collections.abc import Callable
 
 from xray_vps_manager.core.terminal import table_border, table_row
+from xray_vps_manager.db import database as sqlite_database
+from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 
 CommandRunner = Callable[[list[str]], None]
 ClientChooser = Callable[[str, str], str]
@@ -136,6 +138,28 @@ def candidate_rows(client_name: str, days: str, region: str = "RU") -> list[dict
     return rows
 
 
+def active_bypass_route_for_region(region: str) -> dict | None:
+    try:
+        connection = sqlite_database.open_database()
+        try:
+            return sqlite_bypass.active_route_for_region(connection, region)
+        finally:
+            connection.close()
+    except Exception:
+        return None
+
+
+def print_geoip_blocklist_warning(region: str) -> None:
+    route = active_bypass_route_for_region(region)
+    if not route:
+        return
+    print()
+    print(f"Внимание: GeoIP bypass уже включён для региона {region.upper()} через {route.get('tag')}.")
+    print("Блокировка из GeoIP-событий нужна только для точечных запретов доменов/IP.")
+    print("Не используй её как основной способ направлять обычный трафик этого региона.")
+    print()
+
+
 def print_candidate_table(rows: list[dict[str, str]]) -> None:
     headers = ("№", "VALUE", "KIND", "EVENTS", "PORTS", "LAST SEEN")
     values = [
@@ -167,6 +191,7 @@ def choose_candidate_from_geoip_ru(
     choose_client: ClientChooser,
     ask_activity_days: DaysPrompt,
 ) -> tuple[str, dict[str, str] | None]:
+    print_geoip_blocklist_warning("RU")
     client_name = choose_client("добавления блокировки из GeoIP RU", "all")
     if not client_name:
         return "", None

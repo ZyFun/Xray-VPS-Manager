@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from xray_vps_manager.activity import blocklist as activity_blocklist
+from xray_vps_manager.activity import bypass as activity_bypass
 from xray_vps_manager.activity import parser
 from xray_vps_manager.activity import raw_logs
 from xray_vps_manager.activity import repository
@@ -84,6 +85,7 @@ def log_maintenance_result(log: LogFunc, result: dict[str, int]) -> None:
 def sync_activity(log: LogFunc) -> int:
     repository.ensure_dirs()
     clients = known_clients()
+    config = repository.load_json(CONFIG_PATH, {})
     if not clients:
         log("No clients found; skipping access log parsing.")
         maintenance = run_independent_maintenance(log)
@@ -142,6 +144,7 @@ def sync_activity(log: LogFunc) -> int:
         if not event:
             skipped += 1
             continue
+        activity_bypass.append_bypass_risk(event, config=config)
         try:
             result = repository.record_pipeline_event_for_write(
                 event,

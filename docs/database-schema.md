@@ -11,7 +11,7 @@ SQLite-база менеджера хранится на сервере здес
 Текущая версия схемы:
 
 ```text
-schema version = 4
+schema version = 7
 ```
 
 Актуальное определение схемы находится в `xray_vps_manager/db/schema.py`.
@@ -49,6 +49,18 @@ erDiagram
         TEXT tag PK
         TEXT country
         TEXT label
+        TEXT created_at
+        TEXT updated_at
+        TEXT extra_json
+    }
+
+    bypass_routes {
+        TEXT tag PK
+        TEXT name
+        TEXT region_code
+        TEXT region_label
+        TEXT label
+        INTEGER enabled
         TEXT created_at
         TEXT updated_at
         TEXT extra_json
@@ -297,6 +309,7 @@ erDiagram
 |---|---|
 | `reality_connections` | Managed подключения. Имя таблицы осталось legacy-совместимым, поэтому оно не переименовывается без отдельной рискованной миграции. Для VLESS Reality хранятся порт, SNI, fingerprint, public key и short id; для TLS/XHTTP через Caddy дополнительные поля (`security`, `publicHost`, `publicPort`, `localPort`, `xhttpPath`, `xhttpMode`, `xhttpExtra`, TLS version) лежат в `extra_json`. Для Trojan через Caddy в `extra_json` хранятся `protocol=trojan`, `security=tls`, `transport=ws`, `publicHost`, `publicPort`, `localPort`, `wsPath`, TLS version и другие protocol-specific поля; legacy direct TLS/TCP может хранить `certFile` и `keyFile`. |
 | `cascade_routes` | Метаданные cascade outbounds: tag, отображаемая страна, label и timestamps. |
+| `bypass_routes` | Метаданные GeoIP bypass routes: tag `bypass-{name}`, имя, выбранный `region_code`, человекочитаемый `region_label`, label VLESS-ссылки, enabled state и timestamps. Реальный outbound хранится в `config.json`. |
 | `clients` | Клиенты как отдельная сущность: внутренний UUID менеджера, общий статус, срок доступа, платежный тип и выбранный cascade route. Legacy-поля `connection_tag` и `xray_client_json` сохраняются как primary credential для совместимости. |
 | `client_credentials` | Protocol credentials клиента. Хранит `client_name`, `connection_tag`, credential UUID/password в `xray_client_json`, `protocol`, `security`, `transport`, enabled state, timestamps и link metadata. Один клиент может иметь несколько credentials разных протоколов. |
 
@@ -418,6 +431,9 @@ clients.name -> telegram_subscriptions.client_name
 | `idx_client_credentials_connection` | `client_credentials` | Поиск credentials по managed connection. |
 | `idx_client_credentials_uuid` | `client_credentials` | Сопоставление VLESS credential UUID. |
 | `idx_cascade_routes_country` | `cascade_routes` | Список cascade routes по отображаемой стране. |
+| `idx_bypass_routes_region` | `bypass_routes` | Поиск bypass routes по GeoIP-региону. |
+| `idx_bypass_routes_enabled` | `bypass_routes` | Фильтрация включённых bypass routes. |
+| `idx_bypass_routes_active_region` | `bypass_routes` | Уникальность одного активного bypass route на GeoIP-регион. |
 | `idx_traffic_history_date` | `traffic_history` | Отчёты по дням. |
 | `idx_traffic_history_client_date` | `traffic_history` | Отчёты по клиенту и периоду. |
 | `idx_credential_traffic_history_client_date` | `credential_traffic_history` | Отчёты по credential и периоду. |

@@ -16,6 +16,7 @@ from xray_vps_manager.activity.constants import (
 )
 from xray_vps_manager.activity import blocklist as activity_blocklist
 from xray_vps_manager.activity import backfill as activity_backfill
+from xray_vps_manager.activity import bypass as activity_bypass
 from xray_vps_manager.activity import client_reports as activity_client_reports
 from xray_vps_manager.activity import controls as activity_controls
 from xray_vps_manager.activity import exception_reports as activity_exception_reports
@@ -299,13 +300,13 @@ def report_client(name, days_value="7"):
     report = activity_client_reports.client_report(name, days_value)
     print(f"Activity report for client: {report['name']}")
     print(f"Period: {report['start'].isoformat()} - {report['end'].isoformat()} UTC")
-    print_table(["DATE", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "EXCEPTIONS", "TOP HOSTS"], report["rows"])
+    print_table(["DATE", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "BYPASS", "EXCEPTIONS", "TOP HOSTS"], report["rows"])
     credential_rows = report.get("credentialRows") or []
     if len([row for row in credential_rows if row and row[0] != "TOTAL"]) > 1:
         print()
         print("Credentials")
         print_table(
-            ["CONNECTION", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "EXCEPTIONS", "TOP HOSTS"],
+            ["CONNECTION", "EVENTS", "HOSTS", "PORTS", "OUTBOUNDS", "RISKS", "BYPASS", "EXCEPTIONS", "TOP HOSTS"],
             credential_rows,
         )
     print(f"Total events: {report['totalEvents']}")
@@ -330,6 +331,38 @@ def geoip_risk_details(days_value="7"):
         print_table(["TIME", "IP", "DOMAIN", "PORT", "REGION", "OUTBOUND"], client["rows"])
     if not report["clients"]:
         print("No GeoIP risk events found by current rules.")
+
+
+def bypass_status():
+    rows = activity_bypass.status_rows()
+    if not rows:
+        print("No GeoIP bypass routes found.")
+        return
+    print_table(["TAG", "REGION", "LABEL", "STATUS", "CONFIGURED OUTBOUND"], rows)
+
+
+def bypass_events(days_value="7"):
+    report = activity_bypass.event_rows(days_value)
+    print(f"GeoIP bypass events: {report['start'].isoformat()} - {report['end'].isoformat()} UTC")
+    rows = report.get("rows") or []
+    if not rows:
+        print("No GeoIP bypass events found.")
+        return
+    print_table(
+        ["CLIENT", "LAST", "HOST/IP", "PORT", "REGION", "BYPASS", "EVENTS"],
+        [
+            [
+                row.get("client", ""),
+                row.get("last", ""),
+                row.get("host", ""),
+                row.get("port", ""),
+                row.get("region", ""),
+                row.get("bypassTag", ""),
+                row.get("events", 0),
+            ]
+            for row in rows
+        ],
+    )
 
 
 def add_exception(value, source="manual"):
@@ -952,6 +985,8 @@ def usage():
   xray-activity client NAME [DAYS]
   xray-activity suspicious [DAYS]
   xray-activity geoip-risks [DAYS]
+  xray-activity bypass-events [DAYS]
+  xray-activity bypass-status
   xray-activity exception-candidates [DAYS] [--plain]
   xray-activity exceptions [--plain]
   xray-activity exception-add VALUE [SOURCE]
@@ -1057,6 +1092,10 @@ def main():
             suspicious(args[1] if len(args) == 2 else "7")
         elif command == "geoip-risks" and len(args) in (1, 2):
             geoip_risk_details(args[1] if len(args) == 2 else "7")
+        elif command == "bypass-events" and len(args) in (1, 2):
+            bypass_events(args[1] if len(args) == 2 else "7")
+        elif command == "bypass-status" and len(args) == 1:
+            bypass_status()
         elif command == "exception-candidates" and len(args) in (1, 2, 3):
             plain = "--plain" in args
             values = [arg for arg in args[1:] if arg != "--plain"]

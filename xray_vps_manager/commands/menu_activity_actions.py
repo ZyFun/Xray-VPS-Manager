@@ -14,6 +14,7 @@ from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import load_config as load_xray_config
 from xray_vps_manager.xray.config import save_config
@@ -21,7 +22,7 @@ from xray_vps_manager.xray.config import save_config
 WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_OUTBOUND_TAG = "direct"
 XRAY_GEOIP_OUTBOUND_PREFIX = "geoip-warning-"
-XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = "ACTIVITY_XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY"
+XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV = bypass_config.GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV
 MENU_ENV_REQUIRED_KEYS = [
     "SERVER_ADDR",
     "SERVER_NAME",
@@ -316,98 +317,53 @@ def write_server_env_values(values: dict[str, str]) -> None:
 
 
 def routing_rules(config: dict) -> list[dict]:
-    routing = config.setdefault("routing", {})
-    routing.setdefault("domainStrategy", "IPIfNonMatch")
-    return routing.setdefault("rules", [])
+    return bypass_config.routing_rules(config)
 
 
 def ensure_direct_outbound(config: dict) -> dict:
-    outbounds = config.setdefault("outbounds", [])
-    for outbound in outbounds:
-        if outbound.get("tag") == DIRECT_OUTBOUND_TAG:
-            return outbound
-    outbound = {"tag": DIRECT_OUTBOUND_TAG, "protocol": "freedom"}
-    outbounds.append(outbound)
-    return outbound
+    return cascade_config.ensure_direct_outbound(config)
 
 
 def is_xray_geoip_warning_tag(tag: str | None) -> bool:
-    return str(tag or "").startswith(XRAY_GEOIP_OUTBOUND_PREFIX)
+    return bypass_config.is_geoip_warning_tag(tag)
 
 
 def xray_geoip_warning_tag(code: str) -> str:
-    return f"{XRAY_GEOIP_OUTBOUND_PREFIX}{code.upper()}"
+    return bypass_config.geoip_warning_tag(code)
 
 
 def xray_geoip_warning_source_outbound(config: dict) -> dict:
-    outbounds = config.setdefault("outbounds", [])
-    for outbound in outbounds:
-        if outbound.get("tag") == WARP_OUTBOUND_TAG and any(
-            cascade_config.is_catchall_rule(rule, WARP_OUTBOUND_TAG) for rule in routing_rules(config)
-        ):
-            return outbound
-    active_cascade = cascade_config.active_cascade_outbound(config)
-    if active_cascade:
-        return active_cascade
-    return ensure_direct_outbound(config)
+    return bypass_config.warning_source_outbound(config, "RU")
 
 
 def remove_xray_geoip_warning_config(config: dict) -> bool:
     changed = False
-    old_outbounds = config.setdefault("outbounds", [])
-    new_outbounds = [outbound for outbound in old_outbounds if not is_xray_geoip_warning_tag(outbound.get("tag"))]
-    if new_outbounds != old_outbounds:
-        changed = True
-        config["outbounds"] = new_outbounds
-
-    rules = routing_rules(config)
-    new_rules = [rule for rule in rules if not is_xray_geoip_warning_tag(rule.get("outboundTag"))]
-    if new_rules != rules:
-        changed = True
-        config["routing"]["rules"] = new_rules
+    for tag in bypass_config.warning_tags(config):
+        try:
+            region = bypass_config.region_from_geoip_warning_tag(tag)
+        except ValueError:
+            continue
+        if bypass_config.configured_bypass_for_warning(config, region):
+            continue
+        changed = bypass_config.remove_geoip_warning_route(config, region) or changed
     return changed
 
 
 def insert_before_catchall_route(rules: list[dict], rule: dict) -> None:
-    insert_index = len(rules)
-    for index, existing in enumerate(rules):
-        is_client_route = str(existing.get("balancerTag") or "").startswith(client_routes.CLIENT_BALANCER_PREFIX)
-        is_catchall = (
-            existing.get("outboundTag") == WARP_OUTBOUND_TAG
-            or existing.get("outboundTag") == DIRECT_OUTBOUND_TAG
-            or cascade_config.is_cascade_tag(existing.get("outboundTag"))
-        ) and existing.get("network") == "tcp,udp"
-        if is_client_route or is_catchall:
-            insert_index = index
-            break
-    rules.insert(insert_index, rule)
+    config = {"routing": {"rules": rules}}
+    bypass_config.insert_before_client_or_catchall(config, rule)
 
 
 def apply_xray_geoip_warning_config(config: dict, code: str) -> None:
-    code = code.upper()
-    remove_xray_geoip_warning_config(config)
-    routing = config.setdefault("routing", {})
-    routing["domainStrategy"] = "IPOnDemand"
-    source = xray_geoip_warning_source_outbound(config)
-    outbound = copy.deepcopy(source)
-    tag = xray_geoip_warning_tag(code)
-    outbound["tag"] = tag
-    config.setdefault("outbounds", []).append(outbound)
-    rule = {
-        "type": "field",
-        "ip": [f"geoip:{code.lower()}"],
-        "outboundTag": tag,
-    }
-    insert_before_catchall_route(routing_rules(config), rule)
+    code = bypass_config.normalize_region_code(code)
+    source = bypass_config.warning_source_outbound(config, code)
+    bypass_config.ensure_geoip_warning_outbound(config, code, source)
+    bypass_config.ensure_geoip_warning_rule(config, code)
+    bypass_config.ensure_geoip_domain_strategy(config)
 
 
 def restore_xray_geoip_domain_strategy(config: dict, values: dict[str, str]) -> None:
-    previous = values.pop(XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV, "")
-    routing = config.setdefault("routing", {})
-    if previous:
-        routing["domainStrategy"] = previous
-    elif routing.get("domainStrategy") == "IPOnDemand":
-        routing["domainStrategy"] = "IPIfNonMatch"
+    bypass_config.restore_geoip_domain_strategy_if_unused(config, values)
 
 
 def ask_activity_days(default: int = 7) -> str:
@@ -610,12 +566,13 @@ def set_xray_geoip_routing_region() -> None:
         print("Действие отменено.")
         return
     config = load_config()
-    previous_strategy = config.setdefault("routing", {}).get("domainStrategy", "")
+    values = read_server_env()
+    previous_code = values.get("ACTIVITY_XRAY_GEOIP_WARNING_CODE", "")
+    if previous_code and previous_code.upper() != code.upper() and not bypass_config.configured_bypass_for_warning(config, previous_code):
+        bypass_config.remove_geoip_warning_route(config, previous_code)
+    bypass_config.ensure_geoip_domain_strategy(config, values)
     apply_xray_geoip_warning_config(config, code)
     backup = apply_config(config)
-    values = read_server_env()
-    if not values.get(XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV) and previous_strategy != "IPOnDemand":
-        values[XRAY_GEOIP_PREVIOUS_DOMAIN_STRATEGY_ENV] = previous_strategy
     values["ACTIVITY_XRAY_GEOIP_WARNING_CODE"] = code
     write_server_env_values(values)
     print(f"Xray routing GeoIP-предупреждения включены для региона: {code}")
@@ -626,8 +583,12 @@ def set_xray_geoip_routing_region() -> None:
 
 def disable_xray_geoip_routing_region() -> None:
     config = load_config()
-    remove_xray_geoip_warning_config(config)
     values = read_server_env()
+    code = values.get("ACTIVITY_XRAY_GEOIP_WARNING_CODE", "")
+    if code and not bypass_config.configured_bypass_for_warning(config, code):
+        bypass_config.remove_geoip_warning_route(config, code)
+    elif not code:
+        remove_xray_geoip_warning_config(config)
     restore_xray_geoip_domain_strategy(config, values)
     backup = apply_config(config)
     values["ACTIVITY_XRAY_GEOIP_WARNING_CODE"] = ""
