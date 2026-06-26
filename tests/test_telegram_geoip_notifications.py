@@ -527,3 +527,24 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
                 telegram_db["clientSubscriptionState"]["activityExceptionCandidates"]["2"]["items"],
                 [],
             )
+
+    def test_client_geoip_message_mentions_bypass_without_claiming_issue_is_solved(self) -> None:
+        ctx = self.make_context({}, [], Path("/tmp/manager.db"))
+
+        text = notifications.build_client_geoip_message(
+            ctx,
+            {},
+            [
+                {
+                    "time": "2026-06-12T08:01:00Z",
+                    "host": "example.ru",
+                    "port": "443",
+                    "outbound": "geoip-warning-RU",
+                    "risks": ["xray-geoip:RU", "xray-bypass:RU"],
+                }
+            ],
+        )
+
+        self.assertIn("GeoIP bypass", text)
+        self.assertIn("Direct/Bypass", text)
+        self.assertIn("split tunneling", text)

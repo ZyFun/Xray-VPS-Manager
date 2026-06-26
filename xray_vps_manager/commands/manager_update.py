@@ -44,6 +44,7 @@ MANAGER_SYSTEMD_UNITS = (
 MANAGER_WRAPPERS = (
     "xray-client",
     "xray-set-cascade",
+    "xray-set-bypass",
     "xray-menu",
     "xray-activity",
     "xray-traffic-sync",

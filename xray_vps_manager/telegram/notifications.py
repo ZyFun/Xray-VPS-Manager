@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from xray_vps_manager.activity import bypass as activity_bypass
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import status as activity_status
@@ -482,6 +483,16 @@ def geoip_regions(event):
     return regions
 
 
+def bypass_regions(event):
+    regions = []
+    risks = list(event.get("risks") or [])
+    risks.extend(activity_bypass.bypass_risks_for_event(event))
+    for risk in risks:
+        if str(risk).startswith("xray-bypass:"):
+            regions.append(str(risk).split(":", 1)[1].upper())
+    return sorted(set(regions))
+
+
 def event_id(event):
     payload = "|".join(
         str(event.get(key, ""))
@@ -625,14 +636,17 @@ def client_geoip_warning_is_large(events, rows):
 def build_client_geoip_message(ctx: NotificationContext, db, events):
     rows = client_geoip_rows(events)
     is_large = client_geoip_warning_is_large(events, rows)
+    has_bypass = any(bypass_regions(event) for event in events)
     lines = [
         f"{ctx.bot_name(db)}: активность VPN",
         f"Новых GeoIP-предупреждений: {sum(event_notice_count(event) for event in events)}",
         "",
         "Что это значит:",
         "часть подключений через VPN попала в регион, который администратор включил для проверки split tunneling.",
-        "",
     ]
+    if has_bypass:
+        lines.append("Сервер обработал этот регион через GeoIP bypass, но на устройстве всё равно лучше настроить Direct/Bypass для конкретной цели.")
+    lines.append("")
     for row in rows[:10]:
         lines.extend(
             [

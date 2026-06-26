@@ -36,6 +36,7 @@ def aggregate_events(events, skip_exceptions: bool = False, exceptions: list[dic
         "ports": {},
         "outbounds": {},
         "risks": {},
+        "bypass": {},
         "exceptions": {},
         "hours": {},
         "times": [],
@@ -61,6 +62,9 @@ def aggregate_events(events, skip_exceptions: bool = False, exceptions: list[dic
             result["sources"][event["source"]] = result["sources"].get(event["source"], 0) + 1
         if not matched_exception:
             for risk in event.get("risks", []):
+                if str(risk).startswith("xray-bypass:"):
+                    result["bypass"][risk] = result["bypass"].get(risk, 0) + 1
+                    continue
                 result["risks"][risk] = result["risks"].get(risk, 0) + 1
         event_time = parse_time(event.get("time"))
         if event_time:

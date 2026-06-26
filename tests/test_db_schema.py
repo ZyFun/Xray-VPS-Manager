@@ -38,6 +38,7 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "activity_blocklist_hits",
                     "xray_error_events",
                     "cascade_routes",
+                    "bypass_routes",
                     "telegram_settings",
                     "telegram_subscriptions",
                     "telegram_state",
@@ -59,6 +60,8 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "idx_activity_blocklist_hits_client",
                     "idx_xray_error_events_time",
                     "idx_cascade_routes_country",
+                    "idx_bypass_routes_region",
+                    "idx_bypass_routes_active_region",
                     "idx_telegram_subscriptions_uuid",
                     "idx_telegram_subscriptions_activity",
                 }.issubset(schema.index_names(connection))
@@ -78,6 +81,7 @@ class SQLiteSchemaTests(unittest.TestCase):
                     (4, "activity_global_blocklist"),
                     (5, "client_credentials"),
                     (6, "activity_alerts_counters_errors"),
+                    (7, "bypass_routes"),
                 ],
             )
 

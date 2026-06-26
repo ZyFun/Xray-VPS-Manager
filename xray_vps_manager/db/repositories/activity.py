@@ -330,6 +330,8 @@ def add_alerts_for_event(
 ) -> list[int]:
     ids = []
     for risk in _event_risks_value(event):
+        if str(risk).startswith("xray-bypass:"):
+            continue
         ids.append(add_alert_event(connection, event, risk, raw_ref_event_id=raw_ref_event_id))
     return ids
 
@@ -619,7 +621,7 @@ def upsert_client_counter(
     risks = _event_risks_value(event)
     count = _event_count(event)
     geoip_count = count if any(risk.startswith("xray-geoip:") for risk in risks) else 0
-    suspicious_count = count if risks else 0
+    suspicious_count = count if any(not risk.startswith("xray-bypass:") for risk in risks) else 0
     blocked_count = count if any(risk == "blocked" for risk in risks) else 0
     with database.transaction(connection):
         row = connection.execute(

@@ -126,6 +126,8 @@ xray-activity alert-retention 90
 
 `xray-activity suspicious` строится по `activity_alert_events`, а не по detailed `activity_events`. Поэтому сводка продолжает работать при `detail-mode off`. В неё попадают event-level риски `smtp`, `admin-port`, `blocked`, `torrent`, `xray-geoip:CODE`, а также window-level риски `burst`, `unique-hosts` и `unique-ports`; короткое состояние для rolling/bucket-порогов хранится в `manager.db` без полного raw-журнала адресов.
 
+Если для региона включён GeoIP bypass, access/activity всё равно сохраняет обычный trigger `xray-geoip:CODE` через outbound `geoip-warning-CODE`. Дополнительно detailed events, counters и отчёты могут показывать метку `xray-bypass:CODE`. Она означает ожидаемую маршрутизацию через bypass-сервер и сама по себе не считается suspicious alert.
+
 Показать лёгкую статистику клиентов:
 
 ```bash
@@ -220,6 +222,15 @@ xray-activity suspicious 7
 ```bash
 xray-activity geoip-risks 7
 ```
+
+Показать состояние GeoIP bypass и события, которые прошли через bypass marker:
+
+```bash
+xray-activity bypass-status
+xray-activity bypass-events 7
+```
+
+Отчёт `xray-activity client ИМЯ 7` показывает отдельную колонку `BYPASS` рядом с `RISKS`, чтобы было видно, что региональный трафик не только зафиксирован как GeoIP-событие, но и обработан серверным bypass route.
 
 `xray-activity client` показывает дневную сводку по клиенту и колонку `RISKS`. Если у клиента несколько credentials, отчёт дополнительно выводит блок `Credentials` с событиями, host, портами, outbound, рисками, исключениями и top hosts по каждому credential; credentials без событий за выбранный период остаются в таблице с нулём. В колонку `RISKS` попадают метки отдельных событий:
 

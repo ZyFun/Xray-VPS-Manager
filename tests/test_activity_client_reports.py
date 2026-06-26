@@ -45,9 +45,9 @@ class ActivityClientReportsTests(unittest.TestCase):
         self.assertEqual(
             report["credentialRows"],
             [
-                ["trojan-tls", 2, 1, "443(2)", "direct(2)", "xray-geoip:RU(1)", "-", "youtube.com(2)"],
-                ["vless-reality", 1, 1, "443(1)", "cascade-upstream(1)", "-", "-", "example.com(1)"],
-                ["TOTAL", 3, "-", "-", "-", "-", "-", "-"],
+                ["trojan-tls", 2, 1, "443(2)", "direct(2)", "xray-geoip:RU(1)", "-", "-", "youtube.com(2)"],
+                ["vless-reality", 1, 1, "443(1)", "cascade-upstream(1)", "-", "-", "-", "example.com(1)"],
+                ["TOTAL", 3, "-", "-", "-", "-", "-", "-", "-"],
             ],
         )
 
@@ -71,9 +71,9 @@ class ActivityClientReportsTests(unittest.TestCase):
         self.assertEqual(
             report["credentialRows"],
             [
-                ["trojan-tls", 1, 1, "443(1)", "direct(1)", "-", "-", "youtube.com(1)"],
-                ["vless-reality", 0, 0, "-", "-", "-", "-", "-"],
-                ["TOTAL", 1, "-", "-", "-", "-", "-", "-"],
+                ["trojan-tls", 1, 1, "443(1)", "direct(1)", "-", "-", "-", "youtube.com(1)"],
+                ["vless-reality", 0, 0, "-", "-", "-", "-", "-", "-"],
+                ["TOTAL", 1, "-", "-", "-", "-", "-", "-", "-"],
             ],
         )
 
@@ -193,11 +193,11 @@ class ActivityClientReportsTests(unittest.TestCase):
                 "name": "alice",
                 "start": date(2026, 6, 12),
                 "end": date(2026, 6, 13),
-                "rows": [["2026-06-12", 2, 2, "443(2)", "direct(1)", "-", "-", "example.com(1)"]],
+                "rows": [["2026-06-12", 2, 2, "443(2)", "direct(1)", "-", "-", "-", "example.com(1)"]],
                 "credentialRows": [
-                    ["trojan-tls", 1, 1, "443(1)", "direct(1)", "-", "-", "youtube.com(1)"],
-                    ["vless-reality", 1, 1, "443(1)", "cascade-upstream(1)", "-", "-", "example.com(1)"],
-                    ["TOTAL", 2, "-", "-", "-", "-", "-", "-"],
+                    ["trojan-tls", 1, 1, "443(1)", "direct(1)", "-", "-", "-", "youtube.com(1)"],
+                    ["vless-reality", 1, 1, "443(1)", "cascade-upstream(1)", "-", "-", "-", "example.com(1)"],
+                    ["TOTAL", 2, "-", "-", "-", "-", "-", "-", "-"],
                 ],
                 "totalEvents": 2,
             },

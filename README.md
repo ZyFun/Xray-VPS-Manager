@@ -76,6 +76,7 @@ xray-manager-update --update  # обновить менеджер до latest re
 xray-update --check           # проверить обновление Xray Core
 xray-test                     # диагностика сервера
 xray-backup create            # создать резервную копию данных
+xray-set-bypass list          # показать GeoIP bypass routes
 ```
 
 ## Важные файлы на сервере

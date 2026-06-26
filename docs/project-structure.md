@@ -13,6 +13,7 @@ xray-vps-manager
 xray-menu
 xray-client
 xray-set-cascade
+xray-set-bypass
 xray-traffic-sync
 xray-update
 xray-backup

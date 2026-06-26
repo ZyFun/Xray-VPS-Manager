@@ -8,7 +8,7 @@ from pathlib import Path
 
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -522,6 +522,32 @@ MIGRATIONS: tuple[Migration, ...] = (
             "CREATE INDEX IF NOT EXISTS idx_xray_error_events_time ON xray_error_events(event_time)",
             "CREATE INDEX IF NOT EXISTS idx_xray_error_events_level ON xray_error_events(level)",
             "CREATE INDEX IF NOT EXISTS idx_xray_error_events_notified ON xray_error_events(notified_admin_at)",
+        ),
+    ),
+    Migration(
+        version=7,
+        name="bypass_routes",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS bypass_routes (
+                tag TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                region_code TEXT NOT NULL,
+                region_label TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                created_at TEXT,
+                updated_at TEXT,
+                extra_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_bypass_routes_region ON bypass_routes(region_code)",
+            "CREATE INDEX IF NOT EXISTS idx_bypass_routes_enabled ON bypass_routes(enabled)",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_bypass_routes_active_region
+                ON bypass_routes(region_code)
+                WHERE enabled = 1
+            """,
         ),
     ),
 )

@@ -56,7 +56,10 @@ class MenuStructureTests(unittest.TestCase):
     def test_routing_activity_service_and_update_actions_are_exposed(self) -> None:
         self.assertIn(("3", "Торренты"), menu.routing_menu_actions())
         self.assertIn(("4", "GeoIP routing"), menu.routing_menu_actions())
-        self.assertIn(("5", "Блокировки IP/доменов"), menu.routing_menu_actions())
+        self.assertIn(("5", "GeoIP bypass"), menu.routing_menu_actions())
+        self.assertIn(("6", "Блокировки IP/доменов"), menu.routing_menu_actions())
+        self.assertIn(("1", "Показать bypass routes"), menu.geoip_bypass_menu_actions())
+        self.assertIn(("7", "Удалить bypass"), menu.geoip_bypass_menu_actions())
         self.assertIn(("6", "SQLite: статус базы"), menu.service_diagnostics_menu_actions())
         self.assertIn(("7", "Ошибки Xray"), menu.service_diagnostics_menu_actions())
         self.assertIn(("9", "Изменить часовой пояс"), menu.service_diagnostics_menu_actions())

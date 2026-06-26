@@ -1,4 +1,5 @@
 import tempfile
+import sqlite3
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6,15 +7,92 @@ from types import SimpleNamespace
 from unittest import mock
 
 from xray_vps_manager.commands import test as test_command
+from xray_vps_manager.db import schema
 from xray_vps_manager.xray import caddy
+from xray_vps_manager.xray import bypass as bypass_config
+from xray_vps_manager.xray import outbound_links
+
+
+VLESS_LINK = "vless://11111111-1111-1111-1111-111111111111@example.com:443?encryption=none&security=none&type=tcp#Example"
 
 
 class XrayTestCommandTests(unittest.TestCase):
+    def bypass_config(self) -> dict:
+        outbound, _label = outbound_links.parse_vless_outbound(VLESS_LINK, "bypass-ru")
+        config = {
+            "outbounds": [
+                {"tag": "direct", "protocol": "freedom"},
+                {"tag": "blocked", "protocol": "blackhole"},
+            ],
+            "routing": {"domainStrategy": "IPIfNonMatch", "rules": []},
+        }
+        bypass_config.upsert_bypass_outbound(config, outbound)
+        bypass_config.apply_bypass_route(config, "bypass-ru", "RU")
+        return config
+
+    def bypass_db(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        schema.ensure_schema(connection)
+        test_command.sqlite_bypass.upsert_route(
+            connection,
+            "bypass-ru",
+            {
+                "tag": "bypass-ru",
+                "name": "ru",
+                "regionCode": "RU",
+                "regionLabel": "Россия",
+                "label": "Example",
+                "enabled": True,
+            },
+        )
+        return connection
+
     def valid_cert(self, domain: str = "vpn.example.com") -> dict:
         return {
             "notAfter": "Jun 23 12:00:00 2030 GMT",
             "subjectAltName": (("DNS", domain),),
         }
+
+    def test_geoip_warning_routing_accepts_bypass_marker_without_regular_warning_env(self) -> None:
+        diag = SimpleNamespace(context={"config": self.bypass_config(), "server_env": {}})
+
+        result = test_command.check_geoip_warning_routing(diag)
+
+        self.assertIn("bypass marker", result)
+        self.assertIn("RU", result)
+
+    def test_bypass_diagnostics_accept_valid_enabled_route(self) -> None:
+        diag = SimpleNamespace(context={"config": self.bypass_config()})
+        connection = self.bypass_db()
+
+        with mock.patch.object(test_command, "sqlite_ready_connection", return_value=connection):
+            result = test_command.check_bypass_config(diag)
+
+        self.assertIn("active regions=RU", result)
+
+    def test_bypass_diagnostics_reject_config_route_without_enabled_sqlite_row(self) -> None:
+        diag = SimpleNamespace(context={"config": self.bypass_config()})
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        schema.ensure_schema(connection)
+
+        with mock.patch.object(test_command, "sqlite_ready_connection", return_value=connection):
+            with self.assertRaisesRegex(RuntimeError, "no enabled SQLite bypass_routes row"):
+                test_command.check_bypass_config(diag)
+
+    def test_bypass_diagnostics_reject_direct_geoip_to_bypass_rule(self) -> None:
+        config = self.bypass_config()
+        config["routing"]["rules"].insert(
+            0,
+            {"type": "field", "ip": ["geoip:ru"], "outboundTag": "bypass-ru"},
+        )
+        diag = SimpleNamespace(context={"config": config})
+        connection = self.bypass_db()
+
+        with mock.patch.object(test_command, "sqlite_ready_connection", return_value=connection):
+            with self.assertRaisesRegex(RuntimeError, "direct geoip:ru"):
+                test_command.check_bypass_config(diag)
 
     def test_certificate_domain_match_fallback_without_ssl_match_hostname(self) -> None:
         with mock.patch.object(test_command.ssl, "match_hostname", new=None, create=True):

@@ -19,6 +19,7 @@ from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db import schema as sqlite_schema
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import activity_blocklist as sqlite_blocklist
+from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
@@ -26,6 +27,7 @@ from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import sqlite_read_ready
 from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.xray import blocklist as xray_blocklist
+from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import caddy as caddy_config
 
@@ -45,6 +47,7 @@ HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-activity",
     "/usr/local/sbin/xray-traffic-sync",
     "/usr/local/sbin/xray-set-cascade",
+    "/usr/local/sbin/xray-set-bypass",
     "/usr/local/sbin/xray-update",
     "/usr/local/sbin/xray-backup",
     "/usr/local/sbin/xray-test",
@@ -462,6 +465,7 @@ def check_sqlite_database(diag, full_integrity=False):
             "activityExceptions": table_count(connection, "activity_exceptions"),
             "activityBlocklist": table_count(connection, "activity_blocklist"),
             "activityBlocklistHits": table_count(connection, "activity_blocklist_hits"),
+            "bypassRoutes": table_count(connection, "bypass_routes"),
             "xrayErrors": table_count(connection, "xray_error_events"),
             "telegramSubscriptions": table_count(connection, "telegram_subscriptions"),
         }
@@ -961,15 +965,34 @@ def check_geoip_warning_routing(diag):
         raise RuntimeError("old ACTIVITY_GEOIP_WARNING_CODE is still present in server.env")
     if not code and not outbound_tags and not rules:
         return "GeoIP routing warnings are disabled"
-    if not code:
-        raise RuntimeError("geoip-warning route/outbound exists, but ACTIVITY_XRAY_GEOIP_WARNING_CODE is empty")
     strategy = config.get("routing", {}).get("domainStrategy", "")
     if strategy != "IPOnDemand":
         raise RuntimeError(f"GeoIP warning routing requires routing.domainStrategy=IPOnDemand, got {strategy or 'empty'}")
+    if not code:
+        bypass_regions = []
+        for tag in sorted(outbound_tags | {rule.get("outboundTag") for rule in rules}):
+            try:
+                region = bypass_config.region_from_geoip_warning_tag(tag)
+            except ValueError:
+                continue
+            if not bypass_config.configured_bypass_for_warning(config, region):
+                raise RuntimeError("geoip-warning route/outbound exists, but ACTIVITY_XRAY_GEOIP_WARNING_CODE is empty")
+            bypass_regions.append(region)
+        return "GeoIP routing warnings disabled; bypass marker route(s): " + ", ".join(sorted(set(bypass_regions)))
 
     expected_tag = f"{GEOIP_WARNING_PREFIX}{code}"
     expected_ip = f"geoip:{code.lower()}"
-    extra_tags = sorted(tag for tag in outbound_tags if tag != expected_tag)
+    extra_tags = []
+    for tag in sorted(outbound_tags):
+        if tag == expected_tag:
+            continue
+        try:
+            region = bypass_config.region_from_geoip_warning_tag(tag)
+        except ValueError:
+            extra_tags.append(tag)
+            continue
+        if not bypass_config.configured_bypass_for_warning(config, region):
+            extra_tags.append(tag)
     if extra_tags:
         raise RuntimeError("unexpected GeoIP warning outbound(s): " + ", ".join(extra_tags))
     if expected_tag not in outbound_tags:
@@ -983,6 +1006,104 @@ def check_geoip_warning_routing(diag):
     if not matching_rules:
         raise RuntimeError(f"missing routing rule {expected_ip} -> {expected_tag}")
     return f"GeoIP routing warnings enabled for {code}"
+
+
+def check_bypass_config(diag):
+    config = diag.context["config"]
+    connection = sqlite_ready_connection()
+    try:
+        routes = sqlite_bypass.list_routes(connection)
+        enabled_routes = sqlite_bypass.list_enabled_routes(connection)
+    finally:
+        connection.close()
+    diag.context["bypass_routes"] = routes
+
+    issues = []
+    outbounds = bypass_config.bypass_outbounds(config)
+    for outbound in outbounds:
+        tag = outbound.get("tag") or "bypass-unknown"
+        if outbound.get("protocol") != "vless":
+            issues.append(f"{tag} must use protocol=vless")
+            continue
+        vnext = outbound.get("settings", {}).get("vnext", [])
+        if not vnext or not vnext[0].get("address") or not vnext[0].get("port"):
+            issues.append(f"{tag} has incomplete vnext settings")
+
+    enabled_by_region = {}
+    for tag, record in enabled_routes.items():
+        try:
+            region = bypass_config.normalize_region_code(str(record.get("regionCode") or ""))
+        except ValueError:
+            issues.append(f"{tag}: invalid SQLite bypass region: {record.get('regionCode') or '-'}")
+            continue
+        enabled_by_region[region] = record
+        source = bypass_config.bypass_outbound(config, tag)
+        if not source:
+            issues.append(f"enabled bypass route has missing outbound: {tag}")
+            continue
+        warning_tag = bypass_config.geoip_warning_tag(region)
+        warning_outbound = bypass_config.outbound_by_tag(config, warning_tag)
+        if not warning_outbound:
+            issues.append(f"{tag}: missing notification outbound {warning_tag}")
+        elif not bypass_config.outbounds_equivalent(warning_outbound, source):
+            issues.append(f"{tag}: {warning_tag} does not duplicate bypass outbound")
+
+        marker_indexes = [
+            index
+            for index, rule in enumerate(routing_rules(config))
+            if bypass_config.is_geoip_warning_rule_for_region(rule, region)
+        ]
+        if not marker_indexes:
+            issues.append(f"{tag}: missing routing rule geoip:{region.lower()} -> {warning_tag}")
+        direct_indexes = [
+            index
+            for index, rule in enumerate(routing_rules(config))
+            if bypass_config.is_direct_bypass_region_rule(rule, region)
+        ]
+        if direct_indexes:
+            issues.append(f"{tag}: direct geoip:{region.lower()} -> bypass-* rule competes with notification marker")
+        if marker_indexes and direct_indexes and min(direct_indexes) < min(marker_indexes):
+            issues.append(f"{tag}: direct bypass rule is ordered before {warning_tag}")
+
+    active_bypass_marker_regions = set()
+    reported_marker_drifts = set()
+    for rule in routing_rules(config):
+        warning_tag = str(rule.get("outboundTag") or "")
+        if not bypass_config.is_geoip_warning_tag(warning_tag):
+            continue
+        try:
+            region = bypass_config.region_from_geoip_warning_tag(warning_tag)
+        except ValueError:
+            continue
+        if not bypass_config.is_geoip_warning_rule_for_region(rule, region):
+            continue
+        warning_outbound = bypass_config.outbound_by_tag(config, warning_tag)
+        matched_bypass = bypass_config.matching_bypass_outbound_for_warning(config, warning_outbound)
+        if not matched_bypass:
+            continue
+        active_bypass_marker_regions.add(region)
+        marker_key = (warning_tag, region)
+        if marker_key in reported_marker_drifts:
+            continue
+        reported_marker_drifts.add(marker_key)
+        matched_tag = str(matched_bypass.get("tag") or "")
+        record = enabled_by_region.get(region)
+        if not record:
+            issues.append(f"{warning_tag}: bypass-backed marker route has no enabled SQLite bypass_routes row")
+        elif str(record.get("tag") or "") != matched_tag:
+            issues.append(f"{warning_tag}: SQLite route {record.get('tag')} does not match config bypass outbound {matched_tag}")
+
+    if (enabled_routes or active_bypass_marker_regions) and config.get("routing", {}).get("domainStrategy") != "IPOnDemand":
+        issues.append("active GeoIP bypass requires routing.domainStrategy=IPOnDemand")
+
+    if issues:
+        raise RuntimeError("; ".join(issues[:8]))
+    if enabled_routes:
+        regions = ", ".join(sorted(str(record.get("regionCode") or "") for record in enabled_routes.values()))
+        return f"GeoIP bypass config OK: active regions={regions}"
+    if outbounds or routes:
+        return f"GeoIP bypass config present but disabled: outbounds={len(outbounds)}, routes={len(routes)}"
+    return "GeoIP bypass is not configured"
 
 
 def blocked_rule_index_before_geoip(config, key, value):
@@ -1392,6 +1513,7 @@ def run_diagnostics(full_integrity=False):
     diag.check("Cascade config", lambda: check_cascade_config(diag))
     diag.check("WARP config", lambda: check_warp_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
+    diag.check("GeoIP bypass config", lambda: check_bypass_config(diag), fatal=False)
     diag.check("Activity blocklist routing", lambda: check_activity_blocklist_routing(diag), fatal=False)
     diag.check("TLS certificate diagnostics", lambda: check_tls_diagnostics(diag, deep=full_integrity), fatal=False)
     if full_integrity:

@@ -10,6 +10,7 @@ from typing import Any
 
 from xray_vps_manager.activity import settings
 from xray_vps_manager.activity import time as activity_time
+from xray_vps_manager.activity import bypass as activity_bypass
 from xray_vps_manager.activity import parser
 from xray_vps_manager.activity.constants import ACCESS_LOG_PATH
 from xray_vps_manager.db import database
@@ -132,6 +133,7 @@ def run_backfill(
         known_client_names = set(sqlite_clients.list_clients(connection))
         retention_start = _retention_start()
         file_stats: list[dict[str, Any]] = []
+        config = activity_bypass.load_config()
         with database.transaction(connection):
             for _path, event in iter_backfill_events(
                 files,
@@ -141,6 +143,7 @@ def run_backfill(
                 end=end,
                 scan_stats=file_stats,
             ):
+                activity_bypass.append_bypass_risk(event, config=config)
                 stats["matched"] += 1
                 stats["clients"][event.get("client") or ""] = stats["clients"].get(event.get("client") or "", 0) + 1
                 for risk in event.get("risks", []):

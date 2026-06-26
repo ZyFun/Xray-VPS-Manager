@@ -14,6 +14,7 @@
 /usr/local/sbin/xray-client              управление клиентами
 /usr/local/sbin/xray-menu                интерактивное меню
 /usr/local/sbin/xray-set-cascade         управление каскадом
+/usr/local/sbin/xray-set-bypass          управление GeoIP bypass routes
 /usr/local/sbin/xray-warp                управление WARP outbound
 /usr/local/sbin/xray-traffic-sync        сохранение статистики
 /usr/local/sbin/xray-update              обновление и откат Xray

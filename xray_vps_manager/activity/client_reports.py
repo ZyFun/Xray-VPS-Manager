@@ -59,12 +59,13 @@ def credential_rows(
                 activity_reports.top_items(aggregate["ports"]),
                 activity_reports.top_items(aggregate["outbounds"]),
                 activity_reports.top_items(aggregate["risks"]),
+                activity_reports.top_items(aggregate["bypass"]),
                 activity_reports.top_items(aggregate["exceptions"]),
                 activity_reports.top_items(aggregate["hosts"]),
             ]
         )
     if rows:
-        rows.append(["TOTAL", total_events, "-", "-", "-", "-", "-", "-"])
+        rows.append(["TOTAL", total_events, "-", "-", "-", "-", "-", "-", "-"])
     return rows
 
 
@@ -90,6 +91,7 @@ def client_report(name: str, days_value: str = "7") -> dict:
                 activity_reports.top_items(aggregate["ports"]),
                 activity_reports.top_items(aggregate["outbounds"]),
                 activity_reports.top_items(aggregate["risks"]),
+                activity_reports.top_items(aggregate["bypass"]),
                 activity_reports.top_items(aggregate["exceptions"]),
                 activity_reports.top_items(aggregate["hosts"]),
             ]

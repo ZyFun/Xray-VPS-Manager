@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-24 22:42 UTC"
+MENU_UPDATED = "2026-06-26 10:18 UTC"
 
 
 def die(message):
@@ -176,7 +176,8 @@ def routing_menu_actions():
         ("2", "WARP"),
         ("3", "Торренты"),
         ("4", "GeoIP routing"),
-        ("5", "Блокировки IP/доменов"),
+        ("5", "GeoIP bypass"),
+        ("6", "Блокировки IP/доменов"),
         ("0", "Назад"),
     ]
 
@@ -194,6 +195,19 @@ def geoip_routing_menu_actions():
     return [
         ("1", "GeoIP routing: выбрать регион"),
         ("2", "GeoIP routing: отключить"),
+        ("0", "Назад"),
+    ]
+
+
+def geoip_bypass_menu_actions():
+    return [
+        ("1", "Показать bypass routes"),
+        ("2", "Добавить/заменить bypass-сервер"),
+        ("3", "Изменить GeoIP-регион"),
+        ("4", "Включить bypass"),
+        ("5", "Отключить bypass"),
+        ("6", "Проверить bypass"),
+        ("7", "Удалить bypass"),
         ("0", "Назад"),
     ]
 
@@ -660,7 +674,8 @@ def routing_menu_handlers():
         "2": ("WARP", open_warp_menu),
         "3": ("Торренты", open_torrent_menu),
         "4": ("GeoIP routing", open_geoip_routing_menu),
-        "5": ("Блокировки IP/доменов", open_activity_blocklist_menu),
+        "5": ("GeoIP bypass", open_geoip_bypass_menu),
+        "6": ("Блокировки IP/доменов", open_activity_blocklist_menu),
     }
 
 
@@ -676,6 +691,18 @@ def geoip_routing_menu_handlers():
     return {
         "1": ("GeoIP routing: выбрать регион", menu_activity_actions.set_xray_geoip_routing_region),
         "2": ("GeoIP routing: отключить", menu_activity_actions.disable_xray_geoip_routing_region),
+    }
+
+
+def geoip_bypass_menu_handlers():
+    return {
+        "1": ("Показать bypass routes", lambda: call(["xray-set-bypass", "list"])),
+        "2": ("Добавить/заменить bypass-сервер", lambda: call(["xray-set-bypass", "add"])),
+        "3": ("Изменить GeoIP-регион", lambda: call(["xray-set-bypass", "region"])),
+        "4": ("Включить bypass", lambda: call(["xray-set-bypass", "enable"])),
+        "5": ("Отключить bypass", lambda: call(["xray-set-bypass", "disable"])),
+        "6": ("Проверить bypass", lambda: call(["xray-set-bypass", "test"])),
+        "7": ("Удалить bypass", lambda: call(["xray-set-bypass", "remove"])),
     }
 
 
@@ -1083,6 +1110,10 @@ def open_torrent_menu():
 
 def open_geoip_routing_menu():
     menu_loop("GeoIP routing", geoip_routing_menu_actions(), geoip_routing_menu_handlers())
+
+
+def open_geoip_bypass_menu():
+    menu_loop("GeoIP bypass", geoip_bypass_menu_actions(), geoip_bypass_menu_handlers())
 
 
 def open_warp_menu():

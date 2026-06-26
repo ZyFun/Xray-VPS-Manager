@@ -8,6 +8,7 @@ from unittest import mock
 from xray_vps_manager import runner
 from xray_vps_manager.commands import sqlite as sqlite_command
 from xray_vps_manager.db import database
+from xray_vps_manager.db import schema
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 
 
@@ -45,7 +46,7 @@ class SQLiteCommandTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             output = stdout.getvalue()
-            self.assertIn("Schema: 6", output)
+            self.assertIn(f"Schema: {schema.CURRENT_SCHEMA_VERSION}", output)
             self.assertIn("Quick check: ok", output)
             self.assertIn("SQLite ready: yes", output)
             self.assertIn("activity_blocklist: 0", output)

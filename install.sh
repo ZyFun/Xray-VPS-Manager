@@ -60,6 +60,7 @@ need_file() {
 
 need_file xray-client
 need_file xray-set-cascade
+need_file xray-set-bypass
 need_file xray-menu
 need_file xray-activity
 need_file xray-traffic-sync
@@ -1100,6 +1101,7 @@ chmod 0640 /usr/local/etc/xray/config.json /usr/local/etc/xray/server.env
 
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-client" /usr/local/sbin/xray-client
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-cascade" /usr/local/sbin/xray-set-cascade
+install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-bypass" /usr/local/sbin/xray-set-bypass
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-menu" /usr/local/sbin/xray-menu
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-activity" /usr/local/sbin/xray-activity
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-traffic-sync" /usr/local/sbin/xray-traffic-sync
