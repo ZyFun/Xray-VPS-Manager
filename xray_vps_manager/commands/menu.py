@@ -22,7 +22,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v1.0.0"
-MENU_UPDATED = "2026-06-26 10:18 UTC"
+MENU_UPDATED = "2026-06-26 12:15 UTC"
 
 
 def die(message):
@@ -204,10 +204,11 @@ def geoip_bypass_menu_actions():
         ("1", "Показать bypass routes"),
         ("2", "Добавить/заменить bypass-сервер"),
         ("3", "Изменить GeoIP-регион"),
-        ("4", "Включить bypass"),
-        ("5", "Отключить bypass"),
-        ("6", "Проверить bypass"),
-        ("7", "Удалить bypass"),
+        ("4", "Изменить тестовую цель"),
+        ("5", "Включить bypass"),
+        ("6", "Отключить bypass"),
+        ("7", "Проверить bypass"),
+        ("8", "Удалить bypass"),
         ("0", "Назад"),
     ]
 
@@ -699,10 +700,11 @@ def geoip_bypass_menu_handlers():
         "1": ("Показать bypass routes", lambda: call(["xray-set-bypass", "list"])),
         "2": ("Добавить/заменить bypass-сервер", lambda: call(["xray-set-bypass", "add"])),
         "3": ("Изменить GeoIP-регион", lambda: call(["xray-set-bypass", "region"])),
-        "4": ("Включить bypass", lambda: call(["xray-set-bypass", "enable"])),
-        "5": ("Отключить bypass", lambda: call(["xray-set-bypass", "disable"])),
-        "6": ("Проверить bypass", lambda: call(["xray-set-bypass", "test"])),
-        "7": ("Удалить bypass", lambda: call(["xray-set-bypass", "remove"])),
+        "4": ("Изменить тестовую цель", lambda: call(["xray-set-bypass", "target"])),
+        "5": ("Включить bypass", lambda: call(["xray-set-bypass", "enable"])),
+        "6": ("Отключить bypass", lambda: call(["xray-set-bypass", "disable"])),
+        "7": ("Проверить bypass", lambda: call(["xray-set-bypass", "test"])),
+        "8": ("Удалить bypass", lambda: call(["xray-set-bypass", "remove"])),
     }
 
 
