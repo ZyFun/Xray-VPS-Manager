@@ -111,7 +111,7 @@ xray-manager-update --rollback ИМЯ_БЭКАПА
 Переустановить тот же тег или явно поставить тег старее текущей версии:
 
 ```bash
-xray-manager-update --update v1.0.0 --force
+xray-manager-update --update v2.0.0 --force
 ```
 
 Команда обновляет только файлы менеджера:

@@ -16,7 +16,7 @@ xray-menu
 | Xray VPS Manager                                                               |
 +-----------------+--------------------------------------------------------------+
 | Xray Version    | 26.3.27                                                      |
-| Manager Version | v1.0.0                                                       |
+| Manager Version | v2.0.0                                                       |
 | Manager Updated | 2026-06-12 10:34 MSK                                         |
 | Geo Assets      | geoip.dat: 2026-06-11 13:26 MSK; geosite.dat: 2026-06-11...  |
 | Security Audit  | 2026-06-05 15:55 MSK                                         |
