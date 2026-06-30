@@ -53,6 +53,7 @@ class TelegramSettingsReadTests(unittest.TestCase):
                 sqlite_telegram.set_setting(connection, key, value)
             for key, value in {
                 "paymentTotalAmount": "500",
+                "paymentDomainAnnualAmount": "1200",
                 "paymentCurrency": "$",
                 "paymentRoundingMode": "step",
                 "paymentRoundingStep": "50",
@@ -93,6 +94,7 @@ class TelegramSettingsReadTests(unittest.TestCase):
             self.assertEqual(result.db["botName"], "SQLiteBot")
             self.assertEqual(result.db["botUsername"], "SQLiteVpnBot")
             self.assertEqual(result.db["paymentTotalAmount"], "500")
+            self.assertEqual(result.db["paymentDomainAnnualAmount"], "1200")
             self.assertEqual(result.db["paymentCurrency"], "$")
             self.assertEqual(result.db["paymentTransferMethod"], "card")
             self.assertEqual(result.db["paymentCard"], "2200 0000 0000 0000")

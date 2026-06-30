@@ -91,6 +91,7 @@ class ActivityRepositoryReadTests(unittest.TestCase):
             self.assertEqual([event["host"] for event in events], ["sqlite.example.com"])
             self.assertEqual(clients, ["sqlite_client"])
             self.assertEqual(exceptions[0]["value"], "*.sqlite.example.com")
+            self.assertEqual(activity_repository.first_event_time_for_read(db_path=db_path), "2026-06-12T09:00:00Z")
 
     def test_read_fails_when_sqlite_database_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -102,6 +103,8 @@ class ActivityRepositoryReadTests(unittest.TestCase):
                 activity_repository.event_client_names_for_read(date(2026, 6, 12), date(2026, 6, 12), db_path=missing_db_path)
             with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
                 activity_exceptions.exception_items_for_read(db_path=missing_db_path)
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
+                activity_repository.first_event_time_for_read(db_path=missing_db_path)
 
             self.assertFalse(missing_db_path.exists())
 
@@ -116,6 +119,8 @@ class ActivityRepositoryReadTests(unittest.TestCase):
                 activity_repository.event_client_names_for_read(date(2026, 6, 12), date(2026, 6, 12), db_path=db_path)
             with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
                 activity_exceptions.exception_items_for_read(db_path=db_path)
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
+                activity_repository.first_event_time_for_read(db_path=db_path)
 
 
 if __name__ == "__main__":

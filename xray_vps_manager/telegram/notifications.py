@@ -11,8 +11,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from xray_vps_manager.activity import bypass as activity_bypass
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.activity import status as activity_status
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 from xray_vps_manager.telegram import keyboards, messages, payments, subscriptions
 from xray_vps_manager.traffic import formatting as traffic_formatting
@@ -159,9 +161,17 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
     enabled_count = sum(1 for entry in clients.values() if client_enabled(entry))
     rows, total_in, total_out = daily_traffic_rows(client_db, traffic_db, day_key)
     total = total_in + total_out
-    total_rent = payments.format_payment_amount(
-        str(db.get("paymentTotalAmount") or "").strip(),
-        db.get("paymentCurrency") or "₽",
+    payment_summary = payments.payment_summary(db, client_db)
+    activity_first_event = activity_status.first_event_status(
+        db_path=ctx.manager_db_path,
+        now=ctx.utc_now(),
+        display_tz=tzinfo,
+        language="ru",
+    )
+    activity_status_label = (
+        f"первое событие {activity_first_event}"
+        if activity_first_event not in ("нет событий",) and not activity_first_event.startswith("недоступен:")
+        else activity_first_event
     )
 
     lines = [
@@ -172,8 +182,11 @@ def build_daily_summary_message(ctx: NotificationContext, target_day=None):
         f"Telegram poller: {systemd_state(ctx, 'xray-telegram-poller.service')}",
         f"Система: {system_reboot_label()}",
         f"Клиенты: включено {enabled_count} из {len(clients)}, online сейчас: {online_clients_count(ctx, client_db, traffic_db)}",
-        f"Общая аренда сервера: {total_rent}",
+        f"Месячная аренда сервера: {payment_summary['serverMonthly']}",
+        f"Годовая аренда домена: {payment_summary['domainAnnual']} (в месяц: {payment_summary['domainMonthly']})",
+        f"Общая месячная аренда: {payment_summary['total']}",
         f"База данных: {database_usage_label(ctx.manager_db_path)}",
+        f"Журнал активности: {activity_status_label}",
         f"Диск /: {disk_usage_label('/')}",
         "",
         "Трафик за предыдущий день:",
@@ -387,8 +400,8 @@ def notify_access_updated(ctx: NotificationContext, name, quiet=False):
     return 0
 
 
-def maintenance_notice_message(ctx: NotificationContext, db, template_id):
-    return messages.maintenance_notice_message(db, template_id, ctx.bot_name)
+def maintenance_notice_message(ctx: NotificationContext, db, template_id, extra_text=""):
+    return messages.maintenance_notice_message(db, template_id, ctx.bot_name, extra_text=extra_text)
 
 
 def normalize_maintenance_template_id(value):
@@ -470,15 +483,46 @@ def geoip_regions(event):
     return regions
 
 
+def bypass_regions(event):
+    regions = []
+    risks = list(event.get("risks") or [])
+    risks.extend(activity_bypass.bypass_risks_for_event(event))
+    for risk in risks:
+        if str(risk).startswith("xray-bypass:"):
+            regions.append(str(risk).split(":", 1)[1].upper())
+    return sorted(set(regions))
+
+
 def event_id(event):
     payload = "|".join(
         str(event.get(key, ""))
-        for key in ("time", "client", "host", "port", "outbound", "source", "target")
+        for key in ("alertId", "time", "client", "host", "port", "outbound", "source", "target", "event_count")
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def event_notice_count(event):
+    try:
+        return max(1, int(event.get("event_count") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def iter_new_sqlite_events(ctx: NotificationContext, db, state):
+    after_alert_id = int(state.get("sqliteLastAlertId", 0) or 0)
+    alert_after_time = None
+    if after_alert_id <= 0:
+        alert_after_time = state.get("lastGeoipNotification") or db.get("lastGeoipNotification")
+    alert_events, last_alert_id = activity_repository.geoip_alerts_after_for_read(
+        after_id=after_alert_id,
+        after_time=alert_after_time,
+        db_path=ctx.manager_db_path,
+    )
+    if alert_events or after_alert_id > 0 or int(last_alert_id or 0) > 0:
+        state["sqliteLastAlertId"] = int(last_alert_id or after_alert_id or 0)
+        state["updated"] = ctx.utc_stamp()
+        return alert_events
+
     after_id = int(state.get("sqliteLastEventId", 0) or 0)
     after_time = None
     if after_id <= 0:
@@ -501,7 +545,10 @@ def iter_new_events(ctx: NotificationContext, db):
 
 def build_geoip_message(ctx: NotificationContext, events):
     grouped = {}
+    total_events = 0
     for event in events:
+        count = event_notice_count(event)
+        total_events += count
         regions = ",".join(geoip_regions(event)) or "-"
         host = event.get("host") or "-"
         port = str(event.get("port") or "-")
@@ -518,7 +565,7 @@ def build_geoip_message(ctx: NotificationContext, events):
                 "outbound": event.get("outbound") or "-",
             },
         )
-        row["count"] += 1
+        row["count"] += count
         if event.get("time", "") >= row["last"]:
             row["last"] = event.get("time") or row["last"]
             row["outbound"] = event.get("outbound") or row["outbound"]
@@ -526,7 +573,7 @@ def build_geoip_message(ctx: NotificationContext, events):
     rows = sorted(grouped.values(), key=lambda item: (item["count"], item["last"]), reverse=True)
     lines = [
         "Xray VPS Manager: обнаружено подключение по GeoIP",
-        f"Новых событий: {len(events)}",
+        f"Новых событий: {total_events}",
         "",
     ]
     for row in rows[:10]:
@@ -558,6 +605,7 @@ def client_geoip_target(event, client_id=""):
 def client_geoip_rows(events):
     grouped = {}
     for event in events:
+        count = event_notice_count(event)
         regions = ",".join(geoip_regions(event)) or "-"
         host = event.get("host") or "-"
         port = str(event.get("port") or "-")
@@ -572,27 +620,33 @@ def client_geoip_rows(events):
                 "last": event.get("time") or "",
             },
         )
-        row["count"] += 1
+        row["count"] += count
         if event.get("time", "") >= row["last"]:
             row["last"] = event.get("time") or row["last"]
     return sorted(grouped.values(), key=lambda item: (item["count"], item["last"]), reverse=True)
 
 
 def client_geoip_warning_is_large(events, rows):
-    return len(events) > CLIENT_GEOIP_MANY_EVENTS_THRESHOLD or len(rows) > CLIENT_GEOIP_EXCEPTION_MAX_TARGETS
+    return (
+        sum(event_notice_count(event) for event in events) > CLIENT_GEOIP_MANY_EVENTS_THRESHOLD
+        or len(rows) > CLIENT_GEOIP_EXCEPTION_MAX_TARGETS
+    )
 
 
 def build_client_geoip_message(ctx: NotificationContext, db, events):
     rows = client_geoip_rows(events)
     is_large = client_geoip_warning_is_large(events, rows)
+    has_bypass = any(bypass_regions(event) for event in events)
     lines = [
         f"{ctx.bot_name(db)}: активность VPN",
-        f"Новых GeoIP-предупреждений: {len(events)}",
+        f"Новых GeoIP-предупреждений: {sum(event_notice_count(event) for event in events)}",
         "",
         "Что это значит:",
         "часть подключений через VPN попала в регион, который администратор включил для проверки split tunneling.",
-        "",
     ]
+    if has_bypass:
+        lines.append("Сервер обработал этот регион через GeoIP bypass, но на устройстве всё равно лучше настроить Direct/Bypass для конкретной цели.")
+    lines.append("")
     for row in rows[:10]:
         lines.extend(
             [
@@ -745,7 +799,12 @@ def notify_geoip(ctx: NotificationContext, quiet=False):
         for item_id, _event in admin_pairs:
             sent_ids.append(item_id)
             sent_set.add(item_id)
-        admin_sent_count = len(admin_events)
+        admin_sent_count = sum(event_notice_count(event) for event in admin_events)
+        activity_repository.mark_alerts_admin_notified_for_write(
+            [event.get("alertId") for event in admin_events],
+            ctx.utc_stamp(),
+            db_path=ctx.manager_db_path,
+        )
 
     client_message_count = 0
     failed_count = 0

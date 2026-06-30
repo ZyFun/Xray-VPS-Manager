@@ -14,6 +14,7 @@ from xray_vps_manager.activity.constants import (
     XRAY_GEOIP_OUTBOUND_PREFIX,
 )
 from xray_vps_manager.activity.time import access_time_to_iso
+from xray_vps_manager.clients import credentials as client_credentials
 
 _GEOIP_CODES_CACHE: list[str] | None = None
 
@@ -121,6 +122,14 @@ def reality_inbounds(config: dict) -> list[dict]:
     ]
 
 
+def managed_inbounds(config: dict) -> list[dict]:
+    return [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if inbound.get("protocol") in ("vless", "trojan")
+    ]
+
+
 def parse_route(body: str) -> tuple[str, str]:
     match = ROUTE_RE.search(body)
     if not match:
@@ -164,8 +173,10 @@ def parse_access_line(line: str, clients: dict) -> dict | None:
         return None
     email = match.group("email").strip()
     name = split_email(email)
-    if name not in clients:
+    client_info = clients.get(email) or clients.get(name)
+    if not client_info:
         return None
+    client_name_value = client_info.get("client") or name
 
     body = match.group("body")
     target_match = TARGET_RE.search(body)
@@ -191,9 +202,9 @@ def parse_access_line(line: str, clients: dict) -> dict | None:
     inbound, outbound = parse_route(body)
     event = {
         "time": access_time_to_iso(match.group("time")),
-        "client": name,
-        "email": clients[name]["email"],
-        "connection": clients[name].get("connection", ""),
+        "client": client_name_value,
+        "email": email,
+        "connection": client_info.get("connection", ""),
         "source": parse_source(body),
         "status": status,
         "network": network,
@@ -211,22 +222,31 @@ def parse_access_line(line: str, clients: dict) -> dict | None:
 
 def config_clients(config: dict, client_db: dict) -> dict:
     clients = {}
-    for inbound in reality_inbounds(config):
+    for inbound in managed_inbounds(config):
         tag = inbound.get("tag") or INBOUND_TAG
-        for item in inbound.get("settings", {}).get("clients", []):
+        items = inbound.get("settings", {}).get("clients", [])
+        if not items and inbound.get("protocol") == "trojan":
+            items = inbound.get("settings", {}).get("users", [])
+        for item in items:
             email = item.get("email", "")
             if not email:
                 continue
             name = split_email(email)
-            clients[name] = {"email": email, "connection": tag}
+            record = {"client": name, "email": email, "connection": tag}
+            clients[email] = record
+            clients.setdefault(name, record)
 
     for name, entry in client_db.get("clients", {}).items():
-        clients.setdefault(
-            name,
-            {
-                "email": entry.get("client", {}).get("email") or name,
-                "connection": entry.get("connection") or INBOUND_TAG,
-            },
-        )
+        credentials = client_credentials.sorted_credentials(entry)
+        if not credentials:
+            email = entry.get("client", {}).get("email") or name
+            record = {"client": name, "email": email, "connection": entry.get("connection") or INBOUND_TAG}
+            clients[email] = record
+            clients.setdefault(name, record)
+            continue
+        for credential in credentials:
+            email = client_credentials.credential_email(name, entry, credential)
+            record = {"client": name, "email": email, "connection": credential.get("connection") or INBOUND_TAG}
+            clients[email] = record
+            clients.setdefault(name, record)
     return clients
-

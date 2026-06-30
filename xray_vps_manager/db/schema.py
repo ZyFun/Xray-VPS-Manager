@@ -8,7 +8,7 @@ from pathlib import Path
 
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -268,6 +268,286 @@ MIGRATIONS: tuple[Migration, ...] = (
             ADD COLUMN activity_notifications_enabled INTEGER NOT NULL DEFAULT 0 CHECK (activity_notifications_enabled IN (0, 1))
             """,
             "CREATE INDEX IF NOT EXISTS idx_telegram_subscriptions_activity ON telegram_subscriptions(activity_notifications_enabled)",
+        ),
+    ),
+    Migration(
+        version=4,
+        name="activity_global_blocklist",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS activity_blocklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                value TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL CHECK (kind IN ('domain', 'ip', 'cidr', 'mask')),
+                source_client_name TEXT,
+                source_event_id INTEGER,
+                source TEXT NOT NULL DEFAULT 'manual',
+                comment TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                FOREIGN KEY (source_client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE SET NULL,
+                FOREIGN KEY (source_event_id)
+                    REFERENCES activity_events(id)
+                    ON DELETE SET NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS activity_blocklist_hits (
+                blocklist_id INTEGER NOT NULL,
+                client_name TEXT NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 0 CHECK (hits >= 0),
+                first_seen_at TEXT,
+                last_seen_at TEXT,
+                PRIMARY KEY (blocklist_id, client_name),
+                FOREIGN KEY (blocklist_id)
+                    REFERENCES activity_blocklist(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_client ON activity_blocklist(source_client_name)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_value ON activity_blocklist(value)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_expires ON activity_blocklist(expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_enabled ON activity_blocklist(enabled)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_hits_client ON activity_blocklist_hits(client_name)",
+        ),
+    ),
+    Migration(
+        version=5,
+        name="client_credentials",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS client_credentials (
+                client_name TEXT NOT NULL,
+                connection_tag TEXT NOT NULL,
+                credential_uuid TEXT,
+                protocol TEXT NOT NULL DEFAULT 'vless' CHECK (protocol IN ('vless', 'trojan')),
+                security TEXT NOT NULL DEFAULT '',
+                transport TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                created_at TEXT,
+                xray_client_json TEXT NOT NULL DEFAULT '{}',
+                link_metadata_json TEXT NOT NULL DEFAULT '{}',
+                extra_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (client_name, connection_tag),
+                FOREIGN KEY (client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE,
+                FOREIGN KEY (connection_tag)
+                    REFERENCES reality_connections(tag)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            INSERT OR IGNORE INTO client_credentials(
+                client_name, connection_tag, credential_uuid, protocol, enabled, created_at, xray_client_json
+            )
+            SELECT
+                name,
+                connection_tag,
+                uuid,
+                CASE WHEN instr(xray_client_json, '"password"') > 0 THEN 'trojan' ELSE 'vless' END,
+                enabled,
+                created_at,
+                xray_client_json
+            FROM clients
+            WHERE connection_tag IS NOT NULL AND connection_tag != ''
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS credential_traffic_totals (
+                client_name TEXT NOT NULL,
+                connection_tag TEXT NOT NULL,
+                email TEXT,
+                incoming_bytes INTEGER NOT NULL DEFAULT 0 CHECK (incoming_bytes >= 0),
+                outgoing_bytes INTEGER NOT NULL DEFAULT 0 CHECK (outgoing_bytes >= 0),
+                last_runtime_uplink INTEGER,
+                last_runtime_downlink INTEGER,
+                last_online_at TEXT,
+                last_online_source TEXT,
+                last_accepted_at TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (client_name, connection_tag),
+                FOREIGN KEY (client_name, connection_tag)
+                    REFERENCES client_credentials(client_name, connection_tag)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS credential_traffic_history (
+                client_name TEXT NOT NULL,
+                connection_tag TEXT NOT NULL,
+                bucket_date TEXT NOT NULL,
+                bucket_hour INTEGER NOT NULL CHECK (bucket_hour BETWEEN 0 AND 23),
+                incoming_bytes INTEGER NOT NULL DEFAULT 0 CHECK (incoming_bytes >= 0),
+                outgoing_bytes INTEGER NOT NULL DEFAULT 0 CHECK (outgoing_bytes >= 0),
+                PRIMARY KEY (client_name, connection_tag, bucket_date, bucket_hour),
+                FOREIGN KEY (client_name, connection_tag)
+                    REFERENCES client_credentials(client_name, connection_tag)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_client_credentials_client ON client_credentials(client_name)",
+            "CREATE INDEX IF NOT EXISTS idx_client_credentials_connection ON client_credentials(connection_tag)",
+            "CREATE INDEX IF NOT EXISTS idx_client_credentials_uuid ON client_credentials(credential_uuid)",
+            "CREATE INDEX IF NOT EXISTS idx_credential_traffic_history_client_date ON credential_traffic_history(client_name, connection_tag, bucket_date)",
+        ),
+    ),
+    Migration(
+        version=6,
+        name="activity_alerts_counters_errors",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS activity_capture_clients (
+                client_name TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                FOREIGN KEY (client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS activity_alert_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_time TEXT NOT NULL,
+                client_name TEXT NOT NULL,
+                email TEXT,
+                connection_tag TEXT,
+                source TEXT,
+                status TEXT,
+                network TEXT,
+                target TEXT,
+                host TEXT,
+                port INTEGER,
+                inbound TEXT,
+                outbound TEXT,
+                risk TEXT NOT NULL,
+                severity TEXT NOT NULL DEFAULT 'warning'
+                    CHECK (severity IN ('info', 'warning', 'critical')),
+                dedupe_key TEXT NOT NULL UNIQUE,
+                event_count INTEGER NOT NULL DEFAULT 1 CHECK (event_count >= 1),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                notified_admin_at TEXT,
+                raw_ref_event_id INTEGER,
+                extra_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE,
+                FOREIGN KEY (raw_ref_event_id)
+                    REFERENCES activity_events(id)
+                    ON DELETE SET NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS activity_client_counters (
+                client_name TEXT NOT NULL,
+                connection_tag TEXT NOT NULL DEFAULT '',
+                bucket_type TEXT NOT NULL CHECK (bucket_type IN ('hour', 'day')),
+                bucket_start TEXT NOT NULL,
+                total_events INTEGER NOT NULL DEFAULT 0 CHECK (total_events >= 0),
+                geoip_events INTEGER NOT NULL DEFAULT 0 CHECK (geoip_events >= 0),
+                suspicious_events INTEGER NOT NULL DEFAULT 0 CHECK (suspicious_events >= 0),
+                blocked_events INTEGER NOT NULL DEFAULT 0 CHECK (blocked_events >= 0),
+                unique_hosts INTEGER NOT NULL DEFAULT 0 CHECK (unique_hosts >= 0),
+                unique_ports INTEGER NOT NULL DEFAULT 0 CHECK (unique_ports >= 0),
+                first_seen_at TEXT,
+                last_seen_at TEXT,
+                risk_counts_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (client_name, connection_tag, bucket_type, bucket_start),
+                FOREIGN KEY (client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS activity_client_counter_uniques (
+                client_name TEXT NOT NULL,
+                connection_tag TEXT NOT NULL DEFAULT '',
+                bucket_type TEXT NOT NULL CHECK (bucket_type IN ('hour', 'day')),
+                bucket_start TEXT NOT NULL,
+                unique_kind TEXT NOT NULL CHECK (unique_kind IN ('host', 'port')),
+                value_hash TEXT NOT NULL,
+                PRIMARY KEY (
+                    client_name,
+                    connection_tag,
+                    bucket_type,
+                    bucket_start,
+                    unique_kind,
+                    value_hash
+                ),
+                FOREIGN KEY (client_name)
+                    REFERENCES clients(name)
+                    ON UPDATE CASCADE
+                    ON DELETE CASCADE
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS xray_error_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_time TEXT NOT NULL,
+                level TEXT NOT NULL DEFAULT 'error',
+                source TEXT NOT NULL DEFAULT 'xray-error-log',
+                component TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                event_count INTEGER NOT NULL DEFAULT 1 CHECK (event_count >= 1),
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                notified_admin_at TEXT,
+                raw_line TEXT,
+                extra_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_activity_capture_clients_client ON activity_capture_clients(client_name)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_alert_events_time ON activity_alert_events(event_time)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_alert_events_client_time ON activity_alert_events(client_name, event_time)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_alert_events_risk ON activity_alert_events(risk)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_alert_events_notified ON activity_alert_events(notified_admin_at)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_client_counters_bucket ON activity_client_counters(bucket_type, bucket_start)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_client_counters_client_bucket ON activity_client_counters(client_name, bucket_type, bucket_start)",
+            "CREATE INDEX IF NOT EXISTS idx_xray_error_events_time ON xray_error_events(event_time)",
+            "CREATE INDEX IF NOT EXISTS idx_xray_error_events_level ON xray_error_events(level)",
+            "CREATE INDEX IF NOT EXISTS idx_xray_error_events_notified ON xray_error_events(notified_admin_at)",
+        ),
+    ),
+    Migration(
+        version=7,
+        name="bypass_routes",
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS bypass_routes (
+                tag TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                region_code TEXT NOT NULL,
+                region_label TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                created_at TEXT,
+                updated_at TEXT,
+                extra_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_bypass_routes_region ON bypass_routes(region_code)",
+            "CREATE INDEX IF NOT EXISTS idx_bypass_routes_enabled ON bypass_routes(enabled)",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_bypass_routes_active_region
+                ON bypass_routes(region_code)
+                WHERE enabled = 1
+            """,
         ),
     ),
 )

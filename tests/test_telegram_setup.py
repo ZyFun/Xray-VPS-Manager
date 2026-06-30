@@ -70,7 +70,7 @@ class TelegramSetupTests(unittest.TestCase):
         self.assertEqual(calls[1][2]["scope"], {"type": "chat", "chat_id": "222"})
         commands = calls[1][2]["commands"]
         self.assertIn({"command": "status", "description": "Показать подписку"}, commands)
-        self.assertIn({"command": "link", "description": "Получить VLESS-ссылку"}, commands)
+        self.assertIn({"command": "link", "description": "Получить VPN-ссылку"}, commands)
         self.assertIn({"command": "traffic", "description": "Показать статистику трафика"}, commands)
         self.assertIn({"command": "unsubscribe", "description": "Отписаться от бота"}, commands)
 

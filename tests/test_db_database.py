@@ -21,6 +21,15 @@ class SQLiteDatabaseInfrastructureTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_open_database_uses_full_busy_timeout(self) -> None:
+        connection = database.open_database(":memory:")
+        try:
+            row = connection.execute("PRAGMA busy_timeout").fetchone()
+            self.assertEqual(row[0], database.DEFAULT_BUSY_TIMEOUT_MS)
+            self.assertEqual(database.DEFAULT_BUSY_TIMEOUT_MS, 30000)
+        finally:
+            connection.close()
+
     def test_transaction_commits_and_rolls_back(self) -> None:
         connection = database.open_database(":memory:")
         try:

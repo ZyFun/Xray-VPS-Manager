@@ -6,11 +6,26 @@ from xray_vps_manager.telegram import admin
 
 
 class TelegramAdminTests(unittest.TestCase):
-    def make_context(self, events, client_db=None, send_response=None, run_capture=None):
+    def make_context(
+        self,
+        events,
+        client_db=None,
+        send_response=None,
+        run_capture=None,
+        server_name_fragment=None,
+        list_tls_sites=None,
+        set_tls_site_version=None,
+    ):
         if client_db is None:
             client_db = {"clients": {}}
         if run_capture is None:
             run_capture = lambda *_args, **_kwargs: None
+        if server_name_fragment is None:
+            server_name_fragment = lambda: "Xray"
+        if list_tls_sites is None:
+            list_tls_sites = lambda: []
+        if set_tls_site_version is None:
+            set_tls_site_version = lambda *_args, **_kwargs: None
 
         def send_chat_message(_db, chat_id, text, reply_markup=None, parse_mode=None):
             events.append(
@@ -32,6 +47,9 @@ class TelegramAdminTests(unittest.TestCase):
             bot_name=lambda current_db=None: "Vireika",
             notification_context=None,
             xray_client=Path("/usr/local/sbin/xray-client"),
+            server_name_fragment=server_name_fragment,
+            list_tls_sites=list_tls_sites,
+            set_tls_site_version=set_tls_site_version,
         )
 
     def test_payment_share_callback_sends_payments_submenu(self) -> None:
@@ -77,6 +95,92 @@ class TelegramAdminTests(unittest.TestCase):
         buttons = [button for row in events[0]["reply_markup"]["inline_keyboard"] for button in row]
         self.assertIn({"text": "Статус бота", "callback_data": "admin:settings-status"}, buttons)
 
+    def test_server_tls_menu_shows_current_profile_and_modified_time(self) -> None:
+        db = {"adminState": {}}
+        events = []
+        sites = [
+            {
+                "domain": "api.example.com",
+                "localPort": 10300,
+                "tlsChoice": "tls12",
+                "tlsLabel": "TLS 1.2",
+                "modifiedAt": "2026-06-21 10:00 UTC",
+            }
+        ]
+        ctx = self.make_context(events, list_tls_sites=lambda: sites)
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls"))
+
+        message = [event for event in events if "text" in event][-1]
+        self.assertIn("Текущее шифрование:", message["text"])
+        self.assertIn("- api.example.com: TLS 1.2", message["text"])
+        self.assertIn("Изменено: 2026-06-21 10:00 UTC", message["text"])
+        self.assertEqual(db["adminState"]["serverSettings"]["111"]["tlsSites"], sites)
+
+    def test_server_tls_set_updates_site_from_saved_selection(self) -> None:
+        db = {"adminState": {}}
+        events = []
+        calls = []
+        sites = [
+            {
+                "domain": "api.example.com",
+                "localPort": 10300,
+                "tlsChoice": "tls12",
+                "tlsLabel": "TLS 1.2",
+                "modifiedAt": "2026-06-21 10:00 UTC",
+            }
+        ]
+
+        def set_tls_site_version(domain, local_port, choice_key, site_path=None):
+            calls.append((domain, local_port, choice_key, site_path))
+
+        ctx = self.make_context(
+            events,
+            list_tls_sites=lambda: sites,
+            set_tls_site_version=set_tls_site_version,
+        )
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-site:0"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-set:0:tls13"))
+
+        self.assertEqual(calls, [("api.example.com", 10300, "tls13", None)])
+        sent = [event for event in events if "text" in event][-1]
+        self.assertIn("TLS обновлён для api.example.com: TLS 1.3", sent["text"])
+        self.assertIn("Caddy config проверен и применён.", sent["text"])
+
+    def test_server_tls_set_updates_static_site_by_config_path(self) -> None:
+        db = {"adminState": {}}
+        events = []
+        calls = []
+        sites = [
+            {
+                "domain": "site.example.com",
+                "path": "/etc/caddy/conf.d/site.example.com.caddy",
+                "localPort": None,
+                "tlsChoice": "default",
+                "tlsLabel": "Caddy default",
+                "modifiedAt": "2026-06-21 10:00 UTC",
+            }
+        ]
+
+        def set_tls_site_version(domain, local_port, choice_key, site_path=None):
+            calls.append((domain, local_port, choice_key, site_path))
+
+        ctx = self.make_context(
+            events,
+            list_tls_sites=lambda: sites,
+            set_tls_site_version=set_tls_site_version,
+        )
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-site:0"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:server-tls-set:0:tls13"))
+
+        self.assertEqual(calls, [("site.example.com", 0, "tls13", "/etc/caddy/conf.d/site.example.com.caddy")])
+        sent = [event for event in events if "text" in event][-1]
+        self.assertIn("TLS обновлён для site.example.com: TLS 1.3", sent["text"])
+
     def test_admin_menu_registers_latest_callback_message(self) -> None:
         db = {"adminState": {}}
         events = []
@@ -114,11 +218,158 @@ class TelegramAdminTests(unittest.TestCase):
 
         self.assertTrue(admin.accept_admin_callback(ctx, db, "111", "admin:menu", 42))
 
+    def test_admin_client_link_selection_sends_current_link_as_html_code_block(self) -> None:
+        db = {"adminState": {}}
+        client_db = {
+            "connections": {
+                "vless-main": {
+                    "tag": "vless-main",
+                    "name": "main",
+                    "protocol": "vless",
+                    "security": "reality",
+                    "transport": "tcp",
+                },
+                "vless-reality": {
+                    "tag": "vless-reality",
+                    "name": "backup",
+                    "protocol": "vless",
+                    "security": "reality",
+                    "transport": "tcp",
+                },
+            },
+            "clients": {
+                "alice": {"id": "00000000-0000-0000-0000-000000000001", "connection": "vless-main"},
+                "bob": {"id": "00000000-0000-0000-0000-000000000002", "connection": "vless-reality"},
+            }
+        }
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append({"run": command, "timeout": timeout})
+            return SimpleNamespace(
+                returncode=0,
+                stdout="vless://bob@example.com:443?type=tcp&security=reality#InternalBob",
+                stderr="",
+            )
+
+        ctx = self.make_context(events, client_db=client_db, run_capture=run_capture, server_name_fragment=lambda: "Demo")
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link:1"))
+
+        self.assertIn({"run": ["/usr/local/sbin/xray-client", "link", "bob", "--connection", "vless-reality"], "timeout": 20}, events)
+        self.assertNotIn("111", db.get("adminState", {}))
+        message = [event for event in events if "text" in event][-1]
+        self.assertEqual(message["parse_mode"], "HTML")
+        self.assertIn("Можно переслать это сообщение пользователю:", message["text"])
+        self.assertIn(
+            "<pre><code>vless://bob@example.com:443?type=tcp&amp;security=reality#Demo</code></pre>",
+            message["text"],
+        )
+        self.assertNotIn("InternalBob", message["text"])
+        self.assertNotIn("Клиент: bob", message["text"])
+
+    def test_admin_client_link_selection_asks_connection_when_client_has_multiple_credentials(self) -> None:
+        db = {"adminState": {}}
+        client_db = {
+            "connections": {
+                "vless-main": {
+                    "tag": "vless-main",
+                    "name": "main",
+                    "protocol": "vless",
+                    "security": "reality",
+                    "transport": "tcp",
+                },
+                "trojan-tls": {
+                    "tag": "trojan-tls",
+                    "name": "caddy",
+                    "protocol": "trojan",
+                    "security": "tls",
+                    "transport": "ws",
+                },
+            },
+            "clients": {
+                "alice": {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "connection": "vless-main",
+                    "credentials": {
+                        "vless-main": {
+                            "id": "00000000-0000-0000-0000-000000000001",
+                            "connection": "vless-main",
+                            "protocol": "vless",
+                        },
+                        "trojan-tls": {
+                            "id": "00000000-0000-0000-0000-000000000003",
+                            "connection": "trojan-tls",
+                            "protocol": "trojan",
+                        },
+                    },
+                }
+            },
+        }
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append({"run": command, "timeout": timeout})
+            return SimpleNamespace(
+                returncode=0,
+                stdout="trojan://secret@example.com:443?security=tls&type=ws&path=/trojan#Internal",
+                stderr="",
+            )
+
+        ctx = self.make_context(events, client_db=client_db, run_capture=run_capture, server_name_fragment=lambda: "Demo")
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-link:0"))
+
+        pending = db["adminState"]["111"]
+        self.assertEqual(pending["action"], "client-link-credential-select")
+        trojan_index = next(
+            index for index, option in enumerate(pending["options"])
+            if option["connection"] == "trojan-tls"
+        )
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", f"admin:client-link-credential:{trojan_index}"))
+
+        self.assertIn({"run": ["/usr/local/sbin/xray-client", "link", "alice", "--connection", "trojan-tls"], "timeout": 20}, events)
+        message = [event for event in events if "text" in event][-1]
+        self.assertEqual(message["parse_mode"], "HTML")
+        self.assertIn(
+            "<pre><code>trojan://secret@example.com:443?security=tls&amp;type=ws&amp;path=/trojan#Demo</code></pre>",
+            message["text"],
+        )
+        self.assertNotIn("Internal", message["text"])
+
+    def test_admin_client_key_selection_sends_only_access_key(self) -> None:
+        db = {"adminState": {}}
+        client_db = {"clients": {"alice": {"id": "00000000-0000-0000-0000-000000000001"}}}
+        events = []
+
+        def run_capture(command, timeout=20, **_kwargs):
+            events.append({"run": command, "timeout": timeout})
+            return SimpleNamespace(returncode=0, stdout="vpn-key:00000000-0000-0000-0000-000000000001", stderr="")
+
+        ctx = self.make_context(events, client_db=client_db, run_capture=run_capture)
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-key"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:client-key:0"))
+
+        self.assertIn({"run": ["/usr/local/sbin/xray-client", "key", "alice"], "timeout": 20}, events)
+        message = [event for event in events if "text" in event][-1]
+        self.assertEqual(message["parse_mode"], "HTML")
+        self.assertIn(
+            "<pre><code>vpn-key:00000000-0000-0000-0000-000000000001</code></pre>",
+            message["text"],
+        )
+        self.assertNotIn("vless://", message["text"])
+        self.assertNotIn("trojan://", message["text"])
+
     def test_add_client_success_sends_key_as_html_code_block(self) -> None:
         db = {"botUsername": "ExampleVpnBot", "adminState": {}}
         client_db = {
             "clients": {
                 "alice": {
+                    "id": "00000000-0000-0000-0000-000000000001",
                     "expiresAt": "2026-07-14T00:00:00+03:00",
                     "paymentType": "paid",
                 }
@@ -130,7 +381,11 @@ class TelegramAdminTests(unittest.TestCase):
             events.append({"run": command, "timeout": timeout})
             return SimpleNamespace(
                 returncode=0,
-                stdout="vless://alice@example.com:443?type=tcp&security=reality#Xray",
+                stdout=(
+                    "Added client: alice\n"
+                    "Access key: vpn-key:00000000-0000-0000-0000-000000000001\n"
+                    "vless://alice@example.com:443?type=tcp&security=reality#Xray"
+                ),
                 stderr="",
             )
 
@@ -148,6 +403,10 @@ class TelegramAdminTests(unittest.TestCase):
         self.assertEqual(message["parse_mode"], "HTML")
         self.assertIn(
             "<pre><code>vless://alice@example.com:443?type=tcp&amp;security=reality#Xray</code></pre>",
+            message["text"],
+        )
+        self.assertIn(
+            "<pre><code>vpn-key:00000000-0000-0000-0000-000000000001</code></pre>",
             message["text"],
         )
 

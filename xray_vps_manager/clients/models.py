@@ -52,11 +52,29 @@ class RealityConnection:
         )
 
 
+def email_metadata(email: str) -> tuple[str, dict[str, str]]:
+    parts = str(email or "").split("|")
+    name = parts[0]
+    metadata: dict[str, str] = {}
+    for part in parts[1:]:
+        key, separator, value = part.partition("=")
+        if separator and key:
+            metadata[key] = value
+    return name, metadata
+
+
 def split_email(email: str) -> tuple[str, str]:
-    if "|created=" in str(email):
-        name, created = str(email).split("|created=", 1)
-        return name, created
-    return str(email), ""
+    name, metadata = email_metadata(email)
+    return name, metadata.get("created", "")
+
+
+def email_for_client(name: str, created: str = "", *, connection_tag: str = "") -> str:
+    parts = [str(name)]
+    if created:
+        parts.append(f"created={created}")
+    if connection_tag:
+        parts.append(f"connection={connection_tag}")
+    return "|".join(parts)
 
 
 def client_name(item: dict[str, Any]) -> str:
@@ -85,12 +103,20 @@ def db_entry_from_client(
     name, email_created = split_email(item.get("email", ""))
     previous = previous or {}
     created = created or previous.get("created", "") or email_created
+    protocol = str(item.get("protocol") or previous.get("protocol") or "").strip().lower()
+    if not protocol and item.get("password"):
+        protocol = "trojan"
     entry: dict[str, Any] = {
-        "id": item.get("id", ""),
+        "id": item.get("id") or previous.get("id", ""),
         "created": created,
         "enabled": enabled,
         "client": dict(item),
     }
+    if protocol:
+        entry["protocol"] = protocol
+        entry["client"].setdefault("protocol", protocol)
+    if entry["id"]:
+        entry["client"].setdefault("id", entry["id"])
     for key in (
         "expiresAt",
         "accessDays",
@@ -103,6 +129,7 @@ def db_entry_from_client(
         "trafficLimitExceededBytes",
         "trafficLimitResetAt",
         "paymentType",
+        "credentials",
     ):
         if key in previous:
             entry[key] = previous[key]
@@ -110,17 +137,33 @@ def db_entry_from_client(
     if "connection" in previous:
         entry["connection"] = previous["connection"]
     if not entry["client"].get("email") and name:
-        entry["client"]["email"] = f"{name}|created={created}" if created else name
+        entry["client"]["email"] = email_for_client(name, created)
     return entry
 
 
 def client_from_db_entry(name: str, entry: dict[str, Any]) -> dict[str, Any]:
     created = entry.get("created", "")
     client = dict(entry.get("client") or {})
+    protocol = str(entry.get("protocol") or client.get("protocol") or "").strip().lower()
+    if not protocol and client.get("password"):
+        protocol = "trojan"
+    email = email_for_client(name, created)
+
+    if protocol == "trojan":
+        password = str(client.get("password") or "").strip()
+        if not password:
+            raise ValueError(f"Trojan client has no password in database: {name}")
+        return {
+            "password": password,
+            "email": email,
+            "level": int(client.get("level", 0) or 0),
+        }
+
     client.setdefault("id", entry.get("id", ""))
     client.setdefault("flow", "xtls-rprx-vision")
     client.setdefault("level", 0)
-    client["email"] = f"{name}|created={created}" if created else name
+    client["email"] = email
     if not client.get("id"):
         raise ValueError(f"Client has no UUID in database: {name}")
+    client.pop("protocol", None)
     return client

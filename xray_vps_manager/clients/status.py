@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients import connections
 from xray_vps_manager.clients.access import access_expired, extend_entry_expiry, local_now, set_entry_expiry
 from xray_vps_manager.clients.limits import traffic_limit_status
@@ -18,11 +19,12 @@ from xray_vps_manager.xray.config import (
     active_client_any,
     apply_client_transport,
     clients,
+    connection_transport_settings_from_inbound,
     default_connection_tag,
     find_inbound_by_tag,
     inbound_tag,
-    reality_inbounds,
-    reality_transport_settings_from_inbound,
+    managed_connection_inbounds,
+    set_clients,
 )
 
 
@@ -71,24 +73,25 @@ def clear_traffic_limit_exceeded_state(entry: dict[str, Any]) -> None:
 
 
 def enable_db_client(config: dict[str, Any], name: str, entry: dict[str, Any]) -> bool:
-    if active_client_any(config, name)[1] is not None:
-        return False
-
-    client = client_from_db_entry(name, entry)
-    connection_tag = entry.get("connection") or default_connection_tag(config)
-    inbound = find_inbound_by_tag(config, connection_tag)
-    apply_client_transport(client, reality_transport_settings_from_inbound(inbound)["transport"])
-    clients(inbound).append(client)
-    entry["client"] = client
-    entry["connection"] = connection_tag
-    return True
+    changed = False
+    for credential in client_credentials.sorted_credentials(entry):
+        tag = credential.get("connection") or entry.get("connection") or default_connection_tag(config)
+        _inbound, active_item = client_credentials.active_item_for_connection(config, name, tag)
+        if active_item is not None and credential.get("enabled") is not False:
+            continue
+        client_credentials.upsert_active_credential(config, name, entry, credential)
+        changed = True
+    if changed:
+        entry["enabled"] = True
+        client_credentials.sync_legacy_fields(entry)
+    return changed
 
 
 def remove_active_client(config: dict[str, Any], name: str) -> tuple[bool, str, dict[str, Any] | None]:
     removed_tag = ""
     removed_item = None
     changed = False
-    for inbound in reality_inbounds(config):
+    for inbound in managed_connection_inbounds(config):
         before = clients(inbound)
         after = []
         for item in before:
@@ -100,7 +103,7 @@ def remove_active_client(config: dict[str, Any], name: str) -> tuple[bool, str, 
                 continue
             after.append(item)
         if len(after) != len(before):
-            inbound["settings"]["clients"] = after
+            set_clients(inbound, after)
     return changed, removed_tag, removed_item
 
 
@@ -109,16 +112,24 @@ def disabled_entry_for_policy(
     name: str,
     entry: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
-    changed, tag, item = remove_active_client(config, name)
-    if item is None:
-        disabled = dict(entry)
-        disabled["enabled"] = False
-        return disabled, changed
-
-    _, created = split_email(item.get("email", ""))
-    created = entry.get("created", created)
-    disabled = db_entry_from_client(item, created=created, enabled=False, previous=entry)
-    disabled["connection"] = entry.get("connection") or tag
+    disabled = dict(entry)
+    disabled["credentials"] = {
+        tag: dict(credential)
+        for tag, credential in client_credentials.normalize_entry_credentials(entry).items()
+    }
+    changed = False
+    for tag, credential in disabled["credentials"].items():
+        removed, item = client_credentials.remove_active_credential(config, name, tag)
+        changed = changed or removed
+        if item is not None:
+            stored = dict(item)
+            if credential.get("protocol") == "trojan":
+                stored["id"] = credential.get("id") or disabled.get("id", "")
+                stored["protocol"] = "trojan"
+            credential["client"] = stored
+        credential["enabled"] = False
+    disabled["enabled"] = False
+    client_credentials.sync_legacy_fields(disabled)
     return disabled, changed
 
 
@@ -242,24 +253,27 @@ def enforce_traffic_limits(
         db_clients(db)[name] = entry
         reactivated_names.append(name)
 
-    for inbound in reality_inbounds(config):
-        tag = inbound_tag(inbound)
+    for inbound in managed_connection_inbounds(config):
         for item in clients(inbound):
             name = client_name(item)
+            if name in due_statuses:
+                continue
             entry = db_clients(db).get(name, {})
             status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
             if status and status["exceeded"]:
                 due_names.append(name)
-                due_clients[name] = (tag, item)
+                due_clients[name] = (inbound_tag(inbound), item)
                 due_statuses[name] = status
 
     for name in due_names:
-        tag, item = due_clients[name]
         status = due_statuses[name]
-        _, created = split_email(item.get("email", ""))
         previous = db_clients(db).get(name, {})
-        entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
-        entry["connection"] = previous.get("connection") or tag
+        if not previous:
+            tag, item = due_clients[name]
+            _, created = split_email(item.get("email", ""))
+            previous = db_entry_from_client(item, created=created, enabled=True)
+            previous["connection"] = tag
+        entry, _changed = disabled_entry_for_policy(config, name, previous)
         entry["disabledAt"] = stamp
         entry["disabledReason"] = "traffic-limit"
         entry["trafficLimitExceededAt"] = stamp
@@ -267,10 +281,6 @@ def enforce_traffic_limits(
         entry["trafficLimitExceededBytes"] = status["usedBytes"]
         entry["trafficLimitResetAt"] = status["resetAt"]
         db_clients(db)[name] = entry
-
-    due_set = set(due_names)
-    for inbound in reality_inbounds(config):
-        inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
 
     return TrafficLimitEnforcementResult(
         reactivated_names=reactivated_names,
@@ -289,28 +299,27 @@ def expire_due_clients(
     due_names: list[str] = []
     due_clients: dict[str, tuple[str, dict[str, Any]]] = {}
 
-    for inbound in reality_inbounds(config):
-        tag = inbound_tag(inbound)
+    for inbound in managed_connection_inbounds(config):
         for item in clients(inbound):
             name = client_name(item)
+            if name in due_clients:
+                continue
             entry = db_clients(db).get(name, {})
             if access_expired(entry, now):
                 due_names.append(name)
-                due_clients[name] = (tag, item)
+                due_clients[name] = (inbound_tag(inbound), item)
 
     for name in due_names:
-        tag, item = due_clients[name]
-        _, created = split_email(item.get("email", ""))
         previous = db_clients(db).get(name, {})
-        entry = db_entry_from_client(item, created=created, enabled=False, previous=previous)
-        entry["connection"] = previous.get("connection") or tag
+        if not previous:
+            tag, item = due_clients[name]
+            _, created = split_email(item.get("email", ""))
+            previous = db_entry_from_client(item, created=created, enabled=True)
+            previous["connection"] = tag
+        entry, _changed = disabled_entry_for_policy(config, name, previous)
         entry["disabledAt"] = stamp
         entry["expiredAt"] = stamp
         entry["disabledReason"] = "expired"
         db_clients(db)[name] = entry
-
-    due_set = set(due_names)
-    for inbound in reality_inbounds(config):
-        inbound["settings"]["clients"] = [item for item in clients(inbound) if client_name(item) not in due_set]
 
     return ExpireDueResult(due_names=due_names)

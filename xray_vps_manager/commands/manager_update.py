@@ -33,8 +33,10 @@ MANAGER_PACKAGE_DIR = MANAGER_LIB_DIR / "xray_vps_manager"
 BACKUP_DIR = Path("/usr/local/lib/xray-vps-manager-backups")
 MANAGER_SYSTEMD_UNITS = (
     "xray-traffic-sync.timer",
+    "xray-raw-log-rotate.timer",
     "xray-client-expire.timer",
     "xray-traffic-sync.service",
+    "xray-raw-log-rotate.service",
     "xray-client-expire.service",
     "xray-telegram-poller.service",
 )
@@ -42,6 +44,7 @@ MANAGER_SYSTEMD_UNITS = (
 MANAGER_WRAPPERS = (
     "xray-client",
     "xray-set-cascade",
+    "xray-set-bypass",
     "xray-menu",
     "xray-activity",
     "xray-traffic-sync",
@@ -376,6 +379,18 @@ def install_release_source(source_root: Path) -> None:
     install_python_package(source_root)
 
 
+def sync_raw_log_units() -> None:
+    xray_activity = SBIN_DIR / "xray-activity"
+    if not xray_activity.exists():
+        warn("xray-activity не найден; raw-log rotation units не синхронизированы.")
+        return
+    result = run([str(xray_activity), "raw-log-timer-sync"], timeout=30)
+    if result.returncode == 0:
+        ok("raw-log rotation systemd units синхронизированы.")
+    else:
+        warn(f"raw-log rotation units не удалось синхронизировать: {compact_output(result)}")
+
+
 def restart_manager_services() -> None:
     systemctl = shutil.which("systemctl")
     if not systemctl:
@@ -508,11 +523,13 @@ def update_to_tag(tag: str, force: bool, run_xray_test: bool) -> None:
         print(f"Backup: {backup}")
         try:
             install_release_source(release_source)
+            sync_raw_log_units()
             restart_manager_services()
             validate_installed_manager(run_xray_test)
         except Exception:
             warn("Обновление менеджера не прошло; восстанавливаю предыдущую версию.")
             restore_backup(backup)
+            sync_raw_log_units()
             restart_manager_services()
             raise
 
@@ -528,6 +545,7 @@ def rollback(name: str | None, run_xray_test: bool) -> None:
     require_root()
     backup = choose_backup(name)
     restore_backup(backup)
+    sync_raw_log_units()
     restart_manager_services()
     validate_installed_manager(run_xray_test)
     ok(f"Xray VPS Manager восстановлен из backup: {backup.name}")

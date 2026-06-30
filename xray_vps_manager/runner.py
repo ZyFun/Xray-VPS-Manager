@@ -9,7 +9,9 @@ from typing import Callable
 COMMAND_MODULES = {
     "activity": "xray_vps_manager.commands.activity",
     "backup": "xray_vps_manager.commands.backup",
+    "bypass": "xray_vps_manager.commands.set_bypass",
     "cascade": "xray_vps_manager.commands.set_cascade",
+    "caddy": "xray_vps_manager.commands.caddy",
     "client": "xray_vps_manager.commands.client",
     "manager-update": "xray_vps_manager.commands.manager_update",
     "menu": "xray_vps_manager.commands.menu",

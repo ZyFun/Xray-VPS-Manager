@@ -6,12 +6,15 @@
 
 ```text
 /usr/local/etc/xray/config.json          основной конфиг Xray
-/usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, Telegram и настроек оплаты
+/usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, blocklist, Telegram и настроек оплаты
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
+/etc/caddy/Caddyfile                     основной Caddy config
+/etc/caddy/conf.d                        TLS site configs Caddy
 /usr/local/sbin/xray-client              управление клиентами
 /usr/local/sbin/xray-menu                интерактивное меню
 /usr/local/sbin/xray-set-cascade         управление каскадом
+/usr/local/sbin/xray-set-bypass          управление GeoIP bypass routes
 /usr/local/sbin/xray-warp                управление WARP outbound
 /usr/local/sbin/xray-traffic-sync        сохранение статистики
 /usr/local/sbin/xray-update              обновление и откат Xray
@@ -25,6 +28,8 @@
 /root/xray_server/bootstrap.sh           установка чистого сервера из GitHub Releases
 /root/xray-reality-client.txt            стартовая ссылка
 /root/xray_backups                       архивы резервных копий данных
+/root/xray_caddy_backups                 архивы резервных копий Caddy config
+/root/xray_caddy_site_backups            архивы резервных копий файлов сайта Caddy
 /root/xray_activity_exports              экспортированные отчёты активности
 /usr/local/lib/xray-vps-manager-backups  архивы отката менеджера
 /etc/ssh/sshd_config.d/00-xray-vps-manager.conf  managed-настройка SSH password login
@@ -47,10 +52,15 @@ xray-backup create
 /usr/local/etc/xray/config.json
 /usr/local/etc/xray/server.env
 /usr/local/etc/xray/manager.db
+/etc/caddy/Caddyfile, если Caddy настроен
+/etc/caddy/conf.d, если Caddy site configs существуют
 ```
 
 Архивы хранятся на сервере в `/root/xray_backups`.
-Архив содержит Reality private key, UUID клиентов, SQLite-базу менеджера, статистику трафика, журнал активности, исключения suspicious и token Telegram-бота, поэтому его нужно хранить как приватный секрет.
+Архив содержит Reality private key, UUID клиентов, Trojan passwords, SQLite-базу менеджера, статистику трафика, журнал активности, глобальные блокировки, исключения suspicious, token Telegram-бота и Caddy site configs, поэтому его нужно хранить как приватный секрет.
+Перед добавлением `manager.db` в архив `xray-backup create` создаёт временный консистентный SQLite snapshot через SQLite backup API внутри `/root/xray_backups`, а не копирует живой файл базы напрямую. Это защищает архив от повреждения, если фоновые таймеры или бот записывают данные во время создания backup.
+
+Обычный `xray-backup` теперь включает настройки Caddy, чтобы Trojan TLS/WebSocket и VLESS TLS/XHTTP подключения восстанавливались вместе со связанными Caddy site configs. Сертификатный кеш Caddy не копируется: Caddy может выпустить сертификаты заново после восстановления. Для legacy direct TLS/TCP подключений в backup сохраняются пути `certificateFile` и `keyFile`, но не сами cert/key файлы. После restore менеджер автоматически выставляет безопасные права для существующих файлов: cert `root:xray 0644`, key `root:xray 0640`; если файл отсутствует, restore выводит warning до проверки и перезапуска Xray. Статические файлы сайта не входят в общий backup; для них остаются отдельные backup-пункты в меню `Подключения и TLS` -> `Caddy / TLS` -> `Бэкапы`.
 
 `server.env` сохраняется как переносимая конфигурация. Host-specific значения, например `SERVER_ADDR` и `SECURITY_AUDIT_LAST_RUN`, в новый архив не записываются. При восстановлении `xray-backup restore` сохраняет текущий `SERVER_ADDR` нового сервера, чтобы новые VLESS-ссылки генерировались с актуальным адресом.
 
@@ -94,8 +104,48 @@ xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 
 Перед восстановлением менеджер автоматически создаёт pre-restore бэкап текущего состояния.
 Если на сервере уже есть `/usr/local/etc/xray/manager.db`, дополнительно создаётся отдельная pre-restore копия SQLite-базы в каталоге резервных копий.
-После восстановления менеджер проверяет `config.json`, перезапускает Xray и включает timers.
+После восстановления менеджер применяет Caddy config из архива, если он там есть, выполняет `caddy validate` и reload Caddy, проверяет `config.json`, перезапускает Xray и включает timers. Если Caddy или Xray проверка не проходит, restore откатывается к pre-restore backup.
 Если архив переносится на сервер с новым IP или доменом, сначала установи менеджер на новом сервере, затем восстанови архив. `SERVER_ADDR` из нового `server.env` будет сохранён, а старый адрес из архива не перезапишет новый.
+
+
+## Резервные Копии Caddy
+
+Настройки Caddy входят в обычный `xray-backup`, если Caddy настроен. Отдельные операции ниже нужны для точечного config-only backup/restore перед ручными изменениями Caddy или без восстановления Xray/SQLite.
+В backup Caddy входят:
+
+```text
+/etc/caddy/Caddyfile
+/etc/caddy/conf.d
+```
+
+Архивы Caddy config хранятся в `/root/xray_caddy_backups`.
+Сертификатный кеш Caddy не копируется: Caddy может выпустить сертификаты заново после восстановления.
+
+Операции с Caddy config доступны через меню:
+
+```text
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Создать backup Caddy config
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Показать backups Caddy config
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Восстановить Caddy config из backup
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Удалить backup Caddy config
+```
+
+Перед восстановлением Caddy config менеджер автоматически создаёт pre-restore backup текущих настроек Caddy, затем применяет выбранный архив, выполняет `caddy validate` и reload Caddy. Если проверка не проходит, менеджер пытается вернуть предыдущие настройки из pre-restore backup.
+
+Файлы сайта сохраняются отдельным архивом. Меню пытается найти папку сайта по директивам `root * ...` в `Caddyfile` и site configs, но путь можно ввести вручную.
+
+Архивы сайта хранятся в `/root/xray_caddy_site_backups`.
+
+Операции с файлами сайта доступны через меню:
+
+```text
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Создать backup сайта
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Показать backups сайта
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Восстановить сайт из backup
+Подключения и TLS -> Caddy / TLS -> Бэкапы -> Удалить backup сайта
+```
+
+Перед восстановлением сайта менеджер создаёт pre-restore backup текущей папки сайта, если она существует, затем заменяет её содержимое файлами из выбранного архива. Caddy config и сертификаты при этом не меняются.
 
 
 ## SQLite Данные
@@ -106,7 +156,7 @@ SQLite-база менеджера хранится в:
 /usr/local/etc/xray/manager.db
 ```
 
-`install.sh` создаёт эту базу сразу. Клиенты, Reality-подключения, трафик, журнал активности, исключения suspicious, Telegram-настройки, подписки, флаг личных уведомлений активности и настройки оплаты хранятся в `manager.db`.
+`install.sh` создаёт эту базу сразу. Клиенты, VLESS/Trojan-подключения, трафик, журнал активности, исключения suspicious, Telegram-настройки, подписки, флаг личных уведомлений активности и настройки оплаты хранятся в `manager.db`.
 
 Подробная схема таблиц и индексов описана отдельно: [Схема базы данных](database-schema.md).
 
@@ -116,10 +166,16 @@ SQLite-база менеджера хранится в:
 xray-vps-manager sqlite status
 ```
 
-Эта команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check`, готовность SQLite и количество строк в основных таблицах. То же доступно через меню `Настройки Xray` -> `Обновление Xray`:
+Эта команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check`, готовность SQLite и количество строк в основных таблицах, включая activity blocklist и hit-счётчики. То же доступно через меню `Сервис и диагностика`:
 
 ```text
 SQLite: статус базы
+```
+
+Обычная диагностика `xray-test` проверяет наличие базы, версию схемы, ready-метку, счётчики и согласованность runtime-строк без полного физического прохода по SQLite-файлу. Если нужно именно проверить целостность страниц базы через `PRAGMA quick_check`, запускайте:
+
+```bash
+xray-test --all
 ```
 
 

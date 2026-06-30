@@ -10,6 +10,7 @@ XRAY_DGST_URL="${XRAY_DGST_URL:-}"
 XRAY_LOCAL_ZIP="${XRAY_LOCAL_ZIP:-}"
 XRAY_LOCAL_DGST="${XRAY_LOCAL_DGST:-}"
 XRAY_DOWNLOAD_ATTEMPTS="${XRAY_DOWNLOAD_ATTEMPTS:-4}"
+INITIAL_PROTOCOL="${INITIAL_PROTOCOL:-vless}"
 PORT="${PORT:-443}"
 REALITY_SNI="${REALITY_SNI:-www.microsoft.com}"
 REALITY_DEST=""
@@ -20,6 +21,12 @@ REALITY_TRANSPORT="${REALITY_TRANSPORT:-tcp}"
 GRPC_SERVICE_NAME="${GRPC_SERVICE_NAME:-vless-grpc}"
 XHTTP_PATH="${XHTTP_PATH:-/vless-xhttp}"
 XHTTP_MODE="${XHTTP_MODE:-auto}"
+TROJAN_CONNECTION_NAME="${TROJAN_CONNECTION_NAME:-trojan}"
+TROJAN_DOMAIN="${TROJAN_DOMAIN:-}"
+TROJAN_LOCAL_PORT="${TROJAN_LOCAL_PORT:-10100}"
+TROJAN_WS_PATH="${TROJAN_WS_PATH:-/trojan}"
+TROJAN_TLS_MIN_VERSION="${TROJAN_TLS_MIN_VERSION:-tls1.2}"
+TROJAN_TLS_MAX_VERSION="${TROJAN_TLS_MAX_VERSION:-tls1.3}"
 MANAGER_TIMEZONE="${MANAGER_TIMEZONE:-}"
 TIMEZONE_SEARCH_LIMIT=30
 TIMEZONE_PRESETS=(
@@ -53,6 +60,7 @@ need_file() {
 
 need_file xray-client
 need_file xray-set-cascade
+need_file xray-set-bypass
 need_file xray-menu
 need_file xray-activity
 need_file xray-traffic-sync
@@ -139,6 +147,26 @@ validate_transport() {
   esac
 }
 
+normalize_initial_protocol() {
+  INITIAL_PROTOCOL="$(printf '%s' "$INITIAL_PROTOCOL" | tr '[:upper:]' '[:lower:]')"
+  case "$INITIAL_PROTOCOL" in
+    vless|trojan|both)
+      ;;
+    *)
+      echo "INITIAL_PROTOCOL must be one of: vless, trojan, both." >&2
+      exit 1
+      ;;
+  esac
+}
+
+initial_has_vless() {
+  [[ "$INITIAL_PROTOCOL" == "vless" || "$INITIAL_PROTOCOL" == "both" ]]
+}
+
+initial_has_trojan() {
+  [[ "$INITIAL_PROTOCOL" == "trojan" || "$INITIAL_PROTOCOL" == "both" ]]
+}
+
 validate_grpc_service_name() {
   local value="$1"
   if [[ ! "$value" =~ ^[A-Za-z0-9_.-]{1,128}$ ]]; then
@@ -151,6 +179,22 @@ validate_xhttp_path() {
   local value="$1"
   if [[ ! "$value" =~ ^/[A-Za-z0-9._~/-]{0,255}$ ]]; then
     echo "XHTTP_PATH must start with / and contain only A-Z a-z 0-9 . _ ~ - / characters." >&2
+    exit 1
+  fi
+}
+
+validate_trojan_ws_path() {
+  local value="$1"
+  if [[ ! "$value" =~ ^/[A-Za-z0-9._~/-]{0,255}$ ]]; then
+    echo "TROJAN_WS_PATH must start with / and contain only A-Z a-z 0-9 . _ ~ - / characters." >&2
+    exit 1
+  fi
+}
+
+validate_trojan_connection_name() {
+  local value="$1"
+  if [[ -z "$value" || "$value" == *"|"* || "$value" == *$'\n'* || "$value" == *$'\r'* || ${#value} -gt 64 ]]; then
+    echo "TROJAN_CONNECTION_NAME must be 1-64 chars without line breaks or |." >&2
     exit 1
   fi
 }
@@ -252,18 +296,34 @@ validate_xray_source() {
 }
 
 validate_install_options() {
+  normalize_initial_protocol
   FINGERPRINT="$(printf '%s' "$FINGERPRINT" | tr '[:upper:]' '[:lower:]')"
   REALITY_TRANSPORT="$(printf '%s' "$REALITY_TRANSPORT" | tr '[:upper:]' '[:lower:]')"
   XHTTP_MODE="$(printf '%s' "$XHTTP_MODE" | tr '[:upper:]' '[:lower:]')"
-  validate_port "$PORT" "PORT"
-  validate_host "$REALITY_SNI" "REALITY_SNI"
   validate_fingerprint "$FINGERPRINT"
-  validate_transport "$REALITY_TRANSPORT"
-  if [[ "$REALITY_TRANSPORT" == "grpc" ]]; then
-    validate_grpc_service_name "$GRPC_SERVICE_NAME"
-  elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
-    validate_xhttp_path "$XHTTP_PATH"
-    validate_xhttp_mode "$XHTTP_MODE"
+  if initial_has_vless; then
+    validate_port "$PORT" "PORT"
+    validate_host "$REALITY_SNI" "REALITY_SNI"
+    validate_transport "$REALITY_TRANSPORT"
+    if [[ "$REALITY_TRANSPORT" == "grpc" ]]; then
+      validate_grpc_service_name "$GRPC_SERVICE_NAME"
+    elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
+      validate_xhttp_path "$XHTTP_PATH"
+      validate_xhttp_mode "$XHTTP_MODE"
+    fi
+    REALITY_DEST="${REALITY_SNI}:443"
+  else
+    REALITY_DEST=""
+  fi
+  if initial_has_trojan; then
+    validate_host "$TROJAN_DOMAIN" "TROJAN_DOMAIN"
+    validate_port "$TROJAN_LOCAL_PORT" "TROJAN_LOCAL_PORT"
+    validate_trojan_ws_path "$TROJAN_WS_PATH"
+    validate_trojan_connection_name "$TROJAN_CONNECTION_NAME"
+    if initial_has_vless && [[ "$PORT" == "443" ]]; then
+      echo "PORT must not be 443 when INITIAL_PROTOCOL=both, because Caddy owns public 443 for Trojan." >&2
+      exit 1
+    fi
   fi
   validate_manager_timezone "$MANAGER_TIMEZONE"
 
@@ -273,13 +333,11 @@ validate_install_options() {
   fi
   validate_server_name "$SERVER_NAME"
   validate_xray_source
-
-  REALITY_DEST="${REALITY_SNI}:443"
 }
 
 prompt_fingerprint() {
   while true; do
-    echo "FINGERPRINT: маскировка браузера/uTLS для клиентской VLESS-ссылки."
+    echo "FINGERPRINT: маскировка браузера/uTLS для клиентской ссылки."
     echo "Обычно оставляют chrome. Если клиент поддерживает Reality/uTLS, можно выбрать другой профиль."
     echo "  1) chrome"
     echo "  2) firefox"
@@ -318,6 +376,63 @@ prompt_fingerprint() {
   done
 }
 
+prompt_initial_protocol() {
+  while true; do
+    echo "INITIAL_PROTOCOL: какие initial credentials создать для первого клиента."
+    echo "  1) vless  - VLESS Reality starter, совместимо со старым install flow"
+    echo "  2) trojan - Trojan WebSocket через Caddy/ACME"
+    echo "  3) both   - VLESS Reality + Trojan WebSocket для одного клиента"
+    read -r -p "INITIAL_PROTOCOL [${INITIAL_PROTOCOL}] (номер или значение): " input
+    input="${input:-$INITIAL_PROTOCOL}"
+    input="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+    case "$input" in
+      1) INITIAL_PROTOCOL="vless" ;;
+      2) INITIAL_PROTOCOL="trojan" ;;
+      3) INITIAL_PROTOCOL="both" ;;
+      vless|trojan|both) INITIAL_PROTOCOL="$input" ;;
+      *)
+        echo "Выбери номер 1-3 или значение vless/trojan/both."
+        continue
+        ;;
+    esac
+    if [[ "$INITIAL_PROTOCOL" == "both" && "$PORT" == "443" ]]; then
+      PORT="8443"
+    fi
+    break
+  done
+}
+
+prompt_xhttp_mode() {
+  local default_mode input
+  default_mode="${1:-$XHTTP_MODE}"
+  default_mode="$(printf '%s' "$default_mode" | tr '[:upper:]' '[:lower:]')"
+  validate_xhttp_mode "$default_mode"
+  while true; do
+    echo "XHTTP_MODE: режим XHTTP/XMUX."
+    echo "  1) auto"
+    echo "  2) packet-up"
+    echo "  3) stream-up"
+    echo "  4) stream-one"
+    read -r -p "XHTTP_MODE [${default_mode}] (номер из списка): " input
+    input="${input:-$default_mode}"
+    input="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')"
+    case "$input" in
+      1) XHTTP_MODE="auto" ;;
+      2) XHTTP_MODE="packet-up" ;;
+      3) XHTTP_MODE="stream-up" ;;
+      4) XHTTP_MODE="stream-one" ;;
+      auto|packet-up|stream-up|stream-one)
+        XHTTP_MODE="$input"
+        ;;
+      *)
+        echo "Выбери номер 1-4 или нажми Enter для ${default_mode}."
+        continue
+        ;;
+    esac
+    break
+  done
+}
+
 prompt_transport() {
   while true; do
     echo "REALITY_TRANSPORT: transport для первого VLESS Reality подключения."
@@ -344,8 +459,7 @@ prompt_transport() {
     elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
       read -r -p "XHTTP_PATH [${XHTTP_PATH}]: " xhttp_path_input
       XHTTP_PATH="${xhttp_path_input:-$XHTTP_PATH}"
-      read -r -p "XHTTP_MODE [${XHTTP_MODE}]: " xhttp_mode_input
-      XHTTP_MODE="${xhttp_mode_input:-$XHTTP_MODE}"
+      prompt_xhttp_mode "$XHTTP_MODE"
     fi
     break
   done
@@ -496,20 +610,40 @@ prompt_install_options() {
   echo
   echo "Начальные настройки Xray. Нажми Enter, чтобы оставить значение по умолчанию."
   echo
-  echo "PORT: публичный TCP-порт для подключения клиентов. Рекомендуется оставить 443."
-  read -r -p "PORT [${PORT}]: " input
-  PORT="${input:-$PORT}"
+  prompt_initial_protocol
   echo
-  echo "REALITY_SNI: домен, видимый в TLS handshake. Вводи реальный HTTPS-домен без https:// и без порта."
-  echo "REALITY_DEST будет создан автоматически как REALITY_SNI:443."
-  read -r -p "REALITY_SNI [${REALITY_SNI}]: " input
-  REALITY_SNI="${input:-$REALITY_SNI}"
+  if initial_has_vless; then
+    echo "PORT: публичный TCP-порт для VLESS Reality. Рекомендуется 443, если Trojan/Caddy не используется."
+    echo "Если выбран режим both, Caddy занимает 443 для Trojan, поэтому VLESS должен быть на другом порту."
+    read -r -p "PORT [${PORT}]: " input
+    PORT="${input:-$PORT}"
+    echo
+    echo "REALITY_SNI: домен, видимый в TLS handshake. Вводи реальный HTTPS-домен без https:// и без порта."
+    echo "REALITY_DEST будет создан автоматически как REALITY_SNI:443."
+    read -r -p "REALITY_SNI [${REALITY_SNI}]: " input
+    REALITY_SNI="${input:-$REALITY_SNI}"
+    echo
+  fi
+  if initial_has_trojan; then
+    echo "TROJAN_DOMAIN: реальный домен, который указывает на этот сервер. Caddy выпустит для него TLS-сертификат."
+    read -r -p "TROJAN_DOMAIN [${TROJAN_DOMAIN}]: " input
+    TROJAN_DOMAIN="${input:-$TROJAN_DOMAIN}"
+    echo
+    echo "TROJAN_LOCAL_PORT: локальный порт Xray для Trojan WebSocket inbound."
+    read -r -p "TROJAN_LOCAL_PORT [${TROJAN_LOCAL_PORT}]: " input
+    TROJAN_LOCAL_PORT="${input:-$TROJAN_LOCAL_PORT}"
+    echo
+    echo "TROJAN_WS_PATH: WebSocket path, который будет проксировать Caddy."
+    read -r -p "TROJAN_WS_PATH [${TROJAN_WS_PATH}]: " input
+    TROJAN_WS_PATH="${input:-$TROJAN_WS_PATH}"
+    echo
+  fi
   echo
   echo "CLIENT_NAME: имя первого клиента, для которого будет создана ссылка. Разрешены: A-Z a-z 0-9 _ . @ -"
   read -r -p "CLIENT_NAME [${CLIENT_NAME}]: " input
   CLIENT_NAME="${input:-$CLIENT_NAME}"
   echo
-  echo "SERVER_NAME: отображаемое имя сервера в конце VLESS-ссылки после #."
+  echo "SERVER_NAME: отображаемое имя сервера в конце клиентской ссылки после #."
   echo "Оно видно пользователю в приложении, но не раскрывает внутреннее имя клиента."
   echo "Разрешены: A-Z a-z 0-9 _ . @ -"
   read -r -p "SERVER_NAME [${SERVER_NAME}]: " input
@@ -519,23 +653,37 @@ prompt_install_options() {
   echo
   prompt_fingerprint
   echo
-  prompt_transport
+  if initial_has_vless; then
+    prompt_transport
+  fi
 
   validate_install_options
   echo
   echo "Выбранные настройки:"
-  echo "  PORT=${PORT}"
-  echo "  REALITY_SNI=${REALITY_SNI}"
-  echo "  REALITY_DEST=${REALITY_DEST} (создан автоматически)"
+  echo "  INITIAL_PROTOCOL=${INITIAL_PROTOCOL}"
+  if initial_has_vless; then
+    echo "  PORT=${PORT}"
+    echo "  REALITY_SNI=${REALITY_SNI}"
+    echo "  REALITY_DEST=${REALITY_DEST} (создан автоматически)"
+  fi
+  if initial_has_trojan; then
+    echo "  TROJAN_CONNECTION_NAME=${TROJAN_CONNECTION_NAME}"
+    echo "  TROJAN_DOMAIN=${TROJAN_DOMAIN}"
+    echo "  TROJAN_LOCAL_PORT=${TROJAN_LOCAL_PORT}"
+    echo "  TROJAN_WS_PATH=${TROJAN_WS_PATH}"
+    echo "  TROJAN_TLS=${TROJAN_TLS_MIN_VERSION}..${TROJAN_TLS_MAX_VERSION}"
+  fi
   echo "  CLIENT_NAME=${CLIENT_NAME}"
   echo "  SERVER_NAME=${SERVER_NAME}"
   echo "  FINGERPRINT=${FINGERPRINT}"
-  echo "  REALITY_TRANSPORT=${REALITY_TRANSPORT}"
-  if [[ "$REALITY_TRANSPORT" == "grpc" ]]; then
-    echo "  GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME}"
-  elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
-    echo "  XHTTP_PATH=${XHTTP_PATH}"
-    echo "  XHTTP_MODE=${XHTTP_MODE}"
+  if initial_has_vless; then
+    echo "  REALITY_TRANSPORT=${REALITY_TRANSPORT}"
+    if [[ "$REALITY_TRANSPORT" == "grpc" ]]; then
+      echo "  GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME}"
+    elif [[ "$REALITY_TRANSPORT" == "xhttp" ]]; then
+      echo "  XHTTP_PATH=${XHTTP_PATH}"
+      echo "  XHTTP_MODE=${XHTTP_MODE}"
+    fi
   fi
   echo "  MANAGER_TIMEZONE=${MANAGER_TIMEZONE:-server local time}"
   echo "  XRAY_SOURCE=${XRAY_SOURCE} (альтернативу можно выбрать, если скачивание не удастся)"
@@ -639,7 +787,11 @@ prepare_xray_archive() {
 
 export DEBIAN_FRONTEND=noninteractive
 apt_get_with_lock_retry update
-apt_get_with_lock_retry install -y ca-certificates curl unzip openssl python3 tzdata
+install_packages=(ca-certificates curl unzip openssl python3 tzdata)
+if initial_has_trojan; then
+  install_packages+=(caddy)
+fi
+apt_get_with_lock_retry install -y "${install_packages[@]}"
 
 echo "Xray source: ${XRAY_SOURCE}"
 if [[ "$XRAY_SOURCE" == "local" ]]; then
@@ -700,12 +852,14 @@ backup_and_remove_manager_db /usr/local/etc/xray/manager.db
 server_addr="$(detect_server_addr)"
 created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 uuid="$(/usr/local/bin/xray uuid)"
+trojan_uuid="$(/usr/local/bin/xray uuid)"
 keys="$(/usr/local/bin/xray x25519)"
 private_key="$(printf '%s\n' "$keys" | awk -F': ' '/^PrivateKey:/ || /^Private key:/ {print $2}')"
 public_key="$(printf '%s\n' "$keys" | awk -F': ' '/^Password \(PublicKey\):/ || /^PublicKey:/ || /^Public key:/ {print $2}')"
 short_id="$(openssl rand -hex 8)"
+trojan_password="$(openssl rand -hex 32)"
 
-if [[ -z "$uuid" || -z "$private_key" || -z "$public_key" || -z "$short_id" ]]; then
+if [[ -z "$uuid" || -z "$trojan_uuid" || -z "$private_key" || -z "$public_key" || -z "$short_id" || -z "$trojan_password" ]]; then
   echo "Failed to generate Xray credentials." >&2
   exit 1
 fi
@@ -715,25 +869,26 @@ client_flow_query=""
 starter_flow=""
 transport_settings_json=""
 transport_link_query=""
-case "$REALITY_TRANSPORT" in
-  tcp)
-    client_flow_json='              "flow": "xtls-rprx-vision",'
-    client_flow_query="&flow=xtls-rprx-vision"
-    starter_flow="xtls-rprx-vision"
-    ;;
-  grpc)
-    transport_settings_json=$(cat <<JSON
+if initial_has_vless; then
+  case "$REALITY_TRANSPORT" in
+    tcp)
+      client_flow_json='              "flow": "xtls-rprx-vision",'
+      client_flow_query="&flow=xtls-rprx-vision"
+      starter_flow="xtls-rprx-vision"
+      ;;
+    grpc)
+      transport_settings_json=$(cat <<JSON
 ,
         "grpcSettings": {
           "serviceName": "${GRPC_SERVICE_NAME}"
         }
 JSON
 )
-    transport_link_query="&serviceName=${GRPC_SERVICE_NAME}"
-    ;;
-  xhttp)
-    xhttp_path_query="${XHTTP_PATH//\//%2F}"
-    transport_settings_json=$(cat <<JSON
+      transport_link_query="&serviceName=${GRPC_SERVICE_NAME}"
+      ;;
+    xhttp)
+      xhttp_path_query="${XHTTP_PATH//\//%2F}"
+      transport_settings_json=$(cat <<JSON
 ,
         "xhttpSettings": {
           "path": "${XHTTP_PATH}",
@@ -741,9 +896,90 @@ JSON
         }
 JSON
 )
-    transport_link_query="&path=${xhttp_path_query}&mode=${XHTTP_MODE}"
-    ;;
-esac
+      transport_link_query="&path=${xhttp_path_query}&mode=${XHTTP_MODE}"
+      ;;
+  esac
+fi
+
+vless_inbound_json=""
+trojan_inbound_json=""
+managed_inbounds_json=""
+if initial_has_vless; then
+  vless_inbound_json=$(cat <<EOF
+    {
+      "tag": "vless-reality",
+      "listen": "0.0.0.0",
+      "port": ${PORT},
+      "protocol": "vless",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "${REALITY_TRANSPORT}",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${REALITY_DEST}",
+          "xver": 0,
+          "serverNames": [
+            "${REALITY_SNI}"
+          ],
+          "privateKey": "${private_key}",
+          "shortIds": [
+            "${short_id}"
+          ]
+        }${transport_settings_json}
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+EOF
+)
+fi
+if initial_has_trojan; then
+  trojan_inbound_json=$(cat <<EOF
+    {
+      "tag": "trojan-tls",
+      "listen": "127.0.0.1",
+      "port": ${TROJAN_LOCAL_PORT},
+      "protocol": "trojan",
+      "settings": {
+        "clients": []
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "none",
+        "wsSettings": {
+          "path": "${TROJAN_WS_PATH}"
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+EOF
+)
+fi
+if initial_has_vless && initial_has_trojan; then
+  managed_inbounds_json="${vless_inbound_json},
+${trojan_inbound_json}"
+elif initial_has_vless; then
+  managed_inbounds_json="${vless_inbound_json}"
+else
+  managed_inbounds_json="${trojan_inbound_json}"
+fi
 
 cat >/usr/local/etc/xray/config.json <<EOF
 {
@@ -775,47 +1011,7 @@ cat >/usr/local/etc/xray/config.json <<EOF
   },
   "stats": {},
   "inbounds": [
-    {
-      "tag": "vless-reality",
-      "listen": "0.0.0.0",
-      "port": ${PORT},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-            {
-              "id": "${uuid}",
-${client_flow_json}
-              "level": 0,
-              "email": "${CLIENT_NAME}|created=${created}"
-            }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "${REALITY_TRANSPORT}",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "${REALITY_DEST}",
-          "xver": 0,
-          "serverNames": [
-            "${REALITY_SNI}"
-          ],
-          "privateKey": "${private_key}",
-          "shortIds": [
-            "${short_id}"
-          ]
-        }${transport_settings_json}
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": [
-          "http",
-          "tls",
-          "quic"
-        ]
-      }
-    },
+${managed_inbounds_json},
     {
       "tag": "api",
       "listen": "127.0.0.1",
@@ -868,6 +1064,7 @@ EOF
 cat >/usr/local/etc/xray/server.env <<EOF
 SERVER_ADDR=${server_addr}
 SERVER_NAME=${SERVER_NAME}
+INITIAL_PROTOCOL=${INITIAL_PROTOCOL}
 PORT=${PORT}
 REALITY_SNI=${REALITY_SNI}
 REALITY_DEST=${REALITY_DEST}
@@ -876,6 +1073,13 @@ REALITY_TRANSPORT=${REALITY_TRANSPORT}
 GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME}
 XHTTP_PATH=${XHTTP_PATH}
 XHTTP_MODE=${XHTTP_MODE}
+TROJAN_CONNECTION_NAME=${TROJAN_CONNECTION_NAME}
+TROJAN_DOMAIN=${TROJAN_DOMAIN}
+TROJAN_LOCAL_PORT=${TROJAN_LOCAL_PORT}
+TROJAN_PUBLIC_PORT=443
+TROJAN_WS_PATH=${TROJAN_WS_PATH}
+TROJAN_TLS_MIN_VERSION=${TROJAN_TLS_MIN_VERSION}
+TROJAN_TLS_MAX_VERSION=${TROJAN_TLS_MAX_VERSION}
 MANAGER_TIMEZONE=${MANAGER_TIMEZONE}
 ACTIVITY_LOGGING_ENABLED=false
 ACTIVITY_RETENTION_DAYS=365
@@ -884,6 +1088,12 @@ ACTIVITY_RISK_BURST_WINDOW_MINUTES=15
 ACTIVITY_RISK_UNIQUE_HOSTS=500
 ACTIVITY_RISK_UNIQUE_PORTS=20
 ACTIVITY_XRAY_GEOIP_WARNING_CODE=
+ACTIVITY_ALERTS_ENABLED=true
+ACTIVITY_ALERT_RETENTION_DAYS=90
+XRAY_ERROR_EVENT_RETENTION_DAYS=180
+XRAY_ACCESS_LOG_RETENTION_DAYS=180
+XRAY_ERROR_LOG_RETENTION_DAYS=180
+XRAY_RAW_LOG_ROTATE_TIME=03:00
 EOF
 
 chown root:xray /usr/local/etc/xray/config.json /usr/local/etc/xray/server.env
@@ -891,6 +1101,7 @@ chmod 0640 /usr/local/etc/xray/config.json /usr/local/etc/xray/server.env
 
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-client" /usr/local/sbin/xray-client
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-cascade" /usr/local/sbin/xray-set-cascade
+install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-bypass" /usr/local/sbin/xray-set-bypass
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-menu" /usr/local/sbin/xray-menu
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-activity" /usr/local/sbin/xray-activity
 install -o root -g root -m 0755 "$SCRIPT_DIR/xray-traffic-sync" /usr/local/sbin/xray-traffic-sync
@@ -919,67 +1130,141 @@ INSTALL_REALITY_TRANSPORT="$REALITY_TRANSPORT" \
 INSTALL_GRPC_SERVICE_NAME="$GRPC_SERVICE_NAME" \
 INSTALL_XHTTP_PATH="$XHTTP_PATH" \
 INSTALL_XHTTP_MODE="$XHTTP_MODE" \
+INSTALL_INITIAL_PROTOCOL="$INITIAL_PROTOCOL" \
+INSTALL_TROJAN_CONNECTION_NAME="$TROJAN_CONNECTION_NAME" \
+INSTALL_TROJAN_DOMAIN="$TROJAN_DOMAIN" \
+INSTALL_TROJAN_LOCAL_PORT="$TROJAN_LOCAL_PORT" \
+INSTALL_TROJAN_WS_PATH="$TROJAN_WS_PATH" \
+INSTALL_TROJAN_TLS_MIN_VERSION="$TROJAN_TLS_MIN_VERSION" \
+INSTALL_TROJAN_TLS_MAX_VERSION="$TROJAN_TLS_MAX_VERSION" \
+INSTALL_TROJAN_PASSWORD="$trojan_password" \
 INSTALL_PUBLIC_KEY="$public_key" \
 INSTALL_SHORT_ID="$short_id" \
 INSTALL_UUID="$uuid" \
+INSTALL_TROJAN_UUID="$trojan_uuid" \
 PYTHONPATH=/usr/local/lib/xray-vps-manager \
 python3 <<'PY'
+import json
 import os
+import shutil
 
+from pathlib import Path
+
+from xray_vps_manager.clients import crud as client_crud
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients, connections, settings
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
+from xray_vps_manager.xray.config import CONFIG_PATH
 
 client_name = os.environ["INSTALL_CLIENT_NAME"]
 created = os.environ["INSTALL_CREATED"]
-connection_tag = "vless-reality"
-client_uuid = os.environ["INSTALL_UUID"]
+initial_protocol = os.environ["INSTALL_INITIAL_PROTOCOL"]
 transport = os.environ["INSTALL_REALITY_TRANSPORT"]
-connection_record = {
-    "tag": connection_tag,
-    "name": "default",
-    "created": created,
-    "port": int(os.environ["INSTALL_PORT"]),
-    "sni": os.environ["INSTALL_REALITY_SNI"],
-    "dest": os.environ["INSTALL_REALITY_DEST"],
-    "fingerprint": os.environ["INSTALL_FINGERPRINT"],
-    "publicKey": os.environ["INSTALL_PUBLIC_KEY"],
-    "shortId": os.environ["INSTALL_SHORT_ID"],
-    "transport": transport,
-}
-if transport == "grpc":
-    connection_record["grpcServiceName"] = os.environ["INSTALL_GRPC_SERVICE_NAME"]
-elif transport == "xhttp":
-    connection_record["xhttpPath"] = os.environ["INSTALL_XHTTP_PATH"]
-    connection_record["xhttpMode"] = os.environ["INSTALL_XHTTP_MODE"]
+config_path = Path(CONFIG_PATH)
+config = json.loads(config_path.read_text())
+db = {"connections": {}, "clients": {}}
 
-client = {
-    "id": client_uuid,
-    "level": 0,
-    "email": f"{client_name}|created={created}",
-}
-if transport == "tcp":
-    client["flow"] = "xtls-rprx-vision"
+
+def has_vless() -> bool:
+    return initial_protocol in {"vless", "both"}
+
+
+def has_trojan() -> bool:
+    return initial_protocol in {"trojan", "both"}
+
+
+if has_vless():
+    connection_record = {
+        "tag": "vless-reality",
+        "name": "default",
+        "created": created,
+        "port": int(os.environ["INSTALL_PORT"]),
+        "sni": os.environ["INSTALL_REALITY_SNI"],
+        "dest": os.environ["INSTALL_REALITY_DEST"],
+        "fingerprint": os.environ["INSTALL_FINGERPRINT"],
+        "publicKey": os.environ["INSTALL_PUBLIC_KEY"],
+        "shortId": os.environ["INSTALL_SHORT_ID"],
+        "transport": transport,
+    }
+    if transport == "grpc":
+        connection_record["grpcServiceName"] = os.environ["INSTALL_GRPC_SERVICE_NAME"]
+    elif transport == "xhttp":
+        connection_record["xhttpPath"] = os.environ["INSTALL_XHTTP_PATH"]
+        connection_record["xhttpMode"] = os.environ["INSTALL_XHTTP_MODE"]
+    db["connections"]["vless-reality"] = connection_record
+
+if has_trojan():
+    db["connections"]["trojan-tls"] = {
+        "tag": "trojan-tls",
+        "name": os.environ["INSTALL_TROJAN_CONNECTION_NAME"],
+        "created": created,
+        "protocol": "trojan",
+        "security": "tls",
+        "transport": "ws",
+        "port": 443,
+        "publicPort": 443,
+        "localPort": int(os.environ["INSTALL_TROJAN_LOCAL_PORT"]),
+        "publicHost": os.environ["INSTALL_TROJAN_DOMAIN"],
+        "sni": os.environ["INSTALL_TROJAN_DOMAIN"],
+        "dest": "",
+        "fingerprint": os.environ["INSTALL_FINGERPRINT"],
+        "publicKey": "",
+        "shortId": "",
+        "caddy": True,
+        "wsPath": os.environ["INSTALL_TROJAN_WS_PATH"],
+        "tlsMinVersion": os.environ["INSTALL_TROJAN_TLS_MIN_VERSION"],
+        "tlsMaxVersion": os.environ["INSTALL_TROJAN_TLS_MAX_VERSION"],
+    }
+
+uuid_values = [os.environ["INSTALL_UUID"]]
+if initial_protocol == "both":
+    uuid_values.append(os.environ["INSTALL_TROJAN_UUID"])
+
+
+def uuid_factory() -> str:
+    if uuid_values:
+        return uuid_values.pop(0)
+    return os.environ["INSTALL_TROJAN_UUID"]
+
+
+def password_factory() -> str:
+    return os.environ["INSTALL_TROJAN_PASSWORD"]
+
+
+if has_vless():
+    client_crud.add_client(
+        config,
+        db,
+        client_name,
+        access_days=None,
+        connection_tag="vless-reality",
+        uuid_factory=uuid_factory,
+        password_factory=password_factory,
+    )
+if has_trojan():
+    client_crud.add_client(
+        config,
+        db,
+        client_name,
+        access_days=None,
+        connection_tag="trojan-tls",
+        uuid_factory=uuid_factory,
+        password_factory=password_factory,
+    )
+
+tmp_path = config_path.with_suffix(".json.tmp")
+tmp_path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+shutil.chown(tmp_path, user="root", group="xray")
+os.chmod(tmp_path, 0o640)
+tmp_path.replace(config_path)
 
 connection = database.open_database(MANAGER_DB_PATH)
 try:
     with database.transaction(connection):
-        connections.upsert_connection(
-            connection,
-            connection_tag,
-            connection_record,
-        )
-        clients.upsert_client(
-            connection,
-            client_name,
-            {
-                "id": client_uuid,
-                "created": created,
-                "enabled": True,
-                "connection": connection_tag,
-                "client": client,
-            },
-        )
+        for tag, record in db["connections"].items():
+            connections.upsert_connection(connection, tag, record)
+        for name, entry in db["clients"].items():
+            clients.upsert_client(connection, name, entry)
         settings.set_metadata(connection, "jsonImport.completed", "true")
 finally:
     connection.close()
@@ -987,15 +1272,65 @@ PY
 chown root:xray /usr/local/etc/xray/manager.db
 chmod 0640 /usr/local/etc/xray/manager.db
 
-client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=${REALITY_TRANSPORT}${client_flow_query}&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F${transport_link_query}#${SERVER_NAME}"
+if initial_has_trojan; then
+  INSTALL_TROJAN_DOMAIN="$TROJAN_DOMAIN" \
+  INSTALL_TROJAN_LOCAL_PORT="$TROJAN_LOCAL_PORT" \
+  INSTALL_TROJAN_WS_PATH="$TROJAN_WS_PATH" \
+  INSTALL_TROJAN_TLS_MIN_VERSION="$TROJAN_TLS_MIN_VERSION" \
+  INSTALL_TROJAN_TLS_MAX_VERSION="$TROJAN_TLS_MAX_VERSION" \
+  PYTHONPATH=/usr/local/lib/xray-vps-manager \
+  python3 <<'PY'
+import os
+
+from xray_vps_manager.xray import caddy
+
+site_path = caddy.setup_caddy_for_trojan_ws(
+    os.environ["INSTALL_TROJAN_DOMAIN"],
+    int(os.environ["INSTALL_TROJAN_LOCAL_PORT"]),
+    os.environ["INSTALL_TROJAN_WS_PATH"],
+    tls_min_version=os.environ["INSTALL_TROJAN_TLS_MIN_VERSION"],
+    tls_max_version=os.environ["INSTALL_TROJAN_TLS_MAX_VERSION"],
+    install=False,
+)
+print(f"Caddy Trojan site config: {site_path}")
+PY
+fi
+
+vless_client_uri=""
+trojan_client_uri=""
+client_uri=""
+if initial_has_vless; then
+  vless_client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=${REALITY_TRANSPORT}${client_flow_query}&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F${transport_link_query}#${SERVER_NAME}"
+  client_uri="$vless_client_uri"
+fi
+if initial_has_trojan; then
+  trojan_path_query="${TROJAN_WS_PATH//\//%2F}"
+  trojan_client_uri="trojan://${trojan_password}@${TROJAN_DOMAIN}:443?security=tls&type=ws&path=${trojan_path_query}&host=${TROJAN_DOMAIN}&sni=${TROJAN_DOMAIN}&fp=${FINGERPRINT}#${SERVER_NAME}"
+  if [[ -z "$client_uri" ]]; then
+    client_uri="$trojan_client_uri"
+  fi
+fi
+client_uri_protocol="$INITIAL_PROTOCOL"
+client_uri_security="REALITY"
+client_uri_transport="$REALITY_TRANSPORT"
+if ! initial_has_vless; then
+  client_uri_protocol="trojan"
+  client_uri_security="TLS"
+  client_uri_transport="ws"
+elif initial_has_trojan; then
+  client_uri_protocol="vless+trojan"
+fi
 
 cat >/root/xray-reality-client.txt <<EOF
+INITIAL_PROTOCOL=${INITIAL_PROTOCOL}
 CLIENT_URI=${client_uri}
+VLESS_CLIENT_URI=${vless_client_uri}
+TROJAN_CLIENT_URI=${trojan_client_uri}
 SERVER=${server_addr}
 PORT=${PORT}
-PROTOCOL=VLESS
-SECURITY=REALITY
-TRANSPORT=${REALITY_TRANSPORT}
+PROTOCOL=${client_uri_protocol}
+SECURITY=${client_uri_security}
+TRANSPORT=${client_uri_transport}
 FLOW=${starter_flow}
 UUID=${uuid}
 PUBLIC_KEY=${public_key}
@@ -1006,6 +1341,11 @@ FINGERPRINT=${FINGERPRINT}
 GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME}
 XHTTP_PATH=${XHTTP_PATH}
 XHTTP_MODE=${XHTTP_MODE}
+TROJAN_DOMAIN=${TROJAN_DOMAIN}
+TROJAN_LOCAL_PORT=${TROJAN_LOCAL_PORT}
+TROJAN_PUBLIC_PORT=443
+TROJAN_WS_PATH=${TROJAN_WS_PATH}
+TROJAN_TLS=${TROJAN_TLS_MIN_VERSION}..${TROJAN_TLS_MAX_VERSION}
 CREATED=${created}
 EOF
 chmod 0600 /root/xray-reality-client.txt
@@ -1067,6 +1407,34 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
+cat >/etc/systemd/system/xray-caddy-random-tls@.service <<'EOF'
+[Unit]
+Description=Randomize Caddy TLS protocol profile for %i
+After=network-online.target caddy.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/etc/xray/caddy-random-tls.d/%i.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/usr/local/etc/xray/caddy-random-tls.d/%i.env
+ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --domain %i --quiet
+EOF
+
+cat >/etc/systemd/system/xray-caddy-random-tls@.timer <<'EOF'
+[Unit]
+Description=Randomize Caddy TLS protocol profile for %i every 15-60 minutes
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=15min
+RandomizedDelaySec=45min
+AccuracySec=1min
+Unit=xray-caddy-random-tls@%i.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat >/etc/systemd/system/xray-traffic-sync.timer <<'EOF'
 [Unit]
 Description=Persist Xray user traffic counters every minute
@@ -1080,6 +1448,8 @@ Unit=xray-traffic-sync.service
 [Install]
 WantedBy=timers.target
 EOF
+
+xray-activity raw-log-timer-sync --no-systemctl
 
 cat >/etc/systemd/system/xray-client-expire.service <<'EOF'
 [Unit]
@@ -1111,6 +1481,7 @@ systemctl daemon-reload
 systemctl enable --now xray
 systemctl restart xray
 systemctl enable --now xray-traffic-sync.timer
+systemctl enable --now xray-raw-log-rotate.timer
 systemctl enable --now xray-client-expire.timer
 systemctl enable --now xray-telegram-poller.service
 xray-traffic-sync --quiet || true

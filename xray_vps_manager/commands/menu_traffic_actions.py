@@ -10,8 +10,11 @@ from pathlib import Path
 
 from xray_vps_manager.commands import menu_client_actions
 from xray_vps_manager.core.paths import XRAY_TRAFFIC_SYNC
-from xray_vps_manager.core.terminal import table_border, table_row, visible_len
+from xray_vps_manager.core.terminal import print_table, table_border, table_row, visible_len
 from xray_vps_manager.core.time import manager_timezone
+from xray_vps_manager.traffic import controls as traffic_controls
+from xray_vps_manager.traffic import reports as traffic_reports
+from xray_vps_manager.traffic import settings as traffic_settings
 from xray_vps_manager.traffic.formatting import format_traffic
 from xray_vps_manager.traffic.history import all_time_total, month_total
 from xray_vps_manager.traffic.repository import load_traffic_db_for_read, traffic_entry
@@ -94,6 +97,7 @@ def print_traffic_selection_table(rows: list[dict]) -> None:
         for index, row in enumerate(rows, start=1)
     ]
     values.append(["0", "Назад", "", "", "", "", "", ""])
+    values.append(["S", "Настройки TOTAL", "", "", "", "", "", ""])
     widths = [
         max(visible_len(headers[column]), *(visible_len(row[column]) for row in values))
         for column in range(len(headers))
@@ -107,6 +111,17 @@ def print_traffic_selection_table(rows: list[dict]) -> None:
     print(border)
 
 
+def print_total_traffic_summary(rows: list[dict]) -> None:
+    env = traffic_settings.with_total_multiplier_defaults(traffic_settings.server_env_values())
+    month_total_bytes = sum(int(row.get("monthTotal", 0) or 0) for row in rows)
+    summary_rows = traffic_reports.total_summary_rows(
+        month_total_bytes,
+        multiplier_enabled=traffic_settings.total_multiplier_enabled(env),
+        multiplier=traffic_settings.total_multiplier(env),
+    )
+    print_table(["METRIC", "VALUE"], summary_rows, empty_message=None)
+
+
 def choose_traffic_client() -> str:
     month_key = current_month_key()
     rows = traffic_rows_for_selection(month_key)
@@ -115,11 +130,15 @@ def choose_traffic_client() -> str:
         return ""
 
     print(f"Трафик за текущий месяц: {month_key}")
+    print_total_traffic_summary(rows)
+    print()
     print_traffic_selection_table(rows)
     while True:
         choice = input("Клиент: ").strip()
         if choice == "0":
             return ""
+        if choice.lower() == "s":
+            return "__total_traffic_settings__"
         if re.fullmatch(r"[0-9]+", choice):
             index = int(choice, 10)
             if 1 <= index <= len(rows):
@@ -161,3 +180,30 @@ def show_traffic_period(call: CommandRunner, name: str) -> None:
     start = prompt_date(today, "START_DATE", "START_DATE: первый день периода в формате YYYY-MM-DD.")
     end = prompt_date(today, "END_DATE", "END_DATE: последний день периода в формате YYYY-MM-DD.")
     call(["xray-client", "traffic-period", name, start, end])
+
+
+def show_total_traffic_settings() -> None:
+    print_table(["SETTING", "VALUE"], traffic_controls.total_multiplier_rows(), empty_message=None)
+
+
+def enable_total_traffic_multiplier() -> None:
+    traffic_controls.set_total_multiplier_enabled(True)
+    print(f"Строка TOTAL {traffic_settings.total_multiplier_label()} включена.")
+
+
+def disable_total_traffic_multiplier() -> None:
+    traffic_controls.set_total_multiplier_enabled(False)
+    print(f"Строка TOTAL {traffic_settings.total_multiplier_label()} выключена.")
+
+
+def update_total_traffic_multiplier() -> None:
+    current = traffic_settings.total_multiplier()
+    current_label = traffic_settings.format_total_multiplier(current)
+    print("MULTIPLIER: множитель для строки суммарного трафика, например 2 или 1.5.")
+    print("Он применяется только к строке TOTAL xN и не меняет реальные счётчики клиентов.")
+    value = input(f"MULTIPLIER [{current_label}]: ").strip() or current_label
+    try:
+        multiplier = traffic_controls.set_total_multiplier(value)
+    except ValueError as exc:
+        die(str(exc))
+    print(f"Множитель суммарного трафика: {traffic_settings.total_multiplier_label(multiplier)}")

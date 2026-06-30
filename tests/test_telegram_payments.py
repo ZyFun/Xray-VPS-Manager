@@ -4,6 +4,41 @@ from xray_vps_manager.telegram import payments
 
 
 class TelegramPaymentDetailsTests(unittest.TestCase):
+    def test_domain_annual_rent_is_added_to_monthly_payment_share(self) -> None:
+        db = {
+            "paymentTotalAmount": "1000",
+            "paymentDomainAnnualAmount": "1200",
+            "paymentCurrency": "₽",
+            "paymentRoundingMode": "none",
+            "paymentRoundingStep": "10",
+        }
+        client_db = {
+            "clients": {
+                "alice": {"paymentType": "paid"},
+                "bob": {"paymentType": "paid"},
+                "carol": {"paymentType": "free"},
+            }
+        }
+
+        summary = payments.payment_summary(db, client_db)
+
+        self.assertEqual(summary["serverMonthly"], "1000 ₽")
+        self.assertEqual(summary["domainAnnual"], "1200 ₽")
+        self.assertEqual(summary["domainMonthly"], "100 ₽")
+        self.assertEqual(summary["total"], "1100 ₽")
+        self.assertEqual(summary["share"], "550 ₽")
+        self.assertEqual(payments.payment_amount_label(db, client_db), "550 ₽")
+
+    def test_domain_annual_rent_monthly_part_rounds_up_to_cents(self) -> None:
+        db = {
+            "paymentTotalAmount": "1000",
+            "paymentDomainAnnualAmount": "1000",
+            "paymentCurrency": "$",
+        }
+
+        self.assertEqual(payments.domain_monthly_amount(db), "83.34")
+        self.assertEqual(payments.effective_total_amount(db), "1083.34")
+
     def test_apply_phone_payment_details_normalizes_number(self) -> None:
         db = {}
 

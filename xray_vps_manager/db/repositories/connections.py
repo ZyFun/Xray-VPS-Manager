@@ -1,4 +1,7 @@
-"""SQLite repository for Reality connection records."""
+"""SQLite repository for managed connection records.
+
+The table name remains ``reality_connections`` for schema compatibility.
+"""
 
 from __future__ import annotations
 

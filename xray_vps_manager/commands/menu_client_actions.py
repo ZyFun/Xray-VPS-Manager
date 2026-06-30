@@ -6,11 +6,14 @@ import os
 import re
 from collections.abc import Callable
 
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.listing import client_rows as build_client_rows
-from xray_vps_manager.clients.repository import load_db_sql
+from xray_vps_manager.clients.repository import db_clients, load_db_sql
 from xray_vps_manager.commands import menu_reality_actions
-from xray_vps_manager.core.terminal import green, table_border, table_row, visible_len, yellow
+from xray_vps_manager.core.terminal import green, print_table, table_border, table_row, visible_len, yellow
 from xray_vps_manager.core.time import manager_timezone, parse_time
+from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import connection_name_from_tag, load_config as load_xray_config
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
@@ -116,23 +119,72 @@ def print_client_selection_table(rows: list[dict]) -> None:
     print(border)
 
 
-def choose_client(action: str, mode: str = "all") -> str:
+def choose_client_row(action: str, mode: str = "all") -> dict | None:
     rows = client_rows_for_selection(mode)
     if not rows:
         print(f"Нет клиентов для действия: {action}.")
-        return ""
+        return None
 
     print(f"Выбери клиента для действия: {action}.")
     print_client_selection_table(rows)
     while True:
         choice = input("Клиент: ").strip()
         if choice == "0":
+            return None
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return rows[index - 1]
+        print("Неизвестный клиент. Выбери номер из списка или 0 для возврата.")
+
+
+def choose_client(action: str, mode: str = "all") -> str:
+    row = choose_client_row(action, mode)
+    return str(row["name"]) if row else ""
+
+
+def client_exists_for_menu(name: str) -> bool:
+    return any(row["name"] == name for row in client_rows_for_selection("all"))
+
+
+def client_credential_connection_tags(name: str, selected_row: dict | None = None) -> set[str]:
+    tags: set[str] = set()
+    try:
+        entry = db_clients(load_db_sql()).get(name)
+    except Exception:
+        entry = None
+    if isinstance(entry, dict):
+        tags.update(client_credentials.normalize_entry_credentials(entry))
+    if selected_row and selected_row.get("connection"):
+        tags.add(str(selected_row["connection"]))
+    return tags
+
+
+def choose_available_connection_for_client(name: str, selected_row: dict | None = None) -> str:
+    used_connections = client_credential_connection_tags(name, selected_row)
+    rows = [
+        row
+        for row in menu_reality_actions.connection_rows()
+        if str(row["tag"]) not in used_connections
+    ]
+    if not rows:
+        print("У клиента уже есть credentials во всех доступных подключениях.")
+        return ""
+    if len(rows) == 1:
+        row = rows[0]
+        print(f"Будет добавлено подключение: {row['name']} ({row['tag']}).")
+        return str(row["tag"])
+    print(f"Выбери новое подключение для клиента: {name}.")
+    menu_reality_actions.print_connection_selection_table(rows)
+    while True:
+        choice = input("Подключение: ").strip()
+        if choice == "0":
             return ""
         if re.fullmatch(r"[0-9]+", choice):
             index = int(choice, 10)
             if 1 <= index <= len(rows):
-                return rows[index - 1]["name"]
-        print("Неизвестный клиент. Выбери номер из списка или 0 для возврата.")
+                return str(rows[index - 1]["tag"])
+        print("Неизвестное подключение. Выбери номер из списка или 0 для возврата.")
 
 
 def ask_payment_type() -> str:
@@ -156,6 +208,10 @@ def ask_new_client_command() -> list[str]:
         die("Client name is required.")
     parts = raw.split(maxsplit=1)
     name = validate_client_name(parts[0])
+    if client_exists_for_menu(name):
+        print("Такой клиент уже существует.")
+        print("Для добавления VLESS/Trojan credential используй пункт: Добавить подключение к клиенту.")
+        return []
     tag = menu_reality_actions.choose_connection("добавления клиента")
     if not tag:
         return []
@@ -170,6 +226,25 @@ def ask_new_client_command() -> list[str]:
 
 def add_client_from_menu(call: CommandRunner) -> None:
     command = ask_new_client_command()
+    if not command:
+        print("Действие отменено.")
+        return
+    call(command)
+
+
+def ask_existing_client_connection_command() -> list[str]:
+    row = choose_client_row("добавления подключения к клиенту", "all")
+    if not row:
+        return []
+    name = str(row["name"])
+    tag = choose_available_connection_for_client(name, row)
+    if not tag:
+        return []
+    return ["xray-client", "add", name, "--connection", tag]
+
+
+def add_connection_to_client_from_menu(call: CommandRunner) -> None:
+    command = ask_existing_client_connection_command()
     if not command:
         print("Действие отменено.")
         return
@@ -236,6 +311,69 @@ def call_client_command(call: CommandRunner, command: str, action: str, mode: st
     call(["xray-client", command, name])
 
 
+def client_route_rows_for_selection(name: str) -> list[dict]:
+    config = load_config()
+    db = load_db_sql()
+    client_routes.sync_routes_from_config(config, db)
+    entry = db_clients(db).get(name, {})
+    current_tag = client_routes.selected_route_tag(entry)
+    active_tag = cascade_config.active_cascade_tag(config)
+    rows = []
+    for index, item in enumerate(client_routes.route_options(db, config), start=1):
+        tag = str(item["tag"])
+        rows.append(
+            {
+                "index": index,
+                "display": item.get("display") or "-",
+                "tag": tag,
+                "current": "yes" if tag == current_tag else "-",
+                "active": "yes" if tag == active_tag else "-",
+            }
+        )
+    return rows
+
+
+def print_client_route_selection_table(rows: list[dict]) -> None:
+    values = [
+        [str(row["index"]), row["display"], row["tag"], row["current"], row["active"]]
+        for row in rows
+    ]
+    values.append(["0", "Назад", "", "", ""])
+    print_table(["№", "COUNTRY", "TAG", "CURRENT", "GLOBAL ACTIVE"], values, empty_message=None)
+
+
+def choose_client_route(name: str) -> str:
+    rows = client_route_rows_for_selection(name)
+    if not rows:
+        print("Страны подключения не настроены. Добавь cascade через меню Маршрутизация -> Каскад.")
+        return ""
+
+    print(f"Выбери страну подключения для клиента: {name}.")
+    print_client_route_selection_table(rows)
+    while True:
+        choice = input("Страна: ").strip()
+        if choice == "0":
+            return ""
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return str(rows[index - 1]["tag"])
+        print("Неизвестная страна. Выбери номер из списка или 0 для возврата.")
+
+
+def update_selected_client_route(call: CommandRunner) -> None:
+    name = choose_client("изменения страны подключения", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    tag = choose_client_route(name)
+    if not tag:
+        print("Действие отменено.")
+        return
+    call(["xray-client", "route", name, tag])
+    print("После смены страны переподключи VPN, чтобы новые соединения пошли через выбранный маршрут.")
+
+
 def update_selected_client_days(call: CommandRunner) -> None:
     name = choose_client("изменения срока", "all")
     if not name:
@@ -265,3 +403,15 @@ def update_selected_client_payment(call: CommandRunner) -> None:
     if not payment_type:
         return
     call(["xray-client", "set-payment", name, payment_type])
+
+
+def move_selected_client(call: CommandRunner) -> None:
+    name = choose_client("переноса в другое подключение", "all")
+    if not name:
+        print("Действие отменено.")
+        return
+    tag = menu_reality_actions.choose_connection("переноса клиента", auto_single=False)
+    if not tag:
+        print("Действие отменено.")
+        return
+    call(["xray-client", "move-connection", name, tag])

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import copy
 import os
 import re
 import shutil
@@ -25,6 +26,7 @@ from xray_vps_manager.traffic import formatting as traffic_formatting
 from xray_vps_manager.traffic import reports as traffic_reports
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
 
@@ -271,6 +273,13 @@ def validate_host(value, label="SNI"):
     return value
 
 
+def validate_absolute_path(value, label="PATH"):
+    path = (value or "").strip()
+    if not path.startswith("/") or "\n" in path or "\r" in path:
+        die(f"{label} must be an absolute one-line path.")
+    return path
+
+
 def validate_fingerprint(value):
     value = (value or "").strip().lower()
     if value not in FINGERPRINTS:
@@ -281,6 +290,20 @@ def validate_fingerprint(value):
 def validate_reality_transport(value):
     try:
         return xray_config.normalize_reality_transport(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_connection_security(value):
+    security = (value or "reality").strip().lower()
+    if security not in ("reality", "tls"):
+        die("SECURITY must be reality or tls.")
+    return security
+
+
+def validate_tls_version(value, default="tls1.2"):
+    try:
+        return xray_caddy.normalize_tls_version(value, default)
     except ValueError as exc:
         die(str(exc))
 
@@ -299,9 +322,23 @@ def validate_xhttp_path(value):
         die(str(exc))
 
 
+def validate_trojan_ws_path(value):
+    try:
+        return xray_config.normalize_trojan_ws_path(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def validate_xhttp_mode(value):
     try:
         return xray_config.normalize_xhttp_mode(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def validate_xhttp_extra_json(value):
+    try:
+        return xray_config.normalize_xhttp_extra_json(value)
     except ValueError as exc:
         die(str(exc))
 
@@ -317,6 +354,8 @@ def color_label(value, text):
         return f"{GREEN}{text}{RESET}"
     if value in ("disabled", "offline"):
         return f"{RED}{text}{RESET}"
+    if value == "missing":
+        return f"{YELLOW}{text}{RESET}"
     return text
 
 
@@ -332,6 +371,10 @@ def link_for(config, client_id, name, connection_tag=None, db=None):
         return client_links.link_for(config, client_id, name, connection_tag=connection_tag, db=db, db_loader=load_db)
     except (RuntimeError, ValueError) as exc:
         die(str(exc))
+
+
+def access_key_for_client_id(client_id):
+    return f"vpn-key:{client_id}"
 
 
 def query_user_stats():
@@ -467,8 +510,14 @@ def traffic_limit_status(db_entry, traffic_db_entry, now=None):
 
 
 def print_client_table(rows):
-    headers = ["NAME", "STATUS", "PAYMENT", "COUNTRY", "ONLINE", "IN", "OUT", "TOTAL", "TRAFFIC UPDATED", "LIMIT", "LAST ONLINE", "ACCESS UNTIL", "CREATED"]
+    headers = ["NAME", "STATUS", "PAYMENT", "COUNTRY", "ONLINE", "LAST ONLINE", "TOTAL", "LIMIT", "TRAFFIC UPDATED", "ACCESS UNTIL", "CREDS"]
     color_columns = {headers.index("STATUS"), headers.index("PAYMENT"), headers.index("ONLINE"), headers.index("ACCESS UNTIL")}
+    print_table(headers, rows, empty_message=None, color_columns=color_columns, colorizer=color_label)
+
+
+def print_credential_table(rows):
+    headers = ["CLIENT", "PROTOCOL", "SECURITY", "TRANSPORT", "CONNECTION", "STATUS", "ONLINE", "TRAFFIC", "TRAFFIC UPDATED", "LAST ONLINE"]
+    color_columns = {headers.index("STATUS"), headers.index("ONLINE")}
     print_table(headers, rows, empty_message=None, color_columns=color_columns, colorizer=color_label)
 
 
@@ -477,8 +526,10 @@ def print_connection_title(config, db, tag):
     name = entry.get("name") or xray_config.connection_name_from_tag(tag)
     port = entry.get("port", "")
     sni = entry.get("sni", "")
+    security = entry.get("security") or "reality"
+    protocol = entry.get("protocol") or "vless"
     print()
-    print(f"Connection: {name}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
+    print(f"Connection: {name}  |  PROTOCOL={protocol}  |  SECURITY={security}  |  PORT={port}  |  SNI={sni}  |  TAG={tag}")
 
 
 def cmd_connection_list():
@@ -488,7 +539,7 @@ def cmd_connection_list():
     ensure_connections(config, db)
     if read_result.source == "json":
         save_db(db)
-    headers = ["NAME", "TAG", "PORT", "SNI", "TRANSPORT", "FINGERPRINT", "CREATED"]
+    headers = ["NAME", "TAG", "PROTOCOL", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT", "CREATED"]
     print_table(headers, connection_rows(config, db), empty_message=None)
 
 
@@ -501,55 +552,232 @@ def cmd_connection_add(
     grpc_service_name="",
     xhttp_path="",
     xhttp_mode="",
+    xhttp_extra_json="",
+    security_value="reality",
+    public_port_value="",
+    install_caddy=False,
+    tls_min_version="tls1.2",
+    tls_max_version="tls1.2",
 ):
     name = validate_connection_name(name)
+    security = validate_connection_security(security_value)
     port = validate_port(port_value)
-    sni = validate_host(sni_value, "REALITY_SNI")
+    sni = validate_host(sni_value, "REALITY_SNI" if security == "reality" else "TLS_DOMAIN")
     fp = validate_fingerprint(fingerprint_value or "chrome")
-    transport = validate_reality_transport(transport_value)
+    transport = validate_reality_transport(transport_value or ("xhttp" if security == "tls" else "tcp"))
+    if security == "tls" and transport != "xhttp":
+        die("TLS connections support only xhttp transport.")
     grpc_service_name = validate_grpc_service_name(grpc_service_name) if transport == "grpc" else ""
     xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
     xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
+    xhttp_extra = validate_xhttp_extra_json(xhttp_extra_json) if transport == "xhttp" else {}
+    public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_XHTTP_TLS_PUBLIC_PORT
+    tls_min_version = validate_tls_version(tls_min_version, "tls1.2")
+    tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
     config = load_config()
     db = load_db()
     try:
-        result = client_connections.add_connection(
-            config,
-            db,
-            name,
-            port,
-            sni,
-            fp,
-            transport=transport,
-            grpc_service_name=grpc_service_name,
-            xhttp_path=xhttp_path,
-            xhttp_mode=xhttp_mode,
-        )
-    except (ValueError, RuntimeError) as exc:
+        if security == "tls":
+            tls_domain = xray_caddy.validate_domain(sni)
+            if install_caddy:
+                conflicts = client_connections.public_port_conflicts(config, public_port)
+                if conflicts:
+                    tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+                    die(
+                        f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
+                        "Move those connections to another port before installing Caddy."
+                    )
+                xray_caddy.require_site_config_absent(tls_domain)
+            result = client_connections.add_tls_xhttp_connection(
+                config,
+                db,
+                name,
+                tls_domain,
+                local_port=port,
+                public_port=public_port,
+                fingerprint_value=fp,
+                xhttp_path=xhttp_path,
+                xhttp_mode=xhttp_mode,
+                xhttp_extra=xhttp_extra,
+                tls_min_version=tls_min_version,
+                tls_max_version=tls_max_version,
+                caddy_enabled=install_caddy,
+            )
+        else:
+            result = client_connections.add_connection(
+                config,
+                db,
+                name,
+                port,
+                sni,
+                fp,
+                transport=transport,
+                grpc_service_name=grpc_service_name,
+                xhttp_path=xhttp_path,
+                xhttp_mode=xhttp_mode,
+                xhttp_extra=xhttp_extra,
+            )
+    except (OSError, ValueError, RuntimeError) as exc:
         die(str(exc))
 
     backup = save_config_restart_xray_and_db(config, db)
+    caddy_site = None
+    if result.security == "tls" and install_caddy:
+        try:
+            caddy_site = xray_caddy.setup_caddy_for_xhttp(
+                result.public_host,
+                result.local_port,
+                tls_min_version=result.tls_min_version,
+                tls_max_version=result.tls_max_version,
+            )
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            die(
+                "TLS-XHTTP connection was added, but Caddy setup failed. "
+                f"Config backup: {backup}. Detail: {exc}"
+            )
 
     print(f"Added connection: {result.name}")
     print(f"Tag: {result.tag}")
-    print(f"PORT: {result.port}")
-    print(f"REALITY_SNI: {result.sni}")
-    print(f"REALITY_DEST: {result.dest}")
-    print(f"FINGERPRINT: {result.fingerprint}")
+    print(f"SECURITY: {result.security}")
+    if result.security == "tls":
+        print(f"PUBLIC_HOST: {result.public_host}")
+        print(f"PUBLIC_PORT: {result.public_port}")
+        print(f"LOCAL_PORT: {result.local_port}")
+        print(f"FINGERPRINT: {result.fingerprint or '-'}")
+        print(f"TLS_MIN_VERSION: {result.tls_min_version}")
+        print(f"TLS_MAX_VERSION: {result.tls_max_version}")
+        if caddy_site:
+            print(f"CADDY_SITE: {caddy_site}")
+    else:
+        print(f"PORT: {result.port}")
+        print(f"REALITY_SNI: {result.sni}")
+        print(f"REALITY_DEST: {result.dest}")
+        print(f"FINGERPRINT: {result.fingerprint}")
     print(f"TRANSPORT: {result.transport}")
     if result.transport == "grpc":
         print(f"GRPC_SERVICE_NAME: {result.grpc_service_name}")
     elif result.transport == "xhttp":
         print(f"XHTTP_PATH: {result.xhttp_path}")
         print(f"XHTTP_MODE: {result.xhttp_mode}")
+        extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
+        print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
     print(f"Backup: {backup}")
 
 
-def cmd_connection_transport(identifier, transport_value, grpc_service_name="", xhttp_path="", xhttp_mode=""):
+def cmd_trojan_connection_add(
+    name,
+    port_value,
+    domain_value,
+    cert_file_value="",
+    key_file_value="",
+    fingerprint_value="chrome",
+    transport_value="ws",
+    ws_path="",
+    public_port_value="",
+    install_caddy=True,
+    tls_min_version=xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION,
+    tls_max_version=xray_config.DEFAULT_TROJAN_TLS_MAX_VERSION,
+):
+    name = validate_connection_name(name)
+    domain = validate_host(domain_value, "TLS_DOMAIN")
+    fp = validate_fingerprint(fingerprint_value or "chrome")
+    transport = (transport_value or "ws").strip().lower()
+    if transport not in ("tcp", "ws"):
+        die("Trojan TRANSPORT must be tcp or ws.")
+    config = load_config()
+    db = load_db()
+    try:
+        if transport == "ws":
+            local_port = validate_port(port_value)
+            public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_TROJAN_TLS_PUBLIC_PORT
+            path = validate_trojan_ws_path(ws_path)
+            tls_min_version = validate_tls_version(tls_min_version, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
+            tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
+            tls_domain = xray_caddy.validate_domain(domain)
+            if install_caddy:
+                conflicts = client_connections.public_port_conflicts(config, public_port)
+                if conflicts:
+                    tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+                    die(
+                        f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
+                        "Move those connections to another port before installing Caddy."
+                    )
+                xray_caddy.require_site_config_absent(tls_domain)
+            result = client_connections.add_trojan_caddy_connection(
+                config,
+                db,
+                name,
+                tls_domain,
+                local_port=local_port,
+                public_port=public_port,
+                fingerprint_value=fp,
+                ws_path=path,
+                tls_min_version=tls_min_version,
+                tls_max_version=tls_max_version,
+                caddy_enabled=install_caddy,
+            )
+        else:
+            port = validate_port(port_value)
+            cert_file = validate_absolute_path(cert_file_value, "CERT_FILE")
+            key_file = validate_absolute_path(key_file_value, "KEY_FILE")
+            result = client_connections.add_trojan_tls_connection(
+                config,
+                db,
+                name,
+                port,
+                domain,
+                cert_file,
+                key_file,
+                fp,
+            )
+    except (OSError, ValueError, RuntimeError) as exc:
+        die(str(exc))
+
+    backup = save_config_restart_xray_and_db(config, db)
+    caddy_site = None
+    if result.transport == "ws" and install_caddy:
+        try:
+            caddy_site = xray_caddy.setup_caddy_for_trojan_ws(
+                result.public_host,
+                result.local_port,
+                result.ws_path,
+                tls_min_version=result.tls_min_version,
+                tls_max_version=result.tls_max_version,
+            )
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            die(
+                "Trojan Caddy connection was added, but Caddy setup failed. "
+                f"Config backup: {backup}. Detail: {exc}"
+            )
+
+    print(f"Added Trojan connection: {result.name}")
+    print(f"Tag: {result.tag}")
+    print("PROTOCOL: trojan")
+    print(f"SECURITY: {result.security}")
+    print(f"TLS_DOMAIN: {result.sni}")
+    print(f"FINGERPRINT: {result.fingerprint}")
+    print(f"TRANSPORT: {result.transport}")
+    if result.transport == "ws":
+        print(f"PUBLIC_PORT: {result.public_port}")
+        print(f"LOCAL_PORT: {result.local_port}")
+        print(f"WS_PATH: {result.ws_path}")
+        print(f"TLS_MIN_VERSION: {result.tls_min_version}")
+        print(f"TLS_MAX_VERSION: {result.tls_max_version}")
+        if caddy_site:
+            print(f"CADDY_SITE: {caddy_site}")
+    else:
+        print(f"PORT: {result.port}")
+        print(f"CERT_FILE: {result.cert_file}")
+        print(f"KEY_FILE: {result.key_file}")
+    print(f"Backup: {backup}")
+
+
+def cmd_connection_transport(identifier, transport_value, grpc_service_name="", xhttp_path="", xhttp_mode="", xhttp_extra_json=None):
     transport = validate_reality_transport(transport_value)
     grpc_service_name = validate_grpc_service_name(grpc_service_name) if transport == "grpc" else ""
     xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
     xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
+    xhttp_extra = validate_xhttp_extra_json(xhttp_extra_json) if transport == "xhttp" and xhttp_extra_json is not None else None
     config = load_config()
     db = load_db()
     try:
@@ -561,6 +789,7 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
             grpc_service_name=grpc_service_name,
             xhttp_path=xhttp_path,
             xhttp_mode=xhttp_mode,
+            xhttp_extra=xhttp_extra,
         )
     except (ValueError, RuntimeError) as exc:
         die(str(exc))
@@ -576,9 +805,160 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
     elif result.transport == "xhttp":
         print(f"XHTTP_PATH: {result.xhttp_path}")
         print(f"XHTTP_MODE: {result.xhttp_mode}")
+        extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
+        print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
     print("Updated clients: " + (", ".join(result.updated_clients or []) if result.updated_clients else "none"))
     print(f"Backup: {backup}")
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
+
+
+def cmd_connection_xhttp_extra(identifier, xhttp_extra_json=None, clear=False):
+    xhttp_extra = {} if clear else validate_xhttp_extra_json(xhttp_extra_json)
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_connections.update_connection_xhttp_extra(config, db, identifier, xhttp_extra)
+    except (ValueError, RuntimeError) as exc:
+        die(str(exc))
+
+    backup = save_config_restart_xray_and_db(config, db)
+    extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
+    print(f"Connection: {result.display_name} ({result.tag})")
+    print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
+    print(f"Backup: {backup}")
+    print("Выведи клиентам новые ссылки через xray-client link NAME.")
+
+
+def update_trojan_caddy_site(result):
+    if not result.caddy_enabled:
+        return None
+    if result.public_host == result.previous_public_host:
+        return xray_caddy.update_site_config(
+            result.public_host,
+            result.local_port,
+            tls_min_version=result.tls_min_version,
+            tls_max_version=result.tls_max_version,
+            upstream_transport="http",
+            route_path=result.ws_path,
+        )
+
+    old_path = xray_caddy.site_config_path(result.previous_public_host)
+    new_path = xray_caddy.site_config_path(result.public_host)
+    old_backup = xray_caddy.backup_file(old_path)
+    new_backup = xray_caddy.backup_file(new_path)
+    try:
+        xray_caddy.write_site_config(
+            result.public_host,
+            result.local_port,
+            tls_min_version=result.tls_min_version,
+            tls_max_version=result.tls_max_version,
+            upstream_transport="http",
+            route_path=result.ws_path,
+        )
+        if old_path.exists():
+            old_path.unlink()
+        xray_caddy.validate_and_reload_caddy(subprocess.run)
+    except Exception:
+        xray_caddy.restore_file(old_backup, old_path)
+        xray_caddy.restore_file(new_backup, new_path)
+        try:
+            xray_caddy.validate_and_reload_caddy(subprocess.run)
+        except Exception:
+            pass
+        raise
+    return xray_caddy.SiteWriteResult(new_path, old_backup)
+
+
+def cmd_trojan_connection_update(
+    identifier,
+    domain_value=None,
+    local_port_value=None,
+    public_port_value=None,
+    ws_path_value=None,
+    fingerprint_value=None,
+    tls_min_version_value=None,
+    tls_max_version_value=None,
+):
+    domain = xray_caddy.validate_domain(domain_value) if domain_value else None
+    local_port = validate_port(local_port_value) if local_port_value else None
+    public_port = validate_port(public_port_value) if public_port_value else None
+    ws_path = validate_trojan_ws_path(ws_path_value) if ws_path_value else None
+    fp = validate_fingerprint(fingerprint_value) if fingerprint_value else None
+    tls_min = (
+        validate_tls_version(tls_min_version_value, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
+        if tls_min_version_value
+        else None
+    )
+    tls_max = (
+        validate_tls_version(tls_max_version_value, tls_min or xray_config.DEFAULT_TROJAN_TLS_MAX_VERSION)
+        if tls_max_version_value
+        else None
+    )
+
+    config = load_config()
+    db = load_db()
+    original_db = copy.deepcopy(db)
+    try:
+        result = client_connections.update_trojan_connection(
+            config,
+            db,
+            identifier,
+            domain=domain,
+            local_port=local_port,
+            public_port=public_port,
+            ws_path=ws_path,
+            fingerprint_value=fp,
+            tls_min_version=tls_min,
+            tls_max_version=tls_max,
+        )
+        if result.caddy_enabled and result.public_host != result.previous_public_host:
+            xray_caddy.require_site_config_absent(result.public_host)
+    except (OSError, ValueError, RuntimeError) as exc:
+        die(str(exc))
+
+    backup = save_config_restart_xray_and_db(config, db)
+    caddy_result = None
+    try:
+        caddy_result = update_trojan_caddy_site(result)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        restore_config_backup(backup)
+        save_db(original_db)
+        die(
+            "Trojan connection was updated, but Caddy update failed. "
+            f"Rolled back Xray config and database. Detail: {exc}"
+        )
+
+    print(f"Trojan connection updated: {result.display_name}")
+    print(f"Tag: {result.tag}")
+    print(f"TLS_DOMAIN: {result.public_host}")
+    print(f"PUBLIC_PORT: {result.public_port}")
+    print(f"LOCAL_PORT: {result.local_port}")
+    print(f"WS_PATH: {result.ws_path}")
+    print(f"FINGERPRINT: {result.fingerprint or '-'}")
+    print(f"TLS_MIN_VERSION: {result.tls_min_version}")
+    print(f"TLS_MAX_VERSION: {result.tls_max_version}")
+    if caddy_result:
+        print(f"CADDY_SITE: {caddy_result.path}")
+    elif result.caddy_enabled:
+        print("CADDY_SITE: not updated")
+    else:
+        print("CADDY_SITE: disabled for this connection")
+    print(f"Backup: {backup}")
+    print("Выведи клиентам новые Trojan-ссылки через xray-client link NAME: параметры подключения изменились.")
+
+
+def cmd_connection_rename(identifier, new_name):
+    new_name = validate_connection_name(new_name)
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_connections.rename_connection(config, db, identifier, new_name)
+    except ValueError as exc:
+        die(str(exc))
+    save_db(db)
+    print(f"Connection renamed: {result.old_name} -> {result.new_name}")
+    print(f"Tag: {result.tag}")
+    print("Xray restart is not required.")
 
 
 def cmd_connection_remove(identifier):
@@ -619,40 +999,55 @@ def cmd_list():
     traffic_db = load_traffic_db_readonly()
     stats = query_user_stats()
     display_timezone = client_settings.manager_timezone()
-    grouped = {}
+    table_rows = []
     for row in rows:
-        grouped.setdefault(row["connection"], []).append(row)
+        incoming, outgoing = client_runtime.traffic_for(traffic_db, stats, row)
+        total = None if incoming is None or outgoing is None else incoming + outgoing
+        online, last_online = client_runtime.online_state(row, traffic_db, display_timezone)
+        db_entry = client_repository.db_clients(db).get(row["name"], {})
+        traffic_updated = client_runtime.traffic_updated_at(row, traffic_db, display_timezone)
+        table_rows.append(
+            [
+                row["name"],
+                row["status"],
+                row["paymentType"],
+                row["cascade"],
+                online,
+                last_online,
+                format_traffic(total),
+                client_limits.format_traffic_limit(db_entry),
+                traffic_updated,
+                client_access.format_access_until(row["expiresAt"]),
+                f"{row.get('credentialsActive', 0)}/{row.get('credentialsTotal', 0)}",
+            ]
+        )
+    print()
+    print("Clients")
+    print_client_table(table_rows)
 
-    for tag in client_repository.db_connections(db):
-        group_rows = grouped.get(tag, [])
-        if not group_rows:
-            continue
-        print_connection_title(config, db, tag)
-        table_rows = []
-        for row in group_rows:
-            incoming, outgoing = client_runtime.traffic_for(traffic_db, stats, row)
-            total = None if incoming is None or outgoing is None else incoming + outgoing
-            online, last_online = client_runtime.online_state(row, traffic_db, display_timezone)
-            db_entry = client_repository.db_clients(db).get(row["name"], {})
-            traffic_updated = client_runtime.traffic_updated_at(row, traffic_db, display_timezone)
-            table_rows.append(
-                [
-                    row["name"],
-                    row["status"],
-                    row["paymentType"],
-                    row["cascade"],
-                    online,
-                    format_traffic(incoming),
-                    format_traffic(outgoing),
-                    format_traffic(total),
-                    traffic_updated,
-                    client_limits.format_traffic_limit(db_entry),
-                    last_online,
-                    client_access.format_access_until(row["expiresAt"]),
-                    row["created"],
-                ]
-            )
-        print_client_table(table_rows)
+    credential_table_rows = []
+    for row in client_listing.credential_rows(config, db):
+        incoming, outgoing = client_runtime.credential_traffic_for(traffic_db, stats, row)
+        total = None if incoming is None or outgoing is None else incoming + outgoing
+        online, last_online = client_runtime.credential_online_state(row, traffic_db, display_timezone)
+        traffic_updated = client_runtime.credential_traffic_updated_at(row, traffic_db, display_timezone)
+        credential_table_rows.append(
+            [
+                row["client"],
+                row["protocol"],
+                row["security"] or "-",
+                row["transport"] or "-",
+                row["connection"],
+                row["status"],
+                online,
+                format_traffic(total),
+                traffic_updated,
+                last_online,
+            ]
+        )
+    print()
+    print("Credentials")
+    print_credential_table(credential_table_rows)
 
 
 def known_for_traffic_report(config, db, traffic_db, name):
@@ -704,30 +1099,50 @@ def cmd_traffic_summary(month_value=None):
     print_table(["NAME", "STATUS", "CONNECTION", "IN", "OUT", "TOTAL", "LIMIT", "ALL TIME"], table_rows, empty_message=None)
 
 
+def traffic_credential_rows(config, db, name):
+    return [row for row in client_listing.credential_rows(config, db) if row["client"] == name]
+
+
+def print_traffic_credential_period(config, db, traffic_db, name, start, end):
+    credentials = traffic_credential_rows(config, db, name)
+    if len(credentials) <= 1:
+        return
+    print()
+    print("Credentials")
+    print_table(
+        ["PROTOCOL", "SECURITY", "TRANSPORT", "CONNECTION", "STATUS", "IN", "OUT", "TOTAL"],
+        traffic_reports.credential_period_rows(credentials, traffic_db, start, end),
+        empty_message=None,
+    )
+
+
 def cmd_traffic_day(name, day_value=None):
     day = parse_date_value(day_value or client_access.local_now().date().isoformat())
-    _, _, _, entry = traffic_report_context(name)
+    config, db, traffic_db, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Day: {day.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_table(["HOUR", "IN", "OUT", "TOTAL"], traffic_reports.day_hour_rows(entry, day), empty_message=None)
+    print_traffic_credential_period(config, db, traffic_db, name, day, day)
 
 
 def cmd_traffic_week(name, start_value=None):
     start = parse_date_value(start_value or (client_access.local_now().date() - timedelta(days=6)).isoformat(), "START_DATE")
     end = start + timedelta(days=6)
-    _, _, _, entry = traffic_report_context(name)
+    config, db, traffic_db, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
+    print_traffic_credential_period(config, db, traffic_db, name, start, end)
 
 
 def cmd_traffic_month(name, month_value=None):
     month_key = parse_month_value(month_value)
     start, end = traffic_reports.month_bounds(month_key, today=client_access.local_now().date())
-    _, _, _, entry = traffic_report_context(name)
+    config, db, traffic_db, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Month: {month_key} (timezone: {client_settings.manager_timezone_label()})")
     print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
+    print_traffic_credential_period(config, db, traffic_db, name, start, end)
 
 
 def cmd_traffic_period(name, start_value, end_value):
@@ -735,10 +1150,11 @@ def cmd_traffic_period(name, start_value, end_value):
     end = parse_date_value(end_value, "END_DATE")
     if end < start:
         die("END_DATE must be the same as or later than START_DATE.")
-    _, _, _, entry = traffic_report_context(name)
+    config, db, traffic_db, entry = traffic_report_context(name)
     print(f"Client: {name}")
     print(f"Period: {start.isoformat()}..{end.isoformat()} (timezone: {client_settings.manager_timezone_label()})")
     print_table(["DATE", "IN", "OUT", "TOTAL"], traffic_reports.period_day_rows(entry, start, end), empty_message=None)
+    print_traffic_credential_period(config, db, traffic_db, name, start, end)
 
 
 def db_entry_for_existing_client(config, db, name):
@@ -749,17 +1165,18 @@ def db_entry_for_existing_client(config, db, name):
         die(str(exc))
 
 
-def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, payment_type="free"):
+def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, protocol="", payment_type="free"):
     validate_name(name)
-    payment_type = normalize_payment_type(payment_type)
+    payment_type = normalize_payment_type(payment_type) if payment_type else ""
     config = load_config()
     db = load_db()
+    existing_client = client_crud.client_exists(config, db, name)
     try:
-        connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag)
+        connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
     except ValueError as exc:
         die(str(exc))
 
-    if prompt_for_access:
+    if prompt_for_access and not existing_client:
         access_days = prompt_access_days()
     try:
         result = client_crud.add_client(config, db, name, access_days, connection_tag, payment_type)
@@ -768,14 +1185,15 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
 
     backup = save_config_restart_xray_and_db(config, db)
 
-    print(f"Added client: {name}")
+    print(("Added client: " if result.added_client else "Added credential for client: ") + name)
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
     print(f"Payment type: {client_payments.payment_type_label(result.entry)}")
     print(f"Created: {result.created}")
     print(f"Access until: {client_access.format_access_until(result.entry.get('expiresAt', ''))}")
+    print(f"Access key: {access_key_for_client_id(result.client_id)}")
     print(f"Backup: {backup}")
     print_payment_summary()
-    print(link_for(config, result.client_id, name, result.connection_tag, db))
+    print(link_for(config, result.credential_id, name, result.connection_tag, db))
 
 
 def cmd_set_payment(name, payment_value):
@@ -870,29 +1288,31 @@ def cmd_remove(name):
     print(f"Backup: {backup}")
 
 
-def cmd_disable(name):
+def cmd_disable(name, connection_tag=None):
     validate_name(name)
     config = load_config()
     db = load_db()
     try:
-        result = client_crud.disable_client(config, db, name)
+        result = client_crud.disable_client(config, db, name, connection_tag=connection_tag)
     except ValueError as exc:
         die(str(exc))
 
     backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Disabled client: {result.name}")
+    if result.connection_tags:
+        print("Disabled credentials: " + ", ".join(result.connection_tags))
     print(f"Backup: {backup}")
 
 
-def cmd_enable(name):
+def cmd_enable(name, connection_tag=None):
     validate_name(name)
     sync_traffic()
     config = load_config()
     db = load_db()
     traffic_db = load_traffic_db()
     try:
-        result = client_crud.enable_client(config, db, traffic_db, name)
+        result = client_crud.enable_client(config, db, traffic_db, name, connection_tag=connection_tag)
     except client_crud.EnableTrafficLimitExceeded as exc:
         traffic_status = exc.traffic_status
         die(
@@ -907,9 +1327,47 @@ def cmd_enable(name):
     backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Enabled client: {result.name}")
-    print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
+    if result.connection_tags:
+        print("Enabled credentials: " + ", ".join(result.connection_tags))
+    if result.connection_tag:
+        print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
     print(f"Backup: {backup}")
-    print(link_for(config, result.client_id, result.name, result.connection_tag, db))
+    if result.connection_tag:
+        print(link_for(config, result.credential_id, result.name, result.connection_tag, db))
+
+
+def cmd_move_connection(name, target_connection_identifier):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_crud.move_client_to_connection(config, db, name, target_connection_identifier)
+    except ValueError as exc:
+        die(str(exc))
+
+    backup = None
+    if result.config_changed:
+        backup = save_config_restart_xray_and_db(config, db)
+    else:
+        save_db(db)
+
+    print(f"Moved client: {result.name}")
+    print(
+        "From: "
+        f"{connection_display_name(config, db, result.source_connection_tag)} ({result.source_connection_tag})"
+    )
+    print(
+        "To: "
+        f"{connection_display_name(config, db, result.target_connection_tag)} ({result.target_connection_tag})"
+    )
+    print("Status: " + ("enabled" if result.enabled else "disabled"))
+    if backup:
+        print(f"Backup: {backup}")
+    else:
+        print("Xray restart is not required for disabled client.")
+    print("New link:")
+    print(link_for(config, result.client_id, result.name, result.target_connection_tag, db))
+    print("Выдай клиенту новую ссылку: после переноса параметры подключения меняются.")
 
 
 def run_access_update(name, result_factory):
@@ -1015,6 +1473,48 @@ def cmd_clear_limit(name):
         print("Status: disabled by previous traffic limit. Use xray-client enable NAME if the client should be enabled now.")
 
 
+def cmd_trojan_password_check():
+    config = load_config()
+    db = load_db_readonly().db
+    rows = client_crud.trojan_password_policy_rows(config, db)
+    if not rows:
+        print("No Trojan credentials.")
+        return
+    table_rows = [
+        [row["client"], row["connection"], row["status"], row["issues"]]
+        for row in rows
+    ]
+    print_table(["CLIENT", "CONNECTION", "STATUS", "ISSUES"], table_rows, empty_message=None)
+    if any(row["status"] != "OK" for row in rows):
+        die("Trojan password policy check failed.")
+
+
+def cmd_rotate_trojan_password(name, connection_tag=None):
+    validate_name(name)
+    config = load_config()
+    db = load_db()
+    try:
+        result = client_crud.rotate_trojan_password(config, db, name, connection_tag)
+    except ValueError as exc:
+        die(str(exc))
+
+    backup = ""
+    if result.config_changed:
+        backup = save_config_restart_xray_and_db(config, db)
+    else:
+        save_db(db)
+
+    print("Trojan password rotated.")
+    print(f"Client: {name}")
+    print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
+    if backup:
+        print(f"Backup: {backup}")
+    else:
+        print("Backup: not created; credential is not active in config.")
+    print("Client must reimport this Trojan link:")
+    print(link_for(config, result.credential_id, name, result.connection_tag, db))
+
+
 def cmd_limit_list():
     sync_traffic()
     config = load_config()
@@ -1103,20 +1603,37 @@ def cmd_set_timezone(value):
     print(f"Current time: {client_access.local_now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     if normalized:
         print(f"Normalized access deadlines: {normalized}")
+    try:
+        from xray_vps_manager.activity import raw_logs as activity_raw_logs
+
+        result = activity_raw_logs.sync_raw_log_timer()
+        print(f"Raw log rotation timer: {result['onCalendar']}")
+    except Exception as exc:
+        print(f"WARN: raw log rotation timer sync failed: {exc}", file=sys.stderr)
 
 
 def usage():
     print("""Usage:
   xray-client list
   xray-client connection-list
-  xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE]
-  xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE]
+  xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
+  xray-client add-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-trojan-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] [--ws-path PATH] [--public-port PORT] [--no-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-trojan-connection NAME PORT DOMAIN CERT_FILE KEY_FILE [FINGERPRINT] [--transport tcp]
+  xray-client update-trojan-connection NAME_OR_TAG [--domain DOMAIN] [--local-port PORT] [--public-port PORT] [--ws-path PATH] [--fingerprint FINGERPRINT] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client connection-rename NAME_OR_TAG NEW_NAME
+  xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
+  xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra
   xray-client remove-connection NAME_OR_TAG
-  xray-client add NAME [DAYS] [--connection TAG] [--payment paid|free]
-  xray-client disable NAME
-  xray-client enable NAME
+  xray-client add NAME [DAYS] [--connection TAG|--protocol vless|trojan] [--payment paid|free]
+  xray-client disable NAME [--connection TAG]
+  xray-client enable NAME [--connection TAG]
+  xray-client move-connection NAME CONNECTION_NAME_OR_TAG
   xray-client remove NAME
-  xray-client link NAME
+  xray-client link NAME [--connection TAG]
+  xray-client key NAME
+  xray-client trojan-password-check
+  xray-client rotate-trojan-password NAME [--connection TAG]
   xray-client set-days NAME DAYS
   xray-client extend-days NAME DAYS
   xray-client set-payment NAME paid|free
@@ -1144,13 +1661,25 @@ def parse_add_args(args):
     name = args[0]
     rest = list(args[1:])
     connection_tag = None
-    payment_type = "free"
+    protocol = ""
+    payment_type = ""
     if "--connection" in rest:
         index = rest.index("--connection")
         if index + 1 >= len(rest):
             die("--connection requires TAG")
         connection_tag = rest[index + 1]
         del rest[index:index + 2]
+    if "--protocol" in rest:
+        index = rest.index("--protocol")
+        if index + 1 >= len(rest):
+            die("--protocol requires vless or trojan")
+        try:
+            protocol = client_crud.normalize_connection_protocol(rest[index + 1])
+        except ValueError as exc:
+            die(str(exc))
+        del rest[index:index + 2]
+    if connection_tag and protocol:
+        die("Use either --connection TAG or --protocol vless|trojan.")
     if "--payment" in rest:
         index = rest.index("--payment")
         if index + 1 >= len(rest):
@@ -1161,20 +1690,32 @@ def parse_add_args(args):
         usage()
         sys.exit(1)
     if rest:
-        return name, parse_access_days(rest[0]), False, connection_tag, payment_type
-    return name, None, True, connection_tag, payment_type
+        return name, parse_access_days(rest[0]), False, connection_tag, protocol, payment_type
+    return name, None, True, connection_tag, protocol, payment_type
 
 
 def parse_connection_add_args(args):
     grpc_service_name = ""
     xhttp_path = ""
     xhttp_mode = ""
+    xhttp_extra_json = ""
     transport = ""
+    security = "reality"
+    public_port = ""
+    install_caddy = False
+    tls_min_version = "tls1.2"
+    tls_max_version = "tls1.2"
     rest = list(args)
     index = 0
     positional = []
     while index < len(rest):
         item = rest[index]
+        if item == "--security":
+            if index + 1 >= len(rest):
+                die("--security requires reality or tls")
+            security = rest[index + 1]
+            index += 2
+            continue
         if item == "--transport":
             if index + 1 >= len(rest):
                 die("--transport requires tcp, grpc, or xhttp")
@@ -1199,6 +1740,34 @@ def parse_connection_add_args(args):
             xhttp_mode = rest[index + 1]
             index += 2
             continue
+        if item == "--xhttp-extra-json":
+            if index + 1 >= len(rest):
+                die("--xhttp-extra-json requires JSON value")
+            xhttp_extra_json = rest[index + 1]
+            index += 2
+            continue
+        if item == "--public-port":
+            if index + 1 >= len(rest):
+                die("--public-port requires PORT")
+            public_port = rest[index + 1]
+            index += 2
+            continue
+        if item == "--install-caddy":
+            install_caddy = True
+            index += 1
+            continue
+        if item == "--tls-min-version":
+            if index + 1 >= len(rest):
+                die("--tls-min-version requires tls1.2, tls1.3, or default")
+            tls_min_version = rest[index + 1]
+            index += 2
+            continue
+        if item == "--tls-max-version":
+            if index + 1 >= len(rest):
+                die("--tls-max-version requires tls1.2, tls1.3, or default")
+            tls_max_version = rest[index + 1]
+            index += 2
+            continue
         if item.startswith("--"):
             die(f"Unknown option: {item}")
         positional.append(item)
@@ -1219,8 +1788,228 @@ def parse_connection_add_args(args):
     if len(positional) == 5:
         transport = positional[4]
 
-    transport = transport or "tcp"
-    return name, port, sni, fingerprint_value, transport, grpc_service_name, xhttp_path, xhttp_mode
+    transport = transport or ("xhttp" if validate_connection_security(security) == "tls" else "tcp")
+    return (
+        name,
+        port,
+        sni,
+        fingerprint_value,
+        transport,
+        grpc_service_name,
+        xhttp_path,
+        xhttp_mode,
+        xhttp_extra_json,
+        security,
+        public_port,
+        install_caddy,
+        tls_min_version,
+        tls_max_version,
+    )
+
+
+def parse_trojan_connection_add_args(args):
+    if not args:
+        usage()
+        sys.exit(1)
+    transport = "ws"
+    transport_explicit = False
+    ws_path = xray_config.DEFAULT_TROJAN_WS_PATH
+    public_port = ""
+    install_caddy = True
+    tls_min_version = xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION
+    tls_max_version = xray_config.DEFAULT_TROJAN_TLS_MAX_VERSION
+    fingerprint_value = ""
+    rest = list(args)
+    positional = []
+    index = 0
+    while index < len(rest):
+        item = rest[index]
+        if item in ("--caddy", "--install-caddy"):
+            transport = "ws"
+            transport_explicit = True
+            install_caddy = True
+            index += 1
+            continue
+        if item in ("--no-caddy", "--no-install-caddy"):
+            transport = "ws"
+            transport_explicit = True
+            install_caddy = False
+            index += 1
+            continue
+        if item == "--transport":
+            if index + 1 >= len(rest):
+                die("--transport requires tcp or ws")
+            transport = rest[index + 1]
+            transport_explicit = True
+            if transport.strip().lower() == "tcp":
+                install_caddy = False
+            index += 2
+            continue
+        if item == "--ws-path":
+            if index + 1 >= len(rest):
+                die("--ws-path requires PATH")
+            ws_path = rest[index + 1]
+            transport = "ws"
+            transport_explicit = True
+            index += 2
+            continue
+        if item == "--public-port":
+            if index + 1 >= len(rest):
+                die("--public-port requires PORT")
+            public_port = rest[index + 1]
+            transport = "ws"
+            transport_explicit = True
+            index += 2
+            continue
+        if item == "--fingerprint":
+            if index + 1 >= len(rest):
+                die("--fingerprint requires value")
+            fingerprint_value = rest[index + 1]
+            index += 2
+            continue
+        if item == "--tls-min-version":
+            if index + 1 >= len(rest):
+                die("--tls-min-version requires tls1.2, tls1.3, or default")
+            tls_min_version = rest[index + 1]
+            transport = "ws"
+            transport_explicit = True
+            index += 2
+            continue
+        if item == "--tls-max-version":
+            if index + 1 >= len(rest):
+                die("--tls-max-version requires tls1.2, tls1.3, or default")
+            tls_max_version = rest[index + 1]
+            transport = "ws"
+            transport_explicit = True
+            index += 2
+            continue
+        if item.startswith("--"):
+            die(f"Unknown option: {item}")
+        positional.append(item)
+        index += 1
+
+    if not transport_explicit and len(positional) in (5, 6):
+        transport = "tcp"
+        install_caddy = False
+    transport = (transport or "ws").strip().lower()
+    if transport not in ("tcp", "ws"):
+        die("Trojan --transport requires tcp or ws")
+    if transport == "ws":
+        if len(positional) not in (3, 4):
+            usage()
+            sys.exit(1)
+        if len(positional) == 4:
+            fingerprint_value = positional[3]
+        return (
+            positional[0],
+            positional[1],
+            positional[2],
+            "",
+            "",
+            fingerprint_value or "chrome",
+            "ws",
+            ws_path,
+            public_port,
+            install_caddy,
+            tls_min_version,
+            tls_max_version,
+        )
+
+    if len(positional) not in (5, 6):
+        usage()
+        sys.exit(1)
+    if len(positional) == 6:
+        fingerprint_value = positional[5]
+    return (
+        positional[0],
+        positional[1],
+        positional[2],
+        positional[3],
+        positional[4],
+        fingerprint_value or "chrome",
+        "tcp",
+        "",
+        "",
+        False,
+        tls_min_version,
+        tls_max_version,
+    )
+
+
+def parse_trojan_connection_update_args(args):
+    if len(args) < 2:
+        usage()
+        sys.exit(1)
+    identifier = args[0]
+    domain = None
+    local_port = None
+    public_port = None
+    ws_path = None
+    fingerprint_value = None
+    tls_min_version = None
+    tls_max_version = None
+    rest = list(args[1:])
+    index = 0
+    while index < len(rest):
+        item = rest[index]
+        if item in ("--domain", "--tls-domain"):
+            if index + 1 >= len(rest):
+                die("--domain requires DOMAIN")
+            domain = rest[index + 1]
+            index += 2
+            continue
+        if item == "--local-port":
+            if index + 1 >= len(rest):
+                die("--local-port requires PORT")
+            local_port = rest[index + 1]
+            index += 2
+            continue
+        if item == "--public-port":
+            if index + 1 >= len(rest):
+                die("--public-port requires PORT")
+            public_port = rest[index + 1]
+            index += 2
+            continue
+        if item == "--ws-path":
+            if index + 1 >= len(rest):
+                die("--ws-path requires PATH")
+            ws_path = rest[index + 1]
+            index += 2
+            continue
+        if item == "--fingerprint":
+            if index + 1 >= len(rest):
+                die("--fingerprint requires value")
+            fingerprint_value = rest[index + 1]
+            index += 2
+            continue
+        if item == "--tls-min-version":
+            if index + 1 >= len(rest):
+                die("--tls-min-version requires tls1.2, tls1.3, or default")
+            tls_min_version = rest[index + 1]
+            index += 2
+            continue
+        if item == "--tls-max-version":
+            if index + 1 >= len(rest):
+                die("--tls-max-version requires tls1.2, tls1.3, or default")
+            tls_max_version = rest[index + 1]
+            index += 2
+            continue
+        die(f"Unknown option: {item}")
+
+    update_values = (domain, local_port, public_port, ws_path, fingerprint_value, tls_min_version, tls_max_version)
+    if all(value is None for value in update_values):
+        usage()
+        sys.exit(1)
+    return (
+        identifier,
+        domain,
+        local_port,
+        public_port,
+        ws_path,
+        fingerprint_value,
+        tls_min_version,
+        tls_max_version,
+    )
 
 
 def parse_connection_transport_args(args):
@@ -1232,6 +2021,7 @@ def parse_connection_transport_args(args):
     grpc_service_name = ""
     xhttp_path = ""
     xhttp_mode = ""
+    xhttp_extra_json = None
     rest = list(args[2:])
     index = 0
     while index < len(rest):
@@ -1254,20 +2044,100 @@ def parse_connection_transport_args(args):
             xhttp_mode = rest[index + 1]
             index += 2
             continue
+        if item == "--xhttp-extra-json":
+            if index + 1 >= len(rest):
+                die("--xhttp-extra-json requires JSON value")
+            xhttp_extra_json = rest[index + 1]
+            index += 2
+            continue
         die(f"Unknown option: {item}")
-    return identifier, transport, grpc_service_name, xhttp_path, xhttp_mode
+    return identifier, transport, grpc_service_name, xhttp_path, xhttp_mode, xhttp_extra_json
 
 
-def cmd_link(name):
+def parse_connection_xhttp_extra_args(args):
+    if len(args) < 2:
+        usage()
+        sys.exit(1)
+    identifier = args[0]
+    rest = list(args[1:])
+    clear = False
+    xhttp_extra_json = None
+    index = 0
+    while index < len(rest):
+        item = rest[index]
+        if item == "--clear-xhttp-extra":
+            clear = True
+            index += 1
+            continue
+        if item == "--xhttp-extra-json":
+            if index + 1 >= len(rest):
+                die("--xhttp-extra-json requires JSON value")
+            xhttp_extra_json = rest[index + 1]
+            index += 2
+            continue
+        die(f"Unknown option: {item}")
+    if clear and xhttp_extra_json is not None:
+        die("Use either --xhttp-extra-json or --clear-xhttp-extra.")
+    if not clear and xhttp_extra_json is None:
+        die("connection-xhttp-extra requires --xhttp-extra-json JSON or --clear-xhttp-extra.")
+    return identifier, xhttp_extra_json, clear
+
+
+def parse_name_connection_args(args):
+    if not args:
+        usage()
+        sys.exit(1)
+    name = args[0]
+    rest = list(args[1:])
+    connection_tag = None
+    if "--connection" in rest:
+        index = rest.index("--connection")
+        if index + 1 >= len(rest):
+            die("--connection requires TAG")
+        connection_tag = rest[index + 1]
+        del rest[index:index + 2]
+    if rest:
+        usage()
+        sys.exit(1)
+    return name, connection_tag
+
+
+def cmd_link(name, connection_tag=None):
     validate_name(name)
     config = load_config()
     db = load_db_readonly().db
     ensure_connections(config, db)
-    for row in client_listing.client_rows(config, db):
-        if row["name"] == name:
+    links = []
+    for row in client_listing.credential_rows(config, db):
+        if row["name"] != name:
+            continue
+        if connection_tag and row["connection"] != connection_tag:
+            continue
+        links.append(row)
+    if links:
+        if len(links) == 1:
+            row = links[0]
             print(link_for(config, row["id"], name, row["connection"], db))
             return
+        for row in links:
+            print(f"[{row['protocol']} {row['connection']}]")
+            print(link_for(config, row["id"], name, row["connection"], db))
+        return
     die(f"Client not found: {name}")
+
+
+def cmd_key(name):
+    validate_name(name)
+    config = load_config()
+    db = load_db_readonly().db
+    ensure_connections(config, db)
+    entry = client_repository.db_clients(db).get(name)
+    if not entry:
+        die(f"Client not found: {name}")
+    client_id = str(entry.get("id") or "").strip()
+    if not client_id:
+        die(f"Client has no internal UUID: {name}")
+    print(access_key_for_client_id(client_id))
 
 
 def main():
@@ -1283,27 +2153,48 @@ def main():
         cmd_connection_list()
     elif command == "add-connection":
         cmd_connection_add(*parse_connection_add_args(sys.argv[2:]))
+    elif command == "add-trojan-connection":
+        cmd_trojan_connection_add(*parse_trojan_connection_add_args(sys.argv[2:]))
+    elif command in ("update-trojan-connection", "trojan-connection-update"):
+        cmd_trojan_connection_update(*parse_trojan_connection_update_args(sys.argv[2:]))
     elif command in ("connection-transport", "set-connection-transport"):
         cmd_connection_transport(*parse_connection_transport_args(sys.argv[2:]))
+    elif command in ("connection-xhttp-extra", "set-connection-xhttp-extra"):
+        cmd_connection_xhttp_extra(*parse_connection_xhttp_extra_args(sys.argv[2:]))
+    elif command in ("connection-rename", "rename-connection") and len(sys.argv) == 4:
+        cmd_connection_rename(sys.argv[2], sys.argv[3])
     elif command in ("remove-connection", "delete-connection") and len(sys.argv) == 3:
         cmd_connection_remove(sys.argv[2])
     elif command == "add":
-        name, access_days, prompt_for_access, connection_tag, payment_type = parse_add_args(sys.argv[2:])
+        name, access_days, prompt_for_access, connection_tag, protocol, payment_type = parse_add_args(sys.argv[2:])
         cmd_add(
             name,
             access_days,
             prompt_for_access=prompt_for_access,
             connection_tag=connection_tag,
+            protocol=protocol,
             payment_type=payment_type,
         )
-    elif command in ("disable", "off") and len(sys.argv) == 3:
-        cmd_disable(sys.argv[2])
-    elif command in ("enable", "on") and len(sys.argv) == 3:
-        cmd_enable(sys.argv[2])
+    elif command in ("disable", "off"):
+        name, connection_tag = parse_name_connection_args(sys.argv[2:])
+        cmd_disable(name, connection_tag)
+    elif command in ("enable", "on"):
+        name, connection_tag = parse_name_connection_args(sys.argv[2:])
+        cmd_enable(name, connection_tag)
+    elif command in ("move-connection", "move-client", "move") and len(sys.argv) == 4:
+        cmd_move_connection(sys.argv[2], sys.argv[3])
     elif command in ("remove", "delete", "del", "rm") and len(sys.argv) == 3:
         cmd_remove(sys.argv[2])
-    elif command == "link" and len(sys.argv) == 3:
-        cmd_link(sys.argv[2])
+    elif command == "link":
+        name, connection_tag = parse_name_connection_args(sys.argv[2:])
+        cmd_link(name, connection_tag)
+    elif command == "key" and len(sys.argv) == 3:
+        cmd_key(sys.argv[2])
+    elif command in ("trojan-password-check", "validate-trojan-passwords") and len(sys.argv) == 2:
+        cmd_trojan_password_check()
+    elif command in ("rotate-trojan-password", "trojan-password-rotate"):
+        name, connection_tag = parse_name_connection_args(sys.argv[2:])
+        cmd_rotate_trojan_password(name, connection_tag)
     elif command in ("set-days", "access-days") and len(sys.argv) == 4:
         cmd_set_days(sys.argv[2], sys.argv[3])
     elif command in ("extend-days", "prolong-days") and len(sys.argv) == 4:

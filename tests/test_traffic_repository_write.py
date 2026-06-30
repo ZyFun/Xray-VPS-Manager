@@ -104,6 +104,36 @@ class TrafficRepositoryWriteTests(unittest.TestCase):
             self.assertEqual(access_log_state["offset"], 456)
             self.assertFalse(json_path.exists())
 
+    def test_save_preserves_existing_history_when_entry_history_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            json_path = Path(tmp_dir) / "traffic.json"
+            self.make_sqlite_db(db_path)
+
+            traffic_repository.save_traffic_db(
+                {
+                    "clients": {
+                        "old_client": {
+                            "email": "old_client|created=2026-06-12T07:01:00Z",
+                            "incoming": 500,
+                            "outgoing": 600,
+                            "history": {},
+                        }
+                    }
+                },
+                json_path,
+                db_path=db_path,
+            )
+
+            connection = database.open_database(db_path)
+            try:
+                entry = sqlite_traffic.get_traffic_entry(connection, "old_client")
+            finally:
+                connection.close()
+            self.assertEqual(entry["incoming"], 500)
+            self.assertEqual(entry["outgoing"], 600)
+            self.assertEqual(entry["history"]["2026-06-12"]["07"], {"incoming": 300, "outgoing": 400})
+
     def test_remove_traffic_clients_removes_from_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"

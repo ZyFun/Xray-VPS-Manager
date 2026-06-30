@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -10,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.clients import connections as connection_store
-from xray_vps_manager.clients.repository import db_connections, load_db_sql, save_db
+from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql, save_db
 from xray_vps_manager.clients.settings import (
     fingerprint as server_fingerprint,
     save_server_env_values,
@@ -18,21 +19,39 @@ from xray_vps_manager.clients.settings import (
 )
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.terminal import table_border, table_row
+from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import (
+    DEFAULT_TROJAN_TLS_LOCAL_PORT,
+    DEFAULT_TROJAN_TLS_MAX_VERSION,
+    DEFAULT_TROJAN_TLS_MIN_VERSION,
+    DEFAULT_TROJAN_TLS_PUBLIC_PORT,
+    DEFAULT_TROJAN_WS_PATH,
+    DEFAULT_XHTTP_MODE,
+    DEFAULT_XHTTP_PATH,
+    DEFAULT_XHTTP_TLS_PUBLIC_PORT,
     INBOUND_TAG,
+    XHTTP_MODES,
+    XHTTP_XMUX_KEYS,
     connection_name_from_tag,
     connection_settings_from_inbound,
+    default_xhttp_advanced_extra,
+    default_xhttp_packet_up_extra,
     find_inbound,
     find_inbound_by_tag,
     inbound_tag,
     load_config as load_xray_config,
+    managed_connection_inbounds,
+    normalize_xhttp_download_settings,
+    normalize_xhttp_extra,
     normalize_grpc_service_name,
     normalize_reality_transport,
+    normalize_trojan_ws_path,
     normalize_xhttp_mode,
     normalize_xhttp_path,
     reality_dest,
     reality_inbounds,
     save_config,
+    xhttp_extra_json,
 )
 
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
@@ -85,6 +104,13 @@ def validate_host(value: str, label: str = "SNI") -> str:
     return value
 
 
+def validate_absolute_path(value: str, label: str = "PATH") -> str:
+    path = (value or "").strip()
+    if not path.startswith("/") or "\r" in path or "\n" in path:
+        die(f"{label} must be an absolute one-line path.")
+    return path
+
+
 def validate_fingerprint(value: str) -> str:
     value = (value or "").strip().lower()
     if value not in FINGERPRINTS:
@@ -113,6 +139,13 @@ def validate_xhttp_path(value: str) -> str:
         die(str(exc))
 
 
+def validate_trojan_ws_path(value: str) -> str:
+    try:
+        return normalize_trojan_ws_path(value)
+    except ValueError as exc:
+        die(str(exc))
+
+
 def validate_xhttp_mode(value: str) -> str:
     try:
         return normalize_xhttp_mode(value)
@@ -128,32 +161,45 @@ def current_fingerprint() -> str:
     return value if value in FINGERPRINTS else "chrome"
 
 
-def connection_rows() -> list[dict[str, str | int]]:
+def connection_rows(
+    security_filter: str | None = None,
+    protocol_filter: str | None = None,
+) -> list[dict[str, str | int]]:
     config = load_config()
     db = load_db_sql()
     connection_store.ensure_connections(config, db)
     rows = []
-    for inbound in reality_inbounds(config):
+    for inbound in managed_connection_inbounds(config):
         settings = connection_settings_from_inbound(inbound)
-        entry = db_connections(db).get(settings["tag"], {})
+        entry = db_managed_connections(db).get(settings["tag"], {})
+        protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
+        if protocol_filter and protocol != protocol_filter:
+            continue
+        security = entry.get("security") or ("reality" if settings.get("security") == "reality" else "tls")
+        if security_filter and security != security_filter:
+            continue
         rows.append({
             "tag": settings["tag"],
             "name": entry.get("name") or connection_name_from_tag(settings["tag"]),
+            "protocol": protocol,
+            "security": security,
             "port": entry.get("port") or settings["port"],
             "sni": entry.get("sni") or settings["sni"],
             "transport": entry.get("transport") or settings["transport"],
-            "fingerprint": entry.get("fingerprint") or current_fingerprint(),
+            "fingerprint": (entry.get("fingerprint") or current_fingerprint()) if security == "reality" else (entry.get("fingerprint") or "-"),
         })
     return rows
 
 
 def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
-    headers = ("№", "NAME", "TAG", "PORT", "SNI", "TRANSPORT", "FINGERPRINT")
+    headers = ("№", "NAME", "TAG", "PROTOCOL", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT")
     values = [
         (
             str(index),
             row["name"],
             row["tag"],
+            row["protocol"],
+            row["security"],
             row["port"],
             row["sni"],
             row["transport"],
@@ -161,7 +207,7 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
         )
         for index, row in enumerate(rows, start=1)
     ]
-    values.append(("0", "Назад", "", "", "", "", ""))
+    values.append(("0", "Назад", "", "", "", "", "", "", ""))
     widths = [
         max(len(headers[column]), *(len(str(row[column])) for row in values))
         for column in range(len(headers))
@@ -175,13 +221,41 @@ def print_connection_selection_table(rows: list[dict[str, str | int]]) -> None:
     print(border)
 
 
-def choose_connection(action: str, auto_single: bool = True) -> str:
-    rows = connection_rows()
+def choose_connection(
+    action: str,
+    auto_single: bool = True,
+    security_filter: str | None = None,
+    protocol_filter: str | None = None,
+) -> str:
+    rows = connection_rows(security_filter=security_filter, protocol_filter=protocol_filter)
     if not rows:
-        die("No Reality connections found.")
+        die("No matching connections found.")
     if len(rows) == 1 and auto_single:
         return str(rows[0]["tag"])
     print(f"Выбери подключение для действия: {action}.")
+    print_connection_selection_table(rows)
+    while True:
+        choice = input("Подключение: ").strip()
+        if choice == "0":
+            return ""
+        if re.fullmatch(r"[0-9]+", choice):
+            index = int(choice, 10)
+            if 1 <= index <= len(rows):
+                return str(rows[index - 1]["tag"])
+        print("Неизвестное подключение. Выбери номер из списка или 0 для возврата.")
+
+
+def choose_xhttp_connection(action: str, auto_single: bool = True) -> str:
+    rows = [
+        row
+        for row in connection_rows(protocol_filter="vless")
+        if str(row.get("transport") or "").lower() == "xhttp"
+    ]
+    if not rows:
+        die("No xHTTP connections found.")
+    if len(rows) == 1 and auto_single:
+        return str(rows[0]["tag"])
+    print(f"Выбери xHTTP-подключение для действия: {action}.")
     print_connection_selection_table(rows)
     while True:
         choice = input("Подключение: ").strip()
@@ -226,7 +300,7 @@ def update_connection_db(
     xhttp_mode=None,
 ) -> None:
     db = load_db_sql()
-    connections = db_connections(db)
+    connections = db_managed_connections(db)
     entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
     if port is not None:
         entry["port"] = port
@@ -336,7 +410,247 @@ def prompt(default, message: str) -> str:
     return value or str(default)
 
 
-def choose_transport(default: str = "tcp") -> dict[str, str]:
+def ask_yes_no(message: str, default: bool = True) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    value = input(f"{message} [{suffix}]: ").strip().lower()
+    if not value:
+        return default
+    return value in ("y", "yes", "д", "да")
+
+
+def prompt_json_object(current: dict | None, message: str) -> dict:
+    default_text = json.dumps(current or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    value = input(f"{message} [{default_text}]: ").strip()
+    if not value:
+        return dict(current or {})
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        die(f"{message} must be valid JSON: {exc}")
+    if not isinstance(parsed, dict):
+        die(f"{message} must be a JSON object.")
+    return parsed
+
+
+def prompt_bool_value(default: bool, message: str) -> bool:
+    return ask_yes_no(message, default)
+
+
+def prompt_xhttp_headers(current: dict | None = None) -> dict:
+    headers = {str(key): str(value) for key, value in (current or {}).items()}
+    if headers:
+        print("Текущие headers:")
+        for key, value in headers.items():
+            print(f"  {key}: {value}")
+    print("Добавляй headers по одному. Пустое имя завершает ввод.")
+    while True:
+        key = input("Header name: ").strip()
+        if not key:
+            break
+        value = input(f"{key}: ").strip()
+        if value:
+            headers[key] = value
+        elif key in headers and ask_yes_no(f"Удалить header {key}", False):
+            headers.pop(key, None)
+    try:
+        return normalize_xhttp_extra({"headers": headers}).get("headers", {})
+    except ValueError as exc:
+        die(str(exc))
+
+
+def prompt_xhttp_download_settings(
+    default_xhttp_path: str,
+    default_xhttp_mode: str,
+    current: dict | None = None,
+) -> dict:
+    current = current or {}
+    current_xhttp = current.get("xhttpSettings") if isinstance(current.get("xhttpSettings"), dict) else {}
+    current_tls = current.get("tlsSettings") if isinstance(current.get("tlsSettings"), dict) else {}
+    current_reality = current.get("realitySettings") if isinstance(current.get("realitySettings"), dict) else {}
+
+    print()
+    print("downloadSettings: отдельная точка входа для download/downstream.")
+    print("network фиксируется как xhttp; security выбирается tls или reality.")
+    print("address: домен или IP download endpoint без https:// и без порта.")
+    address = prompt(current.get("address", ""), "downloadSettings.address")
+    print("port: публичный порт download endpoint, обычно 443.")
+    port = prompt(current.get("port", 443), "downloadSettings.port")
+    print("security: tls для обычного TLS/Caddy/CDN, reality для отдельного Reality endpoint.")
+    security = prompt(current.get("security", "tls"), "downloadSettings.security tls|reality").strip().lower()
+    settings = {
+        "address": address,
+        "port": port,
+        "network": "xhttp",
+        "security": security,
+        "xhttpSettings": {},
+    }
+    if security == "tls":
+        print("tlsSettings.serverName: SNI для TLS download endpoint; обычно тот же домен, что address.")
+        print("tlsSettings.fingerprint: uTLS/browser fingerprint, обычно chrome.")
+        print("tlsSettings.alpn: HTTP versions через запятую, например h2 или h3. Для Caddy обычно h2.")
+        tls = {
+            "serverName": prompt(current_tls.get("serverName", address), "downloadSettings.tlsSettings.serverName"),
+            "fingerprint": prompt(current_tls.get("fingerprint", "chrome"), "downloadSettings.tlsSettings.fingerprint"),
+            "alpn": prompt(",".join(current_tls.get("alpn", ["h2"])), "downloadSettings.tlsSettings.alpn comma-list"),
+        }
+        settings["tlsSettings"] = tls
+    elif security == "reality":
+        print("realitySettings.serverName: REALITY SNI download endpoint.")
+        print("realitySettings.publicKey: публичный Reality key download endpoint, обязателен.")
+        print("realitySettings.shortId: shortId download endpoint; можно оставить пустым, если он пустой на сервере.")
+        print("realitySettings.fingerprint: uTLS/browser fingerprint, обычно chrome.")
+        print("realitySettings.spiderX: spiderX path, обычно /.")
+        settings["realitySettings"] = {
+            "serverName": prompt(current_reality.get("serverName", address), "downloadSettings.realitySettings.serverName"),
+            "publicKey": prompt(current_reality.get("publicKey", ""), "downloadSettings.realitySettings.publicKey"),
+            "shortId": prompt(current_reality.get("shortId", ""), "downloadSettings.realitySettings.shortId"),
+            "fingerprint": prompt(current_reality.get("fingerprint", "chrome"), "downloadSettings.realitySettings.fingerprint"),
+            "spiderX": prompt(current_reality.get("spiderX", "/"), "downloadSettings.realitySettings.spiderX"),
+        }
+    else:
+        die("downloadSettings.security must be tls or reality.")
+
+    print("xhttpSettings.path: path download endpoint; обычно такой же, как у основного xHTTP подключения.")
+    print("xhttpSettings.mode: режим download endpoint. Для auto Xray сам выберет подходящий режим.")
+    xhttp = {
+        "path": prompt(current_xhttp.get("path", default_xhttp_path), "downloadSettings.xhttpSettings.path"),
+        "mode": choose_xhttp_mode(current_xhttp.get("mode", default_xhttp_mode)),
+    }
+    print("xhttpSettings.host: опциональная проверка/отправка Host. Без необходимости лучше оставить пустым.")
+    host = prompt(current_xhttp.get("host", ""), "downloadSettings.xhttpSettings.host optional")
+    if host:
+        xhttp["host"] = host
+    if ask_yes_no(
+        "Настроить downloadSettings.xhttpSettings.extra JSON",
+        isinstance(current_xhttp.get("extra"), dict),
+    ):
+        print("xhttpSettings.extra: вложенный XHTTP extra для download endpoint. Не должен содержать новый downloadSettings.")
+        xhttp["extra"] = prompt_json_object(current_xhttp.get("extra") or {}, "downloadSettings.xhttpSettings.extra")
+    settings["xhttpSettings"] = xhttp
+
+    if ask_yes_no("Настроить downloadSettings.sockopt JSON", isinstance(current.get("sockopt"), dict)):
+        print("sockopt: редкие socket options для download endpoint. Обычно лучше оставить пустым.")
+        settings["sockopt"] = prompt_json_object(current.get("sockopt") or {}, "downloadSettings.sockopt")
+
+    try:
+        return normalize_xhttp_download_settings(settings)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def prompt_xhttp_advanced_settings(
+    current: dict | None = None,
+    *,
+    default_xhttp_path: str = DEFAULT_XHTTP_PATH,
+    default_xhttp_mode: str = DEFAULT_XHTTP_MODE,
+) -> dict:
+    defaults = default_xhttp_advanced_extra()
+    source = normalize_xhttp_extra(current or defaults)
+    source_xmux = source.get("xmux") if isinstance(source.get("xmux"), dict) else {}
+    default_xmux = defaults["xmux"]
+
+    print()
+    print("Расширенные XHTTP настройки. Enter оставляет значение в квадратных скобках.")
+    print("Диапазон задаётся как MIN-MAX, например 100-1000. Одиночное число задаёт фиксированное значение.")
+    extra = {
+        "xPaddingBytes": prompt(source.get("xPaddingBytes", defaults["xPaddingBytes"]), "xPaddingBytes"),
+        "scStreamUpServerSecs": prompt(
+            source.get("scStreamUpServerSecs", defaults["scStreamUpServerSecs"]),
+            "scStreamUpServerSecs",
+        ),
+        "xmux": {},
+    }
+
+    packet_defaults = default_xhttp_packet_up_extra()
+    if ask_yes_no(
+        "Настроить packet-up параметры",
+        any(key in source for key in ("scMaxEachPostBytes", "scMinPostsIntervalMs", "scMaxBufferedPosts")),
+    ):
+        extra["scMaxEachPostBytes"] = prompt(
+            source.get("scMaxEachPostBytes", packet_defaults["scMaxEachPostBytes"]),
+            "scMaxEachPostBytes",
+        )
+        extra["scMinPostsIntervalMs"] = prompt(
+            source.get("scMinPostsIntervalMs", packet_defaults["scMinPostsIntervalMs"]),
+            "scMinPostsIntervalMs",
+        )
+        extra["scMaxBufferedPosts"] = prompt(
+            source.get("scMaxBufferedPosts", packet_defaults["scMaxBufferedPosts"]),
+            "scMaxBufferedPosts",
+        )
+
+    if ask_yes_no("Настроить noGRPCHeader/noSSEHeader", "noGRPCHeader" in source or "noSSEHeader" in source):
+        extra["noGRPCHeader"] = prompt_bool_value(bool(source.get("noGRPCHeader", False)), "noGRPCHeader")
+        extra["noSSEHeader"] = prompt_bool_value(bool(source.get("noSSEHeader", False)), "noSSEHeader")
+
+    if ask_yes_no("Настроить custom headers", isinstance(source.get("headers"), dict)):
+        headers = prompt_xhttp_headers(source.get("headers") if isinstance(source.get("headers"), dict) else {})
+        if headers:
+            extra["headers"] = headers
+
+    print()
+    print("XMUX. maxConcurrency и maxConnections конфликтуют: оставляй один из них равным 0.")
+    for key in XHTTP_XMUX_KEYS:
+        extra["xmux"][key] = prompt(source_xmux.get(key, default_xmux[key]), f"xmux.{key}")
+
+    current_download_settings = source.get("downloadSettings") if isinstance(source.get("downloadSettings"), dict) else {}
+    if ask_yes_no("Настроить downloadSettings", bool(current_download_settings)):
+        extra["downloadSettings"] = prompt_xhttp_download_settings(
+            default_xhttp_path,
+            default_xhttp_mode,
+            current_download_settings,
+        )
+    elif current_download_settings:
+        extra["downloadSettings"] = current_download_settings
+    try:
+        return normalize_xhttp_extra(extra)
+    except ValueError as exc:
+        die(str(exc))
+
+
+def maybe_prompt_xhttp_advanced_settings(
+    *,
+    default_xhttp_path: str = DEFAULT_XHTTP_PATH,
+    default_xhttp_mode: str = DEFAULT_XHTTP_MODE,
+) -> dict:
+    if not ask_yes_no("Использовать расширенные XHTTP настройки", False):
+        return {}
+    return prompt_xhttp_advanced_settings(
+        default_xhttp_path=default_xhttp_path,
+        default_xhttp_mode=default_xhttp_mode,
+    )
+
+
+def xhttp_extra_cli_arg(extra: dict | None) -> list[str]:
+    encoded = xhttp_extra_json(extra)
+    return ["--xhttp-extra-json", encoded] if encoded else []
+
+
+def print_xhttp_extra_status(extra: dict | None) -> None:
+    encoded = xhttp_extra_json(extra)
+    print("XHTTP_EXTRA: " + (encoded if encoded else "default"))
+
+
+def choose_security(default: str = "reality") -> str:
+    print()
+    print("SECURITY: тип входящего подключения.")
+    print("  1) reality - текущая схема без своего домена и сертификата")
+    print("  2) tls     - XHTTP через Caddy с доменом и автоматическим сертификатом")
+    raw = input(f"SECURITY [{default}] (номер или значение): ").strip().lower() or default
+    if raw == "1":
+        return "reality"
+    if raw == "2":
+        return "tls"
+    if raw in ("reality", "tls"):
+        return raw
+    die("SECURITY must be reality or tls.")
+
+
+def choose_transport(
+    default: str = "tcp",
+    default_xhttp_path: str = DEFAULT_XHTTP_PATH,
+    default_xhttp_mode: str = DEFAULT_XHTTP_MODE,
+) -> dict[str, str]:
     print()
     print("TRANSPORT: транспорт VLESS Reality для этого подключения.")
     print("  tcp   - TCP transport с Vision flow")
@@ -356,10 +670,16 @@ def choose_transport(default: str = "tcp") -> dict[str, str]:
         service_name = prompt("vless-grpc", "GRPC serviceName")
         settings["grpc_service_name"] = validate_grpc_service_name(service_name)
     elif transport == "xhttp":
-        path = prompt("/vless-xhttp", "XHTTP path")
-        mode = prompt("auto", "XHTTP mode")
+        path = prompt(default_xhttp_path, "XHTTP path")
+        mode = choose_xhttp_mode(default_xhttp_mode)
         settings["xhttp_path"] = validate_xhttp_path(path)
-        settings["xhttp_mode"] = validate_xhttp_mode(mode)
+        settings["xhttp_mode"] = mode
+        extra = maybe_prompt_xhttp_advanced_settings(
+            default_xhttp_path=settings["xhttp_path"],
+            default_xhttp_mode=mode,
+        )
+        if extra:
+            settings["xhttp_extra"] = extra
     return settings
 
 
@@ -367,9 +687,21 @@ def show_settings(call: CommandRunner) -> None:
     call(["xray-client", "connection-list"])
 
 
+def show_trojan_settings(call: CommandRunner) -> None:
+    rows = connection_rows(protocol_filter="trojan")
+    if not rows:
+        print("Trojan-подключений пока нет.")
+        return
+    print_connection_selection_table(rows)
+
+
 def create_connection(call: CommandRunner) -> None:
-    print("Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом и SNI.")
+    security = choose_security("reality")
     name = input("Имя подключения: ").strip()
+    if security == "tls":
+        create_tls_xhttp_connection(call, name)
+        return
+    print("Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом и SNI.")
     print("PORT: публичный TCP-порт для подключения клиентов. Он не должен совпадать с уже занятыми портами.")
     port = str(validate_port(input("PORT: ").strip()))
     print("REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
@@ -381,12 +713,124 @@ def create_connection(call: CommandRunner) -> None:
         command.extend(["--grpc-service-name", transport["grpc_service_name"]])
     elif transport["transport"] == "xhttp":
         command.extend(["--xhttp-path", transport["xhttp_path"], "--xhttp-mode", transport["xhttp_mode"]])
+        command.extend(xhttp_extra_cli_arg(transport.get("xhttp_extra")))
+    call(command)
+
+
+def create_trojan_connection(call: CommandRunner) -> None:
+    config = load_config()
+    print("Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.")
+    print("Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.")
+    name = input("Имя Trojan-подключения: ").strip()
+    default_local_port = connection_store.next_local_port(config, DEFAULT_TROJAN_TLS_LOCAL_PORT)
+    print("LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.")
+    local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
+    print("TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.")
+    domain = validate_host(input("TLS_DOMAIN: ").strip(), "TLS_DOMAIN")
+    public_port = str(validate_port(prompt(DEFAULT_TROJAN_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
+    print("WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.")
+    ws_path = validate_trojan_ws_path(prompt(DEFAULT_TROJAN_WS_PATH, "WS_PATH"))
+    fp = choose_fingerprint(current_fingerprint())
+    tls_min, tls_max = choose_tls_versions(
+        DEFAULT_TROJAN_TLS_MIN_VERSION,
+        DEFAULT_TROJAN_TLS_MAX_VERSION,
+    )
+    install_caddy = ask_yes_no("Установить и настроить Caddy сейчас (production default)", True)
+    if install_caddy:
+        conflicts = connection_store.public_port_conflicts(config, int(public_port))
+        if conflicts:
+            tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+            print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
+            print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
+            return
+        try:
+            xray_caddy.require_site_config_absent(domain)
+        except OSError as exc:
+            print(str(exc))
+            print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
+            return
+    command = [
+        "xray-client",
+        "add-trojan-connection",
+        name,
+        local_port,
+        domain,
+        fp,
+        "--transport",
+        "ws",
+        "--ws-path",
+        ws_path,
+        "--public-port",
+        public_port,
+        "--tls-min-version",
+        tls_min,
+        "--tls-max-version",
+        tls_max,
+    ]
+    if install_caddy:
+        command.append("--install-caddy")
+    else:
+        command.append("--no-caddy")
+    call(command)
+
+
+def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
+    config = load_config()
+    print("TLS-XHTTP подключение работает через Caddy: публично api.domain:443, внутри Xray слушает 127.0.0.1:LOCAL_PORT.")
+    domain = validate_host(input("TLS domain/SNI: ").strip(), "TLS_DOMAIN")
+    default_local_port = connection_store.next_local_port(config)
+    local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
+    public_port = str(validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
+    fp = choose_fingerprint(current_fingerprint())
+    path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
+    mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
+    xhttp_extra = maybe_prompt_xhttp_advanced_settings(default_xhttp_path=path, default_xhttp_mode=mode)
+    tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
+    install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
+    if install_caddy:
+        conflicts = connection_store.public_port_conflicts(config, int(public_port))
+        if conflicts:
+            tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+            print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
+            print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
+            return
+        try:
+            xray_caddy.require_site_config_absent(domain)
+        except OSError as exc:
+            print(str(exc))
+            print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
+            return
+    command = [
+        "xray-client",
+        "add-connection",
+        name,
+        local_port,
+        domain,
+        fp,
+        "--security",
+        "tls",
+        "--transport",
+        "xhttp",
+        "--xhttp-path",
+        path,
+        "--xhttp-mode",
+        mode,
+        "--public-port",
+        public_port,
+        "--tls-min-version",
+        tls_min,
+        "--tls-max-version",
+        tls_max,
+    ]
+    command.extend(xhttp_extra_cli_arg(xhttp_extra))
+    if install_caddy:
+        command.append("--install-caddy")
     call(command)
 
 
 def update_port() -> None:
     config = load_config()
-    tag = choose_connection("обновления PORT")
+    tag = choose_connection("обновления PORT", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
@@ -412,7 +856,7 @@ def update_port() -> None:
 
 def update_sni() -> None:
     config = load_config()
-    tag = choose_connection("обновления REALITY_SNI")
+    tag = choose_connection("обновления REALITY_SNI", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
@@ -436,7 +880,7 @@ def update_sni() -> None:
 
 def update_port_and_sni() -> None:
     config = load_config()
-    tag = choose_connection("обновления PORT и REALITY_SNI")
+    tag = choose_connection("обновления PORT и REALITY_SNI", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
@@ -478,9 +922,50 @@ def choose_fingerprint(default: str) -> str:
     return validate_fingerprint(value)
 
 
+def choose_xhttp_mode(default: str = DEFAULT_XHTTP_MODE) -> str:
+    default = validate_xhttp_mode(default)
+    print()
+    print("XHTTP_MODE: режим XHTTP/XMUX.")
+    for index, value in enumerate(XHTTP_MODES, start=1):
+        print(f"  {index}) {value}")
+    while True:
+        value = input(f"XHTTP_MODE [{default}] (номер из списка): ").strip().lower()
+        if not value:
+            return default
+        if value.isdigit():
+            index = int(value, 10)
+            if 1 <= index <= len(XHTTP_MODES):
+                return XHTTP_MODES[index - 1]
+        print(f"Выбери номер 1-{len(XHTTP_MODES)} или нажми Enter для {default}.")
+
+
+def choose_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2") -> tuple[str, str]:
+    try:
+        current_key = xray_caddy.tls_version_choice_key(current_min, current_max)
+        current_label = xray_caddy.tls_version_label(current_min, current_max)
+    except ValueError as exc:
+        die(str(exc))
+    print()
+    print("TLS: выбери версию протокола для Caddy site.")
+    for index, choice in enumerate(xray_caddy.TLS_VERSION_CHOICES, start=1):
+        marker = " (текущий)" if choice.key == current_key else ""
+        print(f"  {index}) {choice.label}{marker}")
+    while True:
+        value = input(f"TLS [{current_label}] (номер из списка): ").strip()
+        if not value:
+            choice = xray_caddy.tls_version_choice(current_key or "tls12")
+            return choice.tls_min_version, choice.tls_max_version
+        if value.isdigit():
+            index = int(value, 10)
+            if 1 <= index <= len(xray_caddy.TLS_VERSION_CHOICES):
+                choice = xray_caddy.TLS_VERSION_CHOICES[index - 1]
+                return choice.tls_min_version, choice.tls_max_version
+        print(f"Выбери номер 1-{len(xray_caddy.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
+
+
 def update_fingerprint() -> None:
     config = load_config()
-    tag = choose_connection("обновления FINGERPRINT")
+    tag = choose_connection("обновления FINGERPRINT", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
@@ -496,28 +981,91 @@ def update_fingerprint() -> None:
 
 def update_transport(call: CommandRunner) -> None:
     config = load_config()
-    tag = choose_connection("обновления TRANSPORT")
+    tag = choose_connection("обновления TRANSPORT", protocol_filter="vless")
     if not tag:
         print("Действие отменено.")
         return
     inbound = find_inbound_by_tag(config, tag)
     current = connection_settings_from_inbound(inbound)
-    settings = choose_transport(str(current.get("transport") or "tcp"))
+    settings = choose_transport(
+        str(current.get("transport") or "tcp"),
+        str(current.get("xhttpPath") or DEFAULT_XHTTP_PATH),
+        str(current.get("xhttpMode") or DEFAULT_XHTTP_MODE),
+    )
     command = ["xray-client", "connection-transport", tag, settings["transport"]]
     if settings["transport"] == "grpc":
         command.extend(["--grpc-service-name", settings["grpc_service_name"]])
     elif settings["transport"] == "xhttp":
         command.extend(["--xhttp-path", settings["xhttp_path"], "--xhttp-mode", settings["xhttp_mode"]])
+        command.extend(xhttp_extra_cli_arg(settings.get("xhttp_extra")))
     call(command)
     refresh_initial_link()
 
 
-def delete_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
-    rows = connection_rows()
-    if len(rows) <= 1:
-        print("Нельзя удалить последнее Reality-подключение. Сначала создай другое подключение.")
+def current_xhttp_extra(tag: str) -> dict:
+    config = load_config()
+    db = load_db_sql()
+    connection_store.ensure_connections(config, db)
+    entry = db_managed_connections(db).get(tag, {})
+    if isinstance(entry.get("xhttpExtra"), dict):
+        try:
+            return normalize_xhttp_extra(entry["xhttpExtra"])
+        except ValueError:
+            return {}
+    inbound = find_inbound_by_tag(config, tag)
+    settings = connection_settings_from_inbound(inbound)
+    if isinstance(settings.get("xhttpExtra"), dict):
+        return settings["xhttpExtra"]
+    return {}
+
+
+def update_xhttp_advanced(call: CommandRunner) -> None:
+    tag = choose_xhttp_connection("расширенных XHTTP настроек", auto_single=False)
+    if not tag:
+        print("Действие отменено.")
         return
-    tag = choose_connection("удаления подключения", auto_single=False)
+    config = load_config()
+    inbound = find_inbound_by_tag(config, tag)
+    settings = connection_settings_from_inbound(inbound)
+    current = current_xhttp_extra(tag)
+    print()
+    print_xhttp_extra_status(current)
+    print("1) Сбросить к настройкам Xray по умолчанию")
+    print("2) Настроить расширенные значения")
+    print("0) Назад")
+    choice = input("Действие: ").strip()
+    if choice == "0":
+        print("Действие отменено.")
+        return
+    if choice == "1":
+        call(["xray-client", "connection-xhttp-extra", tag, "--clear-xhttp-extra"])
+        refresh_initial_link()
+        return
+    if choice != "2":
+        print("Неизвестное действие.")
+        return
+    extra = prompt_xhttp_advanced_settings(
+        current or default_xhttp_advanced_extra(),
+        default_xhttp_path=str(settings.get("xhttpPath") or DEFAULT_XHTTP_PATH),
+        default_xhttp_mode=str(settings.get("xhttpMode") or DEFAULT_XHTTP_MODE),
+    )
+    call(["xray-client", "connection-xhttp-extra", tag, "--xhttp-extra-json", xhttp_extra_json(extra)])
+    refresh_initial_link()
+
+
+def delete_connection(
+    call: CommandRunner,
+    confirm: ConfirmCallback,
+    protocol_filter: str | None = "vless",
+) -> None:
+    rows = connection_rows(protocol_filter=protocol_filter)
+    if len(rows) <= 1:
+        if protocol_filter == "vless":
+            print("Нельзя удалить последнее VLESS-подключение. Сначала создай другое подключение.")
+        else:
+            print("Нет подключений для удаления.")
+        return
+    tag = choose_connection("удаления подключения", auto_single=False, protocol_filter=protocol_filter)
     if not tag:
         print("Действие отменено.")
         return
@@ -531,3 +1079,45 @@ def delete_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
         return
     call(["xray-client", "remove-connection", tag])
     refresh_initial_link()
+
+
+def delete_trojan_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
+    rows = connection_rows(protocol_filter="trojan")
+    if not rows:
+        print("Trojan-подключений пока нет.")
+        return
+    tag = choose_connection("удаления Trojan-подключения", auto_single=False, protocol_filter="trojan")
+    if not tag:
+        print("Действие отменено.")
+        return
+    row = next((item for item in rows if item["tag"] == tag), None)
+    name = row["name"] if row else tag
+    print()
+    print(f"Будет удалено Trojan-подключение: {name} ({tag})")
+    print("Все клиенты этого подключения также будут удалены вместе с их историей трафика.")
+    if not confirm("Продолжить удаление"):
+        print("Удаление отменено.")
+        return
+    call(["xray-client", "remove-connection", tag])
+
+
+def rename_connection(call: CommandRunner, protocol_filter: str | None = "vless") -> None:
+    tag = choose_connection("переименования подключения", auto_single=False, protocol_filter=protocol_filter)
+    if not tag:
+        print("Действие отменено.")
+        return
+    rows = connection_rows(protocol_filter=protocol_filter)
+    row = next((item for item in rows if item["tag"] == tag), None)
+    current_name = row["name"] if row else tag
+    new_name = input(f"Новое имя подключения [{current_name}]: ").strip()
+    if not new_name or new_name == current_name:
+        print("Имя не изменено.")
+        return
+    call(["xray-client", "connection-rename", tag, new_name])
+
+
+def rename_trojan_connection(call: CommandRunner) -> None:
+    if not connection_rows(protocol_filter="trojan"):
+        print("Trojan-подключений пока нет.")
+        return
+    rename_connection(call, protocol_filter="trojan")

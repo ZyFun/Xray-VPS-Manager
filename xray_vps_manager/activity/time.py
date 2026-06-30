@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
+from xray_vps_manager.core.time import xray_access_time_to_iso
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
@@ -30,8 +32,7 @@ def parse_time(value: str | None) -> datetime | None:
 
 
 def access_time_to_iso(value: str) -> str:
-    parsed = datetime.strptime(value, "%Y/%m/%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    return parsed.isoformat().replace("+00:00", "Z")
+    return xray_access_time_to_iso(value)
 
 
 def today_utc_date() -> date:
@@ -49,4 +50,3 @@ def iter_dates(start: date, end: date) -> Iterable[date]:
     while current <= end:
         yield current
         current += timedelta(days=1)
-

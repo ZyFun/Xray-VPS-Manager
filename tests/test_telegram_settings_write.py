@@ -21,6 +21,7 @@ def telegram_db() -> dict:
         "chatLabel": "owner",
         "routeMode": "cascade",
         "paymentTotalAmount": "500",
+        "paymentDomainAnnualAmount": "1200",
         "paymentCurrency": "$",
         "paymentRoundingMode": "step",
         "paymentRoundingStep": "50",
@@ -125,6 +126,7 @@ class TelegramSettingsWriteTests(unittest.TestCase):
                 self.assertEqual(sqlite_telegram.get_setting(connection, "botUsername"), "JsonVpnBot")
                 self.assertEqual(sqlite_telegram.get_setting(connection, "enabled"), "true")
                 self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTotalAmount"), "500")
+                self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentDomainAnnualAmount"), "1200")
                 self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentCurrency"), "$")
                 self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTransferMethod"), "phone")
                 self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentPhone"), "+79991234567")

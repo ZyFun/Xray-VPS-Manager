@@ -9,12 +9,15 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
 
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.terminal import print_table
+from xray_vps_manager.db import database as sqlite_database
+from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import client_routes
+from xray_vps_manager.xray import outbound_links
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 GEOIP_WARNING_OUTBOUND_PREFIX = "geoip-warning-"
@@ -28,116 +31,11 @@ def die(message):
     sys.exit(1)
 
 
-def one(params, key, default=""):
-    value = params.get(key, [default])
-    return value[0] if value else default
-
-
 def parse_vless(uri, tag=None):
-    parsed = urlparse(uri.strip())
-    if parsed.scheme.lower() != "vless":
-        die("Only vless:// links are supported.")
-    if not parsed.username or not parsed.hostname:
-        die("The VLESS link must include UUID and host.")
-
-    params = parse_qs(parsed.query, keep_blank_values=True)
-    port = parsed.port or 443
-    network = (one(params, "type", "tcp") or "tcp").lower()
-    security = (one(params, "security", "none") or "none").lower()
-    encryption = one(params, "encryption", "none") or "none"
-    flow = one(params, "flow", "")
-
-    outbound = {
-        "tag": tag or cascade_config.cascade_tag(),
-        "protocol": "vless",
-        "settings": {
-            "vnext": [
-                {
-                    "address": parsed.hostname,
-                    "port": port,
-                    "users": [
-                        {
-                            "id": unquote(parsed.username),
-                            "encryption": encryption,
-                        }
-                    ],
-                }
-            ]
-        },
-        "streamSettings": {
-            "network": network,
-            "security": security,
-        },
-    }
-
-    user = outbound["settings"]["vnext"][0]["users"][0]
-    if flow:
-        user["flow"] = flow
-
-    stream = outbound["streamSettings"]
-    if security == "reality":
-        public_key = one(params, "pbk")
-        sni = one(params, "sni")
-        short_id = one(params, "sid")
-        if not public_key or not sni:
-            die("Reality VLESS requires pbk and sni parameters.")
-        reality = {
-            "serverName": sni,
-            "publicKey": public_key,
-            "fingerprint": one(params, "fp", "chrome") or "chrome",
-        }
-        if short_id:
-            reality["shortId"] = short_id
-        spider_x = one(params, "spx", "")
-        if spider_x:
-            reality["spiderX"] = unquote(spider_x)
-        stream["realitySettings"] = reality
-    elif security == "tls":
-        tls = {}
-        sni = one(params, "sni")
-        if sni:
-            tls["serverName"] = sni
-        fp = one(params, "fp")
-        if fp:
-            tls["fingerprint"] = fp
-        stream["tlsSettings"] = tls
-    elif security in ("none", ""):
-        stream["security"] = "none"
-    else:
-        die(f"Unsupported security={security!r}; supported: reality, tls, none.")
-
-    if network == "tcp":
-        header_type = one(params, "headerType", "none") or "none"
-        stream["tcpSettings"] = {"header": {"type": header_type}}
-    elif network == "ws":
-        ws = {}
-        path = one(params, "path")
-        host = one(params, "host")
-        if path:
-            ws["path"] = unquote(path)
-        if host:
-            ws["headers"] = {"Host": host}
-        stream["wsSettings"] = ws
-    elif network == "grpc":
-        service_name = one(params, "serviceName")
-        grpc = {}
-        if service_name:
-            grpc["serviceName"] = unquote(service_name)
-        stream["grpcSettings"] = grpc
-    elif network == "xhttp":
-        path = one(params, "path")
-        mode = one(params, "mode")
-        xhttp = {}
-        if path:
-            xhttp["path"] = unquote(path)
-        if mode:
-            xhttp["mode"] = mode
-        stream["xhttpSettings"] = xhttp
-    else:
-        die(f"Unsupported network type={network!r}; supported: tcp, ws, grpc, xhttp.")
-
-    label = unquote(parsed.fragment) if parsed.fragment else f"{parsed.hostname}:{port}"
-    return outbound, label
+    try:
+        return outbound_links.parse_vless_outbound(uri, tag or cascade_config.cascade_tag())
+    except ValueError as exc:
+        die(str(exc))
 
 
 def load_config():
@@ -149,20 +47,15 @@ def remove_tag(items, tag):
 
 
 def is_geoip_warning_tag(tag):
-    return str(tag or "").startswith(GEOIP_WARNING_OUTBOUND_PREFIX)
+    return bypass_config.is_geoip_warning_tag(tag)
 
 
 def geoip_warning_tags(config):
-    tags = {item.get("tag") for item in config.get("outbounds", []) if is_geoip_warning_tag(item.get("tag"))}
-    tags.update(rule.get("outboundTag") for rule in config.get("routing", {}).get("rules", []) if is_geoip_warning_tag(rule.get("outboundTag")))
-    return sorted(tag for tag in tags if tag)
+    return bypass_config.warning_tags(config)
 
 
 def outbound_by_tag(config, tag):
-    for outbound in config.get("outbounds", []):
-        if outbound.get("tag") == tag:
-            return outbound
-    return None
+    return bypass_config.outbound_by_tag(config, tag)
 
 
 def load_client_db_optional():
@@ -182,30 +75,30 @@ def save_client_db_optional(db):
         print(f"WARN: client route DB save skipped: {exc}", file=sys.stderr)
 
 
+def load_enabled_bypass_routes_optional():
+    try:
+        connection = sqlite_database.open_database()
+        try:
+            return sqlite_bypass.list_enabled_routes(connection)
+        finally:
+            connection.close()
+    except Exception as exc:
+        print(f"WARN: bypass route DB sync skipped: {exc}", file=sys.stderr)
+        return None
+
+
 def route_source_outbound(config, fallback=None):
-    catchall = cascade_config.current_catchall_tag(config)
-    if catchall:
-        outbound = outbound_by_tag(config, catchall)
-        if outbound:
-            return outbound
-    if fallback:
-        return fallback
-    active = cascade_config.active_cascade_outbound(config)
-    if active:
-        return active
-    return cascade_config.ensure_direct_outbound(config)
+    return bypass_config.current_catchall_source_outbound(config, fallback=fallback)
 
 
 def sync_geoip_warning_outbounds(config, source_outbound=None):
-    tags = geoip_warning_tags(config)
-    if not tags:
+    if not bypass_config.warning_tags(config):
         return
-    source = route_source_outbound(config, fallback=source_outbound)
-    config["outbounds"] = [item for item in config.get("outbounds", []) if not is_geoip_warning_tag(item.get("tag"))]
-    for tag in tags:
-        outbound = copy.deepcopy(source)
-        outbound["tag"] = tag
-        config.setdefault("outbounds", []).append(outbound)
+    bypass_config.sync_geoip_warning_outbounds(
+        config,
+        source_outbound=source_outbound,
+        enabled_routes=load_enabled_bypass_routes_optional(),
+    )
 
 
 def is_api_rule(rule):

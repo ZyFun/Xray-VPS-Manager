@@ -9,11 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.clients import access as client_access
-from xray_vps_manager.telegram import keyboards, messages, notifications, payments, subscriptions
+from xray_vps_manager.telegram import keyboards, messages, notifications, payments, server_settings, subscriptions
+from xray_vps_manager.xray import caddy
 
 ADMIN_CALLBACK_GUARDS_KEY = "callbackGuards"
 ADMIN_CONSUMED_CALLBACK_LIMIT = 40
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
+
+
+def default_server_name_fragment() -> str:
+    return "Xray"
 
 
 @dataclass(frozen=True)
@@ -26,6 +31,9 @@ class AdminContext:
     bot_name: Callable[[dict | None], str]
     notification_context: notifications.NotificationContext
     xray_client: Path = Path("/usr/local/sbin/xray-client")
+    server_name_fragment: Callable[[], str] = default_server_name_fragment
+    list_tls_sites: Callable[[], list[dict[str, Any]]] = server_settings.tls_site_rows
+    set_tls_site_version: Callable[..., Any] = server_settings.set_tls_site_version
 
 
 def normalize_message_id(value):
@@ -186,6 +194,151 @@ def send_admin_settings_menu(ctx: AdminContext, db, chat_id, text=None):
     )
 
 
+def send_admin_server_settings_menu(ctx: AdminContext, db, chat_id, text=None):
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        text or "Xray VPS Manager: настройки сервера",
+        keyboards.admin_server_settings_keyboard(),
+    )
+
+
+def server_settings_state(db):
+    admin_state = db.setdefault("adminState", {})
+    state = admin_state.setdefault("serverSettings", {})
+    if not isinstance(state, dict):
+        state = {}
+        admin_state["serverSettings"] = state
+    return state
+
+
+def set_server_tls_sites(ctx: AdminContext, db, chat_id, sites):
+    state = server_settings_state(db)
+    state[str(chat_id)] = {"tlsSites": list(sites), "updatedAt": admin_utc_stamp(ctx)}
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def selected_tls_site(db, chat_id, index_value) -> dict[str, Any]:
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return {}
+    state = server_settings_state(db)
+    entry = state.get(str(chat_id), {})
+    sites = entry.get("tlsSites", []) if isinstance(entry, dict) else []
+    if index < 0 or index >= len(sites):
+        return {}
+    item = sites[index]
+    return item if isinstance(item, dict) else {}
+
+
+def server_tls_summary_text(sites):
+    lines = ["Xray VPS Manager: TLS", ""]
+    if not sites:
+        lines.append("TLS site configs не найдены.")
+        lines.append("Создай TLS-подключение и Caddy site config через SSH-меню, затем вернись сюда.")
+        return "\n".join(lines)
+    lines.append("Текущее шифрование:")
+    for item in sites:
+        domain = str(item.get("domain") or "-")
+        label = str(item.get("tlsLabel") or "-")
+        modified_at = str(item.get("modifiedAt") or "-")
+        lines.append(f"- {domain}: {label}")
+        lines.append(f"  Изменено: {modified_at}")
+    lines.extend(["", "Выбери site config, чтобы сменить TLS."])
+    return "\n".join(lines)
+
+
+def server_tls_site_text(site, prefix=""):
+    domain = str(site.get("domain") or "-")
+    label = str(site.get("tlsLabel") or "-")
+    modified_at = str(site.get("modifiedAt") or "-")
+    local_port = site.get("localPort") or "-"
+    upstream = f"127.0.0.1:{local_port}" if local_port != "-" else "-"
+    lines = []
+    if prefix:
+        lines.extend([prefix, ""])
+    lines.extend(
+        [
+            f"TLS: {domain}",
+            "",
+            f"Текущее шифрование: {label}",
+            f"Изменено: {modified_at}",
+            f"Upstream: {upstream}",
+            "",
+            "Выбери новый TLS-профиль.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def send_admin_server_tls_menu(ctx: AdminContext, db, chat_id, text=None):
+    sites = ctx.list_tls_sites()
+    set_server_tls_sites(ctx, db, chat_id, sites)
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        text or server_tls_summary_text(sites),
+        keyboards.admin_server_tls_sites_keyboard(sites),
+    )
+
+
+def send_admin_server_tls_site_menu(ctx: AdminContext, db, chat_id, index_value, text=None):
+    site = selected_tls_site(db, chat_id, index_value)
+    if not site:
+        send_admin_server_tls_menu(ctx, db, chat_id, "Список TLS site configs устарел. Открой TLS заново.")
+        return True
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        text or server_tls_site_text(site),
+        keyboards.admin_server_tls_site_keyboard(index_value, site.get("tlsChoice", "")),
+    )
+    return True
+
+
+def handle_server_tls_set(ctx: AdminContext, db, chat_id, index_value, choice_key):
+    site = selected_tls_site(db, chat_id, index_value)
+    if not site:
+        send_admin_server_tls_menu(ctx, db, chat_id, "Список TLS site configs устарел. Открой TLS заново.")
+        return True
+    try:
+        choice = caddy.tls_version_choice(choice_key)
+    except ValueError:
+        send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, "Неизвестный TLS-профиль.")
+        return True
+    if site.get("tlsChoice") == choice.key:
+        send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, f"Этот TLS-профиль уже выбран: {choice.label}.")
+        return True
+    try:
+        local_port = int(site.get("localPort") or 0)
+    except (TypeError, ValueError):
+        local_port = 0
+    site_path = str(site.get("path") or "")
+    if local_port <= 0 and not site_path:
+        send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, "Не удалось определить upstream local port для site config.")
+        return True
+    try:
+        ctx.set_tls_site_version(str(site.get("domain") or ""), local_port, choice.key, site_path or None)
+    except Exception as exc:
+        text = messages.truncate_telegram_text(
+            f"Не удалось изменить TLS для {site.get('domain') or '-'}.\n\n"
+            f"Caddy config был откатан, если запись уже успела начаться.\n\n{exc}"
+        )
+        send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, text)
+        return True
+    send_admin_server_tls_menu(
+        ctx,
+        db,
+        chat_id,
+        f"TLS обновлён для {site.get('domain')}: {choice.label}.\n\nCaddy config проверен и применён.",
+    )
+    return True
+
+
 def admin_client_names(ctx: AdminContext) -> list[str]:
     clients = subscriptions.client_db_clients(ctx.load_client_db())
     return sorted(str(name) for name, entry in clients.items() if isinstance(entry, dict))
@@ -243,6 +396,38 @@ def send_admin_client_extend_list(ctx: AdminContext, db, chat_id):
     )
 
 
+def send_admin_client_link_list(ctx: AdminContext, db, chat_id):
+    names = admin_client_names(ctx)
+    if not names:
+        clear_client_flow_state_if_pending(ctx, db, chat_id)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиентов пока нет.")
+        return
+    set_client_link_selection(ctx, db, chat_id, names)
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        "Выбери клиента, для которого нужно получить актуальную VPN-ссылку.",
+        keyboards.admin_client_link_keyboard(names),
+    )
+
+
+def send_admin_client_key_list(ctx: AdminContext, db, chat_id):
+    names = admin_client_names(ctx)
+    if not names:
+        clear_client_flow_state_if_pending(ctx, db, chat_id)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиентов пока нет.")
+        return
+    set_client_key_selection(ctx, db, chat_id, names)
+    send_admin_response(
+        ctx,
+        db,
+        chat_id,
+        "Выбери клиента, для которого нужно получить ключ доступа к боту.",
+        keyboards.admin_client_key_keyboard(names),
+    )
+
+
 def status_text(ctx: AdminContext, db):
     user_subscriptions = db.get("clientSubscriptions", {})
     subscription_state = db.get("clientSubscriptionState", {})
@@ -286,12 +471,15 @@ def subscribers_text(ctx: AdminContext, db):
 
 def payment_total_text(ctx: AdminContext, db):
     client_db = ctx.load_client_db()
-    total = payments.format_payment_amount(str(db.get("paymentTotalAmount") or "").strip(), db.get("paymentCurrency") or "₽")
+    summary = payments.payment_summary(db, client_db)
     return "\n".join(
         [
             "Xray VPS Manager: текущая сумма",
             "",
-            f"Общая аренда: {total}",
+            f"Месячная аренда сервера: {summary['serverMonthly']}",
+            f"Годовая аренда домена: {summary['domainAnnual']}",
+            f"Аренда домена в месяц: {summary['domainMonthly']}",
+            f"Общая месячная аренда: {summary['total']}",
             f"Платных клиентов: {payments.paid_client_count(client_db)}",
             f"Реквизиты: {payments.payment_transfer_label(db)}",
         ]
@@ -371,7 +559,15 @@ def create_backup_text(ctx: AdminContext):
 
 
 def maintenance_notice_message(ctx: AdminContext, db, template_id):
-    return notifications.maintenance_notice_message(ctx.notification_context, db, template_id)
+    extra_text = ""
+    if messages.normalize_maintenance_template_id(template_id) == "done":
+        extra_text = str(db.get("adminState", {}).get("doneNoticeExtraText") or "").strip()
+    return notifications.maintenance_notice_message(
+        ctx.notification_context,
+        db,
+        template_id,
+        extra_text=extra_text,
+    )
 
 
 def news_notice_message(ctx: AdminContext, db, text):
@@ -432,6 +628,11 @@ def set_news_notice_waiting(ctx: AdminContext, db, chat_id):
     ctx.save_db_sections(db, ("adminState",))
 
 
+def set_done_notice_extra_waiting(ctx: AdminContext, db, chat_id):
+    db.setdefault("adminState", {})[str(chat_id)] = {"action": "done-notice-extra-text", "startedAt": admin_utc_stamp(ctx)}
+    ctx.save_db_sections(db, ("adminState",))
+
+
 def set_client_extend_waiting(ctx: AdminContext, db, chat_id, name):
     db.setdefault("adminState", {})[str(chat_id)] = {
         "action": "extend-subscription-days",
@@ -444,6 +645,34 @@ def set_client_extend_waiting(ctx: AdminContext, db, chat_id, name):
 def set_client_extend_selection(ctx: AdminContext, db, chat_id, names):
     db.setdefault("adminState", {})[str(chat_id)] = {
         "action": "extend-subscription-select",
+        "clients": list(names),
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def set_client_link_selection(ctx: AdminContext, db, chat_id, names):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "client-link-select",
+        "clients": list(names),
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def set_client_link_credential_selection(ctx: AdminContext, db, chat_id, name, options):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "client-link-credential-select",
+        "client": str(name or ""),
+        "options": list(options),
+        "startedAt": admin_utc_stamp(ctx),
+    }
+    ctx.save_db_sections(db, ("adminState",))
+
+
+def set_client_key_selection(ctx: AdminContext, db, chat_id, names):
+    db.setdefault("adminState", {})[str(chat_id)] = {
+        "action": "client-key-select",
         "clients": list(names),
         "startedAt": admin_utc_stamp(ctx),
     }
@@ -486,6 +715,7 @@ def clear_admin_state(ctx: AdminContext, db, chat_id, clear_custom_notice=True):
     if clear_custom_notice:
         state.pop("customNoticeText", None)
         state.pop("newsNoticeText", None)
+        state.pop("doneNoticeExtraText", None)
     ctx.save_db_sections(db, ("adminState",))
 
 
@@ -496,11 +726,15 @@ def clear_client_extend_state_if_pending(ctx: AdminContext, db, chat_id):
 def clear_client_flow_state_if_pending(ctx: AdminContext, db, chat_id):
     pending = db.get("adminState", {}).get(str(chat_id), {})
     if pending.get("action") in (
+        "client-link-select",
+        "client-link-credential-select",
+        "client-key-select",
         "extend-subscription-select",
         "extend-subscription-days",
         "add-client-input",
         "add-client-payment",
         "add-client-connection",
+        "done-notice-extra-text",
     ):
         clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
 
@@ -560,6 +794,21 @@ def handle_news_notice_text(ctx: AdminContext, db, chat_id, text):
     return True
 
 
+def handle_done_notice_extra_text(ctx: AdminContext, db, chat_id, text):
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    if pending.get("action") != "done-notice-extra-text":
+        return False
+    if text.lower() in ("/cancel", "cancel", "отмена"):
+        clear_admin_state(ctx, db, chat_id)
+        send_admin_notices_menu(ctx, db, chat_id, "Рассылка отменена.")
+        return True
+    db.setdefault("adminState", {})["doneNoticeExtraText"] = text
+    db["adminState"].pop(str(chat_id), None)
+    ctx.save_db_sections(db, ("adminState",))
+    preview_notice(ctx, db, chat_id, "done")
+    return True
+
+
 def selected_client_name(db, chat_id, index_value):
     try:
         index = int(index_value)
@@ -567,6 +816,43 @@ def selected_client_name(db, chat_id, index_value):
         return ""
     pending = db.get("adminState", {}).get(str(chat_id), {})
     names = pending.get("clients", []) if pending.get("action") == "extend-subscription-select" else []
+    if index < 0 or index >= len(names):
+        return ""
+    return str(names[index])
+
+
+def selected_client_link_name(db, chat_id, index_value):
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return ""
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    names = pending.get("clients", []) if pending.get("action") == "client-link-select" else []
+    if index < 0 or index >= len(names):
+        return ""
+    return str(names[index])
+
+
+def selected_client_link_credential(db, chat_id, index_value) -> dict[str, Any]:
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return {}
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    options = pending.get("options", []) if pending.get("action") == "client-link-credential-select" else []
+    if index < 0 or index >= len(options):
+        return {}
+    item = options[index]
+    return item if isinstance(item, dict) else {}
+
+
+def selected_client_key_name(db, chat_id, index_value):
+    try:
+        index = int(index_value)
+    except (TypeError, ValueError):
+        return ""
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    names = pending.get("clients", []) if pending.get("action") == "client-key-select" else []
     if index < 0 or index >= len(names):
         return ""
     return str(names[index])
@@ -621,11 +907,7 @@ def command_output(result):
 
 
 def first_vless_link(output):
-    for line in str(output or "").splitlines():
-        value = line.strip()
-        if value.startswith("vless://"):
-            return value
-    return ""
+    return subscriptions.first_connection_link(output)
 
 
 def add_client_command(ctx: AdminContext, pending, connection_tag=""):
@@ -641,14 +923,25 @@ def add_client_command(ctx: AdminContext, pending, connection_tag=""):
     return command
 
 
-def add_client_success_text(ctx: AdminContext, db, name, payment_type, result):
+def add_client_success_text(ctx: AdminContext, db, name, payment_type, result, connection_tag=""):
     link = first_vless_link(command_output(result))
     if not link:
-        link_result = ctx.run_capture([str(ctx.xray_client), "link", name], timeout=20)
+        link_command = [str(ctx.xray_client), "link", name]
+        if connection_tag:
+            link_command.extend(["--connection", str(connection_tag)])
+        link_result = ctx.run_capture(link_command, timeout=20)
         if getattr(link_result, "returncode", 1) == 0:
             link = first_vless_link(command_output(link_result))
     if not link:
-        return "Клиент добавлен, но xray-client не вернул VLESS-ссылку. Выведи её через SSH: xray-client link " + name
+        return "Клиент добавлен, но xray-client не вернул ссылку подключения. Выведи её через SSH: xray-client link " + name
+
+    access_key = subscriptions.access_key_from_output(command_output(result))
+    if not access_key:
+        key_result = ctx.run_capture([str(ctx.xray_client), "key", name], timeout=20)
+        if getattr(key_result, "returncode", 1) == 0:
+            access_key = subscriptions.access_key_from_output(command_output(key_result))
+    if not access_key:
+        return "Клиент добавлен, но xray-client не вернул ключ доступа. Выведи его через SSH: xray-client key " + name
 
     try:
         client_db = ctx.load_client_db()
@@ -659,22 +952,23 @@ def add_client_success_text(ctx: AdminContext, db, name, payment_type, result):
     entry = clients.get(name, {})
     access_until = ctx.format_access_until(entry.get("expiresAt", "") if isinstance(entry, dict) else "")
     amount_label = payments.payment_amount_label(db, client_db)
-    return messages.build_client_added_message(db, link, access_until, payment_type, amount_label, ctx.bot_name)
+    link = subscriptions.neutral_link_fragment(link, ctx.server_name_fragment())
+    return messages.build_client_added_message(db, link, access_key, access_until, payment_type, amount_label, ctx.bot_name)
 
 
-def add_client_result_message(ctx: AdminContext, db, pending, result):
+def add_client_result_message(ctx: AdminContext, db, pending, result, connection_tag=""):
     name = str(pending.get("client") or "")
     if getattr(result, "returncode", 1) != 0:
         output = command_output(result)
         details = f"\n\n{output}" if output else ""
         return messages.truncate_telegram_text(f"Не удалось добавить клиента {name}, exit {getattr(result, 'returncode', 1)}.{details}"), None
-    return add_client_success_text(ctx, db, name, pending.get("paymentType", "free"), result), "HTML"
+    return add_client_success_text(ctx, db, name, pending.get("paymentType", "free"), result, connection_tag), "HTML"
 
 
 def run_add_client_from_pending(ctx: AdminContext, db, chat_id, pending, connection_tag=""):
     result = ctx.run_capture(add_client_command(ctx, pending, connection_tag), timeout=120)
     clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
-    text, parse_mode = add_client_result_message(ctx, db, pending, result)
+    text, parse_mode = add_client_result_message(ctx, db, pending, result, connection_tag)
     send_admin_clients_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
     return True
 
@@ -756,7 +1050,7 @@ def handle_add_client_payment(ctx: AdminContext, db, chat_id, payment_type):
             ctx,
             db,
             chat_id,
-            "Выбери Reality-подключение для нового клиента.",
+            "Выбери подключение для нового клиента.",
             keyboards.admin_client_add_connection_keyboard(connections),
         )
         return True
@@ -797,6 +1091,134 @@ def extend_subscription_text(ctx: AdminContext, name, days, result):
     if output:
         lines.extend(["", output])
     return messages.truncate_telegram_text("\n".join(lines))
+
+
+def client_link_text(ctx: AdminContext, name, result):
+    if getattr(result, "returncode", 1) != 0:
+        output = command_output(result)
+        details = f"\n\n{output}" if output else ""
+        return messages.truncate_telegram_text(f"Не удалось получить VPN-ссылку для {name}, exit {getattr(result, 'returncode', 1)}.{details}"), None
+
+    link = first_vless_link(command_output(result))
+    if not link:
+        return "Не удалось получить VPN-ссылку: xray-client не вернул ссылку.", None
+
+    link = subscriptions.neutral_link_fragment(link, ctx.server_name_fragment())
+    return (
+        "\n".join(
+            [
+                "Можно переслать это сообщение пользователю:",
+                "",
+                "Актуальная VPN-ссылка:",
+                "",
+                f"<pre><code>{subscriptions.telegram_html_escape(link)}</code></pre>",
+                "",
+                "Если настройки подключения менялись, импортируй эту ссылку заново.",
+            ]
+        ),
+        "HTML",
+    )
+
+
+def client_access_key_text(ctx: AdminContext, name, result):
+    if getattr(result, "returncode", 1) != 0:
+        output = command_output(result)
+        details = f"\n\n{output}" if output else ""
+        return messages.truncate_telegram_text(f"Не удалось получить ключ доступа для {name}, exit {getattr(result, 'returncode', 1)}.{details}"), None
+
+    access_key = subscriptions.access_key_from_output(command_output(result))
+    if not access_key:
+        return "Не удалось получить ключ доступа: xray-client не вернул ключ.", None
+
+    return (
+        "\n".join(
+            [
+                "Можно переслать это сообщение пользователю:",
+                "",
+                "Ключ доступа для бота:",
+                "",
+                f"<pre><code>{subscriptions.telegram_html_escape(access_key)}</code></pre>",
+                "",
+                "Этот ключ нужен только для подключения уведомлений в Telegram-боте.",
+            ]
+        ),
+        "HTML",
+    )
+
+
+def send_admin_client_link(ctx: AdminContext, db, chat_id, name, connection_tag=""):
+    command = [str(ctx.xray_client), "link", name]
+    if connection_tag:
+        command.extend(["--connection", str(connection_tag)])
+    result = ctx.run_capture(command, timeout=20)
+    clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+    text, parse_mode = client_link_text(ctx, name, result)
+    send_admin_clients_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
+    return True
+
+
+def send_admin_client_key(ctx: AdminContext, db, chat_id, name):
+    result = ctx.run_capture([str(ctx.xray_client), "key", name], timeout=20)
+    clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+    text, parse_mode = client_access_key_text(ctx, name, result)
+    send_admin_clients_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
+    return True
+
+
+def handle_client_link_selection(ctx: AdminContext, db, chat_id, index_value):
+    name = selected_client_link_name(db, chat_id, index_value)
+    if not name:
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент не найден. Открой список заново.")
+        return True
+    if name not in admin_client_names(ctx):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент больше не найден. Выбери клиента заново.")
+        return True
+    client_db = ctx.load_client_db()
+    options = subscriptions.credential_options_for_client(client_db, name)
+    if not options:
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "У клиента нет активных подключений.")
+        return True
+    if len(options) > 1:
+        set_client_link_credential_selection(ctx, db, chat_id, name, options)
+        send_admin_response(
+            ctx,
+            db,
+            chat_id,
+            f"Выбери подключение клиента {name}, для которого нужна VPN-ссылка.",
+            keyboards.admin_client_link_credential_keyboard(options),
+        )
+        return True
+    send_admin_client_link(ctx, db, chat_id, name, options[0].get("connection", ""))
+    return True
+
+
+def handle_client_link_credential_selection(ctx: AdminContext, db, chat_id, index_value):
+    pending = db.get("adminState", {}).get(str(chat_id), {})
+    name = str(pending.get("client") or "")
+    option = selected_client_link_credential(db, chat_id, index_value)
+    connection_tag = str(option.get("connection") or "")
+    if not name or not connection_tag:
+        send_admin_clients_menu(ctx, db, chat_id, "Подключение не найдено. Открой список заново.")
+        return True
+    if name not in admin_client_names(ctx):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент больше не найден. Выбери клиента заново.")
+        return True
+    return send_admin_client_link(ctx, db, chat_id, name, connection_tag)
+
+
+def handle_client_key_selection(ctx: AdminContext, db, chat_id, index_value):
+    name = selected_client_key_name(db, chat_id, index_value)
+    if not name:
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент не найден. Открой список заново.")
+        return True
+    if name not in admin_client_names(ctx):
+        clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
+        send_admin_clients_menu(ctx, db, chat_id, "Клиент больше не найден. Выбери клиента заново.")
+        return True
+    return send_admin_client_key(ctx, db, chat_id, name)
 
 
 def handle_extend_subscription_days(ctx: AdminContext, db, chat_id, text):
@@ -840,6 +1262,8 @@ def handle_pending_text(ctx: AdminContext, db, chat_id, text):
         return handle_custom_notice_text(ctx, db, chat_id, text)
     if action == "news-notice-text":
         return handle_news_notice_text(ctx, db, chat_id, text)
+    if action == "done-notice-extra-text":
+        return handle_done_notice_extra_text(ctx, db, chat_id, text)
     if action == "add-client-input":
         return handle_add_client_input(ctx, db, chat_id, text)
     if action == "extend-subscription-days":
@@ -888,6 +1312,20 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
     if data == "admin:settings":
         send_admin_settings_menu(ctx, db, chat_id)
         return True
+    if data == "admin:server-settings":
+        send_admin_server_settings_menu(ctx, db, chat_id)
+        return True
+    if data == "admin:server-tls":
+        send_admin_server_tls_menu(ctx, db, chat_id)
+        return True
+    if data.startswith("admin:server-tls-site:"):
+        return send_admin_server_tls_site_menu(ctx, db, chat_id, data.rsplit(":", 1)[1])
+    if data.startswith("admin:server-tls-set:"):
+        parts = data.split(":")
+        if len(parts) != 4:
+            send_admin_server_tls_menu(ctx, db, chat_id, "Не удалось прочитать выбранный TLS-профиль.")
+            return True
+        return handle_server_tls_set(ctx, db, chat_id, parts[2], parts[3])
     if data == "admin:client-add":
         set_add_client_input_waiting(ctx, db, chat_id)
         return True
@@ -899,6 +1337,18 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
         clear_admin_state(ctx, db, chat_id, clear_custom_notice=False)
         send_admin_clients_menu(ctx, db, chat_id, "Добавление клиента отменено.")
         return True
+    if data == "admin:client-link":
+        send_admin_client_link_list(ctx, db, chat_id)
+        return True
+    if data.startswith("admin:client-link:"):
+        return handle_client_link_selection(ctx, db, chat_id, data.rsplit(":", 1)[1])
+    if data.startswith("admin:client-link-credential:"):
+        return handle_client_link_credential_selection(ctx, db, chat_id, data.rsplit(":", 1)[1])
+    if data == "admin:client-key":
+        send_admin_client_key_list(ctx, db, chat_id)
+        return True
+    if data.startswith("admin:client-key:"):
+        return handle_client_key_selection(ctx, db, chat_id, data.rsplit(":", 1)[1])
     if data == "admin:client-extend":
         send_admin_client_extend_list(ctx, db, chat_id)
         return True
@@ -943,8 +1393,27 @@ def handle_callback(ctx: AdminContext, db, chat_id, data):
     if data == "admin:notices":
         send_admin_notices_menu(ctx, db, chat_id)
         return True
-    if data in ("admin:notice:start", "admin:notice:done"):
-        preview_notice(ctx, db, chat_id, data.rsplit(":", 1)[1])
+    if data == "admin:notice:start":
+        preview_notice(ctx, db, chat_id, "start")
+        return True
+    if data == "admin:notice:done":
+        db.setdefault("adminState", {}).pop("doneNoticeExtraText", None)
+        set_done_notice_extra_waiting(ctx, db, chat_id)
+        send_admin_response(
+            ctx,
+            db,
+            chat_id,
+            "Можно добавить короткий текст в блок «Что было сделано».\n\n"
+            "Отправь текст следующим сообщением или нажми «Без доп. текста».",
+            keyboards.admin_notice_done_extra_keyboard(),
+        )
+        return True
+    if data == "admin:notice:done-preview":
+        state = db.setdefault("adminState", {})
+        state.pop("doneNoticeExtraText", None)
+        state.pop(str(chat_id), None)
+        ctx.save_db_sections(db, ("adminState",))
+        preview_notice(ctx, db, chat_id, "done")
         return True
     if data == "admin:notice:news":
         set_news_notice_waiting(ctx, db, chat_id)

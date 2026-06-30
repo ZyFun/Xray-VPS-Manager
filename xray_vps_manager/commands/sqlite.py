@@ -15,7 +15,12 @@ COUNT_TABLES = {
     "clients": "clients",
     "traffic": "traffic_totals",
     "activity_events": "activity_events",
+    "activity_alert_events": "activity_alert_events",
+    "activity_client_counters": "activity_client_counters",
     "activity_exceptions": "activity_exceptions",
+    "activity_blocklist": "activity_blocklist",
+    "activity_blocklist_hits": "activity_blocklist_hits",
+    "xray_error_events": "xray_error_events",
     "telegram_subscriptions": "telegram_subscriptions",
 }
 

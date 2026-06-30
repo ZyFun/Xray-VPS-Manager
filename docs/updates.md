@@ -47,7 +47,7 @@ xray-update --update-assets v2fly
 ```
 
 Все варианты проверяют новые `.dat` с текущим `config.json`, заменяют только изменившиеся файлы и перезапускают Xray. Если проверка или перезапуск не проходит, старые `.dat` восстанавливаются. Вариант `v2fly` обновляет только `geoip.dat`, а текущий `geosite.dat` не трогает.
-Эти действия доступны через меню `Настройки Xray` -> `Обновление Xray`.
+Эти действия доступны через меню `Обновления` -> `Geo assets`.
 
 Показать сохранённые бэкапы:
 
@@ -111,7 +111,7 @@ xray-manager-update --rollback ИМЯ_БЭКАПА
 Переустановить тот же тег или явно поставить тег старее текущей версии:
 
 ```bash
-xray-manager-update --update v1.0.0 --force
+xray-manager-update --update v2.0.0 --force
 ```
 
 Команда обновляет только файлы менеджера:
@@ -134,11 +134,11 @@ traffic history
 Telegram settings
 ```
 
-Перед заменой файлов создаётся backup в `/usr/local/lib/xray-vps-manager-backups`. После update или rollback выполняется `systemctl daemon-reload`, затем `try-restart` для manager-owned units: `xray-traffic-sync.timer`, `xray-client-expire.timer`, `xray-traffic-sync.service`, `xray-client-expire.service` и `xray-telegram-poller.service`. Xray Core при этом не перезапускается, чтобы не рвать клиентские соединения без необходимости.
+Перед заменой файлов создаётся backup в `/usr/local/lib/xray-vps-manager-backups`. После update или rollback менеджер пересобирает raw-log rotation units через `xray-activity raw-log-timer-sync`, затем выполняет `systemctl daemon-reload` и `try-restart` для manager-owned units: `xray-traffic-sync.timer`, `xray-raw-log-rotate.timer`, `xray-client-expire.timer`, `xray-traffic-sync.service`, `xray-raw-log-rotate.service`, `xray-client-expire.service` и `xray-telegram-poller.service`. Xray Core при этом не перезапускается, чтобы не рвать клиентские соединения без необходимости.
 
 После обновления проверяется запуск `xray-vps-manager --help`, `xray-manager-update --help` и, если не передан `--no-test`, выполняется `xray-test`. Если проверка не проходит, менеджер пытается восстановить предыдущую версию из backup.
 
-Эти действия доступны через корневой пункт `Обновление менеджера` в `xray-menu`.
+Эти действия доступны через меню `Обновления` -> `Менеджер` в `xray-menu`.
 
 
 ## Проверка Сервиса
@@ -149,7 +149,17 @@ Telegram settings
 xray-test
 ```
 
-`xray-test` проверяет Xray, config.json, все Reality-подключения и локальные порты, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило и каскадную конфигурацию.
+`xray-test` проверяет Xray, config.json, Reality-подключения и локальные порты, согласованность клиентов SQLite со всеми активными managed inbounds включая VLESS TLS/Caddy и Trojan TLS/WebSocket через Caddy, duplicate active client names между VLESS и Trojan credentials, TLS certificate diagnostics для direct TLS cert/key и managed Caddy sites, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило, глобальный blocklist routing, каскадную конфигурацию и GeoIP bypass routes.
+Проверка duplicate active client names warning-level: нормальная модель `один клиент -> несколько credentials` проходит, а проблемы выводятся только когда активный VLESS/Trojan дубль не сопоставляется с `client_credentials` в SQLite или повторно использует один и тот же active email.
+TLS certificate diagnostics проверяет абсолютные пути direct TLS `certificateFile`/`keyFile`, базовые права файлов, срок действия сертификата, соответствие сертификата `SNI`/домену, наличие Caddy site config для managed TLS/Caddy-подключений, upstream local port, route path и live TLS handshake к `DOMAIN:PUBLIC_PORT`. Эта проверка warning-level: проблемы видны в выводе, но временный DNS/ACME/network сбой не блокирует весь `xray-test`.
+Обычный запуск пропускает полный физический проход `PRAGMA quick_check` по SQLite-файлу и deep Caddy endpoint probes, потому что они могут занимать больше времени и зависеть от публичного DNS/TLS. Для глубокой проверки используйте:
+
+```bash
+xray-test --all
+```
+
+`xray-test --all` дополнительно проверяет Caddy endpoint для managed TLS-подключений. Для Trojan/WebSocket он отправляет пробный WebSocket upgrade на `WS_PATH` и ожидает ответ `101 Switching Protocols`; для TLS/XHTTP проверяет, что route не уходит в Caddy fallback JSON/HTML и upstream не возвращает `5xx`. Пустой `404` от Xray на обычный probe считается допустимым ответом неподходящего запроса к XHTTP endpoint. Также `--all` выводит понятные warning по deprecated Trojan и WebSocket transport: это не hard fail, а напоминание, что Trojan/WebSocket используется как compatibility/DPI-bypass режим и должен иметь отдельный план миграции, когда появится подходящая замена.
+
 При проверке установленного Python-пакета служебные `._*` файлы не считаются исходниками менеджера.
 Глубокий сетевой тест каскада остаётся отдельной командой `xray-set-cascade --test` или `xray-set-cascade test NAME`, потому что он временно меняет конфиг и перезапускает Xray.
 
@@ -194,4 +204,3 @@ ss -tulpn
 ```bash
 systemctl status xray-client-expire.timer --no-pager
 ```
-

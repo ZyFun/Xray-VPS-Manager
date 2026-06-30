@@ -100,12 +100,12 @@ def update_payment_rounding(call: CommandRunner) -> None:
 
 def update_payment_amount(call: CommandRunner) -> None:
     call(["xray-telegram", "payment-amount"])
-    print("Введите общую сумму оплаты для всех клиентов.")
+    print("Введите месячную аренду сервера для всех клиентов.")
     print("Введите только число. Пример: 500. Введите 0, чтобы очистить значение.")
     print("Нажмите Enter, чтобы оставить текущую сумму.")
-    amount = input("Сумма оплаты: ").strip().replace(",", ".")
+    amount = input("Месячная аренда сервера: ").strip().replace(",", ".")
     if not amount:
-        print("Сумма оплаты не изменена.")
+        print("Месячная аренда сервера не изменена.")
     elif amount == "0":
         call(["xray-telegram", "payment-amount", "0"])
     elif not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", amount):
@@ -126,6 +126,19 @@ def update_payment_amount(call: CommandRunner) -> None:
             print("Действие отменено: неизвестная валюта.")
             return
         call(["xray-telegram", "payment-amount", f"{amount} {symbol}"])
+    print()
+    print("Введите годовую аренду домена. Она будет поделена на 12 и добавлена к месячной аренде сервера.")
+    print("Введите только число в той же валюте. Введите 0, чтобы очистить значение.")
+    print("Нажмите Enter, чтобы оставить текущую сумму.")
+    domain_amount = input("Годовая аренда домена: ").strip().replace(",", ".")
+    if not domain_amount:
+        print("Годовая аренда домена не изменена.")
+    elif domain_amount == "0":
+        call(["xray-telegram", "payment-domain-rent", "0"])
+    elif not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", domain_amount):
+        die("Domain annual rent must be a number.")
+    else:
+        call(["xray-telegram", "payment-domain-rent", domain_amount])
     update_payment_rounding(call)
 
 

@@ -5,6 +5,11 @@ import tempfile
 import unittest
 from unittest import mock
 
+from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import activity as sqlite_activity
+from xray_vps_manager.db.repositories import clients as sqlite_clients
+from xray_vps_manager.db.repositories import connections as sqlite_connections
+from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.telegram import notifications
 
 
@@ -57,8 +62,22 @@ class TelegramDailySummaryTests(unittest.TestCase):
         with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
             text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
 
-        self.assertIn("Общая аренда сервера: 1123.12 ₽", text)
+        self.assertIn("Месячная аренда сервера: 1123.12 ₽", text)
+        self.assertIn("Общая месячная аренда: 1123.12 ₽", text)
         self.assertNotIn("570 ₽", text)
+
+    def test_daily_summary_adds_domain_annual_rent_to_monthly_total(self) -> None:
+        ctx = self.make_context({
+            "paymentTotalAmount": "1000",
+            "paymentDomainAnnualAmount": "1200",
+            "paymentCurrency": "₽",
+        })
+
+        with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
+            text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
+
+        self.assertIn("Годовая аренда домена: 1200 ₽ (в месяц: 100 ₽)", text)
+        self.assertIn("Общая месячная аренда: 1100 ₽", text)
 
     def test_daily_summary_marks_missing_total_rent_amount(self) -> None:
         ctx = self.make_context({"paymentTotalAmount": "", "paymentCurrency": "₽"})
@@ -66,7 +85,7 @@ class TelegramDailySummaryTests(unittest.TestCase):
         with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
             text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
 
-        self.assertIn("Общая аренда сервера: не указана", text)
+        self.assertIn("Общая месячная аренда: не указана", text)
 
     def test_daily_summary_includes_sqlite_database_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -75,12 +94,66 @@ class TelegramDailySummaryTests(unittest.TestCase):
             Path(f"{db_path}-wal").write_bytes(b"x" * 1024)
             ctx = self.make_context({"paymentTotalAmount": "500", "paymentCurrency": "₽"}, db_path)
 
-            with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
+            with (
+                mock.patch.object(notifications, "disk_usage_label", return_value="ok"),
+                mock.patch.object(notifications.activity_status, "first_event_status", return_value="нет событий"),
+            ):
                 text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
 
         self.assertIn("База данных: 3.00KB", text)
         self.assertIn("manager.db 2.00KB", text)
         self.assertIn("manager.db-wal 1.00KB", text)
+
+    def test_daily_summary_includes_first_activity_event_age(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            connection = database.open_database(db_path)
+            try:
+                sqlite_connections.upsert_connection(
+                    connection,
+                    "vless-reality",
+                    {
+                        "tag": "vless-reality",
+                        "name": "default",
+                        "created": "2026-06-01T07:00:00Z",
+                        "port": 443,
+                        "sni": "example.com",
+                        "dest": "example.com:443",
+                        "fingerprint": "chrome",
+                    },
+                )
+                sqlite_clients.upsert_client(
+                    connection,
+                    "alice",
+                    {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "created": "2026-06-01T07:01:00Z",
+                        "enabled": True,
+                        "connection": "vless-reality",
+                        "client": {
+                            "id": "00000000-0000-0000-0000-000000000001",
+                            "email": "alice|created=2026-06-01T07:01:00Z",
+                        },
+                    },
+                )
+                sqlite_activity.add_event(
+                    connection,
+                    {
+                        "time": "2026-06-01T08:00:00Z",
+                        "client": "alice",
+                        "host": "example.com",
+                        "port": "443",
+                    },
+                )
+                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
+            finally:
+                connection.close()
+            ctx = self.make_context({"paymentTotalAmount": "500", "paymentCurrency": "₽"}, db_path)
+
+            with mock.patch.object(notifications, "disk_usage_label", return_value="ok"):
+                text = notifications.build_daily_summary_message(ctx, date(2026, 6, 12))
+
+        self.assertIn("Журнал активности: первое событие 2026-06-01 (12 дн. назад)", text)
 
     def test_daily_summary_reports_no_reboot_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

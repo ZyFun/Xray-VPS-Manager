@@ -18,7 +18,8 @@ class TelegramMessageTests(unittest.TestCase):
         text = messages.subscription_intro_text({}, bot_name)
 
         self.assertIn("Привет. Я бот Vireika.", text)
-        self.assertIn("VLESS Reality-ссылку", text)
+        self.assertIn("vpn-key:00000000-0000-0000-0000-000000000000", text)
+        self.assertNotIn("VLESS-ссылку", text)
 
     def test_client_help_text_uses_configured_bot_name(self) -> None:
         text = messages.client_help_text({}, bot_name)
@@ -99,6 +100,7 @@ class TelegramMessageTests(unittest.TestCase):
                 "paymentBank": "Т-Банк (Тинькофф)",
             },
             "vless://example?type=tcp&security=reality#Xray",
+            "vpn-key:00000000-0000-0000-0000-000000000001",
             "2026-07-14 00:00 Europe/Moscow",
             "paid",
             "500 ₽",
@@ -106,10 +108,14 @@ class TelegramMessageTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "Ваш VPN-ключ:\n<pre><code>vless://example?type=tcp&amp;security=reality#Xray</code></pre>",
+            "Ссылка подключения:\n<pre><code>vless://example?type=tcp&amp;security=reality#Xray</code></pre>",
             text,
         )
-        self.assertIn("По этому же ключу @ExampleVpnBot будет показывать статус подписки", text)
+        self.assertIn(
+            "Ключ доступа для бота:\n<pre><code>vpn-key:00000000-0000-0000-0000-000000000001</code></pre>",
+            text,
+        )
+        self.assertIn("По ключу доступа @ExampleVpnBot будет показывать статус подписки", text)
         self.assertIn("Не забудь открыть @ExampleVpnBot и подключить уведомления.", text)
         self.assertIn("Сумма оплаты: 500 ₽", text)
         self.assertIn("Перевод нужно выполнить по номеру телефона:\n+79991234567", text)
@@ -122,6 +128,10 @@ class TelegramMessageTests(unittest.TestCase):
         self.assertEqual(messages.normalize_maintenance_template_id("2"), "done")
         self.assertIn("Vireika: плановые работы", messages.maintenance_notice_message({}, "start", bot_name))
         self.assertIn("Vireika: работы завершены", messages.maintenance_notice_message({}, "done", bot_name))
+        self.assertIn(
+            "Что было сделано:\n\nОбновили подключение.",
+            messages.maintenance_notice_message({}, "done", bot_name, extra_text="Обновили подключение."),
+        )
 
         with self.assertRaisesRegex(ValueError, "Неизвестный шаблон"):
             messages.maintenance_notice_message({}, "strange", bot_name)

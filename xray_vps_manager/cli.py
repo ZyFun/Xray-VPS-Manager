@@ -9,6 +9,7 @@ from xray_vps_manager.runner import COMMAND_MODULES, run_command
 
 
 ALIASES = {
+    "set-bypass": "bypass",
     "set-cascade": "cascade",
     "traffic": "traffic-sync",
     "sync": "traffic-sync",

@@ -70,6 +70,48 @@ xray-set-cascade --disable
 Команда также удаляет per-client cascade routing rules и balancers из `config.json`, чтобы отдельные клиентские правила не продолжали направлять трафик через `cascade-*` после отключения каскадного маршрута. Метаданные каскадов и выбранные страны в SQLite сохраняются.
 
 
+## GeoIP bypass
+
+GeoIP bypass - это отдельный режим региональной маршрутизации. Он не делает `bypass-*` активным catch-all маршрутом и не заменяет обычные `cascade-*`, WARP или direct. Для выбранного региона Xray создаёт notification-compatible rule вида `geoip:CODE -> geoip-warning-CODE`, а outbound `geoip-warning-CODE` копирует настройки выбранного VLESS outbound `bypass-{name}`. Поэтому activity/Telegram продолжают видеть обычное GeoIP-событие, но фактический выход в интернет идёт через bypass-сервер.
+
+Добавить или заменить bypass-сервер по VLESS-ссылке:
+
+```bash
+xray-set-bypass add ru --region RU --test-target ya.ru
+```
+
+Если `--region` не передан в интерактивном режиме, команда откроет numbered list популярных GeoIP-регионов и поиск по `geoip.dat`. В non-interactive режиме `--region CODE` обязателен. Тестовая цель задаётся как домен, IP-адрес или `http`/`https` URL через `--test-target`; в интерактивном режиме её можно указать после выбора региона или пропустить.
+
+Основные команды:
+
+```bash
+xray-set-bypass list
+xray-set-bypass enable ru
+xray-set-bypass region ru RU
+xray-set-bypass target ru ya.ru
+xray-set-bypass disable ru
+xray-set-bypass test ru
+xray-set-bypass test ru --test-target https://ya.ru/
+xray-set-bypass remove ru
+xray-set-bypass status
+```
+
+Для одного GeoIP-региона может быть включён только один bypass route. Если регион уже занят другим `bypass-*`, интерактивная команда предложит заменить активный route, а non-interactive команда требует `--replace`.
+
+При включении bypass менеджер:
+
+- сохраняет metadata в `manager.db` в таблице `bypass_routes`;
+- добавляет/обновляет outbound `bypass-{name}` в `config.json`;
+- добавляет marker route `geoip:code -> geoip-warning-CODE`;
+- копирует bypass outbound в `geoip-warning-CODE`;
+- сохраняет необязательную тестовую цель в metadata маршрута;
+- переводит `routing.domainStrategy` в `IPOnDemand`, пока есть GeoIP-dependent routing.
+
+Глобальный blocklist, `geoip:private -> blocked` и запрет BitTorrent остаются выше GeoIP bypass. Если bypass включён для региона, пункт блокировок `Добавить из GeoIP RU` предназначен только для точечных запретов отдельных доменов/IP, а не для обычной маршрутизации всего региона.
+
+Проверка выбранного bypass временно добавляет два локальных SOCKS inbound и возвращает исходный config после теста. `127.0.0.1:10809` принудительно направляется через выбранный `bypass-*` и проверяет внешний IP. `127.0.0.1:18109` использует обычные Xray routing rules: настроенная тестовая цель должна попасть в `geoip-warning-CODE` выбранного региона, а контрольная зарубежная цель `https://example.com/` должна остаться на обычном catch-all маршруте, например `cascade-*`. Если тестовая цель не задана, route split часть проверки пропускается, а forced outbound health-check всё равно выполняется.
+
+
 ## WARP
 
 WARP настраивается как `wireguard` outbound внутри Xray с tag `warp-out`. Это не меняет системный маршрут сервера и не должно ломать SSH-доступ. Создание профиля само по себе не включает WARP для пользователей.
@@ -121,4 +163,3 @@ xray-warp verify-disabled
 ```bash
 xray-warp remove
 ```
-

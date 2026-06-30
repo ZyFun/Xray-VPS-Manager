@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation, ROUND_CEILING
 PAYMENT_SETTING_KEYS = (
     "paymentAmount",
     "paymentTotalAmount",
+    "paymentDomainAnnualAmount",
     "paymentCurrency",
     "paymentRoundingMode",
     "paymentRoundingStep",
@@ -16,6 +17,7 @@ PAYMENT_SETTING_KEYS = (
     "paymentCard",
     "paymentBankAccount",
 )
+MONEY_QUANT = Decimal("0.01")
 
 PAYMENT_TRANSFER_METHODS = ("none", "phone", "card", "bank-account")
 PAYMENT_PHONE_BANKS = (
@@ -31,15 +33,16 @@ def decimal_storage_value(value):
     return format(Decimal(value).normalize(), "f")
 
 
-def parse_payment_value(value):
+def parse_payment_value(value, default_currency="₽"):
     raw = str(value or "").strip().replace(",", ".")
     if not raw or raw == "0":
-        return "", "₽"
+        currency = default_currency if default_currency in ("₽", "$", "€") else "₽"
+        return "", currency
     if any(ch in raw for ch in "\r\n\t"):
         raise ValueError("Сумма оплаты должна быть одной строкой.")
     parts = raw.split()
     amount_raw = parts[0]
-    currency = parts[1] if len(parts) > 1 else "₽"
+    currency = parts[1] if len(parts) > 1 else default_currency
     if currency not in ("₽", "$", "€"):
         raise ValueError("Валюта должна быть одной из: ₽, $, €.")
     try:
@@ -68,6 +71,38 @@ def format_payment_amount(amount, currency):
     if not amount:
         return "не указана"
     return f"{format_decimal_amount(amount)} {currency}"
+
+
+def _positive_decimal(value) -> Decimal:
+    try:
+        amount = Decimal(str(value or "").strip() or "0")
+    except InvalidOperation:
+        return Decimal("0")
+    if amount <= 0:
+        return Decimal("0")
+    return amount
+
+
+def payment_currency(db):
+    currency = db.get("paymentCurrency") or "₽"
+    return currency if currency in ("₽", "$", "€") else "₽"
+
+
+def domain_monthly_amount(db):
+    annual = _positive_decimal(db.get("paymentDomainAnnualAmount", ""))
+    if annual <= 0:
+        return ""
+    monthly = (annual / Decimal("12")).quantize(MONEY_QUANT, rounding=ROUND_CEILING)
+    return decimal_storage_value(monthly)
+
+
+def effective_total_amount(db):
+    server_monthly = _positive_decimal(db.get("paymentTotalAmount", ""))
+    domain_monthly = _positive_decimal(domain_monthly_amount(db))
+    total = server_monthly + domain_monthly
+    if total <= 0:
+        return ""
+    return decimal_storage_value(total)
 
 
 def parse_payment_rounding_step(value):
@@ -136,8 +171,8 @@ def paid_client_count(client_db):
 
 
 def payment_amount_label(db, client_db):
-    total = str(db.get("paymentTotalAmount") or "").strip()
-    currency = db.get("paymentCurrency") or "₽"
+    total = effective_total_amount(db)
+    currency = payment_currency(db)
     count = paid_client_count(client_db)
     rounding_mode, rounding_step = payment_rounding_settings(db)
     share = payment_share_amount(total, count, rounding_mode, rounding_step)
@@ -149,12 +184,18 @@ def payment_amount_label(db, client_db):
 
 
 def payment_summary(db, client_db):
-    total = str(db.get("paymentTotalAmount") or "").strip()
-    currency = db.get("paymentCurrency") or "₽"
+    server_monthly = str(db.get("paymentTotalAmount") or "").strip()
+    domain_annual = str(db.get("paymentDomainAnnualAmount") or "").strip()
+    domain_monthly = domain_monthly_amount(db)
+    total = effective_total_amount(db)
+    currency = payment_currency(db)
     count = paid_client_count(client_db)
     rounding_mode, rounding_step = payment_rounding_settings(db)
     share = payment_share_amount(total, count, rounding_mode, rounding_step)
     summary = {
+        "serverMonthly": format_payment_amount(server_monthly, currency),
+        "domainAnnual": format_payment_amount(domain_annual, currency),
+        "domainMonthly": format_payment_amount(domain_monthly, currency),
         "total": format_payment_amount(total, currency),
         "paidCount": count,
         "rounding": payment_rounding_label(db),
@@ -163,7 +204,7 @@ def payment_summary(db, client_db):
     }
     if not total and count > 0:
         summary["warning"] = (
-            "Total rent amount is not set. Configure it in "
+            "Rent amount is not set. Configure it in "
             "Telegram бот -> Настроить оплату и округление, "
             "or run: xray-telegram payment-amount '500 ₽'"
         )
@@ -171,10 +212,17 @@ def payment_summary(db, client_db):
 
 
 def apply_payment_amount(db, value):
-    amount, currency = parse_payment_value(value)
+    amount, currency = parse_payment_value(value, payment_currency(db))
     db["paymentTotalAmount"] = amount
     db["paymentCurrency"] = currency
     db["paymentAmount"] = format_payment_amount(amount, currency) if amount else ""
+    return amount, currency
+
+
+def apply_domain_annual_amount(db, value):
+    amount, currency = parse_payment_value(value, payment_currency(db))
+    db["paymentDomainAnnualAmount"] = amount
+    db["paymentCurrency"] = currency
     return amount, currency
 
 

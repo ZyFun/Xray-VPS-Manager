@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parent
+installed = Path("/usr/local/lib/xray-vps-manager")
+if (root / "xray_vps_manager").is_dir():
+    sys.path.insert(0, str(root))
+elif installed.is_dir():
+    sys.path.insert(0, str(installed))
+
+from xray_vps_manager.runner import run_command
+
+
+if __name__ == "__main__":
+    run_command("bypass")

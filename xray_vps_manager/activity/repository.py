@@ -9,8 +9,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+from xray_vps_manager.activity.constants import DETAIL_MODE_ALL, DETAIL_MODE_OFF, DETAIL_MODE_SELECTED
 from xray_vps_manager.activity.constants import EXPORT_DIR
 from xray_vps_manager.activity.time import parse_time, utc_stamp
+from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
@@ -90,6 +92,91 @@ def load_activity_db_from_sqlite(connection, retention_days: int, enabled: bool)
 
 def append_event(event: dict, *, db_path: str | Path | None = None) -> None:
     write_event_to_sqlite_for_write(event, db_path=db_path, strict=True)
+
+
+def detail_capture_status_for_read(
+    *,
+    legacy_enabled: bool | None = None,
+    db_path: str | Path | None = None,
+) -> dict:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return sqlite_activity.detail_capture_status(connection, legacy_enabled=legacy_enabled)
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite activity capture status cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def set_detail_mode_for_write(
+    mode: str,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = True,
+) -> str:
+    if not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite manager database is missing")
+        return DETAIL_MODE_OFF
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite database is not marked ready")
+            return DETAIL_MODE_OFF
+        return sqlite_activity.set_detail_mode(connection, mode)
+    except Exception:
+        if strict:
+            raise
+        return DETAIL_MODE_OFF
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def set_detail_clients_for_write(
+    names: Iterable[str],
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = True,
+) -> None:
+    if not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite manager database is missing")
+        return
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite database is not marked ready")
+            return
+        sqlite_activity.set_detail_clients(connection, names)
+    except Exception:
+        if strict:
+            raise
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def should_store_detail_event(event: dict, mode: str, selected_clients: Iterable[str]) -> bool:
+    normalized = sqlite_activity.normalized_detail_mode(mode)
+    if normalized == DETAIL_MODE_ALL:
+        return True
+    if normalized == DETAIL_MODE_SELECTED:
+        client_name = str(event.get("client") or event.get("client_name") or "").strip()
+        return client_name in {str(name or "").strip() for name in selected_clients}
+    return False
 
 
 def update_summary(db: dict, event: dict) -> None:
@@ -221,6 +308,24 @@ def event_client_names_for_read(
             connection.close()
 
 
+def first_event_time_for_read(*, db_path: str | Path | None = None) -> str | None:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return sqlite_activity.first_event_time(connection)
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite first activity event cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def geoip_events_after_for_read(
     *,
     after_id: int = 0,
@@ -257,6 +362,281 @@ def geoip_events_after_for_read(
             connection.close()
 
 
+def geoip_alerts_after_for_read(
+    *,
+    after_id: int = 0,
+    after_time: str | None = None,
+    limit: int = 1000,
+    db_path: str | Path | None = None,
+) -> tuple[list[dict], int]:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        if after_id <= 0 and not after_time:
+            return [], sqlite_activity.max_alert_id(connection)
+        events = list(
+            sqlite_activity.iter_geoip_alerts_after(
+                connection,
+                after_id=after_id,
+                after_time=after_time,
+                limit=limit,
+            )
+        )
+        if events:
+            return events, max(
+                after_id,
+                *(int(event.get("alertId") or event.get("id") or 0) for event in events),
+            )
+        return [], max(after_id, sqlite_activity.max_alert_id(connection))
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite GeoIP alert events cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def alert_events_for_read(
+    *,
+    risk_prefix: str | None = None,
+    client_name: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 100,
+    db_path: str | Path | None = None,
+) -> list[dict]:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return sqlite_activity.list_alert_events(
+            connection,
+            risk_prefix=risk_prefix,
+            client_name=client_name,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite activity alerts cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def mark_alerts_admin_notified_for_write(
+    alert_ids: Iterable[int],
+    stamp: str,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> int:
+    if not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite manager database is missing")
+        return 0
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite database is not marked ready")
+            return 0
+        return sqlite_activity.mark_alerts_admin_notified(connection, alert_ids, stamp)
+    except Exception:
+        if strict:
+            raise
+        return 0
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def client_counters_for_read(
+    *,
+    bucket_type: str,
+    start: str | None = None,
+    end: str | None = None,
+    client_name: str | None = None,
+    limit: int = 100,
+    db_path: str | Path | None = None,
+) -> list[dict]:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return sqlite_activity.list_client_counters(
+            connection,
+            bucket_type=bucket_type,
+            start=start,
+            end=end,
+            client_name=client_name,
+            limit=limit,
+        )
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite activity counters cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def xray_error_events_for_read(
+    *,
+    level: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 100,
+    db_path: str | Path | None = None,
+) -> list[dict]:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return sqlite_activity.list_xray_error_events(connection, level=level, start=start, end=end, limit=limit)
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite Xray error events cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def xray_error_event_for_read(
+    event_id: int,
+    *,
+    db_path: str | Path | None = None,
+) -> dict | None:
+    if not database.database_file_exists(db_path):
+        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        return sqlite_activity.get_xray_error_event(connection, event_id)
+    except SQLiteReadUnavailable:
+        raise
+    except Exception as exc:
+        raise SQLiteReadUnavailable(f"SQLite Xray error event cannot be read: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def record_xray_error_for_write(
+    item: dict,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> int | None:
+    if not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite manager database is missing")
+        return None
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite database is not marked ready")
+            return None
+        return sqlite_activity.upsert_xray_error_event(connection, item)
+    except Exception:
+        if strict:
+            raise
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def record_pipeline_event_for_write(
+    event: dict,
+    *,
+    detail_mode: str,
+    selected_clients: Iterable[str],
+    alerts_enabled: bool,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> dict:
+    if not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite manager database is missing")
+        return {"storedDetail": False, "storedAlerts": 0, "storedCounters": False}
+
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite database is not marked ready")
+            return {"storedDetail": False, "storedAlerts": 0, "storedCounters": False}
+        client_name = str(event.get("client") or event.get("client_name") or "").strip()
+        if client_name not in sqlite_clients.list_clients(connection):
+            if strict:
+                raise RuntimeError(f"Activity event client is missing from SQLite clients: {client_name}")
+            return {"storedDetail": False, "storedAlerts": 0, "storedCounters": False}
+        display_tz, _label = manager_timezone()
+        detail_event_id = None
+        with database.transaction(connection):
+            sqlite_activity.upsert_client_counters(connection, event, display_tz)
+            if should_store_detail_event(event, detail_mode, selected_clients):
+                detail_event_id = sqlite_activity.add_event(connection, event)
+            alert_ids = []
+            if alerts_enabled:
+                alert_ids.extend(
+                    sqlite_activity.add_alerts_for_event(
+                        connection,
+                        event,
+                        raw_ref_event_id=detail_event_id,
+                    )
+                )
+                from xray_vps_manager.activity import settings as activity_settings
+
+                alert_ids.extend(
+                    sqlite_activity.add_window_alerts_for_event(
+                        connection,
+                        event,
+                        activity_settings.risk_limits(),
+                        display_tz,
+                    )
+                )
+            from xray_vps_manager.activity import blocklist as activity_blocklist
+
+            activity_blocklist.record_blocked_event_hit(connection, event)
+        return {
+            "storedDetail": detail_event_id is not None,
+            "storedAlerts": len(alert_ids),
+            "storedCounters": True,
+        }
+    except Exception:
+        if strict:
+            raise
+        return {"storedDetail": False, "storedAlerts": 0, "storedCounters": False}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def write_event_to_sqlite_for_write(
     event: dict,
     *,
@@ -281,6 +661,9 @@ def write_event_to_sqlite_for_write(
                 raise RuntimeError(f"Activity event client is missing from SQLite clients: {client_name}")
             return False
         sqlite_activity.add_event(connection, event)
+        from xray_vps_manager.activity import blocklist as activity_blocklist
+
+        activity_blocklist.record_blocked_event_hit(connection, event)
         return True
     except Exception:
         if strict:
@@ -351,6 +734,60 @@ def prune_sqlite_activity_for_write(
             return 0
         cutoff = cutoff_dt.isoformat().replace("+00:00", "Z")
         return sqlite_activity.delete_events_before(connection, cutoff)
+    except Exception:
+        if strict:
+            raise
+        return 0
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def prune_alerts_for_write(
+    cutoff_dt: datetime,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> int:
+    if not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite manager database is missing")
+        return 0
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite database is not marked ready")
+            return 0
+        return sqlite_activity.delete_alert_events_before(connection, cutoff_dt.isoformat().replace("+00:00", "Z"))
+    except Exception:
+        if strict:
+            raise
+        return 0
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def prune_xray_errors_for_write(
+    cutoff_dt: datetime,
+    *,
+    db_path: str | Path | None = None,
+    strict: bool = False,
+) -> int:
+    if not database.database_file_exists(db_path):
+        if strict:
+            raise RuntimeError("SQLite manager database is missing")
+        return 0
+    connection = None
+    try:
+        connection = database.open_database(db_path)
+        if not sqlite_read_ready(connection):
+            if strict:
+                raise RuntimeError("SQLite database is not marked ready")
+            return 0
+        return sqlite_activity.delete_xray_error_events_before(connection, cutoff_dt.isoformat().replace("+00:00", "Z"))
     except Exception:
         if strict:
             raise

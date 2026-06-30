@@ -94,7 +94,15 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def make_context(self, db: dict, messages: list[str], manager_db_path: Path, client_messages=None, client_db=None):
+    def make_context(
+        self,
+        db: dict,
+        messages: list[str],
+        manager_db_path: Path,
+        client_messages=None,
+        client_db=None,
+        utc_stamp: str = "2026-06-12T08:02:00Z",
+    ):
         def save_sections(updated_db, sections):
             db.update(updated_db)
             self.assertIn(sections, (("geoipState",), ("geoipState", "clientSubscriptionState")))
@@ -113,8 +121,8 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
             format_event_time=lambda value: value,
             format_access_until=lambda value: value,
             parse_time=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None,
-            utc_now=lambda: datetime(2026, 6, 12, 8, 2, tzinfo=timezone.utc),
-            utc_stamp=lambda: "2026-06-12T08:02:00Z",
+            utc_now=lambda: datetime.fromisoformat(utc_stamp.replace("Z", "+00:00")),
+            utc_stamp=lambda: utc_stamp,
             run_capture=lambda *args, **kwargs: None,
             send_chat_message=lambda _db, chat_id, text, **kwargs: client_messages.append(
                 {
@@ -171,6 +179,156 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(sent_messages, [])
             self.assertEqual(telegram_db["geoipState"]["sqliteLastEventId"], 3)
+
+    def test_notify_geoip_marks_alert_events_admin_notified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            self.make_sqlite_db(db_path)
+            connection = database.open_database(db_path)
+            try:
+                alert_id = sqlite_activity.add_alert_event(
+                    connection,
+                    {
+                        "time": "2026-06-12T08:01:00Z",
+                        "client": "alice",
+                        "host": "alert.example.ru",
+                        "port": "443",
+                        "outbound": "geoip-warning-RU",
+                        "risks": ["xray-geoip:RU"],
+                    },
+                    "xray-geoip:RU",
+                )
+            finally:
+                connection.close()
+            telegram_db = {
+                "enabled": True,
+                "token": "token",
+                "chatId": "1",
+                "geoipState": {
+                    "lastGeoipNotification": "2026-06-12T08:00:00Z",
+                    "sentIds": [],
+                },
+            }
+            sent_messages: list[str] = []
+            ctx = self.make_context(telegram_db, sent_messages, db_path)
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                result = notifications.notify_geoip(ctx)
+
+            connection = database.open_database(db_path)
+            try:
+                alerts = sqlite_activity.list_alert_events(connection, limit=10)
+            finally:
+                connection.close()
+            self.assertEqual(result, 0)
+            self.assertEqual(len(sent_messages), 1)
+            self.assertEqual(telegram_db["geoipState"]["sqliteLastAlertId"], alert_id)
+            self.assertEqual(alerts[0]["notified_admin_at"], "2026-06-12T08:02:00Z")
+
+    def test_notify_geoip_resends_updated_alert_group_after_admin_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            self.make_sqlite_db(db_path)
+            connection = database.open_database(db_path)
+            try:
+                alert_id = sqlite_activity.add_alert_event(
+                    connection,
+                    {
+                        "time": "2026-06-12T08:01:00Z",
+                        "client": "alice",
+                        "host": "alert.example.ru",
+                        "port": "443",
+                        "outbound": "geoip-warning-RU",
+                        "risks": ["xray-geoip:RU"],
+                    },
+                    "xray-geoip:RU",
+                )
+            finally:
+                connection.close()
+            telegram_db = {
+                "enabled": True,
+                "token": "token",
+                "chatId": "1",
+                "geoipState": {
+                    "lastGeoipNotification": "2026-06-12T08:00:00Z",
+                    "sentIds": [],
+                },
+            }
+            sent_messages: list[str] = []
+            ctx = self.make_context(telegram_db, sent_messages, db_path)
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(notifications.notify_geoip(ctx), 0)
+
+            connection = database.open_database(db_path)
+            try:
+                sqlite_activity.add_alert_event(
+                    connection,
+                    {
+                        "time": "2026-06-12T08:05:00Z",
+                        "client": "alice",
+                        "host": "alert.example.ru",
+                        "port": "443",
+                        "outbound": "geoip-warning-RU",
+                        "risks": ["xray-geoip:RU"],
+                    },
+                    "xray-geoip:RU",
+                )
+            finally:
+                connection.close()
+
+            sent_messages.clear()
+            ctx = self.make_context(telegram_db, sent_messages, db_path, utc_stamp="2026-06-12T08:06:00Z")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                result = notifications.notify_geoip(ctx)
+
+            connection = database.open_database(db_path)
+            try:
+                alerts = sqlite_activity.list_alert_events(connection, limit=10)
+            finally:
+                connection.close()
+            self.assertEqual(result, 0)
+            self.assertEqual(len(sent_messages), 1)
+            self.assertIn("alert.example.ru", sent_messages[0])
+            self.assertEqual(telegram_db["geoipState"]["sqliteLastAlertId"], alert_id)
+            self.assertEqual(alerts[0]["event_count"], 2)
+            self.assertEqual(alerts[0]["notified_admin_at"], "2026-06-12T08:06:00Z")
+
+    def test_geoip_alert_reader_keeps_offset_at_last_returned_alert_when_limited(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            self.make_sqlite_db(db_path)
+            connection = database.open_database(db_path)
+            try:
+                alert_ids = [
+                    sqlite_activity.add_alert_event(
+                        connection,
+                        {
+                            "time": f"2026-06-12T08:0{index}:00Z",
+                            "client": "alice",
+                            "host": f"limited-{index}.example.ru",
+                            "port": "443",
+                            "outbound": "geoip-warning-RU",
+                            "risks": ["xray-geoip:RU"],
+                        },
+                        "xray-geoip:RU",
+                    )
+                    for index in range(1, 4)
+                ]
+            finally:
+                connection.close()
+
+            events, last_alert_id = notifications.activity_repository.geoip_alerts_after_for_read(
+                after_time="2026-06-12T08:00:00Z",
+                limit=2,
+                db_path=db_path,
+            )
+
+            self.assertEqual([event["alertId"] for event in events], alert_ids[:2])
+            self.assertEqual(last_alert_id, alert_ids[1])
 
     def test_notify_geoip_sends_client_activity_without_internal_client_name_or_owner_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -369,3 +527,24 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
                 telegram_db["clientSubscriptionState"]["activityExceptionCandidates"]["2"]["items"],
                 [],
             )
+
+    def test_client_geoip_message_mentions_bypass_without_claiming_issue_is_solved(self) -> None:
+        ctx = self.make_context({}, [], Path("/tmp/manager.db"))
+
+        text = notifications.build_client_geoip_message(
+            ctx,
+            {},
+            [
+                {
+                    "time": "2026-06-12T08:01:00Z",
+                    "host": "example.ru",
+                    "port": "443",
+                    "outbound": "geoip-warning-RU",
+                    "risks": ["xray-geoip:RU", "xray-bypass:RU"],
+                }
+            ],
+        )
+
+        self.assertIn("GeoIP bypass", text)
+        self.assertIn("Direct/Bypass", text)
+        self.assertIn("split tunneling", text)

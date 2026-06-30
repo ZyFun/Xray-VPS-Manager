@@ -11,7 +11,7 @@ SQLite-база менеджера хранится на сервере здес
 Текущая версия схемы:
 
 ```text
-schema version = 3
+schema version = 7
 ```
 
 Актуальное определение схемы находится в `xray_vps_manager/db/schema.py`.
@@ -49,6 +49,18 @@ erDiagram
         TEXT tag PK
         TEXT country
         TEXT label
+        TEXT created_at
+        TEXT updated_at
+        TEXT extra_json
+    }
+
+    bypass_routes {
+        TEXT tag PK
+        TEXT name
+        TEXT region_code
+        TEXT region_label
+        TEXT label
+        INTEGER enabled
         TEXT created_at
         TEXT updated_at
         TEXT extra_json
@@ -138,12 +150,96 @@ erDiagram
         TEXT risk PK
     }
 
+    activity_capture_clients {
+        TEXT client_name PK,FK
+        TEXT created_at
+    }
+
+    activity_alert_events {
+        INTEGER id PK
+        TEXT event_time
+        TEXT client_name FK
+        TEXT connection_tag
+        TEXT host
+        INTEGER port
+        TEXT outbound
+        TEXT risk
+        TEXT severity
+        TEXT dedupe_key UK
+        INTEGER event_count
+        TEXT first_seen_at
+        TEXT last_seen_at
+        TEXT notified_admin_at
+        INTEGER raw_ref_event_id FK
+        TEXT extra_json
+    }
+
+    activity_client_counters {
+        TEXT client_name PK,FK
+        TEXT connection_tag PK
+        TEXT bucket_type PK
+        TEXT bucket_start PK
+        INTEGER total_events
+        INTEGER geoip_events
+        INTEGER suspicious_events
+        INTEGER blocked_events
+        INTEGER unique_hosts
+        INTEGER unique_ports
+        TEXT risk_counts_json
+    }
+
+    activity_client_counter_uniques {
+        TEXT client_name PK,FK
+        TEXT connection_tag PK
+        TEXT bucket_type PK
+        TEXT bucket_start PK
+        TEXT unique_kind PK
+        TEXT value_hash PK
+    }
+
     activity_exceptions {
         INTEGER id PK
         TEXT value UK
         TEXT kind
         TEXT source
         TEXT created_at
+    }
+
+    activity_blocklist {
+        INTEGER id PK
+        TEXT value UK
+        TEXT kind
+        TEXT source_client_name FK
+        INTEGER source_event_id FK
+        TEXT source
+        TEXT comment
+        TEXT created_at
+        TEXT expires_at
+        INTEGER enabled
+    }
+
+    activity_blocklist_hits {
+        INTEGER blocklist_id PK,FK
+        TEXT client_name PK,FK
+        INTEGER hits
+        TEXT first_seen_at
+        TEXT last_seen_at
+    }
+
+    xray_error_events {
+        INTEGER id PK
+        TEXT event_time
+        TEXT level
+        TEXT source
+        TEXT component
+        TEXT message
+        TEXT dedupe_key UK
+        INTEGER event_count
+        TEXT first_seen_at
+        TEXT last_seen_at
+        TEXT notified_admin_at
+        TEXT raw_line
+        TEXT extra_json
     }
 
     telegram_settings {
@@ -185,6 +281,15 @@ erDiagram
     clients ||--o{ traffic_history : "client_name"
     clients ||--o{ activity_events : "client_name"
     activity_events ||--o{ activity_event_risks : "event_id"
+    clients ||--o{ activity_capture_clients : "client_name"
+    clients ||--o{ activity_alert_events : "client_name"
+    activity_events ||--o{ activity_alert_events : "raw_ref_event_id"
+    clients ||--o{ activity_client_counters : "client_name"
+    clients ||--o{ activity_client_counter_uniques : "client_name"
+    clients ||--o{ activity_blocklist : "source_client_name"
+    activity_events ||--o{ activity_blocklist : "source_event_id"
+    activity_blocklist ||--o{ activity_blocklist_hits : "blocklist_id"
+    clients ||--o{ activity_blocklist_hits : "client_name"
     clients ||--o{ telegram_subscriptions : "client_name"
 ```
 
@@ -195,24 +300,27 @@ erDiagram
 | Таблица | Назначение |
 |---|---|
 | `schema_migrations` | История применённых миграций схемы. |
-| `manager_metadata` | Служебные флаги и метаданные менеджера, например отметка успешного импорта. |
+| `manager_metadata` | Служебные флаги и метаданные менеджера: read-ready, activity summary, detailed mode, source metadata и короткое состояние `activity.alertWindows` для window-level alert рисков. |
 | `file_offsets` | Позиции чтения файлов, например access log offset для traffic/activity sync. |
 
 ### Подключения и клиенты
 
 | Таблица | Назначение |
 |---|---|
-| `reality_connections` | Reality/VLESS подключения: порт, SNI, fingerprint, public key, short id. |
+| `reality_connections` | Managed подключения. Имя таблицы осталось legacy-совместимым, поэтому оно не переименовывается без отдельной рискованной миграции. Для VLESS Reality хранятся порт, SNI, fingerprint, public key и short id; для TLS/XHTTP через Caddy дополнительные поля (`security`, `publicHost`, `publicPort`, `localPort`, `xhttpPath`, `xhttpMode`, `xhttpExtra`, TLS version) лежат в `extra_json`. Для Trojan через Caddy в `extra_json` хранятся `protocol=trojan`, `security=tls`, `transport=ws`, `publicHost`, `publicPort`, `localPort`, `wsPath`, TLS version и другие protocol-specific поля; legacy direct TLS/TCP может хранить `certFile` и `keyFile`. |
 | `cascade_routes` | Метаданные cascade outbounds: tag, отображаемая страна, label и timestamps. |
-| `clients` | Клиенты, UUID, статус, срок доступа, платежный тип, выбранный cascade route и связанное Reality-подключение. |
+| `bypass_routes` | Метаданные GeoIP bypass routes: tag `bypass-{name}`, имя, выбранный `region_code`, человекочитаемый `region_label`, label VLESS-ссылки, enabled state и timestamps. Необязательная тестовая цель для проверки маршрута хранится в `extra_json.testTarget`. Реальный outbound хранится в `config.json`. |
+| `clients` | Клиенты как отдельная сущность: внутренний UUID менеджера, общий статус, срок доступа, платежный тип и выбранный cascade route. Legacy-поля `connection_tag` и `xray_client_json` сохраняются как primary credential для совместимости. |
+| `client_credentials` | Protocol credentials клиента. Хранит `client_name`, `connection_tag`, credential UUID/password в `xray_client_json`, `protocol`, `security`, `transport`, enabled state, timestamps и link metadata. Один клиент может иметь несколько credentials разных протоколов. |
 
 Основная связь:
 
 ```text
 reality_connections.tag -> clients.connection_tag
+clients.name + reality_connections.tag -> client_credentials(client_name, connection_tag)
 ```
 
-Если подключение удаляется, клиенты удаляются логикой менеджера вместе с ним. На уровне SQLite внешний ключ у клиента настроен как `ON DELETE SET NULL`, поэтому бизнес-правило удаления остаётся в коде менеджера.
+Если подключение удаляется, менеджер удаляет credentials этого подключения. Клиент удаляется только если это был его последний credential. На уровне SQLite legacy-внешний ключ у `clients.connection_tag` настроен как `ON DELETE SET NULL`, а `client_credentials` удаляется каскадно.
 
 ### Трафик и лимиты
 
@@ -220,6 +328,8 @@ reality_connections.tag -> clients.connection_tag
 |---|---|
 | `traffic_totals` | Постоянные суммарные IN/OUT счётчики клиента и online/last seen данные. |
 | `traffic_history` | Почасовая история трафика по дням. |
+| `credential_traffic_totals` | Постоянные IN/OUT счётчики и online/last seen данные конкретного credential. |
+| `credential_traffic_history` | Почасовая история трафика конкретного credential. |
 | `client_traffic_limits` | Настроенный daily/monthly лимит клиента. |
 | `client_traffic_limit_state` | Состояние превышения лимита и момент сброса. |
 
@@ -228,6 +338,8 @@ reality_connections.tag -> clients.connection_tag
 ```text
 clients.name -> traffic_totals.client_name
 clients.name -> traffic_history.client_name
+client_credentials(client_name, connection_tag) -> credential_traffic_totals(client_name, connection_tag)
+client_credentials(client_name, connection_tag) -> credential_traffic_history(client_name, connection_tag)
 clients.name -> client_traffic_limits.client_name
 clients.name -> client_traffic_limit_state.client_name
 ```
@@ -238,16 +350,36 @@ clients.name -> client_traffic_limit_state.client_name
 |---|---|
 | `activity_events` | Детальные metadata-события из Xray access log. |
 | `activity_event_risks` | Риски события: GeoIP, admin-port, smtp-port и другие признаки. |
+| `activity_capture_clients` | Список клиентов, для которых detailed log включён в режиме `selected`. |
+| `activity_alert_events` | Отдельный alert-log для GeoIP/split-tunneling и других risk-событий; Telegram уведомления читаются отсюда. |
+| `activity_client_counters` | Лёгкие счётчики событий по клиенту, подключению и bucket `hour/day`, независимые от detailed log. |
+| `activity_client_counter_uniques` | Хэши уникальных host/port для точных счётчиков без хранения адресов в открытом виде. |
 | `activity_exceptions` | Исключения для suspicious/GeoIP отчётов: домены, IP, CIDR, wildcard-маски. |
+| `activity_blocklist` | Глобальные домены/IP/CIDR для блокировки через Xray `blocked`, включая источник-клиента, комментарий, срок и статус. |
+| `activity_blocklist_hits` | Счётчики срабатываний blocklist по клиентам: hits, first_seen_at и last_seen_at. |
+| `xray_error_events` | Нормализованные ошибки Xray и manager-компонентов с агрегацией по `dedupe_key`. |
 
 Связи:
 
 ```text
 clients.name -> activity_events.client_name
 activity_events.id -> activity_event_risks.event_id
+clients.name -> activity_capture_clients.client_name
+clients.name -> activity_alert_events.client_name
+activity_events.id -> activity_alert_events.raw_ref_event_id
+clients.name -> activity_client_counters.client_name
+clients.name -> activity_client_counter_uniques.client_name
+clients.name -> activity_blocklist.source_client_name
+activity_events.id -> activity_blocklist.source_event_id
+activity_blocklist.id -> activity_blocklist_hits.blocklist_id
+clients.name -> activity_blocklist_hits.client_name
 ```
 
 `activity_events.raw_json` хранит исходное metadata-событие для внутренних отчётов и экспорта. Журнал активности не хранит содержимое HTTPS, сообщений, файлов или тела запросов.
+`activity_alert_events` отделяет уведомления и security-события от detailed log: отключение detailed log не останавливает запись alert-log и клиентские GeoIP-уведомления.
+Window-level alert риски `burst`, `unique-hosts` и `unique-ports` используют короткое состояние `activity.alertWindows` в `manager_metadata`; там хранятся timestamp-ы rolling-окна и хэши host/port, а не полный список адресов.
+`activity_client_counters` обновляется независимо от detailed log и нужен для статистики количества событий по клиентам.
+`activity_blocklist` задаёт глобальные Xray routing rules, а не клиентские ограничения: `source_client_name` нужен для истории и сортировки, но блокировка применяется ко всему трафику. `activity_blocklist_hits.last_seen_at` используется для отображения времени последнего срабатывания.
 
 ### Telegram и оплата
 
@@ -256,7 +388,7 @@ activity_events.id -> activity_event_risks.event_id
 | `telegram_settings` | Простые настройки бота: token, botName, routeMode и другие key/value. |
 | `telegram_state` | Состояние фоновых уведомлений и подавления дублей. |
 | `telegram_subscriptions` | Подписки Telegram-чатов на клиентские уведомления, включая флаг личной activity-рассылки. |
-| `payment_settings` | Общая сумма аренды, валюта, способ перевода и правила округления оплаты. |
+| `payment_settings` | Месячная аренда сервера, годовая аренда домена, валюта, способ перевода и правила округления оплаты. |
 
 Связь:
 
@@ -271,7 +403,8 @@ clients.name -> telegram_subscriptions.client_name
 | Ключ | Назначение |
 |---|---|
 | `paymentAmount` | Старое совместимое поле отображаемой суммы. |
-| `paymentTotalAmount` | Общая сумма аренды до деления между платными клиентами. |
+| `paymentTotalAmount` | Месячная аренда сервера до деления между платными клиентами. |
+| `paymentDomainAnnualAmount` | Годовая аренда домена; в расчёте оплаты делится на 12 и прибавляется к месячной аренде сервера. |
 | `paymentCurrency` | Валюта оплаты: `₽`, `$` или `€`. |
 | `paymentRoundingMode` | Режим округления суммы на клиента: `none` или `step`. |
 | `paymentRoundingStep` | Шаг округления, если включён режим `step`. |
@@ -294,15 +427,26 @@ clients.name -> telegram_subscriptions.client_name
 | `idx_clients_expires_at` | `clients` | Поиск клиентов по сроку доступа. |
 | `idx_clients_payment_type` | `clients` | Расчёт платных клиентов. |
 | `idx_clients_selected_cascade` | `clients` | Поиск клиентов по выбранному cascade route. |
+| `idx_client_credentials_client` | `client_credentials` | Быстрый список credentials клиента. |
+| `idx_client_credentials_connection` | `client_credentials` | Поиск credentials по managed connection. |
+| `idx_client_credentials_uuid` | `client_credentials` | Сопоставление VLESS credential UUID. |
 | `idx_cascade_routes_country` | `cascade_routes` | Список cascade routes по отображаемой стране. |
+| `idx_bypass_routes_region` | `bypass_routes` | Поиск bypass routes по GeoIP-региону. |
+| `idx_bypass_routes_enabled` | `bypass_routes` | Фильтрация включённых bypass routes. |
+| `idx_bypass_routes_active_region` | `bypass_routes` | Уникальность одного активного bypass route на GeoIP-регион. |
 | `idx_traffic_history_date` | `traffic_history` | Отчёты по дням. |
 | `idx_traffic_history_client_date` | `traffic_history` | Отчёты по клиенту и периоду. |
+| `idx_credential_traffic_history_client_date` | `credential_traffic_history` | Отчёты по credential и периоду. |
 | `idx_activity_events_time` | `activity_events` | Activity-отчёты по периоду. |
 | `idx_activity_events_client_time` | `activity_events` | Activity-отчёты по клиенту и периоду. |
 | `idx_activity_events_host` | `activity_events` | Поиск и агрегация по host. |
 | `idx_activity_events_outbound` | `activity_events` | GeoIP/split-tunneling отчёты по outbound. |
 | `idx_activity_events_port` | `activity_events` | Анализ портов. |
 | `idx_activity_event_risks_risk` | `activity_event_risks` | Поиск событий по типу риска. |
+| `idx_activity_alert_events_client_time` | `activity_alert_events` | Alert-log по клиенту и периоду. |
+| `idx_activity_alert_events_risk` | `activity_alert_events` | Фильтрация alert-log по типу риска. |
+| `idx_activity_client_counters_client_bucket` | `activity_client_counters` | Лёгкая статистика по клиенту и bucket. |
+| `idx_xray_error_events_time` | `xray_error_events` | Список ошибок по времени. |
 | `idx_activity_exceptions_kind` | `activity_exceptions` | Фильтрация исключений по типу. |
 | `idx_telegram_subscriptions_chat` | `telegram_subscriptions` | Поиск подписок по Telegram-чату. |
 | `idx_telegram_subscriptions_client` | `telegram_subscriptions` | Поиск подписок по клиенту. |
@@ -319,9 +463,10 @@ clients.name -> telegram_subscriptions.client_name
 | `/usr/local/etc/xray/config.json` | Его читает сам Xray. |
 | `/usr/local/etc/xray/server.env` | Простые настройки окружения менеджера и systemd-совместимость. |
 | `/root/xray-reality-client.txt` | Стартовая ссылка и памятка установки. |
-| `/var/log/xray/access.log` | Источник metadata-событий Xray. |
+| `/var/log/xray/access.log` | Raw-источник metadata-событий Xray; хранится и ротируется отдельно от SQLite. |
+| `/var/log/xray/error.log` | Raw-журнал ошибок Xray; нормализованные ошибки агрегируются в `xray_error_events`. |
 
-Состояние менеджера хранится в `/usr/local/etc/xray/manager.db`. Старые JSON/JSONL-файлы состояния больше не используются runtime-кодом менеджера.
+Состояние менеджера хранится в `/usr/local/etc/xray/manager.db`. Старые JSON/JSONL-файлы состояния больше не используются runtime-кодом менеджера. Raw `access.log` и `error.log` по умолчанию хранятся 180 дней и управляются настройками `XRAY_ACCESS_LOG_RETENTION_DAYS`, `XRAY_ERROR_LOG_RETENTION_DAYS` и `XRAY_RAW_LOG_ROTATE_TIME`.
 
 ## Проверка состояния
 

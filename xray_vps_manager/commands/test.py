@@ -3,24 +3,33 @@ import json
 import os
 import re
 import socket
+import ssl
 import stat
 import subprocess
 import sys
 from calendar import monthrange
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.activity import time as activity_time
+from xray_vps_manager.clients import diagnostics as client_diagnostics
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db import schema as sqlite_schema
 from xray_vps_manager.db.repositories import activity as sqlite_activity
+from xray_vps_manager.db.repositories import activity_blocklist as sqlite_blocklist
+from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import sqlite_read_ready
+from xray_vps_manager.traffic import consistency as traffic_consistency
+from xray_vps_manager.xray import blocklist as xray_blocklist
+from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray import caddy as caddy_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -38,6 +47,7 @@ HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-activity",
     "/usr/local/sbin/xray-traffic-sync",
     "/usr/local/sbin/xray-set-cascade",
+    "/usr/local/sbin/xray-set-bypass",
     "/usr/local/sbin/xray-update",
     "/usr/local/sbin/xray-backup",
     "/usr/local/sbin/xray-test",
@@ -57,6 +67,7 @@ TRAFFIC_SERVICE_COMMANDS = [
     "ExecStart=/usr/local/sbin/xray-telegram notify-daily-summary --quiet",
 ]
 TELEGRAM_POLLER_SERVICE_COMMAND = "ExecStart=/usr/local/sbin/xray-telegram run-poller"
+TLS_EXPIRY_WARNING_DAYS = 14
 GREEN = "\033[32m"
 RED = "\033[31m"
 YELLOW = "\033[33m"
@@ -138,11 +149,30 @@ def reality_inbounds(config):
     ]
 
 
+def vless_inbounds(config):
+    return [inbound for inbound in config.get("inbounds", []) if inbound.get("protocol") == "vless"]
+
+
+def trojan_inbounds(config):
+    return [
+        inbound
+        for inbound in config.get("inbounds", [])
+        if inbound.get("protocol") == "trojan"
+        and inbound_tag(inbound).startswith("trojan-tls")
+    ]
+
+
+def managed_connection_inbounds(config):
+    return vless_inbounds(config) + trojan_inbounds(config)
+
+
 def inbound_tag(inbound):
     return inbound.get("tag") or "vless-reality"
 
 
 def clients(inbound):
+    if inbound.get("protocol") == "trojan":
+        return inbound.get("settings", {}).get("clients", [])
     return inbound.get("settings", {}).get("clients", [])
 
 
@@ -297,6 +327,17 @@ def check_activity_exceptions_db(diag):
     return f"{MANAGER_DB_PATH} activity exceptions loaded from SQLite"
 
 
+def check_activity_blocklist_db(diag):
+    connection = sqlite_ready_connection()
+    try:
+        items = sqlite_blocklist.list_blocks(connection)
+        stats = sqlite_blocklist.list_hit_stats(connection)
+    finally:
+        connection.close()
+    diag.context["activity_blocklist_db"] = {"items": items, "stats": stats}
+    return f"{MANAGER_DB_PATH} activity blocklist loaded from SQLite: entries={len(items)}, stats={len(stats)}"
+
+
 def check_telegram_bot_db(diag):
     connection = sqlite_ready_connection()
     try:
@@ -314,6 +355,8 @@ def check_telegram_bot_db(diag):
         raise RuntimeError("Telegram paymentAmount must be a string")
     if not isinstance(db.get("paymentTotalAmount", ""), str):
         raise RuntimeError("Telegram paymentTotalAmount must be a string")
+    if not isinstance(db.get("paymentDomainAnnualAmount", ""), str):
+        raise RuntimeError("Telegram paymentDomainAnnualAmount must be a string")
     if db.get("paymentCurrency", "₽") not in ("₽", "$", "€"):
         raise RuntimeError("Telegram paymentCurrency must be ₽, $, or €")
     if db.get("paymentRoundingMode", "none") not in ("none", "step"):
@@ -356,6 +399,7 @@ def sqlite_telegram_settings_db(connection):
         "botName": "Vireika",
         "paymentAmount": "",
         "paymentTotalAmount": "",
+        "paymentDomainAnnualAmount": "",
         "paymentCurrency": "₽",
         "paymentRoundingMode": "none",
         "paymentRoundingStep": "10",
@@ -390,15 +434,18 @@ def table_values(connection, table, column):
     return {str(row[column]) for row in rows}
 
 
-def check_sqlite_database(diag):
+def check_sqlite_database(diag, full_integrity=False):
     if not MANAGER_DB_PATH.exists():
         raise RuntimeError(f"not found: {MANAGER_DB_PATH}; run install.sh or restore a backup with manager.db")
 
     connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
     try:
-        quick_check = sqlite_database.quick_check(connection)
-        if quick_check != "ok":
-            raise RuntimeError(f"PRAGMA quick_check returned: {quick_check}")
+        quick_check_status = "skipped; run xray-test --all for full SQLite integrity scan"
+        if full_integrity:
+            quick_check = sqlite_database.quick_check(connection)
+            if quick_check != "ok":
+                raise RuntimeError(f"PRAGMA quick_check returned: {quick_check}")
+            quick_check_status = "ok"
 
         version = sqlite_schema.schema_version(connection)
         if version != sqlite_schema.CURRENT_SCHEMA_VERSION:
@@ -413,7 +460,13 @@ def check_sqlite_database(diag):
             "clients": table_count(connection, "clients"),
             "traffic": table_count(connection, "traffic_totals"),
             "activityEvents": table_count(connection, "activity_events"),
+            "activityAlerts": table_count(connection, "activity_alert_events"),
+            "activityCounters": table_count(connection, "activity_client_counters"),
             "activityExceptions": table_count(connection, "activity_exceptions"),
+            "activityBlocklist": table_count(connection, "activity_blocklist"),
+            "activityBlocklistHits": table_count(connection, "activity_blocklist_hits"),
+            "bypassRoutes": table_count(connection, "bypass_routes"),
+            "xrayErrors": table_count(connection, "xray_error_events"),
             "telegramSubscriptions": table_count(connection, "telegram_subscriptions"),
         }
         diag.context["sqlite_counts"] = counts
@@ -423,7 +476,7 @@ def check_sqlite_database(diag):
                 raise RuntimeError("; ".join(issues[:8]))
 
         count_text = ", ".join(f"{key}={value}" for key, value in counts.items())
-        return f"{MANAGER_DB_PATH} schema={version}, quick_check=ok, sqliteReady=yes, {count_text}"
+        return f"{MANAGER_DB_PATH} schema={version}, quick_check={quick_check_status}, sqliteReady=yes, {count_text}"
     finally:
         connection.close()
 
@@ -440,7 +493,7 @@ def sqlite_alignment_issues(diag, connection):
             continue
         connection_tag = str(entry.get("connection") or "").strip()
         if connection_tag and connection_tag not in connections_section:
-            issues.append(f"SQLite client has missing Reality connection: {name} -> {connection_tag}")
+            issues.append(f"SQLite client has missing connection: {name} -> {connection_tag}")
 
     sqlite_clients = table_values(connection, "clients", "name")
     sqlite_traffic = table_values(connection, "traffic_totals", "client_name")
@@ -503,10 +556,10 @@ def check_reality_inbounds(diag):
 
     seen_tags = set()
     seen_ports = set()
-    names = set()
     summary = []
     for inbound in inbounds:
         tag = inbound_tag(inbound)
+        names = set()
         if tag in seen_tags:
             raise RuntimeError(f"duplicate inbound tag: {tag}")
         seen_tags.add(tag)
@@ -554,7 +607,7 @@ def check_reality_inbounds(diag):
                 raise RuntimeError(f"{tag}: {network} client must not use Vision flow")
             name = client_name(email)
             if name in names:
-                raise RuntimeError(f"duplicate active client name: {name}")
+                raise RuntimeError(f"{tag}: duplicate active client name: {name}")
             names.add(name)
         summary.append(f"{tag}:{port}")
 
@@ -562,6 +615,25 @@ def check_reality_inbounds(diag):
     diag.context["reality_tags"] = seen_tags
     diag.context["reality_ports"] = sorted(seen_ports)
     return "Reality connections OK: " + ", ".join(summary)
+
+
+def check_duplicate_active_client_names(diag):
+    rows = client_diagnostics.active_managed_client_rows(
+        managed_connection_inbounds(diag.context.get("config", {}))
+    )
+    cross_protocol = client_diagnostics.cross_protocol_duplicate_rows(rows)
+    client_db = diag.context.get("client_db", {})
+    db_clients = client_db.get("clients", {}) if isinstance(client_db.get("clients", {}), dict) else {}
+    issues = client_diagnostics.duplicate_active_client_name_issues(rows, db_clients)
+    if issues:
+        raise RuntimeError("; ".join(issues[:8]))
+    if not cross_protocol:
+        return "Active VLESS/Trojan duplicate client names OK: none"
+    summary = []
+    for name, rows in sorted(cross_protocol.items()):
+        tags = ", ".join(f"{row['connection']}:{row['protocol']}" for row in rows)
+        summary.append(f"{name} ({tags})")
+    return "Active VLESS/Trojan duplicate client names OK: " + "; ".join(summary[:8])
 
 
 def check_reality_ports(diag):
@@ -606,10 +678,14 @@ def check_stats_runtime():
 
 
 def check_timers():
-    inactive = [unit for unit in ("xray-traffic-sync.timer", "xray-client-expire.timer") if not is_active(unit)]
+    inactive = [
+        unit
+        for unit in ("xray-traffic-sync.timer", "xray-raw-log-rotate.timer", "xray-client-expire.timer")
+        if not is_active(unit)
+    ]
     if inactive:
         raise RuntimeError("inactive timers: " + ", ".join(inactive))
-    return "traffic and expiry timers active"
+    return "traffic, raw-log rotation, and expiry timers active"
 
 
 def check_traffic_sync_service():
@@ -655,9 +731,10 @@ def check_client_list_runtime():
 
 def check_client_db_alignment(diag):
     db = diag.context.get("client_db", {})
-    known_tags = diag.context.get("reality_tags", set())
+    inbounds = managed_connection_inbounds(diag.context.get("config", {}))
+    known_tags = {inbound_tag(inbound) for inbound in inbounds}
     active_names = set()
-    for inbound in diag.context.get("reality_inbounds", []):
+    for inbound in inbounds:
         for client in clients(inbound):
             active_names.add(client_name(client.get("email", "")))
 
@@ -671,7 +748,7 @@ def check_client_db_alignment(diag):
     if problems:
         raise RuntimeError("; ".join(problems[:8]))
     source = diag.context.get("client_db_source", "SQLite")
-    return f"{source} matches active Reality connections"
+    return f"{source} matches active managed connections"
 
 
 def check_traffic_db_alignment(diag):
@@ -734,6 +811,31 @@ def month_total(entry, month_key):
         total += day_total(entry, current)
         current = date.fromordinal(current.toordinal() + 1)
     return total
+
+
+def subtract_months(day, months):
+    month = day.month - months
+    year = day.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, min(day.day, monthrange(year, month)[1]))
+
+
+def check_traffic_history_consistency(diag):
+    client_db = diag.context.get("client_db", {})
+    traffic_db = diag.context.get("traffic_db", {})
+    now = datetime.now(manager_timezone(diag)).replace(microsecond=0)
+    cutoff = subtract_months(now.date(), 6)
+    gaps = traffic_consistency.retained_history_gaps(
+        traffic_db,
+        client_db.get("clients", {}),
+        cutoff,
+    )
+    if gaps:
+        details = ", ".join(f"{gap.name}: missing {gap.missing_total} bytes" for gap in gaps[:8])
+        raise RuntimeError("traffic history is behind retained totals: " + details)
+    return "traffic history matches retained totals"
 
 
 def traffic_limit_status(client_entry, traffic_entry, now):
@@ -863,15 +965,34 @@ def check_geoip_warning_routing(diag):
         raise RuntimeError("old ACTIVITY_GEOIP_WARNING_CODE is still present in server.env")
     if not code and not outbound_tags and not rules:
         return "GeoIP routing warnings are disabled"
-    if not code:
-        raise RuntimeError("geoip-warning route/outbound exists, but ACTIVITY_XRAY_GEOIP_WARNING_CODE is empty")
     strategy = config.get("routing", {}).get("domainStrategy", "")
     if strategy != "IPOnDemand":
         raise RuntimeError(f"GeoIP warning routing requires routing.domainStrategy=IPOnDemand, got {strategy or 'empty'}")
+    if not code:
+        bypass_regions = []
+        for tag in sorted(outbound_tags | {rule.get("outboundTag") for rule in rules}):
+            try:
+                region = bypass_config.region_from_geoip_warning_tag(tag)
+            except ValueError:
+                continue
+            if not bypass_config.configured_bypass_for_warning(config, region):
+                raise RuntimeError("geoip-warning route/outbound exists, but ACTIVITY_XRAY_GEOIP_WARNING_CODE is empty")
+            bypass_regions.append(region)
+        return "GeoIP routing warnings disabled; bypass marker route(s): " + ", ".join(sorted(set(bypass_regions)))
 
     expected_tag = f"{GEOIP_WARNING_PREFIX}{code}"
     expected_ip = f"geoip:{code.lower()}"
-    extra_tags = sorted(tag for tag in outbound_tags if tag != expected_tag)
+    extra_tags = []
+    for tag in sorted(outbound_tags):
+        if tag == expected_tag:
+            continue
+        try:
+            region = bypass_config.region_from_geoip_warning_tag(tag)
+        except ValueError:
+            extra_tags.append(tag)
+            continue
+        if not bypass_config.configured_bypass_for_warning(config, region):
+            extra_tags.append(tag)
     if extra_tags:
         raise RuntimeError("unexpected GeoIP warning outbound(s): " + ", ".join(extra_tags))
     if expected_tag not in outbound_tags:
@@ -885,6 +1006,456 @@ def check_geoip_warning_routing(diag):
     if not matching_rules:
         raise RuntimeError(f"missing routing rule {expected_ip} -> {expected_tag}")
     return f"GeoIP routing warnings enabled for {code}"
+
+
+def check_bypass_config(diag):
+    config = diag.context["config"]
+    connection = sqlite_ready_connection()
+    try:
+        routes = sqlite_bypass.list_routes(connection)
+        enabled_routes = sqlite_bypass.list_enabled_routes(connection)
+    finally:
+        connection.close()
+    diag.context["bypass_routes"] = routes
+
+    issues = []
+    outbounds = bypass_config.bypass_outbounds(config)
+    for outbound in outbounds:
+        tag = outbound.get("tag") or "bypass-unknown"
+        if outbound.get("protocol") != "vless":
+            issues.append(f"{tag} must use protocol=vless")
+            continue
+        vnext = outbound.get("settings", {}).get("vnext", [])
+        if not vnext or not vnext[0].get("address") or not vnext[0].get("port"):
+            issues.append(f"{tag} has incomplete vnext settings")
+
+    enabled_by_region = {}
+    for tag, record in enabled_routes.items():
+        try:
+            region = bypass_config.normalize_region_code(str(record.get("regionCode") or ""))
+        except ValueError:
+            issues.append(f"{tag}: invalid SQLite bypass region: {record.get('regionCode') or '-'}")
+            continue
+        enabled_by_region[region] = record
+        source = bypass_config.bypass_outbound(config, tag)
+        if not source:
+            issues.append(f"enabled bypass route has missing outbound: {tag}")
+            continue
+        warning_tag = bypass_config.geoip_warning_tag(region)
+        warning_outbound = bypass_config.outbound_by_tag(config, warning_tag)
+        if not warning_outbound:
+            issues.append(f"{tag}: missing notification outbound {warning_tag}")
+        elif not bypass_config.outbounds_equivalent(warning_outbound, source):
+            issues.append(f"{tag}: {warning_tag} does not duplicate bypass outbound")
+
+        marker_indexes = [
+            index
+            for index, rule in enumerate(routing_rules(config))
+            if bypass_config.is_geoip_warning_rule_for_region(rule, region)
+        ]
+        if not marker_indexes:
+            issues.append(f"{tag}: missing routing rule geoip:{region.lower()} -> {warning_tag}")
+        direct_indexes = [
+            index
+            for index, rule in enumerate(routing_rules(config))
+            if bypass_config.is_direct_bypass_region_rule(rule, region)
+        ]
+        if direct_indexes:
+            issues.append(f"{tag}: direct geoip:{region.lower()} -> bypass-* rule competes with notification marker")
+        if marker_indexes and direct_indexes and min(direct_indexes) < min(marker_indexes):
+            issues.append(f"{tag}: direct bypass rule is ordered before {warning_tag}")
+
+    active_bypass_marker_regions = set()
+    reported_marker_drifts = set()
+    for rule in routing_rules(config):
+        warning_tag = str(rule.get("outboundTag") or "")
+        if not bypass_config.is_geoip_warning_tag(warning_tag):
+            continue
+        try:
+            region = bypass_config.region_from_geoip_warning_tag(warning_tag)
+        except ValueError:
+            continue
+        if not bypass_config.is_geoip_warning_rule_for_region(rule, region):
+            continue
+        warning_outbound = bypass_config.outbound_by_tag(config, warning_tag)
+        matched_bypass = bypass_config.matching_bypass_outbound_for_warning(config, warning_outbound)
+        if not matched_bypass:
+            continue
+        active_bypass_marker_regions.add(region)
+        marker_key = (warning_tag, region)
+        if marker_key in reported_marker_drifts:
+            continue
+        reported_marker_drifts.add(marker_key)
+        matched_tag = str(matched_bypass.get("tag") or "")
+        record = enabled_by_region.get(region)
+        if not record:
+            issues.append(f"{warning_tag}: bypass-backed marker route has no enabled SQLite bypass_routes row")
+        elif str(record.get("tag") or "") != matched_tag:
+            issues.append(f"{warning_tag}: SQLite route {record.get('tag')} does not match config bypass outbound {matched_tag}")
+
+    if (enabled_routes or active_bypass_marker_regions) and config.get("routing", {}).get("domainStrategy") != "IPOnDemand":
+        issues.append("active GeoIP bypass requires routing.domainStrategy=IPOnDemand")
+
+    if issues:
+        raise RuntimeError("; ".join(issues[:8]))
+    if enabled_routes:
+        regions = ", ".join(sorted(str(record.get("regionCode") or "") for record in enabled_routes.values()))
+        return f"GeoIP bypass config OK: active regions={regions}"
+    if outbounds or routes:
+        return f"GeoIP bypass config present but disabled: outbounds={len(outbounds)}, routes={len(routes)}"
+    return "GeoIP bypass is not configured"
+
+
+def blocked_rule_index_before_geoip(config, key, value):
+    rules = routing_rules(config)
+    geoip_indexes = [index for index, rule in enumerate(rules) if is_geoip_warning_tag(rule.get("outboundTag"))]
+    first_geoip = min(geoip_indexes) if geoip_indexes else len(rules)
+    for index, rule in enumerate(rules):
+        if index >= first_geoip:
+            break
+        if rule.get("outboundTag") == BLOCKED_TAG and value in rule_values(rule, key):
+            return index
+    return None
+
+
+def check_activity_blocklist_routing(diag):
+    config = diag.context["config"]
+    connection = sqlite_ready_connection()
+    try:
+        active_items = sqlite_blocklist.active_blocks(connection, activity_time.utc_stamp())
+    finally:
+        connection.close()
+    if not active_items:
+        return "Activity global blocklist is empty"
+
+    domains, ips = xray_blocklist.split_rule_values(active_items)
+    missing = []
+    for value in domains:
+        if blocked_rule_index_before_geoip(config, "domain", value) is None:
+            missing.append(f"domain {value}")
+    for value in ips:
+        if blocked_rule_index_before_geoip(config, "ip", value) is None:
+            missing.append(f"ip {value}")
+    if missing:
+        raise RuntimeError("active blocklist entries are missing before GeoIP warning routing: " + ", ".join(missing[:8]))
+    return f"Activity global blocklist routing is active: entries={len(active_items)}"
+
+
+def certificate_not_after(cert):
+    value = cert.get("notAfter") if isinstance(cert, dict) else ""
+    if not value:
+        raise RuntimeError("certificate notAfter is missing")
+    try:
+        return datetime.strptime(value, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise RuntimeError(f"certificate notAfter could not be parsed: {value}") from exc
+
+
+def decode_certificate_file(path):
+    try:
+        return ssl._ssl._test_decode_cert(str(path))
+    except Exception as exc:
+        raise RuntimeError(f"could not parse certificate {path}: {exc}") from exc
+
+
+def certificate_domain_names(cert):
+    names = [
+        value
+        for key, value in cert.get("subjectAltName", ())
+        if str(key).lower() == "dns" and value
+    ]
+    if names:
+        return names
+    for subject in cert.get("subject", ()):
+        for key, value in subject:
+            if str(key).lower() == "commonname" and value:
+                names.append(value)
+    return names
+
+
+def certificate_dns_name_matches(pattern, domain):
+    pattern = str(pattern or "").strip().lower().rstrip(".")
+    domain = str(domain or "").strip().lower().rstrip(".")
+    if pattern == domain:
+        return True
+    if not pattern.startswith("*."):
+        return False
+    suffix = pattern[1:]
+    return domain.endswith(suffix) and domain.count(".") == suffix.count(".")
+
+
+def certificate_domain_matches(cert, domain):
+    matcher = getattr(ssl, "match_hostname", None)
+    if matcher is None:
+        names = certificate_domain_names(cert)
+        if any(certificate_dns_name_matches(name, domain) for name in names):
+            return
+        detail = ", ".join(names) if names else "no DNS names"
+        raise RuntimeError(f"certificate does not match {domain}: {detail}")
+    try:
+        matcher(cert, domain)
+    except ssl.CertificateError as exc:
+        raise RuntimeError(f"certificate does not match {domain}: {exc}") from exc
+
+
+def check_certificate_expiry(cert, label, now):
+    expires = certificate_not_after(cert)
+    remaining = expires - now
+    if remaining.total_seconds() <= 0:
+        raise RuntimeError(f"{label}: certificate expired at {expires.isoformat()}")
+    remaining_days = int(remaining.total_seconds() // 86400)
+    if remaining_days < TLS_EXPIRY_WARNING_DAYS:
+        raise RuntimeError(f"{label}: certificate expires soon: {expires.isoformat()} ({remaining_days} day(s))")
+    return remaining_days
+
+
+def check_tls_file_path(path_value, label, *, private=False):
+    path = Path(str(path_value or ""))
+    if not path.is_absolute():
+        raise RuntimeError(f"{label} must be an absolute path: {path_value}")
+    if not path.exists():
+        raise RuntimeError(f"{label} not found: {path}")
+    if not path.is_file():
+        raise RuntimeError(f"{label} is not a regular file: {path}")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o002:
+        raise RuntimeError(f"{label} is world-writable: {path} mode {mode:o}")
+    if private and mode & 0o004:
+        raise RuntimeError(f"{label} is world-readable: {path} mode {mode:o}")
+    return mode
+
+
+def direct_tls_domain_for_tag(diag, tag):
+    connections = diag.context.get("client_db", {}).get("connections", {})
+    entry = connections.get(tag, {}) if isinstance(connections, dict) else {}
+    for key in ("sni", "publicHost", "domain"):
+        value = str(entry.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def direct_tls_certificate_pairs(config):
+    pairs = []
+    for inbound in config.get("inbounds", []):
+        stream = inbound.get("streamSettings") or {}
+        if stream.get("security") != "tls":
+            continue
+        tls = stream.get("tlsSettings") if isinstance(stream.get("tlsSettings"), dict) else {}
+        certificates = tls.get("certificates") if isinstance(tls.get("certificates"), list) else []
+        for index, certificate in enumerate(certificates):
+            if not isinstance(certificate, dict):
+                continue
+            cert_file = certificate.get("certificateFile", "")
+            key_file = certificate.get("keyFile", "")
+            if cert_file or key_file:
+                pairs.append((inbound_tag(inbound), index, cert_file, key_file))
+    return pairs
+
+
+def caddy_expectations(diag):
+    expectations = []
+    connections = diag.context.get("client_db", {}).get("connections", {})
+    if not isinstance(connections, dict):
+        return expectations
+    for tag, entry in connections.items():
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("security") or "") != "tls" or entry.get("caddy") is not True:
+            continue
+        domain = str(entry.get("publicHost") or entry.get("sni") or "").strip()
+        if not domain:
+            continue
+        protocol = str(entry.get("protocol") or "vless").lower()
+        transport = str(entry.get("transport") or "").lower()
+        expected_transport = "http" if protocol == "trojan" or transport == "ws" else "xhttp"
+        expected_path = str(entry.get("wsPath") or entry.get("xhttpPath") or "")
+        local_port = entry.get("localPort")
+        public_port = entry.get("publicPort") or entry.get("port") or 443
+        expectations.append(
+            {
+                "tag": str(tag),
+                "protocol": protocol,
+                "domain": domain,
+                "publicPort": int(public_port) if str(public_port or "").isdigit() else 443,
+                "localPort": int(local_port) if str(local_port or "").isdigit() else None,
+                "transport": expected_transport,
+                "path": expected_path,
+            }
+        )
+    return expectations
+
+
+def fetch_remote_tls_certificate(domain, port=443, timeout=6):
+    context = ssl.create_default_context()
+    with socket.create_connection((domain, port), timeout=timeout) as sock:
+        with context.wrap_socket(sock, server_hostname=domain) as tls:
+            return tls.getpeercert()
+
+
+def parse_http_response(data):
+    text = data.decode("iso-8859-1", errors="replace")
+    header_text, _, body = text.partition("\r\n\r\n")
+    lines = header_text.splitlines()
+    first_line = lines[0] if lines else ""
+    match = re.match(r"HTTP/\d(?:\.\d)?\s+([0-9]{3})\b", first_line)
+    if not match:
+        raise RuntimeError("endpoint did not return an HTTP status line")
+    headers = {}
+    for line in lines[1:]:
+        key, sep, value = line.partition(":")
+        if sep:
+            headers[key.strip().lower()] = value.strip()
+    return int(match.group(1)), first_line, headers, body
+
+
+def caddy_endpoint_request(item):
+    path = item.get("path") or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    domain = item["domain"]
+    if item.get("protocol") == "trojan" and item.get("transport") == "http":
+        return (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {domain}\r\n"
+            "User-Agent: xray-test\r\n"
+            "Connection: Upgrade\r\n"
+            "Upgrade: websocket\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "Sec-WebSocket-Key: eHlheS10ZXN0LWNoZWNrIQ==\r\n"
+            "\r\n"
+        )
+    return (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {domain}\r\n"
+        "User-Agent: xray-test\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+
+
+def describe_caddy_endpoint_response(item, status, first_line, headers, body):
+    label = f"{item['domain']}:{item.get('publicPort') or 443}{item.get('path') or '/'}"
+    if item.get("protocol") == "trojan" and item.get("transport") == "http":
+        if status != 101:
+            raise RuntimeError(f"{label}: expected WebSocket 101 from Caddy/Xray endpoint, got {first_line}")
+        return f"{label} WebSocket endpoint responded 101"
+    if status == 404:
+        content_type = headers.get("content-type", "").lower()
+        body_text = body.strip()
+        if body_text or "json" in content_type or "html" in content_type:
+            raise RuntimeError(f"{label}: returned fallback-looking 404; Caddy route may not reach Xray upstream")
+        return f"{label} endpoint route reached Xray and returned empty 404 to unsupported probe"
+    if status >= 500:
+        raise RuntimeError(f"{label}: returned {status}; Caddy upstream may be unavailable")
+    content_type = headers.get("content-type", "").lower()
+    if "html" in content_type or "<html" in body[:200].lower():
+        raise RuntimeError(f"{label}: returned HTML fallback; Caddy route may not reach Xray upstream")
+    return f"{label} endpoint responded {status}"
+
+
+def probe_caddy_endpoint(item, timeout=6):
+    domain = item["domain"]
+    port = item.get("publicPort") or 443
+    context = ssl.create_default_context()
+    context.set_alpn_protocols(["http/1.1"])
+    with socket.create_connection((domain, port), timeout=timeout) as sock:
+        with context.wrap_socket(sock, server_hostname=domain) as tls:
+            tls.settimeout(timeout)
+            tls.sendall(caddy_endpoint_request(item).encode("ascii"))
+            response = b""
+            while len(response) < 4096:
+                chunk = tls.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+                if b"\r\n\r\n" in response:
+                    break
+    status, first_line, headers, body = parse_http_response(response)
+    return describe_caddy_endpoint_response(item, status, first_line, headers, body)
+
+
+def check_tls_diagnostics(diag, now=None, *, deep=False):
+    config = diag.context.get("config", {})
+    now = now or datetime.now(timezone.utc).replace(microsecond=0)
+    issues = []
+    checked_direct = 0
+    checked_caddy = 0
+    checked_endpoints = 0
+
+    for tag, index, cert_file, key_file in direct_tls_certificate_pairs(config):
+        label = f"{tag}[{index}]"
+        domain = direct_tls_domain_for_tag(diag, tag)
+        try:
+            check_tls_file_path(cert_file, f"{label} certificateFile")
+            check_tls_file_path(key_file, f"{label} keyFile", private=True)
+            cert = decode_certificate_file(cert_file)
+            check_certificate_expiry(cert, label, now)
+            if domain:
+                certificate_domain_matches(cert, domain)
+            else:
+                issues.append(f"{label}: SNI/domain metadata is missing in SQLite connection")
+        except Exception as exc:
+            issues.append(str(exc))
+        checked_direct += 1
+
+    site_by_domain = {site.domain.lower(): site for site in caddy_config.list_site_configs()}
+    for item in caddy_expectations(diag):
+        domain = item["domain"]
+        site = site_by_domain.get(domain.lower())
+        if not site:
+            issues.append(f"{item['tag']}: Caddy site config not found for {domain}")
+            checked_caddy += 1
+            continue
+        if item["localPort"] and site.local_port != item["localPort"]:
+            issues.append(f"{item['tag']}: Caddy upstream mismatch for {domain}: {site.local_port} != {item['localPort']}")
+        if site.upstream_transport != item["transport"]:
+            issues.append(f"{item['tag']}: Caddy upstream transport mismatch for {domain}: {site.upstream_transport} != {item['transport']}")
+        if item["path"] and site.match_path != item["path"]:
+            issues.append(f"{item['tag']}: Caddy route path mismatch for {domain}: {site.match_path or '-'} != {item['path']}")
+        try:
+            cert = fetch_remote_tls_certificate(domain, port=item["publicPort"])
+            check_certificate_expiry(cert, f"{item['tag']} {domain}:{item['publicPort']}", now)
+            certificate_domain_matches(cert, domain)
+        except Exception as exc:
+            issues.append(f"{item['tag']} {domain}:{item['publicPort']} TLS handshake/certificate check failed: {exc}")
+        if deep:
+            try:
+                probe_caddy_endpoint(item)
+            except Exception as exc:
+                issues.append(f"{item['tag']} Caddy endpoint check failed: {exc}")
+            checked_endpoints += 1
+        checked_caddy += 1
+
+    if issues:
+        raise RuntimeError("; ".join(issues[:8]))
+    total = checked_direct + checked_caddy
+    if total == 0:
+        return "TLS certificate diagnostics skipped: no direct TLS certs or managed Caddy TLS connections"
+    if deep:
+        return f"TLS certificate diagnostics OK: direct={checked_direct}, caddy={checked_caddy}, endpoint={checked_endpoints}"
+    return f"TLS certificate diagnostics OK: direct={checked_direct}, caddy={checked_caddy}"
+
+
+def check_deprecated_trojan_websocket_usage(diag):
+    notices = []
+    for inbound in diag.context.get("config", {}).get("inbounds", []):
+        tag = inbound_tag(inbound)
+        protocol = str(inbound.get("protocol") or "").lower()
+        network = str((inbound.get("streamSettings") or {}).get("network") or "").lower()
+        if protocol == "trojan":
+            notices.append(
+                f"{tag}: Xray warns that Trojan (with no Flow, etc.) is deprecated; "
+                "keep it as compatibility/DPI-bypass mode and plan migration when a suitable replacement is ready"
+            )
+        if network == "ws":
+            notices.append(
+                f"{tag}: Xray warns that WebSocket transport (with ALPN http/1.1, etc.) is deprecated; "
+                "track XHTTP H2/H3 migration when client support is ready"
+            )
+    if notices:
+        raise RuntimeError("; ".join(notices[:8]))
+    return "Deprecated Trojan/WebSocket check OK: none"
 
 
 def check_file_permissions():
@@ -903,7 +1474,7 @@ def check_file_permissions():
     return "sensitive file permissions OK: " + ", ".join(checked)
 
 
-def run_diagnostics():
+def run_diagnostics(full_integrity=False):
     diag = Diagnostics()
     diag.check("Root privileges", check_root)
     diag.check("Xray binary", lambda: check_xray_binary(diag))
@@ -915,11 +1486,13 @@ def run_diagnostics():
     diag.check("Clients DB", lambda: check_client_db(diag))
     diag.check("Traffic DB", lambda: check_traffic_db(diag))
     diag.check("Activity exceptions DB", lambda: check_activity_exceptions_db(diag))
+    diag.check("Activity blocklist DB", lambda: check_activity_blocklist_db(diag))
     diag.check("Telegram bot DB", lambda: check_telegram_bot_db(diag))
-    diag.check("Manager SQLite DB", lambda: check_sqlite_database(diag), fatal=False)
+    diag.check("Manager SQLite DB", lambda: check_sqlite_database(diag, full_integrity=full_integrity), fatal=False)
     diag.check("server.env", lambda: check_server_env(diag))
     diag.check("Manager timezone", lambda: check_manager_timezone(diag))
     diag.check("Reality connections", lambda: check_reality_inbounds(diag))
+    diag.check("Duplicate active client names", lambda: check_duplicate_active_client_names(diag), fatal=False)
     diag.check("Xray config test", check_config_test)
     diag.check("xray.service", check_xray_service)
     diag.check("Reality TCP ports", lambda: check_reality_ports(diag))
@@ -934,11 +1507,17 @@ def run_diagnostics():
     diag.check("xray-client list", check_client_list_runtime)
     diag.check("Client DB alignment", lambda: check_client_db_alignment(diag), fatal=False)
     diag.check("Traffic DB alignment", lambda: check_traffic_db_alignment(diag), fatal=False)
+    diag.check("Traffic history consistency", lambda: check_traffic_history_consistency(diag), fatal=False)
     diag.check("Traffic limit reset state", lambda: check_traffic_limit_reset_state(diag))
     diag.check("Torrent policy", lambda: check_torrent_policy(diag))
     diag.check("Cascade config", lambda: check_cascade_config(diag))
     diag.check("WARP config", lambda: check_warp_config(diag))
     diag.check("GeoIP warning routing", lambda: check_geoip_warning_routing(diag), fatal=False)
+    diag.check("GeoIP bypass config", lambda: check_bypass_config(diag), fatal=False)
+    diag.check("Activity blocklist routing", lambda: check_activity_blocklist_routing(diag), fatal=False)
+    diag.check("TLS certificate diagnostics", lambda: check_tls_diagnostics(diag, deep=full_integrity), fatal=False)
+    if full_integrity:
+        diag.check("Deprecated Trojan/WebSocket warnings", lambda: check_deprecated_trojan_websocket_usage(diag), fatal=False)
     diag.check("Sensitive file permissions", check_file_permissions, fatal=False)
     return diag.summary()
 
@@ -947,14 +1526,18 @@ def usage():
     print("""Usage:
   xray-test
   xray-test --all
+
+Default mode skips the full SQLite PRAGMA quick_check scan and deep Caddy endpoint probes.
+Use --all when you need a deep SQLite physical integrity check plus Trojan/TLS/Caddy endpoint warnings.
 """)
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] not in ("--all", "all"):
+    args = sys.argv[1:]
+    if len(args) > 1 or any(arg not in ("--all", "all") for arg in args):
         usage()
         sys.exit(1)
-    sys.exit(run_diagnostics())
+    sys.exit(run_diagnostics(full_integrity=bool(args)))
 
 
 if __name__ == "__main__":
