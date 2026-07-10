@@ -21,8 +21,8 @@ from xray_vps_manager.commands import (
 )
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
-MENU_VERSION = "v2.0.0"
-MENU_UPDATED = "2026-06-26 12:15 UTC"
+MENU_VERSION = "v2.0.1"
+MENU_UPDATED = "2026-07-10 19:32 UTC"
 
 
 def die(message):
@@ -418,6 +418,7 @@ def detailed_activity_menu_actions():
         ("5", "Backfill из raw access.log"),
         ("6", "Экспорт подробной активности"),
         ("7", "Retention подробного журнала"),
+        ("8", "Очистить и сжать activity DB"),
         ("0", "Назад"),
     ]
 
@@ -939,6 +940,7 @@ def detailed_activity_menu_handlers():
             lambda: menu_activity_export_actions.activity_export_report(menu_client_actions.choose_client, call),
         ),
         "7": ("Retention подробного журнала", lambda: menu_activity_actions.update_activity_retention(call)),
+        "8": ("Очистить и сжать activity DB", lambda: menu_activity_actions.cleanup_activity_data(call, confirm)),
     }
 
 

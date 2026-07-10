@@ -81,6 +81,15 @@ xray-activity status
 В статусе строка `Manager DB` показывает текущую SQLite-базу менеджера и её размер.
 Строка `First event` показывает дату самого раннего детального события, которое сейчас осталось в `manager.db`, и сколько календарных дней назад оно было записано.
 
+Очистить detailed activity по retention и физически сжать SQLite-базу:
+
+```bash
+xray-activity cleanup --yes
+xray-activity cleanup 14 --yes
+```
+
+Команда создаёт SQLite backup в `manager-db-backups`, временно останавливает manager-owned writer units (`xray-traffic-sync`, raw-log rotation, expiry и Telegram poller), применяет `ACTIVITY_RETENTION_DAYS`, запускает `PRAGMA quick_check`, выполняет `VACUUM` для `manager.db` и затем запускает обратно те timer/service units, которые были активны до очистки. Xray Core при этом не перезапускается.
+
 Синхронизация выполняется раз в минуту тем же `xray-traffic-sync.timer`, а вручную её можно запустить так:
 
 ```bash

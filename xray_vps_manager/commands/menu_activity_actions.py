@@ -430,6 +430,21 @@ def update_activity_retention(call: CommandRunner) -> None:
     call(["xray-activity", "retention", value])
 
 
+def cleanup_activity_data(call: CommandRunner, confirm: Callable[[str], bool]) -> None:
+    current = activity_retention_value()
+    print("Очистка detailed activity: применяет retention, удаляет старые события и сжимает manager.db через VACUUM.")
+    print("Перед очисткой будет создан SQLite backup, writer-сервисы и timer-ы менеджера будут временно остановлены и запущены обратно.")
+    print("Xray Core не перезапускается, VPN-соединения не должны прерываться.")
+    value = input(f"Сколько дней хранить detailed activity [{current}] (Enter - текущий срок): ").strip() or current
+    if not re.fullmatch(r"[0-9]+", value):
+        print("Срок хранения должен быть числом.")
+        return
+    if not confirm("Запустить очистку и сжатие SQLite сейчас?"):
+        print("Действие отменено.")
+        return
+    call(["xray-activity", "cleanup", value, "--yes"])
+
+
 def activity_risk_limit_values() -> dict[str, str]:
     defaults = {
         "burst_events": "1000",
