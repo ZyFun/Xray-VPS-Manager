@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -19,6 +20,8 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import runtime as client_runtime
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.clients import status as client_status
+from xray_vps_manager.core.errors import LockTimeout
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.core.terminal import print_table
@@ -33,6 +36,8 @@ from xray_vps_manager.xray import config as xray_config
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 STATS_SERVER = "127.0.0.1:10085"
+MANAGER_LOCK_TIMEOUT = 60
+TIMER_MANAGER_LOCK_TIMEOUT = 30
 TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 XRAY_TELEGRAM = Path("/usr/local/sbin/xray-telegram")
 CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
@@ -58,6 +63,20 @@ RESET = "\033[0m"
 def die(message):
     print(f"ERROR: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+@contextmanager
+def client_db_lock(purpose, timeout=None, skip_on_timeout=False):
+    # manager.lock around load_db -> mutate -> save_db; take it only after all prompts.
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT if timeout is None else timeout, purpose=purpose):
+            yield
+    except LockTimeout as exc:
+        if skip_on_timeout:
+            # Timer step: skip this run so the rest of the minute chain continues; the next run retries.
+            print(f"WARN: {exc.message}. Шаг {purpose} пропущен, следующий запуск таймера повторит его.", file=sys.stderr)
+            sys.exit(0)
+        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
 
 
 def run(command):
@@ -574,67 +593,68 @@ def cmd_connection_add(
     public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_XHTTP_TLS_PUBLIC_PORT
     tls_min_version = validate_tls_version(tls_min_version, "tls1.2")
     tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
-    config = load_config()
-    db = load_db()
-    try:
-        if security == "tls":
-            tls_domain = xray_caddy.validate_domain(sni)
-            if install_caddy:
-                conflicts = client_connections.public_port_conflicts(config, public_port)
-                if conflicts:
-                    tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
-                    die(
-                        f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
-                        "Move those connections to another port before installing Caddy."
-                    )
-                xray_caddy.require_site_config_absent(tls_domain)
-            result = client_connections.add_tls_xhttp_connection(
-                config,
-                db,
-                name,
-                tls_domain,
-                local_port=port,
-                public_port=public_port,
-                fingerprint_value=fp,
-                xhttp_path=xhttp_path,
-                xhttp_mode=xhttp_mode,
-                xhttp_extra=xhttp_extra,
-                tls_min_version=tls_min_version,
-                tls_max_version=tls_max_version,
-                caddy_enabled=install_caddy,
-            )
-        else:
-            result = client_connections.add_connection(
-                config,
-                db,
-                name,
-                port,
-                sni,
-                fp,
-                transport=transport,
-                grpc_service_name=grpc_service_name,
-                xhttp_path=xhttp_path,
-                xhttp_mode=xhttp_mode,
-                xhttp_extra=xhttp_extra,
-            )
-    except (OSError, ValueError, RuntimeError) as exc:
-        die(str(exc))
-
-    backup = save_config_restart_xray_and_db(config, db)
-    caddy_site = None
-    if result.security == "tls" and install_caddy:
+    with client_db_lock("add-connection"):
+        config = load_config()
+        db = load_db()
         try:
-            caddy_site = xray_caddy.setup_caddy_for_xhttp(
-                result.public_host,
-                result.local_port,
-                tls_min_version=result.tls_min_version,
-                tls_max_version=result.tls_max_version,
-            )
-        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-            die(
-                "TLS-XHTTP connection was added, but Caddy setup failed. "
-                f"Config backup: {backup}. Detail: {exc}"
-            )
+            if security == "tls":
+                tls_domain = xray_caddy.validate_domain(sni)
+                if install_caddy:
+                    conflicts = client_connections.public_port_conflicts(config, public_port)
+                    if conflicts:
+                        tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+                        die(
+                            f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
+                            "Move those connections to another port before installing Caddy."
+                        )
+                    xray_caddy.require_site_config_absent(tls_domain)
+                result = client_connections.add_tls_xhttp_connection(
+                    config,
+                    db,
+                    name,
+                    tls_domain,
+                    local_port=port,
+                    public_port=public_port,
+                    fingerprint_value=fp,
+                    xhttp_path=xhttp_path,
+                    xhttp_mode=xhttp_mode,
+                    xhttp_extra=xhttp_extra,
+                    tls_min_version=tls_min_version,
+                    tls_max_version=tls_max_version,
+                    caddy_enabled=install_caddy,
+                )
+            else:
+                result = client_connections.add_connection(
+                    config,
+                    db,
+                    name,
+                    port,
+                    sni,
+                    fp,
+                    transport=transport,
+                    grpc_service_name=grpc_service_name,
+                    xhttp_path=xhttp_path,
+                    xhttp_mode=xhttp_mode,
+                    xhttp_extra=xhttp_extra,
+                )
+        except (OSError, ValueError, RuntimeError) as exc:
+            die(str(exc))
+
+        backup = save_config_restart_xray_and_db(config, db)
+        caddy_site = None
+        if result.security == "tls" and install_caddy:
+            try:
+                caddy_site = xray_caddy.setup_caddy_for_xhttp(
+                    result.public_host,
+                    result.local_port,
+                    tls_min_version=result.tls_min_version,
+                    tls_max_version=result.tls_max_version,
+                )
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+                die(
+                    "TLS-XHTTP connection was added, but Caddy setup failed. "
+                    f"Config backup: {backup}. Detail: {exc}"
+                )
 
     print(f"Added connection: {result.name}")
     print(f"Tag: {result.tag}")
@@ -684,71 +704,72 @@ def cmd_trojan_connection_add(
     transport = (transport_value or "ws").strip().lower()
     if transport not in ("tcp", "ws"):
         die("Trojan TRANSPORT must be tcp or ws.")
-    config = load_config()
-    db = load_db()
-    try:
-        if transport == "ws":
-            local_port = validate_port(port_value)
-            public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_TROJAN_TLS_PUBLIC_PORT
-            path = validate_trojan_ws_path(ws_path)
-            tls_min_version = validate_tls_version(tls_min_version, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
-            tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
-            tls_domain = xray_caddy.validate_domain(domain)
-            if install_caddy:
-                conflicts = client_connections.public_port_conflicts(config, public_port)
-                if conflicts:
-                    tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
-                    die(
-                        f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
-                        "Move those connections to another port before installing Caddy."
-                    )
-                xray_caddy.require_site_config_absent(tls_domain)
-            result = client_connections.add_trojan_caddy_connection(
-                config,
-                db,
-                name,
-                tls_domain,
-                local_port=local_port,
-                public_port=public_port,
-                fingerprint_value=fp,
-                ws_path=path,
-                tls_min_version=tls_min_version,
-                tls_max_version=tls_max_version,
-                caddy_enabled=install_caddy,
-            )
-        else:
-            port = validate_port(port_value)
-            cert_file = validate_absolute_path(cert_file_value, "CERT_FILE")
-            key_file = validate_absolute_path(key_file_value, "KEY_FILE")
-            result = client_connections.add_trojan_tls_connection(
-                config,
-                db,
-                name,
-                port,
-                domain,
-                cert_file,
-                key_file,
-                fp,
-            )
-    except (OSError, ValueError, RuntimeError) as exc:
-        die(str(exc))
-
-    backup = save_config_restart_xray_and_db(config, db)
-    caddy_site = None
-    if result.transport == "ws" and install_caddy:
+    with client_db_lock("add-trojan-connection"):
+        config = load_config()
+        db = load_db()
         try:
-            caddy_site = xray_caddy.setup_caddy_for_trojan_ws(
-                result.public_host,
-                result.local_port,
-                result.ws_path,
-                tls_min_version=result.tls_min_version,
-                tls_max_version=result.tls_max_version,
-            )
-        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-            die(
-                "Trojan Caddy connection was added, but Caddy setup failed. "
-                f"Config backup: {backup}. Detail: {exc}"
-            )
+            if transport == "ws":
+                local_port = validate_port(port_value)
+                public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_TROJAN_TLS_PUBLIC_PORT
+                path = validate_trojan_ws_path(ws_path)
+                tls_min_version = validate_tls_version(tls_min_version, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
+                tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
+                tls_domain = xray_caddy.validate_domain(domain)
+                if install_caddy:
+                    conflicts = client_connections.public_port_conflicts(config, public_port)
+                    if conflicts:
+                        tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
+                        die(
+                            f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
+                            "Move those connections to another port before installing Caddy."
+                        )
+                    xray_caddy.require_site_config_absent(tls_domain)
+                result = client_connections.add_trojan_caddy_connection(
+                    config,
+                    db,
+                    name,
+                    tls_domain,
+                    local_port=local_port,
+                    public_port=public_port,
+                    fingerprint_value=fp,
+                    ws_path=path,
+                    tls_min_version=tls_min_version,
+                    tls_max_version=tls_max_version,
+                    caddy_enabled=install_caddy,
+                )
+            else:
+                port = validate_port(port_value)
+                cert_file = validate_absolute_path(cert_file_value, "CERT_FILE")
+                key_file = validate_absolute_path(key_file_value, "KEY_FILE")
+                result = client_connections.add_trojan_tls_connection(
+                    config,
+                    db,
+                    name,
+                    port,
+                    domain,
+                    cert_file,
+                    key_file,
+                    fp,
+                )
+        except (OSError, ValueError, RuntimeError) as exc:
+            die(str(exc))
+
+        backup = save_config_restart_xray_and_db(config, db)
+        caddy_site = None
+        if result.transport == "ws" and install_caddy:
+            try:
+                caddy_site = xray_caddy.setup_caddy_for_trojan_ws(
+                    result.public_host,
+                    result.local_port,
+                    result.ws_path,
+                    tls_min_version=result.tls_min_version,
+                    tls_max_version=result.tls_max_version,
+                )
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+                die(
+                    "Trojan Caddy connection was added, but Caddy setup failed. "
+                    f"Config backup: {backup}. Detail: {exc}"
+                )
 
     print(f"Added Trojan connection: {result.name}")
     print(f"Tag: {result.tag}")
@@ -778,25 +799,26 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
     xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
     xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
     xhttp_extra = validate_xhttp_extra_json(xhttp_extra_json) if transport == "xhttp" and xhttp_extra_json is not None else None
-    config = load_config()
-    db = load_db()
-    try:
-        result = client_connections.update_connection_transport(
-            config,
-            db,
-            identifier,
-            transport,
-            grpc_service_name=grpc_service_name,
-            xhttp_path=xhttp_path,
-            xhttp_mode=xhttp_mode,
-            xhttp_extra=xhttp_extra,
-        )
-    except (ValueError, RuntimeError) as exc:
-        die(str(exc))
+    with client_db_lock("connection-transport"):
+        config = load_config()
+        db = load_db()
+        try:
+            result = client_connections.update_connection_transport(
+                config,
+                db,
+                identifier,
+                transport,
+                grpc_service_name=grpc_service_name,
+                xhttp_path=xhttp_path,
+                xhttp_mode=xhttp_mode,
+                xhttp_extra=xhttp_extra,
+            )
+        except (ValueError, RuntimeError) as exc:
+            die(str(exc))
 
-    backup = save_config_restart_xray_and_db(config, db)
-    if result.env_update is not None:
-        save_server_env_values(result.env_update)
+        backup = save_config_restart_xray_and_db(config, db)
+        if result.env_update is not None:
+            save_server_env_values(result.env_update)
 
     print(f"Connection: {result.display_name} ({result.tag})")
     print(f"TRANSPORT: {result.transport}")
@@ -814,14 +836,15 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
 
 def cmd_connection_xhttp_extra(identifier, xhttp_extra_json=None, clear=False):
     xhttp_extra = {} if clear else validate_xhttp_extra_json(xhttp_extra_json)
-    config = load_config()
-    db = load_db()
-    try:
-        result = client_connections.update_connection_xhttp_extra(config, db, identifier, xhttp_extra)
-    except (ValueError, RuntimeError) as exc:
-        die(str(exc))
+    with client_db_lock("connection-xhttp-extra"):
+        config = load_config()
+        db = load_db()
+        try:
+            result = client_connections.update_connection_xhttp_extra(config, db, identifier, xhttp_extra)
+        except (ValueError, RuntimeError) as exc:
+            die(str(exc))
 
-    backup = save_config_restart_xray_and_db(config, db)
+        backup = save_config_restart_xray_and_db(config, db)
     extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
     print(f"Connection: {result.display_name} ({result.tag})")
     print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
@@ -895,38 +918,39 @@ def cmd_trojan_connection_update(
         else None
     )
 
-    config = load_config()
-    db = load_db()
-    original_db = copy.deepcopy(db)
-    try:
-        result = client_connections.update_trojan_connection(
-            config,
-            db,
-            identifier,
-            domain=domain,
-            local_port=local_port,
-            public_port=public_port,
-            ws_path=ws_path,
-            fingerprint_value=fp,
-            tls_min_version=tls_min,
-            tls_max_version=tls_max,
-        )
-        if result.caddy_enabled and result.public_host != result.previous_public_host:
-            xray_caddy.require_site_config_absent(result.public_host)
-    except (OSError, ValueError, RuntimeError) as exc:
-        die(str(exc))
+    with client_db_lock("update-trojan-connection"):
+        config = load_config()
+        db = load_db()
+        original_db = copy.deepcopy(db)
+        try:
+            result = client_connections.update_trojan_connection(
+                config,
+                db,
+                identifier,
+                domain=domain,
+                local_port=local_port,
+                public_port=public_port,
+                ws_path=ws_path,
+                fingerprint_value=fp,
+                tls_min_version=tls_min,
+                tls_max_version=tls_max,
+            )
+            if result.caddy_enabled and result.public_host != result.previous_public_host:
+                xray_caddy.require_site_config_absent(result.public_host)
+        except (OSError, ValueError, RuntimeError) as exc:
+            die(str(exc))
 
-    backup = save_config_restart_xray_and_db(config, db)
-    caddy_result = None
-    try:
-        caddy_result = update_trojan_caddy_site(result)
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        restore_config_backup(backup)
-        save_db(original_db)
-        die(
-            "Trojan connection was updated, but Caddy update failed. "
-            f"Rolled back Xray config and database. Detail: {exc}"
-        )
+        backup = save_config_restart_xray_and_db(config, db)
+        caddy_result = None
+        try:
+            caddy_result = update_trojan_caddy_site(result)
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            restore_config_backup(backup)
+            save_db(original_db)
+            die(
+                "Trojan connection was updated, but Caddy update failed. "
+                f"Rolled back Xray config and database. Detail: {exc}"
+            )
 
     print(f"Trojan connection updated: {result.display_name}")
     print(f"Tag: {result.tag}")
@@ -949,30 +973,32 @@ def cmd_trojan_connection_update(
 
 def cmd_connection_rename(identifier, new_name):
     new_name = validate_connection_name(new_name)
-    config = load_config()
-    db = load_db()
-    try:
-        result = client_connections.rename_connection(config, db, identifier, new_name)
-    except ValueError as exc:
-        die(str(exc))
-    save_db(db)
+    with client_db_lock("rename-connection"):
+        config = load_config()
+        db = load_db()
+        try:
+            result = client_connections.rename_connection(config, db, identifier, new_name)
+        except ValueError as exc:
+            die(str(exc))
+        save_db(db)
     print(f"Connection renamed: {result.old_name} -> {result.new_name}")
     print(f"Tag: {result.tag}")
     print("Xray restart is not required.")
 
 
 def cmd_connection_remove(identifier):
-    config = load_config()
-    db = load_db()
-    try:
-        result = client_connections.remove_connection(config, db, identifier)
-    except ValueError as exc:
-        die(str(exc))
+    with client_db_lock("remove-connection"):
+        config = load_config()
+        db = load_db()
+        try:
+            result = client_connections.remove_connection(config, db, identifier)
+        except ValueError as exc:
+            die(str(exc))
 
-    backup = save_config_restart_xray_and_db(config, db)
-    if result.env_update is not None:
-        save_server_env_values(result.env_update)
-    traffic_removed = remove_traffic_clients(result.removed_client_names)
+        backup = save_config_restart_xray_and_db(config, db)
+        if result.env_update is not None:
+            save_server_env_values(result.env_update)
+        traffic_removed = remove_traffic_clients(result.removed_client_names)
 
     print(f"Removed connection: {result.display_name}")
     print(f"Tag: {result.tag}")
@@ -1168,22 +1194,31 @@ def db_entry_for_existing_client(config, db, name):
 def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, protocol="", payment_type="free"):
     validate_name(name)
     payment_type = normalize_payment_type(payment_type) if payment_type else ""
-    config = load_config()
-    db = load_db()
-    existing_client = client_crud.client_exists(config, db, name)
-    try:
-        connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
-    except ValueError as exc:
-        die(str(exc))
+    if prompt_for_access:
+        # ACCESS_DAYS is asked from a read-only snapshot, before manager.lock is taken.
+        config = load_config()
+        db = load_db_readonly().db
+        existing_client = client_crud.client_exists(config, db, name)
+        try:
+            client_crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
+        except ValueError as exc:
+            die(str(exc))
+        if not existing_client:
+            access_days = prompt_access_days()
 
-    if prompt_for_access and not existing_client:
-        access_days = prompt_access_days()
-    try:
-        result = client_crud.add_client(config, db, name, access_days, connection_tag, payment_type)
-    except ValueError as exc:
-        die(str(exc))
+    with client_db_lock("add"):
+        config = load_config()
+        db = load_db()
+        if prompt_for_access and client_crud.client_exists(config, db, name) != existing_client:
+            # ACCESS_DAYS was asked or skipped for a client state that changed while waiting.
+            die(f"Client {name} was added or removed by another operation. Run the command again.")
+        try:
+            connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
+            result = client_crud.add_client(config, db, name, access_days, connection_tag, payment_type)
+        except ValueError as exc:
+            die(str(exc))
 
-    backup = save_config_restart_xray_and_db(config, db)
+        backup = save_config_restart_xray_and_db(config, db)
 
     print(("Added client: " if result.added_client else "Added credential for client: ") + name)
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
@@ -1197,73 +1232,78 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
 
 
 def cmd_set_payment(name, payment_value):
-    config = load_config()
-    db = load_db()
-    ensure_connections(config, db)
-    entry = db_entry_for_existing_client(config, db, name)
-    set_entry_payment_type(entry, payment_value)
-    client_repository.db_clients(db)[name] = entry
-    save_db(db)
+    with client_db_lock("set-payment"):
+        config = load_config()
+        db = load_db()
+        ensure_connections(config, db)
+        entry = db_entry_for_existing_client(config, db, name)
+        set_entry_payment_type(entry, payment_value)
+        client_repository.db_clients(db)[name] = entry
+        save_db(db)
     print(f"Client: {name}")
     print(f"Payment type: {client_payments.payment_type_label(entry)}")
     print_payment_summary()
 
 
 def cmd_sync_routes():
-    config = load_config()
-    db = load_db()
-    changed = client_routes.ensure_all_client_route_config(config, db)
+    with client_db_lock("sync-routes"):
+        config = load_config()
+        db = load_db()
+        changed = client_routes.ensure_all_client_route_config(config, db)
+        if changed:
+            backup = save_config_restart_xray_and_db(config, db)
+        else:
+            save_db(db)
     if changed:
-        backup = save_config_restart_xray_and_db(config, db)
         print("Client cascade routes synchronized.")
         print(f"Backup: {backup}")
     else:
-        save_db(db)
         print("Client cascade routes are already synchronized.")
     print_route_options(config, db)
 
 
 def cmd_route(name, route_value=None):
     validate_name(name)
-    config = load_config()
-    db = load_db()
-    client_routes.sync_routes_from_config(config, db)
-    entry = db_entry_for_existing_client(config, db, name)
-    current_tag = client_routes.selected_route_tag(entry)
+    with client_db_lock("route"):
+        config = load_config()
+        db = load_db()
+        client_routes.sync_routes_from_config(config, db)
+        entry = db_entry_for_existing_client(config, db, name)
+        current_tag = client_routes.selected_route_tag(entry)
 
-    if route_value is None:
-        print(f"Client: {name}")
-        print(f"Current country: {client_routes.selected_route_label(db, entry)}")
-        print(f"Current cascade: {current_tag or '-'}")
-        print_route_options(config, db)
+        if route_value is None:
+            print(f"Client: {name}")
+            print(f"Current country: {client_routes.selected_route_label(db, entry)}")
+            print(f"Current cascade: {current_tag or '-'}")
+            print_route_options(config, db)
+            save_db(db)
+            return
+
+        tag = resolve_cascade_route_tag(config, db, route_value)
+        if current_tag == tag:
+            save_db(db)
+            print(f"Client: {name}")
+            print(f"Country already selected: {client_routes.selected_route_label(db, entry)}")
+            print(f"Cascade: {tag}")
+            return
+
+        next_entry = dict(entry)
+        next_entry["selectedCascadeTag"] = tag
+        client_routes.ensure_client_route_config(config, name, next_entry, tag)
+        backup = save_config(config)
+        try:
+            run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+        except subprocess.CalledProcessError:
+            restore_config_file(backup)
+            die(f"New route config failed. Restored backup: {backup}")
+
+        ok, detail = client_routes.apply_runtime_override(name, next_entry, tag, run_capture)
+        if not ok:
+            restore_config_file(backup)
+            die("Runtime route switch failed. Run xray-client sync-routes first and check Xray RoutingService. Detail: " + detail)
+
+        client_repository.db_clients(db)[name] = next_entry
         save_db(db)
-        return
-
-    tag = resolve_cascade_route_tag(config, db, route_value)
-    if current_tag == tag:
-        save_db(db)
-        print(f"Client: {name}")
-        print(f"Country already selected: {client_routes.selected_route_label(db, entry)}")
-        print(f"Cascade: {tag}")
-        return
-
-    next_entry = dict(entry)
-    next_entry["selectedCascadeTag"] = tag
-    client_routes.ensure_client_route_config(config, name, next_entry, tag)
-    backup = save_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-    except subprocess.CalledProcessError:
-        restore_config_file(backup)
-        die(f"New route config failed. Restored backup: {backup}")
-
-    ok, detail = client_routes.apply_runtime_override(name, next_entry, tag, run_capture)
-    if not ok:
-        restore_config_file(backup)
-        die("Runtime route switch failed. Run xray-client sync-routes first and check Xray RoutingService. Detail: " + detail)
-
-    client_repository.db_clients(db)[name] = next_entry
-    save_db(db)
     print(f"Client: {name}")
     print(f"Selected country: {client_routes.selected_route_label(db, next_entry)}")
     print(f"Cascade: {tag}")
@@ -1273,31 +1313,34 @@ def cmd_route(name, route_value=None):
 
 def cmd_remove(name):
     validate_name(name)
-    config = load_config()
-    db = load_db()
-    try:
-        result = client_crud.remove_client(config, db, name)
-    except ValueError as exc:
-        die(str(exc))
+    with client_db_lock("remove"):
+        config = load_config()
+        db = load_db()
+        try:
+            result = client_crud.remove_client(config, db, name)
+        except ValueError as exc:
+            die(str(exc))
 
-    backup = save_config_restart_xray_and_db(config, db)
+        backup = save_config_restart_xray_and_db(config, db)
+        traffic_removed = remove_traffic_clients([result.name])
 
     print(f"Removed client: {result.name}")
-    if remove_traffic_clients([result.name]):
+    if traffic_removed:
         print("Removed traffic history.")
     print(f"Backup: {backup}")
 
 
 def cmd_disable(name, connection_tag=None):
     validate_name(name)
-    config = load_config()
-    db = load_db()
-    try:
-        result = client_crud.disable_client(config, db, name, connection_tag=connection_tag)
-    except ValueError as exc:
-        die(str(exc))
+    with client_db_lock("disable"):
+        config = load_config()
+        db = load_db()
+        try:
+            result = client_crud.disable_client(config, db, name, connection_tag=connection_tag)
+        except ValueError as exc:
+            die(str(exc))
 
-    backup = save_config_restart_xray_and_db(config, db)
+        backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Disabled client: {result.name}")
     if result.connection_tags:
@@ -1308,23 +1351,24 @@ def cmd_disable(name, connection_tag=None):
 def cmd_enable(name, connection_tag=None):
     validate_name(name)
     sync_traffic()
-    config = load_config()
-    db = load_db()
-    traffic_db = load_traffic_db()
-    try:
-        result = client_crud.enable_client(config, db, traffic_db, name, connection_tag=connection_tag)
-    except client_crud.EnableTrafficLimitExceeded as exc:
-        traffic_status = exc.traffic_status
-        die(
-            "Traffic limit is exhausted for the current "
-            f"{client_limits.traffic_limit_period_label(traffic_status['period'])}. "
-            f"Used {format_traffic(traffic_status['usedBytes'])} of {format_traffic(traffic_status['limitBytes'])}. "
-            f"Can be enabled after reset: {traffic_status['resetAt']}"
-        )
-    except ValueError as exc:
-        die(str(exc))
+    with client_db_lock("enable"):
+        config = load_config()
+        db = load_db()
+        traffic_db = load_traffic_db()
+        try:
+            result = client_crud.enable_client(config, db, traffic_db, name, connection_tag=connection_tag)
+        except client_crud.EnableTrafficLimitExceeded as exc:
+            traffic_status = exc.traffic_status
+            die(
+                "Traffic limit is exhausted for the current "
+                f"{client_limits.traffic_limit_period_label(traffic_status['period'])}. "
+                f"Used {format_traffic(traffic_status['usedBytes'])} of {format_traffic(traffic_status['limitBytes'])}. "
+                f"Can be enabled after reset: {traffic_status['resetAt']}"
+            )
+        except ValueError as exc:
+            die(str(exc))
 
-    backup = save_config_restart_xray_and_db(config, db)
+        backup = save_config_restart_xray_and_db(config, db)
 
     print(f"Enabled client: {result.name}")
     if result.connection_tags:
@@ -1338,18 +1382,19 @@ def cmd_enable(name, connection_tag=None):
 
 def cmd_move_connection(name, target_connection_identifier):
     validate_name(name)
-    config = load_config()
-    db = load_db()
-    try:
-        result = client_crud.move_client_to_connection(config, db, name, target_connection_identifier)
-    except ValueError as exc:
-        die(str(exc))
+    with client_db_lock("move-connection"):
+        config = load_config()
+        db = load_db()
+        try:
+            result = client_crud.move_client_to_connection(config, db, name, target_connection_identifier)
+        except ValueError as exc:
+            die(str(exc))
 
-    backup = None
-    if result.config_changed:
-        backup = save_config_restart_xray_and_db(config, db)
-    else:
-        save_db(db)
+        backup = None
+        if result.config_changed:
+            backup = save_config_restart_xray_and_db(config, db)
+        else:
+            save_db(db)
 
     print(f"Moved client: {result.name}")
     print(
@@ -1370,23 +1415,24 @@ def cmd_move_connection(name, target_connection_identifier):
     print("Выдай клиенту новую ссылку: после переноса параметры подключения меняются.")
 
 
-def run_access_update(name, result_factory):
+def run_access_update(name, result_factory, purpose):
     validate_name(name)
     sync_traffic()
-    config = load_config()
-    db = load_db()
-    traffic_db = load_traffic_db()
-    try:
-        result = result_factory(config, db, traffic_db)
-    except ValueError as exc:
-        die(str(exc))
-    entry = result.entry
+    with client_db_lock(purpose):
+        config = load_config()
+        db = load_db()
+        traffic_db = load_traffic_db()
+        try:
+            result = result_factory(config, db, traffic_db)
+        except ValueError as exc:
+            die(str(exc))
+        entry = result.entry
 
-    backup = None
-    if result.config_changed:
-        backup = save_config_restart_xray_and_db(config, db)
-    else:
-        save_db(db)
+        backup = None
+        if result.config_changed:
+            backup = save_config_restart_xray_and_db(config, db)
+        else:
+            save_db(db)
 
     print(f"Client: {name}")
     print(f"Access until: {client_access.format_access_until(entry.get('expiresAt', ''))}")
@@ -1418,6 +1464,7 @@ def cmd_set_days(name, days_value):
     run_access_update(
         name,
         lambda config, db, traffic_db: client_status.set_access_days(config, db, traffic_db, name, days),
+        "set-days",
     )
 
 
@@ -1426,19 +1473,21 @@ def cmd_extend_days(name, days_value):
     run_access_update(
         name,
         lambda config, db, traffic_db: client_status.extend_access_days(config, db, traffic_db, name, days),
+        "extend-days",
     )
 
 
 def cmd_set_limit(name, period_value, limit_gb_value):
     period = validate_limit_period(period_value)
     limit_bytes = parse_limit_gb(limit_gb_value)
-    config = load_config()
-    db = load_db()
-    ensure_connections(config, db)
-    entry = db_entry_for_existing_client(config, db, name)
-    result = set_client_traffic_limit(entry, period, limit_bytes)
-    client_repository.db_clients(db)[name] = result.entry
-    save_db(db)
+    with client_db_lock("set-limit"):
+        config = load_config()
+        db = load_db()
+        ensure_connections(config, db)
+        entry = db_entry_for_existing_client(config, db, name)
+        result = set_client_traffic_limit(entry, period, limit_bytes)
+        client_repository.db_clients(db)[name] = result.entry
+        save_db(db)
 
     print(f"Client: {name}")
     if result.limit_bytes is None:
@@ -1459,13 +1508,14 @@ def cmd_set_limit(name, period_value, limit_gb_value):
 
 
 def cmd_clear_limit(name):
-    config = load_config()
-    db = load_db()
-    ensure_connections(config, db)
-    entry = db_entry_for_existing_client(config, db, name)
-    result = clear_client_traffic_limit(entry)
-    client_repository.db_clients(db)[name] = result.entry
-    save_db(db)
+    with client_db_lock("clear-limit"):
+        config = load_config()
+        db = load_db()
+        ensure_connections(config, db)
+        entry = db_entry_for_existing_client(config, db, name)
+        result = clear_client_traffic_limit(entry)
+        client_repository.db_clients(db)[name] = result.entry
+        save_db(db)
 
     print(f"Client: {name}")
     print("Traffic limit: без лимита")
@@ -1491,18 +1541,19 @@ def cmd_trojan_password_check():
 
 def cmd_rotate_trojan_password(name, connection_tag=None):
     validate_name(name)
-    config = load_config()
-    db = load_db()
-    try:
-        result = client_crud.rotate_trojan_password(config, db, name, connection_tag)
-    except ValueError as exc:
-        die(str(exc))
+    with client_db_lock("rotate-trojan-password"):
+        config = load_config()
+        db = load_db()
+        try:
+            result = client_crud.rotate_trojan_password(config, db, name, connection_tag)
+        except ValueError as exc:
+            die(str(exc))
 
-    backup = ""
-    if result.config_changed:
-        backup = save_config_restart_xray_and_db(config, db)
-    else:
-        save_db(db)
+        backup = ""
+        if result.config_changed:
+            backup = save_config_restart_xray_and_db(config, db)
+        else:
+            save_db(db)
 
     print("Trojan password rotated.")
     print(f"Client: {name}")
@@ -1544,18 +1595,19 @@ def cmd_enforce_limits(quiet=False, sync_first=False):
     if sync_first:
         sync_traffic()
 
-    config = load_config()
-    db = load_db()
-    ensure_connections(config, db)
-    traffic_db = load_traffic_db()
-    result = enforce_traffic_limits(config, db, traffic_db)
+    with client_db_lock("enforce-limits", timeout=TIMER_MANAGER_LOCK_TIMEOUT, skip_on_timeout=quiet):
+        config = load_config()
+        db = load_db()
+        ensure_connections(config, db)
+        traffic_db = load_traffic_db()
+        result = enforce_traffic_limits(config, db, traffic_db)
 
-    if not result.has_changes:
-        if not quiet:
-            print("No traffic limits exceeded or reset.")
-        return
+        if not result.has_changes:
+            if not quiet:
+                print("No traffic limits exceeded or reset.")
+            return
 
-    backup = save_config_restart_xray_and_db(config, db)
+        backup = save_config_restart_xray_and_db(config, db)
 
     if not quiet:
         if result.reactivated_names:
@@ -1566,20 +1618,21 @@ def cmd_enforce_limits(quiet=False, sync_first=False):
 
 
 def cmd_expire_due(quiet=False):
-    config = load_config()
-    db = load_db()
-    ensure_connections(config, db)
-    try:
-        result = client_status.expire_due_clients(config, db, stamp=utc_stamp())
-    except ValueError as exc:
-        die(str(exc))
+    with client_db_lock("expire-due", timeout=TIMER_MANAGER_LOCK_TIMEOUT, skip_on_timeout=quiet):
+        config = load_config()
+        db = load_db()
+        ensure_connections(config, db)
+        try:
+            result = client_status.expire_due_clients(config, db, stamp=utc_stamp())
+        except ValueError as exc:
+            die(str(exc))
 
-    if not result.has_changes:
-        if not quiet:
-            print("No expired clients.")
-        return
+        if not result.has_changes:
+            if not quiet:
+                print("No expired clients.")
+            return
 
-    backup = save_config_restart_xray_and_db(config, db)
+        backup = save_config_restart_xray_and_db(config, db)
 
     if not quiet:
         print("Disabled expired clients: " + ", ".join(result.due_names))
@@ -1595,10 +1648,11 @@ def cmd_timezone():
 
 def cmd_set_timezone(value):
     name = normalize_timezone(value)
-    values = client_settings.server_env_values(SERVER_ENV_PATH)
-    values["MANAGER_TIMEZONE"] = name
-    save_server_env_values(values)
-    normalized = normalize_access_deadlines(client_settings.manager_timezone())
+    with client_db_lock("set-timezone"):
+        values = client_settings.server_env_values(SERVER_ENV_PATH)
+        values["MANAGER_TIMEZONE"] = name
+        save_server_env_values(values)
+        normalized = normalize_access_deadlines(client_settings.manager_timezone())
     print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
     print(f"Current time: {client_access.local_now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     if normalized:

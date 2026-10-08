@@ -20,3 +20,4 @@ XRAY_TEST = SBIN_DIR / "xray-test"
 
 MANAGER_LIB_DIR = Path("/usr/local/lib/xray-vps-manager")
 MANAGER_DB_PATH = CONFIG_DIR / "manager.db"
+MANAGER_LOCK_PATH = CONFIG_DIR / "manager.lock"
