@@ -1,13 +1,23 @@
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from xray_vps_manager.commands import client as client_command
+from xray_vps_manager.core import paths as core_paths
 
 
 class ClientCommandReadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        lock_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(lock_dir.cleanup)
+        lock_patch = mock.patch.object(core_paths, "MANAGER_LOCK_PATH", Path(lock_dir.name) / "manager.lock")
+        lock_patch.start()
+        self.addCleanup(lock_patch.stop)
+
     def test_load_db_uses_runtime_read_layer(self) -> None:
         expected = {"clients": {"alice": {}}}
         with mock.patch.object(
