@@ -12,6 +12,8 @@ import time
 from datetime import datetime, timezone
 
 from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.core.errors import ConflictError
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.process import run_capture
 from xray_vps_manager.telegram import api, bot_commands, poller, settings
@@ -20,6 +22,7 @@ from xray_vps_manager.xray import cascade as cascade_config
 TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
 TELEGRAM_SOCKS_HOST = api.TELEGRAM_SOCKS_HOST
 TELEGRAM_SOCKS_PORT = api.TELEGRAM_SOCKS_PORT
+MANAGER_LOCK_TIMEOUT = 60
 
 
 def utc_stamp():
@@ -141,33 +144,34 @@ def wait_for_tcp(host, port, timeout=8.0):
 def set_route_mode(mode):
     if mode not in ("direct", "cascade"):
         raise ValueError("Route mode must be direct or cascade.")
-    db = settings.load_db_sql()
-    previous_mode = db.get("routeMode", "direct")
-    config = load_config()
-    if mode == "cascade":
-        db["routeMode"] = mode
-        settings.save_db(db)
-        cascade_tag = ensure_telegram_proxy_config(config)
-        try:
-            backup = apply_config(config)
-        except Exception:
-            db["routeMode"] = previous_mode
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose=f"mode {mode}"):
+        db = settings.load_db_sql()
+        previous_mode = db.get("routeMode", "direct")
+        config = load_config()
+        if mode == "cascade":
+            db["routeMode"] = mode
             settings.save_db(db)
-            raise
-        if not wait_for_tcp(TELEGRAM_SOCKS_HOST, TELEGRAM_SOCKS_PORT):
-            raise RuntimeError(f"Telegram SOCKS inbound did not open: {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}")
-        print(f"Telegram Bot API traffic will use {cascade_tag} through SOCKS {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}.")
-        print(f"Backup: {backup}")
-    else:
-        changed = remove_telegram_proxy_config(config)
-        if changed:
-            backup = apply_config(config)
-            print("Telegram Bot API traffic will use direct server internet route.")
+            cascade_tag = ensure_telegram_proxy_config(config)
+            try:
+                backup = apply_config(config)
+            except Exception:
+                db["routeMode"] = previous_mode
+                settings.save_db(db)
+                raise
+            if not wait_for_tcp(TELEGRAM_SOCKS_HOST, TELEGRAM_SOCKS_PORT):
+                raise RuntimeError(f"Telegram SOCKS inbound did not open: {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}")
+            print(f"Telegram Bot API traffic will use {cascade_tag} through SOCKS {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}.")
             print(f"Backup: {backup}")
         else:
-            print("Telegram Bot API traffic already uses direct server internet route.")
-    db["routeMode"] = mode
-    settings.save_db(db)
+            changed = remove_telegram_proxy_config(config)
+            if changed:
+                backup = apply_config(config)
+                print("Telegram Bot API traffic will use direct server internet route.")
+                print(f"Backup: {backup}")
+            else:
+                print("Telegram Bot API traffic already uses direct server internet route.")
+        db["routeMode"] = mode
+        settings.save_db(db)
 
 
 def private_chats_from_updates(updates):
@@ -240,8 +244,10 @@ def ask_token_if_missing(db):
     token = input("BOT_TOKEN: ").strip()
     if not token or ":" not in token:
         raise ValueError("BOT_TOKEN выглядит некорректно.")
-    db["token"] = token
-    settings.save_db(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="owner"):
+        db = settings.load_db_sql()
+        db["token"] = token
+        settings.save_db(db)
     return db
 
 
@@ -258,8 +264,10 @@ def maybe_adopt_existing_cascade_route(db):
     print("Похоже, первичная настройка оборвалась после применения маршрута, но до выбора владельца бота.")
     answer = input("Использовать cascade для привязки владельца? [Y/n]: ").strip().lower()
     if answer in ("", "y", "yes", "д", "да"):
-        db["routeMode"] = "cascade"
-        settings.save_db(db)
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="owner"):
+            db = settings.load_db_sql()
+            db["routeMode"] = "cascade"
+            settings.save_db(db)
     return db
 
 
@@ -276,17 +284,31 @@ def configure_bot_commands():
 def configure_owner(send_test=True):
     db = ask_token_if_missing(settings.load_db_sql())
     db = maybe_adopt_existing_cascade_route(db)
+    token = db.get("token", "")
     me = api.curl_json(db, "getMe")
     bot = me.get("result", {})
-    db["botUsername"] = settings.normalize_bot_username(bot.get("username", ""))
-    print(f"Бот найден: @{db['botUsername'] or bot.get('username', 'unknown')}")
+    bot_username = settings.normalize_bot_username(bot.get("username", ""))
+    print(f"Бот найден: @{bot_username or bot.get('username', 'unknown')}")
     chat = choose_private_chat(db)
-    db["chatId"] = chat["id"]
-    db["chatLabel"] = chat["label"]
-    db["enabled"] = True
-    initialize_geoip_offsets(db)
     refresh_user_update_offset(db)
-    settings.save_db(db)
+    update_offset = int(db.get("clientSubscriptionState", {}).get("userUpdateOffset", 0) or 0)
+    # Questions and Bot API calls are done; write from a fresh snapshot under manager.lock.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="owner"):
+        db = settings.load_db_sql()
+        if db.get("token", "") != token:
+            # Bot username, chat and update offset belong to the bot of the token used above.
+            raise ConflictError(
+                "Token Telegram-бота изменён другой операцией во время привязки владельца.",
+                hint="Запусти xray-telegram owner ещё раз.",
+            )
+        db["botUsername"] = bot_username
+        db["chatId"] = chat["id"]
+        db["chatLabel"] = chat["label"]
+        db["enabled"] = True
+        initialize_geoip_offsets(db)
+        state = db.setdefault("clientSubscriptionState", {})
+        state["userUpdateOffset"] = max(int(state.get("userUpdateOffset", 0) or 0), update_offset)
+        settings.save_db(db)
     configure_bot_commands()
     if send_test:
         api.send_message(db, "Xray VPS Manager: Telegram-уведомления подключены. GeoIP-уведомления будут отправляться только в этот чат.")
@@ -303,15 +325,13 @@ def setup():
     token = input("BOT_TOKEN: ").strip()
     if not token or ":" not in token:
         raise ValueError("BOT_TOKEN выглядит некорректно.")
-    db = settings.load_db_sql()
-    db["token"] = token
+    current_bot_name = settings.bot_name(settings.load_db_sql())
 
     print()
     print("BOT_NAME: имя бота в сообщениях пользователям.")
     print("Например: Vireika. Если нажать Enter, останется текущее значение.")
-    current_bot_name = settings.bot_name(db)
     value = input(f"BOT_NAME [{current_bot_name}]: ").strip()
-    db["botName"] = settings.normalize_display_name(value or current_bot_name, settings.DEFAULT_BOT_NAME, "BOT_NAME")
+    bot_name = settings.normalize_display_name(value or current_bot_name, settings.DEFAULT_BOT_NAME, "BOT_NAME")
 
     print()
     print("Как боту выходить в интернет?")
@@ -319,7 +339,11 @@ def setup():
     print("2. cascade: через активный исходящий сервер cascade-*")
     mode_choice = input("Route mode [1-direct]: ").strip() or "1"
     mode = "cascade" if mode_choice == "2" else "direct"
-    settings.save_db(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="setup"):
+        db = settings.load_db_sql()
+        db["token"] = token
+        db["botName"] = bot_name
+        settings.save_db(db)
     if mode == "cascade":
         print()
         print("Сейчас будет применён cascade-маршрут для Telegram Bot API.")
@@ -331,18 +355,21 @@ def setup():
 
 
 def set_enabled(value):
-    db = settings.load_db_sql()
-    db["enabled"] = bool(value)
-    if value:
-        initialize_geoip_offsets(db)
-    settings.save_db(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="enable" if value else "disable"):
+        db = settings.load_db_sql()
+        db["enabled"] = bool(value)
+        if value:
+            initialize_geoip_offsets(db)
+        settings.save_db(db)
     print("Telegram notifications enabled." if value else "Telegram notifications disabled.")
 
 
 def set_bot_name(value):
-    db = settings.load_db_sql()
-    db["botName"] = settings.normalize_display_name(value, settings.DEFAULT_BOT_NAME, "BOT_NAME")
-    settings.save_db(db)
+    bot_name = settings.normalize_display_name(value, settings.DEFAULT_BOT_NAME, "BOT_NAME")
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="bot-name"):
+        db = settings.load_db_sql()
+        db["botName"] = bot_name
+        settings.save_db(db)
     print(f"Bot name: {db['botName']}")
 
 
