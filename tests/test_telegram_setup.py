@@ -1,10 +1,20 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.telegram import setup
 
 
 class TelegramSetupTests(unittest.TestCase):
+    def setUp(self) -> None:
+        lock_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(lock_dir.cleanup)
+        lock_patch = mock.patch.object(core_paths, "MANAGER_LOCK_PATH", Path(lock_dir.name) / "manager.lock")
+        lock_patch.start()
+        self.addCleanup(lock_patch.stop)
+
     def test_configure_owner_saves_bot_username_from_get_me(self) -> None:
         db = {"token": "token", "routeMode": "direct"}
         saved = []
