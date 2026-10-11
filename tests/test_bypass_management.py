@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from xray_vps_manager.commands import set_bypass
+from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.db import database
 from xray_vps_manager.db import schema
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
@@ -42,6 +43,13 @@ def bypass_outbound(name: str) -> dict:
 
 
 class BypassManagementTests(unittest.TestCase):
+    def setUp(self) -> None:
+        lock_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(lock_dir.cleanup)
+        lock_patch = mock.patch.object(core_paths, "MANAGER_LOCK_PATH", Path(lock_dir.name) / "manager.lock")
+        lock_patch.start()
+        self.addCleanup(lock_patch.stop)
+
     def test_apply_bypass_uses_notification_marker_before_client_routes(self) -> None:
         config = base_config()
         outbound = bypass_outbound("ru")

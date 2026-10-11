@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.core.errors import LockTimeout, ManagerError
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
@@ -24,6 +26,9 @@ GEOIP_WARNING_OUTBOUND_PREFIX = "geoip-warning-"
 TEST_INBOUND_TAG = "cascade-test-socks"
 TEST_SOCKS_HOST = "127.0.0.1"
 TEST_SOCKS_PORT = 10808
+MANAGER_LOCK_TIMEOUT = 60
+# Drift write on a read path (list, cascade selection): wait briefly, otherwise show the synced snapshot.
+ROUTE_DRIFT_LOCK_TIMEOUT = 5
 
 
 def die(message):
@@ -345,7 +350,18 @@ def cascade_rows(config):
     active = cascade_config.active_cascade_tag(config)
     db = load_client_db_optional()
     if db is not None and client_routes.sync_routes_from_config(config, db):
-        save_client_db_optional(db)
+        # Drift between config.json and manager.db: persist it from a fresh snapshot under manager.lock.
+        try:
+            with manager_lock(ROUTE_DRIFT_LOCK_TIMEOUT, purpose="sync-client-routes"):
+                fresh_db = load_client_db_optional()
+                if fresh_db is not None and client_routes.sync_routes_from_config(load_config(), fresh_db):
+                    save_client_db_optional(fresh_db)
+        except LockTimeout as exc:
+            print(
+                f"WARN: {exc.message}. "
+                "Запись маршрутов клиентов из config.json в manager.db пропущена, следующее чтение повторит её.",
+                file=sys.stderr,
+            )
     rows = []
     for index, outbound in enumerate(cascade_config.cascade_outbounds(config), start=1):
         tag = outbound.get("tag", "")
@@ -479,17 +495,18 @@ def cmd_add(args):
     tag = cascade_config.cascade_tag(name)
     uri = read_vless_link()
     outbound, label = parse_vless(uri, tag=tag)
-    config = load_config()
-    before = copy.deepcopy(config)
-    db = load_client_db_optional()
-    if db is not None:
-        client_routes.sync_routes_from_config(config, db)
-    configure_cascade(config, outbound)
-    if db is not None:
-        client_routes.upsert_route_country(db, tag, country, label=name)
-        client_routes.ensure_all_client_route_config(config, db)
-    backup = apply_config(config, before)
-    save_client_db_optional(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="add"):
+        config = load_config()
+        before = copy.deepcopy(config)
+        db = load_client_db_optional()
+        if db is not None:
+            client_routes.sync_routes_from_config(config, db)
+        configure_cascade(config, outbound)
+        if db is not None:
+            client_routes.upsert_route_country(db, tag, country, label=name)
+            client_routes.ensure_all_client_route_config(config, db)
+        backup = apply_config(config, before)
+        save_client_db_optional(db)
 
     print(f"Cascade configured: {name} ({tag})")
     print(f"Country: {country or 'not specified'}")
@@ -507,17 +524,19 @@ def cmd_add(args):
 def cmd_use(args):
     config = load_config()
     tag = tag_from_name_or_die(args[0]) if args else choose_cascade_tag(config, "Active cascade")
-    before = copy.deepcopy(config)
-    db = load_client_db_optional()
-    try:
-        set_active_cascade(config, tag)
-    except ValueError as exc:
-        die(str(exc))
-    if db is not None:
-        client_routes.sync_routes_from_config(config, db)
-        client_routes.ensure_all_client_route_config(config, db)
-    backup = apply_config(config, before)
-    save_client_db_optional(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="use"):
+        config = load_config()
+        before = copy.deepcopy(config)
+        db = load_client_db_optional()
+        try:
+            set_active_cascade(config, tag)
+        except ValueError as exc:
+            die(str(exc))
+        if db is not None:
+            client_routes.sync_routes_from_config(config, db)
+            client_routes.ensure_all_client_route_config(config, db)
+        backup = apply_config(config, before)
+        save_client_db_optional(db)
     print(f"Active cascade: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Backup: {backup}")
 
@@ -525,17 +544,18 @@ def cmd_use(args):
 def cmd_country(args):
     if len(args) < 2:
         die("Usage: xray-set-cascade country NAME_OR_TAG COUNTRY")
-    config = load_config()
-    tag = tag_from_name_or_die(args[0])
-    if not cascade_config.cascade_outbound(config, tag):
-        die(f"Cascade outbound is not configured: {tag}")
-    country = client_routes.normalize_country(" ".join(args[1:]))
-    db = load_client_db_optional()
-    if db is None:
-        die("Client database is unavailable.")
-    client_routes.sync_routes_from_config(config, db)
-    client_routes.upsert_route_country(db, tag, country, label=cascade_config.cascade_name_from_tag(tag) or tag)
-    save_client_db_optional(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="country"):
+        config = load_config()
+        tag = tag_from_name_or_die(args[0])
+        if not cascade_config.cascade_outbound(config, tag):
+            die(f"Cascade outbound is not configured: {tag}")
+        country = client_routes.normalize_country(" ".join(args[1:]))
+        db = load_client_db_optional()
+        if db is None:
+            die("Client database is unavailable.")
+        client_routes.sync_routes_from_config(config, db)
+        client_routes.upsert_route_country(db, tag, country, label=cascade_config.cascade_name_from_tag(tag) or tag)
+        save_client_db_optional(db)
     print(f"Cascade: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Country: {country or 'not specified'}")
 
@@ -551,30 +571,33 @@ def cmd_remove(args):
     if sys.stdin.isatty() and not confirm_remove(tag):
         print("Remove cancelled.")
         return
-    before = copy.deepcopy(config)
-    try:
-        remove_cascade(config, tag)
-    except ValueError as exc:
-        die(str(exc))
-    backup = apply_config(config, before)
-    db = load_client_db_optional()
-    if db is not None:
-        client_repository.db_cascade_routes(db).pop(tag, None)
-        for entry in client_repository.db_clients(db).values():
-            if isinstance(entry, dict) and entry.get("selectedCascadeTag") == tag:
-                entry["selectedCascadeTag"] = cascade_config.active_cascade_tag(config)
-        client_routes.sync_routes_from_config(config, db)
-        save_client_db_optional(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="remove"):
+        config = load_config()
+        before = copy.deepcopy(config)
+        try:
+            remove_cascade(config, tag)
+        except ValueError as exc:
+            die(str(exc))
+        backup = apply_config(config, before)
+        db = load_client_db_optional()
+        if db is not None:
+            client_repository.db_cascade_routes(db).pop(tag, None)
+            for entry in client_repository.db_clients(db).values():
+                if isinstance(entry, dict) and entry.get("selectedCascadeTag") == tag:
+                    entry["selectedCascadeTag"] = cascade_config.active_cascade_tag(config)
+            client_routes.sync_routes_from_config(config, db)
+            save_client_db_optional(db)
     print(f"Cascade removed: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Current catch-all route: {current_route_label(config)}")
     print(f"Backup: {backup}")
 
 
 def cmd_disable():
-    config = load_config()
-    before = copy.deepcopy(config)
-    disable_cascade(config)
-    backup = apply_config(config, before)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="disable"):
+        config = load_config()
+        before = copy.deepcopy(config)
+        disable_cascade(config)
+        backup = apply_config(config, before)
     print("Cascade routing disabled. Configured cascade outbounds were kept.")
     print(f"Current catch-all route: {current_route_label(config)}")
     print(f"Backup: {backup}")
@@ -665,7 +688,9 @@ def cmd_test(args, choose=False):
         tag = tag_from_name_or_die(args[0])
     else:
         tag = None
-    test_cascade(tag)
+    # The test rewrites config.json and restarts Xray, then restores the original text.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="test"):
+        test_cascade(tag)
 
 
 def print_usage():
@@ -691,32 +716,35 @@ def main():
         die(f"Config not found: {CONFIG_PATH}")
 
     args = sys.argv[1:]
-    if not args:
-        cmd_add([])
-        return
+    try:
+        if not args:
+            cmd_add([])
+            return
 
-    command = args[0]
-    rest = args[1:]
-    if command in ("-h", "--help", "help"):
-        print_usage()
-    elif command in ("list", "status", "--list", "--status"):
-        cmd_status()
-    elif command in ("add", "set", "replace"):
-        cmd_add(rest)
-    elif command in ("use", "switch", "select"):
-        cmd_use(rest)
-    elif command in ("country", "set-country"):
-        cmd_country(rest)
-    elif command in ("remove", "delete", "rm"):
-        cmd_remove(rest)
-    elif command in ("--disable", "--direct", "disable", "direct"):
-        cmd_disable()
-    elif command in ("--test", "test"):
-        cmd_test(rest)
-    elif command in ("test-select", "select-test"):
-        cmd_test([], choose=True)
-    else:
-        cmd_add(args)
+        command = args[0]
+        rest = args[1:]
+        if command in ("-h", "--help", "help"):
+            print_usage()
+        elif command in ("list", "status", "--list", "--status"):
+            cmd_status()
+        elif command in ("add", "set", "replace"):
+            cmd_add(rest)
+        elif command in ("use", "switch", "select"):
+            cmd_use(rest)
+        elif command in ("country", "set-country"):
+            cmd_country(rest)
+        elif command in ("remove", "delete", "rm"):
+            cmd_remove(rest)
+        elif command in ("--disable", "--direct", "disable", "direct"):
+            cmd_disable()
+        elif command in ("--test", "test"):
+            cmd_test(rest)
+        elif command in ("test-select", "select-test"):
+            cmd_test([], choose=True)
+        else:
+            cmd_add(args)
+    except ManagerError as exc:
+        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
 
 
 if __name__ == "__main__":

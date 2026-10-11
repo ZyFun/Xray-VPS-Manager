@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from xray_vps_manager.core.errors import ManagerError
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import cascade as cascade_config
 
@@ -38,6 +40,7 @@ HOSTS_PATH = Path("/etc/hosts")
 HOSTS_PIN_COMMENT = "# xray-vps-manager WARP API pin"
 FALLBACK_API_IPS = ("8.47.69.1", "8.6.112.1")
 GITHUB_API_LATEST = "https://api.github.com/repos/ViRb3/wgcf/releases/latest"
+MANAGER_LOCK_TIMEOUT = 60
 GREEN = "\033[32m"
 RESET = "\033[0m"
 
@@ -569,23 +572,26 @@ def print_status():
 
 def cmd_create(force=False):
     ensure_warp_profile(force=force)
-    endpoint = choose_working_endpoint(required=False)
-    config = load_config()
-    configure_warp_outbound(config, endpoint_override=endpoint)
-    backup = apply_config(config)
+    # Endpoint probes rewrite config.json and restart Xray, so they run under manager.lock too.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="create"):
+        endpoint = choose_working_endpoint(required=False)
+        config = load_config()
+        configure_warp_outbound(config, endpoint_override=endpoint)
+        backup = apply_config(config)
     print("WARP outbound configured but not enabled.")
     print(f"WARP endpoint: {endpoint}")
     print(f"Backup: {backup}")
 
 
 def cmd_enable():
-    config = load_config()
     if not WGCF_PROFILE.exists():
         print("WARP profile is missing. Creating it first...")
         ensure_warp_profile(force=False)
-    endpoint = choose_working_endpoint(required=True)
-    enable_warp_route(config, endpoint_override=endpoint)
-    backup = apply_config(config)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="enable"):
+        config = load_config()
+        endpoint = choose_working_endpoint(required=True)
+        enable_warp_route(config, endpoint_override=endpoint)
+        backup = apply_config(config)
     print("WARP is enabled for Xray outbound traffic.")
     print("All managed catch-all tcp/udp traffic now goes through tag: warp-out")
     print(f"WARP endpoint: {endpoint}")
@@ -593,30 +599,32 @@ def cmd_enable():
 
 
 def cmd_disable():
-    config = load_config()
-    changed = disable_warp_route(config)
-    if not changed:
-        print("WARP route is already disabled.")
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="disable"):
+        config = load_config()
+        changed = disable_warp_route(config)
+        if not changed:
+            print("WARP route is already disabled.")
+            cmd_verify_disabled()
+            return
+        backup = apply_config(config)
+        print("WARP route is disabled.")
+        cascade_tag = cascade_config.active_cascade_tag(config)
+        if cascade_tag:
+            print(f"Catch-all traffic restored to {cascade_tag}.")
+        else:
+            print("Catch-all traffic restored to default direct outbound.")
+        print(f"Backup: {backup}")
         cmd_verify_disabled()
-        return
-    backup = apply_config(config)
-    print("WARP route is disabled.")
-    cascade_tag = cascade_config.active_cascade_tag(config)
-    if cascade_tag:
-        print(f"Catch-all traffic restored to {cascade_tag}.")
-    else:
-        print("Catch-all traffic restored to default direct outbound.")
-    print(f"Backup: {backup}")
-    cmd_verify_disabled()
 
 
 def cmd_remove():
-    config = load_config()
-    changed = remove_warp(config)
-    if not changed:
-        print("WARP config is already removed from Xray.")
-        return
-    backup = apply_config(config)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="remove"):
+        config = load_config()
+        changed = remove_warp(config)
+        if not changed:
+            print("WARP config is already removed from Xray.")
+            return
+        backup = apply_config(config)
     print("WARP outbound removed from Xray config. Local wgcf profile files were kept.")
     print(f"Backup: {backup}")
 
@@ -768,7 +776,9 @@ def probe_warp_disabled():
 
 def cmd_verify_disabled():
     print("Verifying normal Xray route without forcing warp-out...")
-    ok, detail, warp_active = probe_warp_disabled()
+    # The probe rewrites config.json and restarts Xray, then restores the original text.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="verify-disabled"):
+        ok, detail, warp_active = probe_warp_disabled()
     if not ok:
         die(f"Could not verify that WARP is disabled: {detail}")
     if warp_active:
@@ -850,7 +860,12 @@ def choose_working_endpoint(required=False):
 def cmd_test():
     if not WGCF_PROFILE.exists():
         die("WARP profile is missing. Run: xray-warp create")
+    # The test rewrites config.json and restarts Xray, then restores the original text.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="test"):
+        test_warp()
 
+
+def test_warp():
     original_text = CONFIG_PATH.read_text()
     config = json.loads(original_text)
     test_config = copy.deepcopy(config)
@@ -965,6 +980,8 @@ def main():
         if stderr:
             print(stderr, file=sys.stderr)
         die(f"Command failed: {' '.join(str(item) for item in exc.cmd)}")
+    except ManagerError as exc:
+        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
 
 
 if __name__ == "__main__":
