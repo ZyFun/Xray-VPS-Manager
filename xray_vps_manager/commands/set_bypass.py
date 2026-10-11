@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 from xray_vps_manager.activity.constants import ACCESS_LOG_PATH
 from xray_vps_manager.activity import parser as activity_parser
+from xray_vps_manager.core.errors import ManagerError
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
 from xray_vps_manager.core.terminal import print_table
@@ -36,6 +38,7 @@ FORCED_TEST_URLS = [
     "https://checkip.amazonaws.com",
 ]
 DEFAULT_FOREIGN_ROUTE_TEST_URL = "https://example.com/"
+MANAGER_LOCK_TIMEOUT = 60
 GEOIP_REGION_PRESETS = [
     ("RU", "Россия"),
     ("US", "США"),
@@ -372,6 +375,16 @@ def confirm_replace(conflict: dict, region_code: str) -> bool:
     return answer in ("y", "yes", "д", "да")
 
 
+def confirm_region_conflict(connection, tag: str, region_code: str, *, replace: bool) -> str:
+    # Asked before manager.lock; returns the tag of the route the admin agreed to replace.
+    conflict = sqlite_bypass.active_route_for_region(connection, region_code)
+    if replace or not conflict or conflict.get("tag") == tag:
+        return ""
+    if not confirm_replace(conflict, region_code):
+        die(f"GeoIP region {region_code} is already enabled on {conflict.get('tag')}. Use --replace to replace it.")
+    return str(conflict.get("tag") or "")
+
+
 def disable_conflicting_region_route(
     connection,
     config: dict,
@@ -379,12 +392,14 @@ def disable_conflicting_region_route(
     region_code: str,
     *,
     replace: bool,
+    confirmed_tag: str = "",
     env_values: dict[str, str],
 ) -> dict | None:
     conflict = sqlite_bypass.active_route_for_region(connection, region_code)
     if not conflict or conflict.get("tag") == tag:
         return None
-    if not replace and not confirm_replace(conflict, region_code):
+    if not replace and not (confirmed_tag and conflict.get("tag") == confirmed_tag):
+        # Under manager.lock only the route confirmed before the lock may be replaced.
         die(f"GeoIP region {region_code} is already enabled on {conflict.get('tag')}. Use --replace to replace it.")
     bypass_config.disable_bypass_route(
         config,
@@ -401,6 +416,7 @@ def apply_enable(
     record: dict,
     *,
     replace: bool = False,
+    confirmed_tag: str = "",
     env_values: dict[str, str],
 ) -> dict | None:
     region = bypass_config.normalize_region_code(str(record.get("regionCode") or ""))
@@ -410,6 +426,7 @@ def apply_enable(
         str(record.get("tag") or ""),
         region,
         replace=replace,
+        confirmed_tag=confirmed_tag,
         env_values=env_values,
     )
     bypass_config.ensure_geoip_domain_strategy(config, env_values)
@@ -455,38 +472,42 @@ def cmd_add(args: list[str]) -> None:
         die(str(exc))
     region, region_label = read_region(str(options["region"] or ""))
 
-    config = load_config()
-    before = copy.deepcopy(config)
-    env_values = read_server_env()
     connection = open_db()
     try:
-        bypass_config.upsert_bypass_outbound(config, outbound)
-        stamp = utc_stamp()
         existing = sqlite_bypass.get_route(connection, tag) or {}
         test_target = read_test_target(str(options["test_target"] or ""), record_test_target(existing))
-        record = {
-            "tag": tag,
-            "name": name,
-            "regionCode": region,
-            "regionLabel": region_label,
-            "label": label,
-            "enabled": True,
-            "created": existing.get("created") or stamp,
-            "updated": stamp,
-        }
-        set_record_test_target(record, test_target)
-        conflict = apply_enable(
-            connection,
-            config,
-            record,
-            replace=bool(options["replace"]),
-            env_values=env_values,
-        )
-        backup = apply_config(config, before)
-        if conflict:
-            sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
-        save_route(connection, record)
-        write_server_env_values(env_values)
+        confirmed_tag = confirm_region_conflict(connection, tag, region, replace=bool(options["replace"]))
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="add"):
+            config = load_config()
+            before = copy.deepcopy(config)
+            env_values = read_server_env()
+            bypass_config.upsert_bypass_outbound(config, outbound)
+            stamp = utc_stamp()
+            existing = sqlite_bypass.get_route(connection, tag) or {}
+            record = {
+                "tag": tag,
+                "name": name,
+                "regionCode": region,
+                "regionLabel": region_label,
+                "label": label,
+                "enabled": True,
+                "created": existing.get("created") or stamp,
+                "updated": stamp,
+            }
+            set_record_test_target(record, test_target)
+            conflict = apply_enable(
+                connection,
+                config,
+                record,
+                replace=bool(options["replace"]),
+                confirmed_tag=confirmed_tag,
+                env_values=env_values,
+            )
+            backup = apply_config(config, before)
+            if conflict:
+                sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
+            save_route(connection, record)
+            write_server_env_values(env_values)
     finally:
         connection.close()
 
@@ -554,30 +575,40 @@ def cmd_enable(args: list[str]) -> None:
         outbound = bypass_config.bypass_outbound(config, tag)
         if not outbound:
             die(f"Bypass outbound is not configured in Xray config: {tag}")
+        current = sqlite_bypass.get_route(connection, tag)
         record = route_record_for_outbound(
-            sqlite_bypass.get_route(connection, tag),
+            copy.deepcopy(current),
             tag,
             outbound,
             region_arg=str(options["region"] or ""),
             test_target_arg=str(options["test_target"] or ""),
             enabled=True,
         )
-        before = copy.deepcopy(config)
-        env_values = read_server_env()
-        conflict = apply_enable(
-            connection,
-            config,
-            record,
-            replace=bool(options["replace"]),
-            env_values=env_values,
-        )
-        backup = apply_config(config, before)
-        if conflict:
-            sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
-        record["enabled"] = True
-        record["updated"] = utc_stamp()
-        save_route(connection, record)
-        write_server_env_values(env_values)
+        region = bypass_config.normalize_region_code(str(record.get("regionCode") or ""))
+        confirmed_tag = confirm_region_conflict(connection, tag, region, replace=bool(options["replace"]))
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="enable"):
+            if sqlite_bypass.get_route(connection, tag) != current:
+                die(f"GeoIP bypass route {tag} was changed by another operation. Run the command again.")
+            config = load_config()
+            if not bypass_config.bypass_outbound(config, tag):
+                die(f"Bypass outbound is not configured in Xray config: {tag}")
+            before = copy.deepcopy(config)
+            env_values = read_server_env()
+            conflict = apply_enable(
+                connection,
+                config,
+                record,
+                replace=bool(options["replace"]),
+                confirmed_tag=confirmed_tag,
+                env_values=env_values,
+            )
+            backup = apply_config(config, before)
+            if conflict:
+                sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
+            record["enabled"] = True
+            record["updated"] = utc_stamp()
+            save_route(connection, record)
+            write_server_env_values(env_values)
     finally:
         connection.close()
     print(f"GeoIP bypass enabled: {tag}")
@@ -602,42 +633,55 @@ def cmd_region(args: list[str]) -> None:
         region_arg = rest[1] if len(rest) >= 2 else str(options["region"] or "")
         region, region_label = read_region(region_arg)
         record = sqlite_bypass.get_route(connection, tag)
-        old_region = str(record.get("regionCode") or "") if record else ""
-        if record is None:
-            outbound = bypass_config.bypass_outbound(config, tag)
-            if not outbound:
-                die(f"GeoIP bypass route metadata and Xray outbound not found: {tag}")
-            stamp = utc_stamp()
-            record = {
-                "tag": tag,
-                "name": bypass_config.bypass_name_from_tag(tag),
-                "regionCode": region,
-                "regionLabel": region_label,
-                "label": outbound_address(outbound),
-                "enabled": False,
-                "created": stamp,
-                "updated": stamp,
-            }
-        before = copy.deepcopy(config)
-        env_values = read_server_env()
-        if record.get("enabled"):
-            if old_region:
-                bypass_config.disable_bypass_route(config, tag, old_region, env_values=env_values)
-            record["regionCode"] = region
-            record["regionLabel"] = region_label
-            conflict = apply_enable(connection, config, record, replace=bool(options["replace"]), env_values=env_values)
-            backup = apply_config(config, before)
-            if conflict:
-                sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
-        else:
-            record["regionCode"] = region
-            record["regionLabel"] = region_label
-            backup = None
-        if options["test_target"]:
-            set_record_test_target(record, read_test_target(str(options["test_target"] or ""), record_test_target(record)))
-        record["updated"] = utc_stamp()
-        save_route(connection, record)
-        write_server_env_values(env_values)
+        confirmed_tag = ""
+        if record and record.get("enabled"):
+            confirmed_tag = confirm_region_conflict(connection, tag, region, replace=bool(options["replace"]))
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="region"):
+            config = load_config()
+            record = sqlite_bypass.get_route(connection, tag)
+            old_region = str(record.get("regionCode") or "") if record else ""
+            if record is None:
+                outbound = bypass_config.bypass_outbound(config, tag)
+                if not outbound:
+                    die(f"GeoIP bypass route metadata and Xray outbound not found: {tag}")
+                stamp = utc_stamp()
+                record = {
+                    "tag": tag,
+                    "name": bypass_config.bypass_name_from_tag(tag),
+                    "regionCode": region,
+                    "regionLabel": region_label,
+                    "label": outbound_address(outbound),
+                    "enabled": False,
+                    "created": stamp,
+                    "updated": stamp,
+                }
+            before = copy.deepcopy(config)
+            env_values = read_server_env()
+            if record.get("enabled"):
+                if old_region:
+                    bypass_config.disable_bypass_route(config, tag, old_region, env_values=env_values)
+                record["regionCode"] = region
+                record["regionLabel"] = region_label
+                conflict = apply_enable(
+                    connection,
+                    config,
+                    record,
+                    replace=bool(options["replace"]),
+                    confirmed_tag=confirmed_tag,
+                    env_values=env_values,
+                )
+                backup = apply_config(config, before)
+                if conflict:
+                    sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
+            else:
+                record["regionCode"] = region
+                record["regionLabel"] = region_label
+                backup = None
+            if options["test_target"]:
+                set_record_test_target(record, read_test_target(str(options["test_target"] or ""), record_test_target(record)))
+            record["updated"] = utc_stamp()
+            save_route(connection, record)
+            write_server_env_values(env_values)
     finally:
         connection.close()
     print(f"GeoIP bypass region updated: {tag}")
@@ -661,8 +705,9 @@ def cmd_target(args: list[str]) -> None:
         routes = sqlite_bypass.list_routes(connection)
         tag = tag_from_name_or_die(rest[0]) if rest else choose_bypass_tag(config, routes, "Bypass")
         outbound = bypass_config.bypass_outbound(config, tag)
+        current = sqlite_bypass.get_route(connection, tag)
         record = route_record_for_outbound(
-            sqlite_bypass.get_route(connection, tag),
+            copy.deepcopy(current),
             tag,
             outbound,
             region_arg=str(options["region"] or ""),
@@ -670,7 +715,10 @@ def cmd_target(args: list[str]) -> None:
         target_arg = rest[1] if len(rest) >= 2 else str(options["test_target"] or "")
         set_record_test_target(record, read_test_target(target_arg, record_test_target(record)))
         record["updated"] = utc_stamp()
-        save_route(connection, record)
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="target"):
+            if sqlite_bypass.get_route(connection, tag) != current:
+                die(f"GeoIP bypass route {tag} was changed by another operation. Run the command again.")
+            save_route(connection, record)
     finally:
         connection.close()
     print(f"GeoIP bypass test target updated: {tag}")
@@ -683,15 +731,17 @@ def cmd_disable(args: list[str]) -> None:
     try:
         routes = sqlite_bypass.list_routes(connection)
         tag = tag_from_name_or_die(args[0]) if args else choose_bypass_tag(config, routes, "Disable bypass")
-        record = route_record_or_die(connection, tag)
-        before = copy.deepcopy(config)
-        env_values = read_server_env()
-        bypass_config.disable_bypass_route(config, tag, str(record.get("regionCode") or ""), env_values=env_values)
-        backup = apply_config(config, before)
-        record["enabled"] = False
-        record["updated"] = utc_stamp()
-        save_route(connection, record)
-        write_server_env_values(env_values)
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="disable"):
+            config = load_config()
+            record = route_record_or_die(connection, tag)
+            before = copy.deepcopy(config)
+            env_values = read_server_env()
+            bypass_config.disable_bypass_route(config, tag, str(record.get("regionCode") or ""), env_values=env_values)
+            backup = apply_config(config, before)
+            record["enabled"] = False
+            record["updated"] = utc_stamp()
+            save_route(connection, record)
+            write_server_env_values(env_values)
     finally:
         connection.close()
     print(f"GeoIP bypass disabled: {tag}")
@@ -716,18 +766,21 @@ def cmd_remove(args: list[str]) -> None:
         if not confirm_remove(tag):
             print("Remove cancelled.")
             return
-        before = copy.deepcopy(config)
-        env_values = read_server_env()
-        bypass_config.disable_bypass_route(
-            config,
-            tag,
-            str(record.get("regionCode") or ""),
-            remove_outbound=True,
-            env_values=env_values,
-        )
-        backup = apply_config(config, before)
-        sqlite_bypass.delete_route(connection, tag)
-        write_server_env_values(env_values)
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="remove"):
+            config = load_config()
+            record = route_record_or_die(connection, tag)
+            before = copy.deepcopy(config)
+            env_values = read_server_env()
+            bypass_config.disable_bypass_route(
+                config,
+                tag,
+                str(record.get("regionCode") or ""),
+                remove_outbound=True,
+                env_values=env_values,
+            )
+            backup = apply_config(config, before)
+            sqlite_bypass.delete_route(connection, tag)
+            write_server_env_values(env_values)
     finally:
         connection.close()
     print(f"GeoIP bypass removed: {tag}")
@@ -1018,12 +1071,24 @@ def cmd_test(args: list[str]) -> None:
         connection.close()
     tag = tag_from_name_or_die(rest[0]) if rest else choose_bypass_tag(config, routes, "Test bypass")
     record = routes.get(tag, {})
-    test_target = record_test_target(record)
+    # None means the target stored in the route; "" or a URL is the admin's explicit answer.
+    test_target = None
     if options["test_target"]:
-        test_target = read_test_target(str(options["test_target"] or ""), test_target)
-    elif not test_target and sys.stdin.isatty():
+        test_target = read_test_target(str(options["test_target"] or ""), record_test_target(record))
+    elif not record_test_target(record) and sys.stdin.isatty():
         test_target = read_test_target("", "")
-    test_bypass(tag, active_region_for_tag(config, routes, tag), test_target)
+    # The test rewrites config.json and restarts Xray, then restores the original text.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="test"):
+        # The route may have changed while waiting for the lock: read region and stored target again.
+        config = load_config()
+        connection = open_db()
+        try:
+            routes = sqlite_bypass.list_routes(connection)
+        finally:
+            connection.close()
+        if test_target is None:
+            test_target = record_test_target(routes.get(tag, {}))
+        test_bypass(tag, active_region_for_tag(config, routes, tag), test_target)
 
 
 def print_usage() -> None:
@@ -1052,32 +1117,35 @@ def main() -> None:
         die(f"Config not found: {CONFIG_PATH}")
 
     args = sys.argv[1:]
-    if not args:
-        cmd_add([])
-        return
+    try:
+        if not args:
+            cmd_add([])
+            return
 
-    command = args[0]
-    rest = args[1:]
-    if command in ("-h", "--help", "help"):
-        print_usage()
-    elif command in ("list", "status", "--list", "--status"):
-        cmd_status()
-    elif command in ("add", "set", "replace"):
-        cmd_add(rest)
-    elif command == "enable":
-        cmd_enable(rest)
-    elif command in ("region", "set-region"):
-        cmd_region(rest)
-    elif command in ("target", "set-target", "test-target"):
-        cmd_target(rest)
-    elif command == "disable":
-        cmd_disable(rest)
-    elif command in ("remove", "delete", "rm"):
-        cmd_remove(rest)
-    elif command in ("test", "--test"):
-        cmd_test(rest)
-    else:
-        cmd_add(args)
+        command = args[0]
+        rest = args[1:]
+        if command in ("-h", "--help", "help"):
+            print_usage()
+        elif command in ("list", "status", "--list", "--status"):
+            cmd_status()
+        elif command in ("add", "set", "replace"):
+            cmd_add(rest)
+        elif command == "enable":
+            cmd_enable(rest)
+        elif command in ("region", "set-region"):
+            cmd_region(rest)
+        elif command in ("target", "set-target", "test-target"):
+            cmd_target(rest)
+        elif command == "disable":
+            cmd_disable(rest)
+        elif command in ("remove", "delete", "rm"):
+            cmd_remove(rest)
+        elif command in ("test", "--test"):
+            cmd_test(rest)
+        else:
+            cmd_add(args)
+    except ManagerError as exc:
+        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
 
 
 if __name__ == "__main__":

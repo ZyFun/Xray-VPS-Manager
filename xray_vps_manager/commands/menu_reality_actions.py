@@ -17,6 +17,8 @@ from xray_vps_manager.clients.settings import (
     save_server_env_values,
     server_env_values,
 )
+from xray_vps_manager.core.errors import LockTimeout
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import caddy as xray_caddy
@@ -69,6 +71,7 @@ FINGERPRINTS = [
     "randomized",
 ]
 TRANSPORTS = ["tcp", "grpc", "xhttp"]
+MANAGER_LOCK_TIMEOUT = 60
 
 CommandRunner = Callable[[list[str]], None]
 ConfirmCallback = Callable[[str], bool]
@@ -834,20 +837,29 @@ def update_port() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    inbound, reality, current_port, sni, _ = current_settings(config, tag)
+    _, _, current_port, _, _ = current_settings(config, tag)
     print()
     print("Новый PORT: публичный TCP-порт для подключения клиентов.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
     port = validate_port(prompt(current_port, "PORT"))
     if port_used_by_other_inbound(config, port, tag):
         die(f"PORT is already used by another inbound: {port}")
-    dest = reality_dest(sni)
-    inbound["port"] = port
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port"):
+            # The answers apply to config.json read again under the lock.
+            config = load_config()
+            inbound, reality, _, sni, _ = current_settings(config, tag)
+            if port_used_by_other_inbound(config, port, tag):
+                die(f"PORT is already used by another inbound: {port}")
+            dest = reality_dest(sni)
+            inbound["port"] = port
+            reality["dest"] = dest
+            backup = apply_config(config)
+            update_connection_db(tag, port=port, sni=sni, dest=dest)
+            if tag == INBOUND_TAG:
+                write_server_env(port, sni, dest)
+    except LockTimeout as exc:
+        die(f"{exc.message}\n{exc.hint}")
     refresh_initial_link()
     print(f"PORT обновлён: {port}")
     print(f"REALITY_DEST обновлён: {dest}")
@@ -860,18 +872,25 @@ def update_sni() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    _, reality, port, current_sni, _ = current_settings(config, tag)
+    _, _, _, current_sni, _ = current_settings(config, tag)
     print()
     print("Новый REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
     sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    dest = reality_dest(sni)
-    reality["serverNames"] = [sni]
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-sni"):
+            # The answers apply to config.json read again under the lock.
+            config = load_config()
+            _, reality, port, _, _ = current_settings(config, tag)
+            dest = reality_dest(sni)
+            reality["serverNames"] = [sni]
+            reality["dest"] = dest
+            backup = apply_config(config)
+            update_connection_db(tag, port=port, sni=sni, dest=dest)
+            if tag == INBOUND_TAG:
+                write_server_env(port, sni, dest)
+    except LockTimeout as exc:
+        die(f"{exc.message}\n{exc.hint}")
     refresh_initial_link()
     print(f"REALITY_SNI обновлён: {sni}")
     print(f"REALITY_DEST обновлён: {dest}")
@@ -884,7 +903,7 @@ def update_port_and_sni() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    inbound, reality, current_port, current_sni, _ = current_settings(config, tag)
+    _, _, current_port, current_sni, _ = current_settings(config, tag)
     print()
     print("Обновление PORT и REALITY_SNI.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
@@ -892,14 +911,23 @@ def update_port_and_sni() -> None:
     if port_used_by_other_inbound(config, port, tag):
         die(f"PORT is already used by another inbound: {port}")
     sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    dest = reality_dest(sni)
-    inbound["port"] = port
-    reality["serverNames"] = [sni]
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port-sni"):
+            # The answers apply to config.json read again under the lock.
+            config = load_config()
+            inbound, reality, _, _, _ = current_settings(config, tag)
+            if port_used_by_other_inbound(config, port, tag):
+                die(f"PORT is already used by another inbound: {port}")
+            dest = reality_dest(sni)
+            inbound["port"] = port
+            reality["serverNames"] = [sni]
+            reality["dest"] = dest
+            backup = apply_config(config)
+            update_connection_db(tag, port=port, sni=sni, dest=dest)
+            if tag == INBOUND_TAG:
+                write_server_env(port, sni, dest)
+    except LockTimeout as exc:
+        die(f"{exc.message}\n{exc.hint}")
     refresh_initial_link()
     print(f"PORT обновлён: {port}")
     print(f"REALITY_SNI обновлён: {sni}")
@@ -964,16 +992,19 @@ def choose_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2"
 
 
 def update_fingerprint() -> None:
-    config = load_config()
     tag = choose_connection("обновления FINGERPRINT", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
-    _, _, port, sni, dest = current_settings(config, tag)
     fp = choose_fingerprint(current_fingerprint())
-    update_connection_db(tag, port=port, sni=sni, dest=dest, fingerprint=fp)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest, fp)
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-fingerprint"):
+            _, _, port, sni, dest = current_settings(load_config(), tag)
+            update_connection_db(tag, port=port, sni=sni, dest=dest, fingerprint=fp)
+            if tag == INBOUND_TAG:
+                write_server_env(port, sni, dest, fp)
+    except LockTimeout as exc:
+        die(f"{exc.message}\n{exc.hint}")
     refresh_initial_link()
     print(f"FINGERPRINT обновлён: {fp}")
     print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
