@@ -265,6 +265,16 @@ def maybe_adopt_existing_cascade_route(db):
     answer = input("Использовать cascade для привязки владельца? [Y/n]: ").strip().lower()
     if answer in ("", "y", "yes", "д", "да"):
         with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="owner"):
+            # The answer was given for the config read before the prompt; the SOCKS route must still exist.
+            try:
+                still_configured = telegram_proxy_configured(load_config())
+            except Exception:
+                still_configured = False
+            if not still_configured:
+                raise ConflictError(
+                    "Telegram SOCKS для cascade удалён другой операцией во время вопроса о маршруте.",
+                    hint="Запусти xray-telegram owner ещё раз.",
+                )
             db = settings.load_db_sql()
             db["routeMode"] = "cascade"
             settings.save_db(db)
