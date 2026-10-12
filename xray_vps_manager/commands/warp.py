@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from xray_vps_manager.commands.set_cascade import load_client_db_optional, save_client_db_optional
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.xray import client_routes
@@ -515,7 +516,7 @@ def enable_warp_route(config, endpoint_override=None):
     append_catchall_route(config, WARP_OUTBOUND_TAG)
 
 
-def disable_warp_route(config):
+def disable_warp_route(config, db=None):
     changed = remove_temporary_warp_test_config(config)
     changed = remove_managed_catchall_routes(config) or changed
     changed = cascade_config.ensure_direct_first(config) or changed
@@ -523,12 +524,15 @@ def disable_warp_route(config):
     if cascade_tag:
         append_catchall_route(config, cascade_tag)
         changed = True
+    if db is not None:
+        # Client rules were removed while warp-out was the catch-all; selectedCascadeTag restores them.
+        changed = client_routes.ensure_all_client_route_config(config, db) or changed
     return changed
 
 
-def remove_warp(config):
+def remove_warp(config, db=None):
     changed = remove_temporary_warp_test_config(config)
-    changed = disable_warp_route(config) or changed
+    changed = disable_warp_route(config, db) or changed
     if remove_outbound(config, WARP_OUTBOUND_TAG):
         changed = True
     return changed
@@ -560,6 +564,12 @@ def print_status():
     width = max(len(key) for key, _ in rows)
     for key, value in rows:
         print(f"{key.ljust(width)} : {value}")
+    client_rules = client_routes.client_route_rule_count(config) if catchall == WARP_OUTBOUND_TAG else 0
+    if client_rules:
+        print(
+            f"WARN: WARP включён, но в config.json остались клиентские правила client-route-* ({client_rules}): "
+            "трафик этих клиентов идёт мимо warp-out. Сними их командой xray-client sync-routes."
+        )
 
 
 def cmd_create(force=False):
@@ -593,12 +603,14 @@ def cmd_enable():
 def cmd_disable():
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="disable"):
         config = load_config()
-        changed = disable_warp_route(config)
+        db = load_client_db_optional()
+        changed = disable_warp_route(config, db)
         if not changed:
             print("WARP route is already disabled.")
             cmd_verify_disabled()
             return
         backup = apply_config(config)
+        save_client_db_optional(db)
         print("WARP route is disabled.")
         cascade_tag = cascade_config.active_cascade_tag(config)
         if cascade_tag:
@@ -612,11 +624,13 @@ def cmd_disable():
 def cmd_remove():
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="remove"):
         config = load_config()
-        changed = remove_warp(config)
+        db = load_client_db_optional()
+        changed = remove_warp(config, db)
         if not changed:
             print("WARP config is already removed from Xray.")
             return
         backup = apply_config(config)
+        save_client_db_optional(db)
     print("WARP outbound removed from Xray config. Local wgcf profile files were kept.")
     print(f"Backup: {backup}")
 
