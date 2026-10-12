@@ -18,7 +18,9 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.commands import telegram as telegram_command
 from xray_vps_manager.core import paths as core_paths
+from xray_vps_manager.core.errors import ConflictError
 from xray_vps_manager.db import database
+from xray_vps_manager.telegram import poller as telegram_poller
 from xray_vps_manager.telegram import settings as telegram_settings
 from xray_vps_manager.telegram import setup as telegram_setup
 from xray_vps_manager.xray import config as xray_config
@@ -358,6 +360,59 @@ class TelegramSetupLockTests(unittest.TestCase):
         self.assertEqual(settings["clientSubscriptionState"]["userUpdateOffset"], 0)
         self.assertTrue(client_lock_tests.lock_is_free(self.lock_path))
 
+    def add_telegram_socks_route(self) -> None:
+        """Telegram SOCKS для cascade уже в config.json, а routeMode в базе ещё direct: setup оборвался."""
+        config = json.loads((self.root / "config.json").read_text())
+        config["inbounds"].append(
+            {"tag": telegram_setup.TELEGRAM_SOCKS_TAG, "listen": "127.0.0.1", "port": 10810, "protocol": "socks", "settings": {}}
+        )
+        config["routing"]["rules"].append(
+            {"type": "field", "inboundTag": [telegram_setup.TELEGRAM_SOCKS_TAG], "outboundTag": CASCADE_TAG}
+        )
+        (self.root / "config.json").write_text(json.dumps(config))
+
+    def test_adopt_cascade_asks_without_lock_and_writes_route_mode_under_lock(self) -> None:
+        self.add_telegram_socks_route()
+        events = []
+
+        def answer(_prompt: str = "") -> str:
+            events.append(("input", client_lock_tests.lock_is_free(self.lock_path)))
+            return "y"
+
+        with telegram_patches(self.root), \
+            mock.patch("builtins.input", side_effect=answer), \
+            redirect_stdout(StringIO()):
+            db = telegram_setup.maybe_adopt_existing_cascade_route(stored_settings(self.root))
+
+        self.assertEqual(events, [("input", True)])
+        self.assertEqual(db["routeMode"], "cascade")
+        self.assertEqual(stored_settings(self.root)["routeMode"], "cascade")
+        self.assertTrue(client_lock_tests.lock_is_free(self.lock_path))
+
+    def test_adopt_cascade_stops_when_socks_removed_while_answering(self) -> None:
+        """58-R02: пока админ отвечает, другая сессия выполнила `mode direct` и удалила Telegram SOCKS."""
+        self.add_telegram_socks_route()
+
+        def answer(_prompt: str = "") -> str:
+            config = json.loads((self.root / "config.json").read_text())
+            telegram_setup.remove_telegram_proxy_config(config)
+            (self.root / "config.json").write_text(json.dumps(config))
+            return "y"
+
+        with telegram_patches(self.root), \
+            mock.patch("builtins.input", side_effect=answer), \
+            redirect_stdout(StringIO()):
+            with self.assertRaises(ConflictError) as raised:
+                telegram_setup.maybe_adopt_existing_cascade_route(stored_settings(self.root))
+
+        self.assertEqual(
+            raised.exception.message,
+            "Telegram SOCKS для cascade удалён другой операцией во время вопроса о маршруте.",
+        )
+        self.assertEqual(raised.exception.hint, "Запусти xray-telegram owner ещё раз.")
+        self.assertNotEqual(stored_settings(self.root).get("routeMode"), "cascade")
+        self.assertTrue(client_lock_tests.lock_is_free(self.lock_path))
+
     def test_setup_keeps_settings_written_while_answering_prompts(self) -> None:
         """XR-REV-001: вопросы setup задаются без lock; другой процесс между ними не теряет изменения."""
         answers = {"BOT_TOKEN: ": "654321:new-token", "Route mode [1-direct]: ": "1"}
@@ -438,6 +493,10 @@ class TelegramSetupLockTests(unittest.TestCase):
                 source = (PACKAGE_DIR / "telegram" / name).read_text(encoding="utf-8")
                 self.assertNotIn("manager_lock", source)
                 self.assertNotIn("core.locks", source)
+
+    def test_country_switch_waits_for_route_longer_than_lock_timeout(self) -> None:
+        """58-R01: бот ждёт xray-client route дольше, чем тот ждёт manager.lock, иначе kill опережает LockTimeout."""
+        self.assertGreater(telegram_poller.CLIENT_ROUTE_TIMEOUT, client_command.MANAGER_LOCK_TIMEOUT)
 
 
 if __name__ == "__main__":

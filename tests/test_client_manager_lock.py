@@ -36,6 +36,7 @@ CLIENT_DB_WRITES = {
 }
 WORKER_TIMEOUT = 30
 REAL_ADD_CLIENT = client_command.client_crud.add_client
+REAL_ADD_CONNECTION = client_command.client_connections.add_connection
 # Сколько медленный писатель держит окно между load_db и save_db, ожидая второго писателя.
 SLOW_WRITER_WINDOW = "2.0"
 
@@ -216,10 +217,39 @@ def add_worker(argv: list) -> int:
     return 0
 
 
-def start_worker(*args: str) -> subprocess.Popen:
+def add_connection_without_xray(*args, **kwargs):
+    return REAL_ADD_CONNECTION(*args, key_pair_factory=lambda: ("test-private-key", "test-public-key"), **kwargs)
+
+
+# Второй писатель сценариев репро P1_001: меняет подключения и поля клиента, пока медленный add держит снимок.
+P1_001_WRITERS = {
+    "add-connection": lambda: client_command.cmd_connection_add("extra", "9443", "example.org"),
+    "disable": lambda: client_command.cmd_disable("bob"),
+    "remove-connection": lambda: client_command.cmd_connection_remove("vless-reality-2"),
+}
+
+
+def writer_worker(argv: list) -> int:
+    """Отдельный процесс xray-client из P1_001_WRITERS: стартует, когда медленный писатель уже прочитал снимок."""
+    root, action = Path(argv[0]), argv[1]
+    try:
+        if not wait_for_file(root / "slow-loaded", WORKER_TIMEOUT):
+            print("slow writer did not load the snapshot", file=sys.stderr)
+            return 2
+        with sandbox_patches(root, config_suffix=f".{action}"), \
+            mock.patch.object(client_command, "SERVER_ENV_PATH", root / "server.env"), \
+            mock.patch.object(client_command.client_connections, "add_connection", side_effect=add_connection_without_xray), \
+            redirect_stdout(StringIO()):
+            P1_001_WRITERS[action]()
+    finally:
+        (root / "fast-done").touch()
+    return 0
+
+
+def start_worker(*args: str, function: str = "add_worker") -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join([str(REPO_ROOT), str(TESTS_DIR)])
-    code = "import sys, test_client_manager_lock as t; sys.exit(t.add_worker(sys.argv[1:]))"
+    code = f"import sys, test_client_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
     return subprocess.Popen(
         [sys.executable, "-c", code, *args],
         cwd=str(REPO_ROOT),
@@ -422,6 +452,70 @@ class ClientWritersLockTests(unittest.TestCase):
         tree = ast.parse((PACKAGE_DIR / "commands" / "client.py").read_text(encoding="utf-8"))
 
         self.assertEqual(unlocked_client_db_writes(tree), [])
+
+
+class LostUpdateScenariosTests(unittest.TestCase):
+    """XR-REV-001, репро P1_001: устаревший снимок медленного `add carol` не откатывает чужие изменения."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        make_sandbox(self.root)
+        with sandbox_patches(self.root), redirect_stdout(StringIO()):
+            client_command.cmd_add("alice", prompt_for_access=False, connection_tag="vless-reality")
+            client_command.cmd_add("alice", prompt_for_access=False, connection_tag="vless-reality-2")
+            client_command.cmd_add("bob", prompt_for_access=False, connection_tag="vless-reality")
+
+    def run_race(self, action: str) -> dict:
+        slow = start_worker(str(self.root), "carol", "slow", SLOW_WRITER_WINDOW)
+        fast = start_worker(str(self.root), action, function="writer_worker")
+        results = []
+        for process in (slow, fast):
+            try:
+                stdout, stderr = process.communicate(timeout=WORKER_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+            results.append((process.returncode, stdout, stderr))
+
+        for returncode, _stdout, stderr in results:
+            self.assertEqual(returncode, 0, stderr)
+        db = client_repository.load_db_sql(db_path=self.root / "manager.db")
+        self.assertEqual(set(db["clients"]), {"alice", "bob", "carol"})
+        self.assertIn("carol", config_client_names(self.root))
+        self.assertTrue(lock_is_free(self.root / "manager.lock"))
+        return db
+
+    def inbound_tags(self) -> set:
+        return {item["tag"] for item in json.loads((self.root / "config.json").read_text())["inbounds"]}
+
+    def test_connection_added_by_other_process_is_not_lost(self) -> None:
+        """Случай A для подключения: подключение, добавленное другим процессом, остаётся в базе и config.json."""
+        db = self.run_race("add-connection")
+
+        added = [
+            tag
+            for tag, item in client_repository.db_managed_connections(db).items()
+            if item.get("name") == "extra"
+        ]
+        self.assertEqual(len(added), 1)
+        self.assertIn(added[0], self.inbound_tags())
+
+    def test_client_disabled_by_other_process_stays_disabled(self) -> None:
+        """Случай B: устаревший снимок не возвращает отключённому клиенту `enabled`."""
+        db = self.run_race("disable")
+
+        self.assertIs(db["clients"]["bob"].get("enabled"), False)
+        self.assertNotIn("bob", config_client_names(self.root))
+
+    def test_connection_removed_by_other_process_does_not_come_back(self) -> None:
+        """Случай C: удалённые подключение и credential не воскресают из устаревшего снимка."""
+        db = self.run_race("remove-connection")
+
+        self.assertNotIn("vless-reality-2", client_repository.db_managed_connections(db))
+        self.assertEqual(set(db["clients"]["alice"]["credentials"]), {"vless-reality"})
+        self.assertNotIn("vless-reality-2", self.inbound_tags())
 
 
 class TrafficSyncWithoutManagerLockTests(unittest.TestCase):

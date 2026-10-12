@@ -16,6 +16,9 @@ USER_POLL_SHORT_TIMEOUT = 2
 USER_POLL_LONG_TIMEOUT = 45
 USER_POLLER_SLEEP_UNCONFIGURED = 30
 USER_POLLER_SLEEP_ERROR = 5
+# xray-client route waits up to 60 s for manager.lock before switching the route;
+# the call budget must outlast that wait so LockTimeout fires instead of a kill mid-write.
+CLIENT_ROUTE_TIMEOUT = 120
 CLIENT_CALLBACK_GUARDS_KEY = "callbackGuards"
 CLIENT_CONSUMED_CALLBACK_LIMIT = 40
 CLIENT_CALLBACK_STALE_TEXT = "Эта кнопка уже устарела. Используй последнее сообщение бота."
@@ -629,7 +632,7 @@ def handle_callback_query(ctx: PollerContext, db, update):
             ctx.answer_callback_query(db, callback_id, "Уже выбрана")
             send_client_country_menu(ctx, db, chat_id, f"Эта страна уже выбрана: {label}.")
             return True
-        result = ctx.run_capture([str(ctx.xray_client), "route", name, tag], timeout=20)
+        result = ctx.run_capture([str(ctx.xray_client), "route", name, tag], timeout=CLIENT_ROUTE_TIMEOUT)
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
             ctx.answer_callback_query(db, callback_id, "Не удалось переключить")
