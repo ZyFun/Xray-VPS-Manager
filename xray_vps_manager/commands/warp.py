@@ -28,7 +28,6 @@ WGCF_ACCOUNT = WARP_DIR / "wgcf-account.toml"
 WGCF_PROFILE = WARP_DIR / "wgcf-profile.conf"
 WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_TAG = "direct"
-BLOCKED_TAG = "blocked"
 API_TAG = "api"
 TEST_INBOUND_TAG = "warp-test-socks"
 TEST_SOCKS_HOST = "127.0.0.1"
@@ -415,15 +414,6 @@ def warp_outbound_from_profile(endpoint_override=None):
     }
 
 
-def ensure_base_outbounds(config):
-    outbounds = config.setdefault("outbounds", [])
-    if not any(item.get("tag") == DIRECT_TAG for item in outbounds):
-        outbounds.append({"tag": DIRECT_TAG, "protocol": "freedom"})
-    if not any(item.get("tag") == BLOCKED_TAG for item in outbounds):
-        outbounds.append({"tag": BLOCKED_TAG, "protocol": "blackhole"})
-    return outbounds
-
-
 def routing_rules(config):
     routing = config.setdefault("routing", {})
     routing.setdefault("domainStrategy", "IPIfNonMatch")
@@ -470,9 +460,10 @@ def remove_outbound(config, tag):
     return len(after) != len(before)
 
 
-def upsert_warp_outbound(config, endpoint_override=None, replace=True):
+def upsert_warp_outbound(config, endpoint_override=None, replace=True, keep_order=False):
     outbound = warp_outbound_from_profile(endpoint_override=endpoint_override)
-    outbounds = ensure_base_outbounds(config)
+    # Temporary probe configs keep the live outbound order, so other clients keep their route during the probe.
+    outbounds = config.setdefault("outbounds", []) if keep_order else cascade_config.ensure_base_outbounds(config)
     replaced = False
     for index, item in enumerate(outbounds):
         if item.get("tag") == WARP_OUTBOUND_TAG:
@@ -527,6 +518,7 @@ def enable_warp_route(config, endpoint_override=None):
 def disable_warp_route(config):
     changed = remove_temporary_warp_test_config(config)
     changed = remove_managed_catchall_routes(config) or changed
+    changed = cascade_config.ensure_direct_first(config) or changed
     cascade_tag = cascade_config.first_cascade_tag(config)
     if cascade_tag:
         append_catchall_route(config, cascade_tag)
@@ -563,7 +555,7 @@ def print_status():
         ("profile endpoint", profile_endpoint or "-"),
         ("config endpoint", config_endpoint or "-"),
         ("outbound", "configured" if outbound else "not configured"),
-        ("route", "enabled" if catchall == WARP_OUTBOUND_TAG else f"disabled (catch-all: {catchall or 'default direct'})"),
+        ("route", "enabled" if catchall == WARP_OUTBOUND_TAG else f"disabled (catch-all: {catchall or cascade_config.default_route_label(config)})"),
     ]
     width = max(len(key) for key, _ in rows)
     for key, value in rows:
@@ -790,7 +782,7 @@ def probe_warp_endpoint(endpoint):
     original_text = CONFIG_PATH.read_text()
     config = json.loads(original_text)
     test_config = copy.deepcopy(config)
-    upsert_warp_outbound(test_config, endpoint_override=endpoint)
+    upsert_warp_outbound(test_config, endpoint_override=endpoint, keep_order=True)
     add_test_inbound(test_config)
 
     try:
@@ -869,7 +861,7 @@ def test_warp():
     original_text = CONFIG_PATH.read_text()
     config = json.loads(original_text)
     test_config = copy.deepcopy(config)
-    upsert_warp_outbound(test_config, replace=False)
+    upsert_warp_outbound(test_config, replace=False, keep_order=True)
     add_test_inbound(test_config)
 
     try:

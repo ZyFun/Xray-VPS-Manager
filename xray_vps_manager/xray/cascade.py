@@ -118,14 +118,30 @@ def active_cascade_outbound(config: dict[str, Any]) -> dict[str, Any] | None:
     return cascade_outbound(config, tag) if tag else None
 
 
-def ensure_direct_outbound(config: dict[str, Any]) -> dict[str, Any]:
+def ensure_direct_first(config: dict[str, Any]) -> bool:
+    """Keep direct the first outbound: Xray sends traffic that matches no rule to the first outbound."""
     outbounds = config.setdefault("outbounds", [])
-    for outbound in outbounds:
-        if outbound.get("tag") == DIRECT_TAG:
-            return outbound
-    outbound = {"tag": DIRECT_TAG, "protocol": "freedom"}
-    outbounds.append(outbound)
-    return outbound
+    index = next((index for index, outbound in enumerate(outbounds) if outbound.get("tag") == DIRECT_TAG), None)
+    if index == 0:
+        return False
+    outbounds.insert(0, outbounds.pop(index) if index is not None else {"tag": DIRECT_TAG, "protocol": "freedom"})
+    return True
+
+
+def ensure_direct_outbound(config: dict[str, Any]) -> dict[str, Any]:
+    ensure_direct_first(config)
+    return config["outbounds"][0]
+
+
+def default_outbound(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Outbound for traffic that matches no routing rule: Xray uses the first one."""
+    outbounds = config.get("outbounds") or []
+    return outbounds[0] if outbounds else None
+
+
+def default_route_label(config: dict[str, Any]) -> str:
+    outbound = default_outbound(config) or {}
+    return f"default {outbound.get('tag') or DIRECT_TAG}"
 
 
 def ensure_blocked_outbound(config: dict[str, Any]) -> dict[str, Any]:
@@ -176,13 +192,15 @@ def activate_cascade_route(config: dict[str, Any], tag: str) -> None:
     append_catchall_route(config, tag)
 
 
-def move_outbound_to_front(config: dict[str, Any], tag: str) -> None:
+def move_cascade_to_front(config: dict[str, Any], tag: str) -> None:
+    """Put the cascade before the other cascades: first_cascade_tag falls back to it, direct stays first."""
     outbounds = config.setdefault("outbounds", [])
     selected = [outbound for outbound in outbounds if outbound.get("tag") == tag]
-    if not selected:
+    if not selected or not is_cascade_tag(tag):
         return
+    first = next(index for index, outbound in enumerate(outbounds) if is_cascade_tag(outbound.get("tag")))
     rest = [outbound for outbound in outbounds if outbound.get("tag") != tag]
-    config["outbounds"] = [selected[0], *rest]
+    config["outbounds"] = [*rest[:first], selected[0], *rest[first:]]
 
 
 def sync_telegram_cascade_rules(config: dict[str, Any], tag: str) -> bool:
