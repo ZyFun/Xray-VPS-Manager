@@ -1286,6 +1286,12 @@ def cmd_route(name, route_value=None):
             print(f"Country already selected: {client_routes.selected_route_label(db, entry)}")
             print(f"Cascade: {tag}")
             return
+        if not client_routes.client_routes_allowed(config):
+            # No client rule to switch; xray api bo could still move a leftover runtime balancer past WARP or direct.
+            die(
+                "Выбор страны недоступен: общий маршрут сейчас не каскад "
+                "(включён WARP или каскадный маршрут отключён). Выбери страну после возврата каскадного маршрута."
+            )
 
         next_entry = dict(entry)
         next_entry["selectedCascadeTag"] = tag

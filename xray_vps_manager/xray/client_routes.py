@@ -205,6 +205,30 @@ def upsert_balancer(config: dict[str, Any], balancer_tag: str, selected_tag: str
     selected.pop("strategy", None)
 
 
+def client_routes_allowed(config: dict[str, Any]) -> bool:
+    """Client rules sit above the catch-all, so they may only refine a cascade catch-all.
+
+    With catch-all warp-out they would send clients past WARP (XR-REV-055), without a catch-all
+    (`xray-set-cascade --disable`) past direct. selectedCascadeTag stays in manager.db and
+    restores the rules once a cascade is the catch-all again.
+    """
+    return bool(cascade_config.active_cascade_tag(config))
+
+
+def client_route_rule_count(config: dict[str, Any]) -> int:
+    rules = config.get("routing", {}).get("rules", [])
+    return sum(1 for rule in rules if is_client_balancer_tag(rule.get("balancerTag")))
+
+
+def remove_client_route_config(config: dict[str, Any], balancer_tag: str) -> bool:
+    routing = config.setdefault("routing", {})
+    rules = cascade_config.routing_rules(config)
+    balancers = routing_balancers(config)
+    routing["rules"] = [rule for rule in rules if rule.get("balancerTag") != balancer_tag]
+    routing["balancers"] = [balancer for balancer in balancers if balancer.get("tag") != balancer_tag]
+    return len(routing["rules"]) != len(rules) or len(routing["balancers"]) != len(balancers)
+
+
 def insert_client_rule_before_catchall(config: dict[str, Any], emails: list[str], balancer_tag: str) -> None:
     rules = cascade_config.routing_rules(config)
     rule = {"type": "field", "user": emails, "balancerTag": balancer_tag}
@@ -217,6 +241,8 @@ def insert_client_rule_before_catchall(config: dict[str, Any], emails: list[str]
 
 
 def ensure_client_route_config(config: dict[str, Any], name: str, entry: dict[str, Any], selected_tag: str | None = None) -> bool:
+    if not client_routes_allowed(config):
+        return remove_client_route_config(config, client_balancer_tag(name, entry))
     selected = selected_tag or selected_route_tag(entry) or cascade_config.active_cascade_tag(config)
     if not selected or not cascade_config.cascade_outbound(config, selected):
         return False
@@ -305,6 +331,8 @@ def remove_unavailable_client_route_config(config: dict[str, Any]) -> bool:
 
 def ensure_all_client_route_config(config: dict[str, Any], db: dict[str, Any]) -> bool:
     changed = sync_routes_from_config(config, db)
+    if not client_routes_allowed(config):
+        return remove_all_client_route_config(config) or changed
     expected_balancers = {
         client_balancer_tag(name, entry)
         for name, entry in client_repository.db_clients(db).items()

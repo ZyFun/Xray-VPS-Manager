@@ -728,7 +728,14 @@ class ExecStopTrafficSyncTests(RoutingLockTestCase):
                 ("save_route",),
             ),
             "warp.py": (
-                {"apply_config", "choose_working_endpoint", "probe_warp_disabled", "test_warp", "install_config_without_backup"},
+                {
+                    "apply_config",
+                    "save_client_db_optional",
+                    "choose_working_endpoint",
+                    "probe_warp_disabled",
+                    "test_warp",
+                    "install_config_without_backup",
+                },
                 ("probe_warp_endpoint", "probe_warp_disabled", "test_warp"),
             ),
             "menu_reality_actions.py": ({"apply_config", "update_connection_db", "write_server_env"}, ()),
