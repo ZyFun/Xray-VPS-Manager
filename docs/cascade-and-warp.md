@@ -69,6 +69,12 @@ xray-set-cascade --disable
 
 Команда также удаляет per-client cascade routing rules и balancers из `config.json`, чтобы отдельные клиентские правила не продолжали направлять трафик через `cascade-*` после отключения каскадного маршрута. Метаданные каскадов и выбранные страны в SQLite сохраняются.
 
+### Маршрут по умолчанию
+
+Трафик, для которого не нашлось ни одного routing rule, Xray отправляет в первый outbound. Поэтому менеджер всегда держит `direct` первым в `config.json`, а `cascade-*` и `bypass-*` добавляет после него. Если catch-all правила нет — после `xray-set-cascade --disable`, удаления последнего каскада или отключения WARP без каскадов, — такой трафик идёт напрямую.
+
+Без catch-all правила строка `Current catch-all route` в выводе `xray-set-cascade` и строка `route` в `xray-warp status` показывают фактический первый outbound, обычно `default direct`. В `config.json`, записанном прежней версией менеджера, первым может стоять `cascade-*` или `bypass-*`. Тогда статус показывает этот outbound, например `default bypass-ru`, а первая же команда `xray-set-cascade`, `xray-set-bypass` или `xray-warp`, которая сохраняет новый `config.json`, переставляет `direct` на первое место.
+
 
 ## GeoIP bypass
 

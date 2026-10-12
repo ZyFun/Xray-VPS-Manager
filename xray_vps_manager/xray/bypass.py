@@ -107,6 +107,7 @@ def upsert_bypass_outbound(config: dict[str, Any], outbound: dict[str, Any]) -> 
     tag = str(outbound.get("tag") or "")
     if not is_bypass_tag(tag):
         raise ValueError(f"Bypass outbound tag must start with {BYPASS_TAG_PREFIX}: {tag}")
+    cascade_config.ensure_base_outbounds(config)
     previous_index = next(
         (
             index
@@ -115,13 +116,13 @@ def upsert_bypass_outbound(config: dict[str, Any], outbound: dict[str, Any]) -> 
         ),
         None,
     )
-    cascade_config.ensure_base_outbounds(config)
     config["outbounds"] = [item for item in config.get("outbounds", []) if item.get("tag") != tag]
     if previous_index is not None:
         config["outbounds"].insert(min(previous_index, len(config["outbounds"])), outbound)
         return
 
-    insert_index = 0
+    # After the other bypass outbounds; direct stays first as the route for traffic without a rule.
+    insert_index = 1
     for index, item in enumerate(config["outbounds"]):
         if is_bypass_tag(item.get("tag")):
             insert_index = index + 1
@@ -276,7 +277,12 @@ def current_catchall_source_outbound(config: dict[str, Any], fallback: dict[str,
     active = cascade_config.active_cascade_outbound(config)
     if active:
         return active
-    return cascade_config.ensure_direct_outbound(config)
+    # Without a catch-all rule the copy keeps the actual default route and does not reorder outbounds.
+    # A copy of bypass-* (or of an outbound with the same settings) would be taken for a bypass marker of the region.
+    default = cascade_config.default_outbound(config)
+    if default and not matching_bypass_outbound_for_warning(config, default):
+        return default
+    return outbound_by_tag(config, cascade_config.DIRECT_TAG) or cascade_config.ensure_direct_outbound(config)
 
 
 def enabled_route_for_region(
@@ -368,6 +374,7 @@ def apply_bypass_route(config: dict[str, Any], tag: str, region_code: str) -> No
     source = bypass_outbound(config, tag)
     if not source:
         raise ValueError(f"Bypass outbound is not configured: {tag}")
+    cascade_config.ensure_direct_first(config)
     ensure_private_block_rule(config)
     remove_direct_bypass_region_rules(config, region)
     ensure_geoip_warning_outbound(config, region, source)
@@ -388,6 +395,7 @@ def disable_bypass_route(
     remove_direct_bypass_region_rules(config, region)
     if remove_outbound:
         remove_tagged_outbounds(config, tag)
+    cascade_config.ensure_direct_first(config)
     restore_geoip_domain_strategy_if_unused(config, env_values)
 
 

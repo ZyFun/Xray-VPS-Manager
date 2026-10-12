@@ -135,6 +135,7 @@ def ensure_private_block_rule(config):
 def configure_cascade(config, outbound):
     tag = outbound["tag"]
     had_cascades_before = bool(cascade_config.cascade_tags(config))
+    cascade_config.ensure_base_outbounds(config)
     previous_index = next(
         (
             index
@@ -143,18 +144,16 @@ def configure_cascade(config, outbound):
         ),
         None,
     )
-    cascade_config.ensure_base_outbounds(config)
     config["outbounds"] = remove_tag(config.get("outbounds", []), tag)
     if previous_index is not None:
         config["outbounds"].insert(min(previous_index, len(config["outbounds"])), outbound)
-    elif had_cascades_before:
-        insert_index = 0
+    else:
+        # After the other cascades; direct stays first as the route for traffic without a rule.
+        insert_index = 1
         for index, item in enumerate(config["outbounds"]):
             if cascade_config.is_cascade_tag(item.get("tag")):
                 insert_index = index + 1
         config["outbounds"].insert(insert_index, outbound)
-    else:
-        config["outbounds"].insert(0, outbound)
     ensure_private_block_rule(config)
     if not had_cascades_before:
         cascade_config.activate_cascade_route(config, tag)
@@ -172,7 +171,8 @@ def configure_cascade(config, outbound):
 def set_active_cascade(config, tag):
     if not cascade_config.cascade_outbound(config, tag):
         raise ValueError(f"Cascade outbound is not configured: {tag}")
-    cascade_config.move_outbound_to_front(config, tag)
+    cascade_config.move_cascade_to_front(config, tag)
+    cascade_config.ensure_direct_first(config)
     cascade_config.activate_cascade_route(config, tag)
     cascade_config.sync_telegram_cascade_rules(config, tag)
     sync_geoip_warning_outbounds(config, cascade_config.cascade_outbound(config, tag))
@@ -195,6 +195,7 @@ def remove_cascade(config, tag):
         raise ValueError(f"Cascade outbound is not configured: {tag}")
     was_active = cascade_config.active_cascade_tag(config) == tag
     config["outbounds"] = remove_tag(config.get("outbounds", []), tag)
+    cascade_config.ensure_direct_first(config)
     client_routes.remove_unavailable_client_route_config(config)
     replacement = cascade_config.first_cascade_tag(config)
     kept_rules = []
@@ -336,7 +337,7 @@ def outbound_address(outbound):
 def current_route_label(config):
     tag = cascade_config.current_catchall_tag(config)
     if not tag:
-        return "default direct"
+        return cascade_config.default_route_label(config)
     if tag == cascade_config.WARP_OUTBOUND_TAG:
         return "warp-out"
     if tag == cascade_config.DIRECT_TAG:
