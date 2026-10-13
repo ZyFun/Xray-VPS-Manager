@@ -19,7 +19,9 @@ from urllib.request import Request, urlopen
 from xray_vps_manager.commands.set_cascade import load_client_db_optional, save_client_db_optional
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
+from xray_vps_manager.core.process import SystemdUnitStartError, restart_systemd_unit
 from xray_vps_manager.xray import client_routes
+from xray_vps_manager.xray.config import inbound_listen_endpoints
 from xray_vps_manager.xray import cascade as cascade_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -77,19 +79,8 @@ def run_capture(command, timeout=10, **kwargs):
 
 
 def restart_xray():
-    result = run_capture(["systemctl", "restart", "xray"], timeout=30)
-    if result.returncode == 0:
-        return
-
-    run_capture(["systemctl", "reset-failed", "xray"], timeout=10)
-    time.sleep(1.0)
-    retry = run_capture(["systemctl", "restart", "xray"], timeout=30)
-    if retry.returncode == 0:
-        return
-
-    stdout = "\n".join(part for part in (result.stdout, retry.stdout) if part).strip()
-    stderr = "\n".join(part for part in (result.stderr, retry.stderr) if part).strip()
-    raise subprocess.CalledProcessError(retry.returncode, retry.args, stdout, stderr)
+    """Перезапуск с проверкой старта и портов inbound из текущего config.json (XR-REV-010)."""
+    restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
 
 
 def require_root():
@@ -128,12 +119,12 @@ def apply_config(config):
     try:
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
         restart_xray()
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as exc:
         shutil.copy2(backup, CONFIG_PATH)
         shutil.chown(CONFIG_PATH, user="root", group="xray")
         os.chmod(CONFIG_PATH, 0o640)
         restart_xray()
-        die(f"New config failed. Restored backup: {backup}")
+        die(f"New config failed: {exc}. Restored backup: {backup}")
     return backup
 
 
@@ -754,7 +745,11 @@ def probe_warp_disabled():
     try:
         install_config_without_backup(test_config)
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_xray()
+        try:
+            restart_xray()
+        except SystemdUnitStartError as exc:
+            # Сбой старта проверочного конфига — отрицательный результат; рестарт восстановления в finally фатален.
+            return False, f"Temporary Xray did not start: {exc.detail}", False
         if not wait_for_tcp(TEST_SOCKS_HOST, VERIFY_SOCKS_PORT):
             return False, "Temporary SOCKS inbound did not become ready.", False
         time.sleep(0.5)
@@ -802,7 +797,11 @@ def probe_warp_endpoint(endpoint):
     try:
         install_config_without_backup(test_config)
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_xray()
+        try:
+            restart_xray()
+        except SystemdUnitStartError as exc:
+            # Отрицательный результат пробы сохраняет переход к IPv4 fallback; ошибка восстановления в finally фатальна.
+            return False, f"Temporary Xray did not start: {exc.detail}"
         if not wait_for_tcp(TEST_SOCKS_HOST, TEST_SOCKS_PORT):
             return False, "Temporary SOCKS inbound did not become ready."
         time.sleep(1.5)
@@ -881,7 +880,10 @@ def test_warp():
     try:
         install_config_without_backup(test_config)
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_xray()
+        try:
+            restart_xray()
+        except SystemdUnitStartError as exc:
+            die(f"Temporary Xray with WARP test config did not start: {exc.detail}")
         proxy = f"socks5h://{TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}"
         print(f"Temporary SOCKS inbound: {TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}")
         if not wait_for_tcp(TEST_SOCKS_HOST, TEST_SOCKS_PORT):

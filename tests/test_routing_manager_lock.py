@@ -125,7 +125,8 @@ def routing_patches(root: Path, *, restart=None, record=None):
         if list(command) == RESTART_XRAY and restart is not None:
             restart()
 
-    def restart_xray():
+    def restart_xray(*_args, **_kwargs):
+        # restart_systemd_unit(..., ports=...) в apply_config: тот же фейковый рестарт без systemctl и TCP-проб.
         run(RESTART_XRAY)
 
     def run_capture(command, timeout=None, **_kwargs):
@@ -160,6 +161,7 @@ def routing_patches(root: Path, *, restart=None, record=None):
         for module in (set_cascade, set_bypass, warp):
             enter(mock.patch.object(module, "CONFIG_PATH", config_path))
             enter(mock.patch.object(module, "run", side_effect=run))
+            enter(mock.patch.object(module, "restart_systemd_unit", side_effect=restart_xray))
             enter(mock.patch.object(module, "run_capture", side_effect=run_capture))
             enter(mock.patch.object(module, "wait_for_tcp", return_value=True))
             enter(mock.patch.object(module, "time", no_sleep_time()))
@@ -179,6 +181,7 @@ def routing_patches(root: Path, *, restart=None, record=None):
         enter(mock.patch.object(warp, "warp_outbound_from_profile", side_effect=warp_outbound))
         enter(mock.patch.object(menu_reality_actions, "CONFIG_PATH", config_path))
         enter(mock.patch.object(menu_reality_actions, "run", side_effect=run))
+        enter(mock.patch.object(menu_reality_actions, "restart_systemd_unit", side_effect=restart_xray))
         enter(mock.patch.object(menu_reality_actions, "load_xray_config", side_effect=lambda: xray_config.load_config(config_path)))
         enter(
             mock.patch.object(

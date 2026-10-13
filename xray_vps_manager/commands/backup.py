@@ -16,6 +16,7 @@ from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.xray import caddy as xray_caddy
+from xray_vps_manager.xray.config import inbound_listen_endpoints
 
 BACKUP_DIR = Path("/root/xray_backups")
 CONFIG_DIR = Path("/usr/local/etc/xray")
@@ -763,10 +764,8 @@ def start_timers():
 
 def test_and_restart():
     run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-    restart_systemd_unit("xray")
-    active = run_capture(["systemctl", "is-active", "xray"], timeout=10)
-    if active.returncode != 0:
-        die("Xray did not become active after restore.")
+    # Проверка старта и портов inbound внутри helper'а: ошибка старта → откат restore (XR-REV-010).
+    restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
 
 
 def restore_backup(value):
