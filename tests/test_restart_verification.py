@@ -159,10 +159,54 @@ class RestartVerificationTests(unittest.TestCase):
         self.assertIn("auto-restart", str(caught.exception))
 
     def test_restart_counter_growth_counts_as_failure(self) -> None:
-        systemctl = FakeSystemctl([("active", "running", 2), ("active", "running", 3)])
+        systemctl = FakeSystemctl([("active", "running", 0), ("active", "running", 1)])
         with self.assertRaises(subprocess.CalledProcessError) as caught:
             self.run_restart(systemctl, verify_timeout=3.0)
         self.assertIn("NRestarts", str(caught.exception))
+
+    def test_automatic_restart_before_first_poll_raises(self) -> None:
+        """Автоперезапуск до первого show не становится baseline, даже если порт открыт (70-R06)."""
+        systemctl = FakeSystemctl([("active", "running", 1)])
+        with self.assertRaises(process.SystemdUnitStartError) as caught:
+            self.run_restart(
+                systemctl,
+                open_ports={("127.0.0.1", 443)},
+                verify_timeout=3.0,
+                ports=[("127.0.0.1", 443)],
+            )
+        self.assertIn("NRestarts=1", str(caught.exception))
+        self.assertIn("automatically", str(caught.exception))
+
+    def test_automatic_restart_before_first_poll_after_retry_raises(self) -> None:
+        """После reset-failed и повторного restart первый show с NRestarts=1 — ошибка (70-R06)."""
+        systemctl = FakeSystemctl([("active", "running", 1)])
+        restart_codes = iter([1, 0])
+
+        def run(command, **kwargs):
+            if command[1] == "restart":
+                systemctl.commands.append(list(command))
+                return completed(command, next(restart_codes))
+            return systemctl(command, **kwargs)
+
+        with mock.patch.object(process.subprocess, "run", side_effect=run), \
+            mock.patch.object(process, "time", FakeClock()), \
+            mock.patch.object(process.socket, "create_connection", side_effect=open_socket):
+            with self.assertRaises(process.SystemdUnitStartError):
+                process.restart_systemd_unit("xray", ports=[("127.0.0.1", 443)])
+        self.assertEqual([item[1] for item in systemctl.commands][:3], ["restart", "reset-failed", "restart"])
+
+    def test_manual_restart_resets_historical_restart_count(self) -> None:
+        """Старые автоперезапуски сбрасываются ручным restart и не мешают успешной проверке (70-R06)."""
+        systemctl = FakeSystemctl([("active", "running", 8)])
+
+        def run(command, **kwargs):
+            if command[1] == "restart":
+                systemctl.show_states = [("active", "running", 0)]
+            return systemctl(command, **kwargs)
+
+        result, clock = self.run_restart(run, verify_timeout=3.0)
+        self.assertEqual(result.returncode, 0)
+        self.assertGreaterEqual(clock.now - 100.0, 3.0)
 
     def test_closed_port_until_timeout_raises(self) -> None:
         systemctl = FakeSystemctl([("active", "running", 0)])

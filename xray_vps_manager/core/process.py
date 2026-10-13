@@ -70,7 +70,7 @@ def restart_systemd_unit(
 
     `systemctl restart` для Type=simple возвращает 0 до того, как сервис прочитает конфиг и займёт порты,
     поэтому после успешного restart unit опрашивается через `systemctl show` всё окно `verify_timeout` секунд:
-    состояние failed/auto-restart или рост NRestarts в любой момент окна — ошибка сразу; к концу окна unit
+    состояние failed/auto-restart или ненулевой NRestarts уже с первого опроса — ошибка сразу; к концу окна unit
     должен быть активен, а все переданные TCP-`ports` — принимать соединение. Окно не сокращается при открытых
     портах: порт может занимать другой процесс (например, Caddy), а Xray падает уже после первого опроса.
     `verify_timeout <= 0` отключает проверку. Ошибка проверки — SystemdUnitStartError
@@ -134,11 +134,12 @@ def verify_systemd_unit_started(
 ) -> dict[str, str]:
     """Опрашивает unit всё окно после restart; возвращает последнее состояние или поднимает SystemdUnitStartError.
 
-    Успех определяется только в конце окна, даже если порты открыты раньше (XR-REV-010, 70-R01).
+    Вызывается после явного restart, который сбрасывает NRestarts: ненулевое значение уже в первом опросе
+    означает автоперезапуск после ручного старта (70-R06). Успех определяется только в конце окна,
+    даже если порты открыты раньше (XR-REV-010, 70-R01).
     """
     endpoints = [(str(host), int(port)) for host, port in ports]
     deadline = time.monotonic() + verify_timeout
-    baseline_restarts: int | None = None
     state: dict[str, str] = {}
     while True:
         # `show` ограничен оставшимся окном, но не меньше порога, чтобы последний опрос не обрывался ложно.
@@ -146,12 +147,10 @@ def verify_systemd_unit_started(
         active = state.get("ActiveState", "")
         sub = state.get("SubState", "")
         restarts = _int_or_zero(state.get("NRestarts"))
-        if baseline_restarts is None:
-            baseline_restarts = restarts
         summary = f"{unit} ActiveState={active or '?'} SubState={sub or '?'} NRestarts={restarts}"
         if active in ("failed", "inactive") or sub in UNIT_FAILED_SUBSTATES:
             raise SystemdUnitStartError(unit, summary)
-        if restarts > baseline_restarts:
+        if restarts > 0:
             raise SystemdUnitStartError(unit, f"{summary} (unit was restarted automatically after start)")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
