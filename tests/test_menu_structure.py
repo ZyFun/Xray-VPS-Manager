@@ -78,6 +78,7 @@ class MenuStructureTests(unittest.TestCase):
         self.assertIn(("3", "Выбрать клиентов для подробной записи"), menu.detailed_activity_menu_actions())
         self.assertIn(("5", "Backfill из raw access.log"), menu.detailed_activity_menu_actions())
         self.assertIn(("6", "Экспорт подробной активности"), menu.detailed_activity_menu_actions())
+        self.assertIn(("8", "Очистить и сжать activity DB"), menu.detailed_activity_menu_actions())
         self.assertIn(("5", "Retention alert-log"), menu.suspicious_menu_actions())
         self.assertIn(("1", "Сводка по клиентам за сегодня"), menu.activity_counters_menu_actions())
         self.assertIn(("5", "Клиенты с ростом total/unique hosts/unique ports"), menu.activity_counters_menu_actions())

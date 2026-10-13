@@ -55,8 +55,10 @@ class SQLiteSchemaTests(unittest.TestCase):
                     "idx_activity_events_client_time",
                     "idx_activity_event_risks_risk",
                     "idx_activity_alert_events_client_time",
+                    "idx_activity_alert_events_raw_ref_event",
                     "idx_activity_client_counters_client_bucket",
                     "idx_activity_blocklist_client",
+                    "idx_activity_blocklist_source_event",
                     "idx_activity_blocklist_hits_client",
                     "idx_xray_error_events_time",
                     "idx_cascade_routes_country",
@@ -82,6 +84,7 @@ class SQLiteSchemaTests(unittest.TestCase):
                     (5, "client_credentials"),
                     (6, "activity_alerts_counters_errors"),
                     (7, "bypass_routes"),
+                    (8, "activity_retention_fk_indexes"),
                 ],
             )
 

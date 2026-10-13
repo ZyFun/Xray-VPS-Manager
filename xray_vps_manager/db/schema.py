@@ -8,7 +8,7 @@ from pathlib import Path
 
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 
 @dataclass(frozen=True)
@@ -548,6 +548,14 @@ MIGRATIONS: tuple[Migration, ...] = (
                 ON bypass_routes(region_code)
                 WHERE enabled = 1
             """,
+        ),
+    ),
+    Migration(
+        version=8,
+        name="activity_retention_fk_indexes",
+        statements=(
+            "CREATE INDEX IF NOT EXISTS idx_activity_alert_events_raw_ref_event ON activity_alert_events(raw_ref_event_id)",
+            "CREATE INDEX IF NOT EXISTS idx_activity_blocklist_source_event ON activity_blocklist(source_event_id)",
         ),
     ),
 )

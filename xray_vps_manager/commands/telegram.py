@@ -8,6 +8,8 @@ from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core.errors import LockTimeout, ManagerError
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import repository as traffic_repository
@@ -27,6 +29,9 @@ MANAGER_DB_PATH = Path("/usr/local/etc/xray/manager.db")
 XRAY_CLIENT = Path("/usr/local/sbin/xray-client")
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 DEFAULT_SERVER_NAME = "Xray"
+MANAGER_LOCK_TIMEOUT = 60
+# Drift write on a read path (poller, notify-*): wait briefly, otherwise answer from the synced snapshot.
+ROUTE_DRIFT_LOCK_TIMEOUT = 5
 
 
 def die(message):
@@ -138,8 +143,20 @@ def load_client_db():
         config = xray_config.load_config()
     except Exception:
         return db
-    if client_routes.sync_routes_from_config(config, db):
-        client_repository.save_db(db)
+    if not client_routes.sync_routes_from_config(config, db):
+        return db
+    # Drift between config.json and manager.db: persist it from a fresh snapshot under manager.lock.
+    try:
+        with manager_lock(ROUTE_DRIFT_LOCK_TIMEOUT, purpose="sync-client-routes"):
+            db = client_repository.load_db_sql()
+            if client_routes.sync_routes_from_config(xray_config.load_config(), db):
+                client_repository.save_db(db)
+    except LockTimeout as exc:
+        print(
+            f"WARN: {exc.message}. "
+            "Запись маршрутов клиентов из config.json в manager.db пропущена, следующее чтение повторит её.",
+            file=sys.stderr,
+        )
     return db
 
 
@@ -276,9 +293,10 @@ def print_payment_summary(db, client_db=None):
 
 
 def set_payment_amount(value):
-    db = load_db()
-    amount, _currency = telegram_payments.apply_payment_amount(db, value)
-    save_db(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="payment-amount"):
+        db = load_db()
+        amount, _currency = telegram_payments.apply_payment_amount(db, value)
+        save_db(db)
     if amount:
         print_payment_summary(db)
     else:
@@ -286,9 +304,10 @@ def set_payment_amount(value):
 
 
 def set_domain_annual_amount(value):
-    db = load_db()
-    amount, _currency = telegram_payments.apply_domain_annual_amount(db, value)
-    save_db(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="payment-domain-rent"):
+        db = load_db()
+        amount, _currency = telegram_payments.apply_domain_annual_amount(db, value)
+        save_db(db)
     if amount:
         print_payment_summary(db)
     else:
@@ -296,9 +315,10 @@ def set_domain_annual_amount(value):
 
 
 def set_payment_rounding(mode_value, step_value=None):
-    db = load_db()
-    telegram_payments.apply_payment_rounding(db, mode_value, step_value)
-    save_db(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="payment-rounding"):
+        db = load_db()
+        telegram_payments.apply_payment_rounding(db, mode_value, step_value)
+        save_db(db)
     print_payment_summary(db)
 
 
@@ -308,9 +328,10 @@ def show_payment_amount():
 
 
 def set_payment_details(method, value="", bank=""):
-    db = load_db()
-    telegram_payments.apply_payment_transfer(db, method, value, bank)
-    save_db(db)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="payment-details"):
+        db = load_db()
+        telegram_payments.apply_payment_transfer(db, method, value, bank)
+        save_db(db)
     print_payment_summary(db)
 
 
@@ -570,6 +591,8 @@ def main():
         else:
             usage()
             sys.exit(1)
+    except ManagerError as exc:
+        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
     except Exception as exc:
         die(str(exc))
 

@@ -1451,7 +1451,10 @@ class TelegramPollerTests(unittest.TestCase):
 
         self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
 
-        self.assertIn(("run", ["/usr/local/sbin/xray-client", "route", "alice", "cascade-us"], 20), events)
+        self.assertIn(
+            ("run", ["/usr/local/sbin/xray-client", "route", "alice", "cascade-us"], poller.CLIENT_ROUTE_TIMEOUT),
+            events,
+        )
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Страна подключения изменена: США.", sent[2])
         self.assertIn("Переподключи VPN", sent[2])

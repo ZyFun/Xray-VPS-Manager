@@ -17,7 +17,10 @@ from xray_vps_manager.clients.settings import (
     save_server_env_values,
     server_env_values,
 )
+from xray_vps_manager.core.errors import LockTimeout
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
+from xray_vps_manager.core.process import restart_systemd_unit, tcp_port_in_use
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import (
@@ -32,12 +35,14 @@ from xray_vps_manager.xray.config import (
     INBOUND_TAG,
     XHTTP_MODES,
     XHTTP_XMUX_KEYS,
+    changed_port_listen,
     connection_name_from_tag,
     connection_settings_from_inbound,
     default_xhttp_advanced_extra,
     default_xhttp_packet_up_extra,
     find_inbound,
     find_inbound_by_tag,
+    inbound_listen_endpoints,
     inbound_tag,
     load_config as load_xray_config,
     managed_connection_inbounds,
@@ -69,6 +74,7 @@ FINGERPRINTS = [
     "randomized",
 ]
 TRANSPORTS = ["tcp", "grpc", "xhttp"]
+MANAGER_LOCK_TIMEOUT = 60
 
 CommandRunner = Callable[[list[str]], None]
 ConfirmCallback = Callable[[str], bool]
@@ -358,13 +364,13 @@ def apply_config(config: dict) -> Path:
     backup = save_config(config)
     try:
         run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-    except subprocess.CalledProcessError:
+        restart_systemd_unit("xray", ports=inbound_listen_endpoints(config))
+    except subprocess.CalledProcessError as exc:
         shutil.copy2(backup, CONFIG_PATH)
         shutil.chown(CONFIG_PATH, user="root", group="xray")
         os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+        restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
+        die(f"New config failed: {exc}. Restored backup: {backup}")
     return backup
 
 
@@ -834,20 +840,35 @@ def update_port() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    inbound, reality, current_port, sni, _ = current_settings(config, tag)
+    _, _, current_port, _, _ = current_settings(config, tag)
     print()
     print("Новый PORT: публичный TCP-порт для подключения клиентов.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
     port = validate_port(prompt(current_port, "PORT"))
     if port_used_by_other_inbound(config, port, tag):
         die(f"PORT is already used by another inbound: {port}")
-    dest = reality_dest(sni)
-    inbound["port"] = port
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
+    listen = changed_port_listen(config, tag, port)
+    if listen is not None and tcp_port_in_use(port, listen):
+        die(f"PORT is already in use on this server by another process: {port}")
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port"):
+            # The answers apply to config.json read again under the lock.
+            config = load_config()
+            inbound, reality, _, sni, _ = current_settings(config, tag)
+            if port_used_by_other_inbound(config, port, tag):
+                die(f"PORT is already used by another inbound: {port}")
+            listen = changed_port_listen(config, tag, port)
+            if listen is not None and tcp_port_in_use(port, listen):
+                die(f"PORT is already in use on this server by another process: {port}")
+            dest = reality_dest(sni)
+            inbound["port"] = port
+            reality["dest"] = dest
+            backup = apply_config(config)
+            update_connection_db(tag, port=port, sni=sni, dest=dest)
+            if tag == INBOUND_TAG:
+                write_server_env(port, sni, dest)
+    except LockTimeout as exc:
+        die(f"{exc.message}\n{exc.hint}")
     refresh_initial_link()
     print(f"PORT обновлён: {port}")
     print(f"REALITY_DEST обновлён: {dest}")
@@ -860,18 +881,25 @@ def update_sni() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    _, reality, port, current_sni, _ = current_settings(config, tag)
+    _, _, _, current_sni, _ = current_settings(config, tag)
     print()
     print("Новый REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
     sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    dest = reality_dest(sni)
-    reality["serverNames"] = [sni]
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-sni"):
+            # The answers apply to config.json read again under the lock.
+            config = load_config()
+            _, reality, port, _, _ = current_settings(config, tag)
+            dest = reality_dest(sni)
+            reality["serverNames"] = [sni]
+            reality["dest"] = dest
+            backup = apply_config(config)
+            update_connection_db(tag, port=port, sni=sni, dest=dest)
+            if tag == INBOUND_TAG:
+                write_server_env(port, sni, dest)
+    except LockTimeout as exc:
+        die(f"{exc.message}\n{exc.hint}")
     refresh_initial_link()
     print(f"REALITY_SNI обновлён: {sni}")
     print(f"REALITY_DEST обновлён: {dest}")
@@ -884,22 +912,37 @@ def update_port_and_sni() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    inbound, reality, current_port, current_sni, _ = current_settings(config, tag)
+    _, _, current_port, current_sni, _ = current_settings(config, tag)
     print()
     print("Обновление PORT и REALITY_SNI.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
     port = validate_port(prompt(current_port, "PORT"))
     if port_used_by_other_inbound(config, port, tag):
         die(f"PORT is already used by another inbound: {port}")
+    listen = changed_port_listen(config, tag, port)
+    if listen is not None and tcp_port_in_use(port, listen):
+        die(f"PORT is already in use on this server by another process: {port}")
     sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    dest = reality_dest(sni)
-    inbound["port"] = port
-    reality["serverNames"] = [sni]
-    reality["dest"] = dest
-    backup = apply_config(config)
-    update_connection_db(tag, port=port, sni=sni, dest=dest)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest)
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port-sni"):
+            # The answers apply to config.json read again under the lock.
+            config = load_config()
+            inbound, reality, _, _, _ = current_settings(config, tag)
+            if port_used_by_other_inbound(config, port, tag):
+                die(f"PORT is already used by another inbound: {port}")
+            listen = changed_port_listen(config, tag, port)
+            if listen is not None and tcp_port_in_use(port, listen):
+                die(f"PORT is already in use on this server by another process: {port}")
+            dest = reality_dest(sni)
+            inbound["port"] = port
+            reality["serverNames"] = [sni]
+            reality["dest"] = dest
+            backup = apply_config(config)
+            update_connection_db(tag, port=port, sni=sni, dest=dest)
+            if tag == INBOUND_TAG:
+                write_server_env(port, sni, dest)
+    except LockTimeout as exc:
+        die(f"{exc.message}\n{exc.hint}")
     refresh_initial_link()
     print(f"PORT обновлён: {port}")
     print(f"REALITY_SNI обновлён: {sni}")
@@ -964,16 +1007,19 @@ def choose_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2"
 
 
 def update_fingerprint() -> None:
-    config = load_config()
     tag = choose_connection("обновления FINGERPRINT", security_filter="reality")
     if not tag:
         print("Действие отменено.")
         return
-    _, _, port, sni, dest = current_settings(config, tag)
     fp = choose_fingerprint(current_fingerprint())
-    update_connection_db(tag, port=port, sni=sni, dest=dest, fingerprint=fp)
-    if tag == INBOUND_TAG:
-        write_server_env(port, sni, dest, fp)
+    try:
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-fingerprint"):
+            _, _, port, sni, dest = current_settings(load_config(), tag)
+            update_connection_db(tag, port=port, sni=sni, dest=dest, fingerprint=fp)
+            if tag == INBOUND_TAG:
+                write_server_env(port, sni, dest, fp)
+    except LockTimeout as exc:
+        die(f"{exc.message}\n{exc.hint}")
     refresh_initial_link()
     print(f"FINGERPRINT обновлён: {fp}")
     print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
@@ -1073,7 +1119,8 @@ def delete_connection(
     name = row["name"] if row else tag
     print()
     print(f"Будет удалено подключение: {name} ({tag})")
-    print("Все клиенты этого подключения также будут удалены вместе с их историей трафика.")
+    print("Клиенты без других подключений будут удалены вместе с историей трафика.")
+    print("У клиентов с другими подключениями удалится только credential этого подключения; клиент и его трафик останутся.")
     if not confirm("Продолжить удаление"):
         print("Удаление отменено.")
         return
@@ -1094,7 +1141,8 @@ def delete_trojan_connection(call: CommandRunner, confirm: ConfirmCallback) -> N
     name = row["name"] if row else tag
     print()
     print(f"Будет удалено Trojan-подключение: {name} ({tag})")
-    print("Все клиенты этого подключения также будут удалены вместе с их историей трафика.")
+    print("Клиенты без других подключений будут удалены вместе с историей трафика.")
+    print("У клиентов с другими подключениями удалится только credential этого подключения; клиент и его трафик останутся.")
     if not confirm("Продолжить удаление"):
         print("Удаление отменено.")
         return

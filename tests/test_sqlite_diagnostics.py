@@ -5,6 +5,7 @@ from unittest import mock
 
 from xray_vps_manager.commands import test as test_command
 from xray_vps_manager.db import database
+from xray_vps_manager.db import schema as sqlite_schema
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
@@ -128,7 +129,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
             ) as quick_check:
                 result = test_command.check_sqlite_database(diag)
 
-            self.assertIn("schema=7", result)
+            self.assertIn(f"schema={sqlite_schema.CURRENT_SCHEMA_VERSION}", result)
             self.assertIn("quick_check=skipped", result)
             self.assertIn("sqliteReady=yes", result)
             self.assertIn("clients=1", result)
@@ -143,7 +144,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
             with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
                 result = test_command.check_sqlite_database(diag, full_integrity=True)
 
-            self.assertIn("schema=7", result)
+            self.assertIn(f"schema={sqlite_schema.CURRENT_SCHEMA_VERSION}", result)
             self.assertIn("quick_check=ok", result)
             self.assertIn("sqliteReady=yes", result)
             self.assertIn("clients=1", result)

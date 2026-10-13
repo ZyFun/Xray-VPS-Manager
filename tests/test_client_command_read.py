@@ -1,13 +1,23 @@
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from xray_vps_manager.commands import client as client_command
+from xray_vps_manager.core import paths as core_paths
 
 
 class ClientCommandReadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        lock_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(lock_dir.cleanup)
+        lock_patch = mock.patch.object(core_paths, "MANAGER_LOCK_PATH", Path(lock_dir.name) / "manager.lock")
+        lock_patch.start()
+        self.addCleanup(lock_patch.stop)
+
     def test_load_db_uses_runtime_read_layer(self) -> None:
         expected = {"clients": {"alice": {}}}
         with mock.patch.object(
@@ -383,9 +393,12 @@ class ClientCommandReadTests(unittest.TestCase):
         )
         output = StringIO()
 
-        with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
+        config = {"inbounds": [{"tag": "trojan-tls", "listen": "127.0.0.1", "port": 10100, "protocol": "trojan"}]}
+
+        with mock.patch.object(client_command, "load_config", return_value=config), \
             mock.patch.object(client_command, "load_db", return_value={"connections": {}, "clients": {}}), \
             mock.patch.object(client_command.client_connections, "update_trojan_connection", return_value=result) as update_connection, \
+            mock.patch.object(client_command, "tcp_port_in_use", return_value=False), \
             mock.patch.object(client_command, "save_config_restart_xray_and_db", return_value="/tmp/config.bak"), \
             mock.patch.object(
                 client_command.xray_caddy,
@@ -405,7 +418,7 @@ class ClientCommandReadTests(unittest.TestCase):
             )
 
         update_connection.assert_called_once_with(
-            {"inbounds": []},
+            config,
             {"connections": {}, "clients": {}},
             "trojan-tls",
             domain="vpn.example.com",

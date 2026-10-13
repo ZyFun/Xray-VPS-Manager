@@ -152,7 +152,7 @@ xray-client update-trojan-connection trojan-tls \
   --tls-max-version tls1.3
 ```
 
-Команда обновляет SQLite metadata, локальный Trojan inbound в Xray config и Caddy site config для этого домена. Если меняется домен site config, старый Caddy site заменяется новым с rollback при ошибке `caddy validate` или reload. После успешного изменения параметров подключения выдай клиентам новые ссылки через `xray-client link NAME`, потому что старая `trojan://` ссылка продолжит указывать на прежний домен, порт, path или fingerprint.
+Команда обновляет SQLite metadata, локальный Trojan inbound в Xray config и Caddy site config для этого домена. Если меняется `--local-port`, а этот TCP-порт на адресе inbound уже слушает другой процесс на сервере, команда завершается ошибкой `LOCAL_PORT is already in use on this server by another process: PORT` до изменения Xray config и SQLite. Если меняется домен site config, старый Caddy site заменяется новым с rollback при ошибке `caddy validate` или reload. После успешного изменения параметров подключения выдай клиентам новые ссылки через `xray-client link NAME`, потому что старая `trojan://` ссылка продолжит указывать на прежний домен, порт, path или fingerprint.
 
 Legacy-режим direct TLS/TCP с ручными cert/key path сохранён для совместимости и автоматизации, но не является основным способом:
 
@@ -321,13 +321,14 @@ xray-client connection-transport ИМЯ_ИЛИ_TAG xhttp --xhttp-path /vless-xht
 
 После смены transport нужно выдать клиентам новые VLESS-ссылки через `xray-client link ИМЯ` или Telegram-кнопку получения актуальной ссылки.
 
-Удалить подключение вместе со всеми клиентами в нём:
+Удалить подключение и credentials клиентов в нём:
 
 ```bash
 xray-client remove-connection ИМЯ_ИЛИ_TAG
 ```
 
-Удаление убирает VLESS inbound из `config.json`, запись подключения из `manager.db`, всех клиентов этого подключения и их историю трафика.
+Удаление убирает VLESS или Trojan inbound из `config.json`, запись подключения из `manager.db` и credentials клиентов этого подключения вместе с их статистикой трафика по credential.
+Клиент, у которого это был последний credential, удаляется вместе с общим трафиком и историей трафика; команда печатает его в строке `Removed clients`.
+Клиент с другими credentials остаётся в базе: удаляется только credential этого подключения, а общий трафик клиента, его история и трафик оставшихся credentials сохраняются. Такие клиенты перечислены в строке `Kept clients with other connections`.
 Последнее VLESS-подключение удалить нельзя.
 Последнее Reality-подключение удалить нельзя.
-Удаление Trojan-подключения убирает Trojan inbound, запись подключения и credentials этого подключения. Если у клиента были другие credentials, сам клиент остаётся в базе; если это был последний credential клиента, клиент удаляется вместе с подключением. Последнее VLESS/Reality-подключение остаётся защищено от удаления.

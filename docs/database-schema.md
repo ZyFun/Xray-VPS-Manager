@@ -11,7 +11,7 @@ SQLite-база менеджера хранится на сервере здес
 Текущая версия схемы:
 
 ```text
-schema version = 7
+schema version = 8
 ```
 
 Актуальное определение схемы находится в `xray_vps_manager/db/schema.py`.
@@ -444,10 +444,12 @@ clients.name -> telegram_subscriptions.client_name
 | `idx_activity_events_port` | `activity_events` | Анализ портов. |
 | `idx_activity_event_risks_risk` | `activity_event_risks` | Поиск событий по типу риска. |
 | `idx_activity_alert_events_client_time` | `activity_alert_events` | Alert-log по клиенту и периоду. |
+| `idx_activity_alert_events_raw_ref_event` | `activity_alert_events` | Быстрая очистка ссылок на удаляемые detailed activity-события при retention pruning. |
 | `idx_activity_alert_events_risk` | `activity_alert_events` | Фильтрация alert-log по типу риска. |
 | `idx_activity_client_counters_client_bucket` | `activity_client_counters` | Лёгкая статистика по клиенту и bucket. |
 | `idx_xray_error_events_time` | `xray_error_events` | Список ошибок по времени. |
 | `idx_activity_exceptions_kind` | `activity_exceptions` | Фильтрация исключений по типу. |
+| `idx_activity_blocklist_source_event` | `activity_blocklist` | Быстрая очистка ссылок на source activity-события при retention pruning. |
 | `idx_telegram_subscriptions_chat` | `telegram_subscriptions` | Поиск подписок по Telegram-чату. |
 | `idx_telegram_subscriptions_client` | `telegram_subscriptions` | Поиск подписок по клиенту. |
 | `idx_telegram_subscriptions_uuid` | `telegram_subscriptions` | Поиск подписок по UUID клиента. |

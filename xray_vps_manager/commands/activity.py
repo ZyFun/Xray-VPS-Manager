@@ -18,6 +18,7 @@ from xray_vps_manager.activity import blocklist as activity_blocklist
 from xray_vps_manager.activity import backfill as activity_backfill
 from xray_vps_manager.activity import bypass as activity_bypass
 from xray_vps_manager.activity import client_reports as activity_client_reports
+from xray_vps_manager.activity import cleanup as activity_cleanup
 from xray_vps_manager.activity import controls as activity_controls
 from xray_vps_manager.activity import exception_reports as activity_exception_reports
 from xray_vps_manager.activity import exports as activity_exports
@@ -122,11 +123,45 @@ def backfill_activity(client_name, start_value, end_value, mode_args):
 
 def set_retention_days(value):
     try:
-        days, removed = activity_controls.set_retention_days(value)
+        days = activity_settings.parse_retention_days(value)
     except ValueError as exc:
         die(str(exc))
+    print(f"Activity retention will be set to {days} days. Pruning old activity events...", flush=True)
+    days, removed = activity_controls.set_retention_days(str(days))
     print(f"Activity retention set to {days} days.")
     print(f"Pruned old activity events: {removed}")
+
+
+def cleanup_activity_data(value=None, confirmed=False):
+    if not confirmed:
+        die("Refusing to cleanup activity data and compact SQLite without --yes.")
+    try:
+        days = activity_settings.parse_retention_days(value) if value is not None else activity_settings.retention_days()
+    except ValueError as exc:
+        die(str(exc))
+    try:
+        result = activity_cleanup.cleanup_activity_data(retention_days=days, log=lambda message: print(message, flush=True))
+    except RuntimeError as exc:
+        die(f"Activity cleanup failed: {exc}")
+    print_table(
+        ["ITEM", "VALUE"],
+        [
+            ["Retention", f"{result.retention_days} days"],
+            ["Pruned old activity events", result.removed_events],
+            ["Backup", str(result.backup_path or "-")],
+            ["Quick check before VACUUM", result.quick_check],
+            ["VACUUM time", f"{result.vacuum_seconds:.2f}s"],
+            ["DB size before", activity_reports.format_size(result.before.file_bytes)],
+            ["DB size after", activity_reports.format_size(result.after.file_bytes)],
+            ["Freed from file", activity_reports.format_size(max(0, result.before.file_bytes - result.after.file_bytes))],
+            ["Free pages before", activity_reports.format_size(result.before.freelist_bytes)],
+            ["Free pages after", activity_reports.format_size(result.after.freelist_bytes)],
+            ["Activity events after", result.after.activity_events],
+            ["Old events after", result.after.old_activity_events],
+            ["Stopped units", ", ".join(result.stopped_units) or "-"],
+            ["Restarted units", ", ".join(result.restarted_units) or "-"],
+        ],
+    )
 
 
 def set_alert_retention_days(value):
@@ -1007,6 +1042,7 @@ def usage():
   xray-activity geoip-status
   xray-activity retention-overview
   xray-activity retention [DAYS]
+  xray-activity cleanup [DAYS] --yes
   xray-activity alert-retention [DAYS]
   xray-activity error-retention [DAYS]
   xray-activity raw-log-retention access|error [DAYS]
@@ -1157,6 +1193,11 @@ def main():
                 print(f"Activity retention: {activity_settings.retention_days()} days")
             else:
                 set_retention_days(args[1])
+        elif command == "cleanup" and len(args) in (2, 3):
+            if args[-1] != "--yes":
+                usage()
+                sys.exit(1)
+            cleanup_activity_data(args[1] if len(args) == 3 else None, confirmed=True)
         elif command == "alert-retention" and len(args) in (1, 2):
             if len(args) == 1:
                 print(f"Activity alert-log retention: {activity_settings.alert_retention_days()} days")

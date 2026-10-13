@@ -8,6 +8,7 @@
 /usr/local/etc/xray/config.json          основной конфиг Xray
 /usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, blocklist, Telegram и настроек оплаты
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
+/usr/local/etc/xray/manager.lock         блокировка изменений клиентов, подключений, маршрутизации (каскады, GeoIP bypass, WARP) и настроек Telegram-бота; служебный файл, в резервную копию не входит
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /etc/caddy/Caddyfile                     основной Caddy config
 /etc/caddy/conf.d                        TLS site configs Caddy
@@ -104,7 +105,7 @@ xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 
 Перед восстановлением менеджер автоматически создаёт pre-restore бэкап текущего состояния.
 Если на сервере уже есть `/usr/local/etc/xray/manager.db`, дополнительно создаётся отдельная pre-restore копия SQLite-базы в каталоге резервных копий.
-После восстановления менеджер применяет Caddy config из архива, если он там есть, выполняет `caddy validate` и reload Caddy, проверяет `config.json`, перезапускает Xray и включает timers. Если Caddy или Xray проверка не проходит, restore откатывается к pre-restore backup.
+После восстановления менеджер применяет Caddy config из архива, если он там есть, выполняет `caddy validate` и reload Caddy, проверяет `config.json`, перезапускает Xray, в течение 3 секунд проверяет, что `xray.service` остаётся активным, а TCP-порты inbound из восстановленного `config.json` принимают соединения, и включает timers. Если Caddy или Xray проверка не проходит либо Xray падает после перезапуска, restore откатывается к pre-restore backup.
 Если архив переносится на сервер с новым IP или доменом, сначала установи менеджер на новом сервере, затем восстанови архив. `SERVER_ADDR` из нового `server.env` будет сохранён, а старый адрес из архива не перезапишет новый.
 
 
@@ -195,4 +196,4 @@ xray-test --all
 /usr/local/lib/xray-backups
 ```
 
-Если новый конфиг не проходит проверку, менеджер восстанавливает предыдущий конфиг и перезапускает Xray.
+Если новый конфиг не проходит проверку или Xray после перезапуска не остаётся активным либо не открывает порты inbound (проверка длится 3 секунды), менеджер восстанавливает предыдущий конфиг и перезапускает Xray.

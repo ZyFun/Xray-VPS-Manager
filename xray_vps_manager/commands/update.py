@@ -13,6 +13,9 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.core.process import restart_systemd_unit
+from xray_vps_manager.xray.config import inbound_listen_endpoints
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
@@ -462,9 +465,8 @@ def install_assets(extract_dir, names=ASSET_NAMES):
 
 
 def restart_xray():
-    run(["systemctl", "restart", "xray"], timeout=30, check=True)
-    if not systemctl_is_active("xray"):
-        raise RuntimeError("xray.service is not active after restart")
+    # Проверка старта и портов inbound внутри helper'а; ошибка — CalledProcessError для except Exception выше.
+    restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
 
 
 def backup_dirs():

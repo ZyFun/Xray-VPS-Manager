@@ -16,7 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from xray_vps_manager.commands.set_cascade import load_client_db_optional, save_client_db_optional
+from xray_vps_manager.core.errors import ManagerError
+from xray_vps_manager.core.locks import manager_lock
+from xray_vps_manager.core.process import SystemdUnitStartError, restart_systemd_unit
 from xray_vps_manager.xray import client_routes
+from xray_vps_manager.xray.config import inbound_listen_endpoints
 from xray_vps_manager.xray import cascade as cascade_config
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -26,7 +31,6 @@ WGCF_ACCOUNT = WARP_DIR / "wgcf-account.toml"
 WGCF_PROFILE = WARP_DIR / "wgcf-profile.conf"
 WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_TAG = "direct"
-BLOCKED_TAG = "blocked"
 API_TAG = "api"
 TEST_INBOUND_TAG = "warp-test-socks"
 TEST_SOCKS_HOST = "127.0.0.1"
@@ -38,6 +42,7 @@ HOSTS_PATH = Path("/etc/hosts")
 HOSTS_PIN_COMMENT = "# xray-vps-manager WARP API pin"
 FALLBACK_API_IPS = ("8.47.69.1", "8.6.112.1")
 GITHUB_API_LATEST = "https://api.github.com/repos/ViRb3/wgcf/releases/latest"
+MANAGER_LOCK_TIMEOUT = 60
 GREEN = "\033[32m"
 RESET = "\033[0m"
 
@@ -74,19 +79,8 @@ def run_capture(command, timeout=10, **kwargs):
 
 
 def restart_xray():
-    result = run_capture(["systemctl", "restart", "xray"], timeout=30)
-    if result.returncode == 0:
-        return
-
-    run_capture(["systemctl", "reset-failed", "xray"], timeout=10)
-    time.sleep(1.0)
-    retry = run_capture(["systemctl", "restart", "xray"], timeout=30)
-    if retry.returncode == 0:
-        return
-
-    stdout = "\n".join(part for part in (result.stdout, retry.stdout) if part).strip()
-    stderr = "\n".join(part for part in (result.stderr, retry.stderr) if part).strip()
-    raise subprocess.CalledProcessError(retry.returncode, retry.args, stdout, stderr)
+    """Перезапуск с проверкой старта и портов inbound из текущего config.json (XR-REV-010)."""
+    restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
 
 
 def require_root():
@@ -125,12 +119,12 @@ def apply_config(config):
     try:
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
         restart_xray()
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as exc:
         shutil.copy2(backup, CONFIG_PATH)
         shutil.chown(CONFIG_PATH, user="root", group="xray")
         os.chmod(CONFIG_PATH, 0o640)
         restart_xray()
-        die(f"New config failed. Restored backup: {backup}")
+        die(f"New config failed: {exc}. Restored backup: {backup}")
     return backup
 
 
@@ -412,15 +406,6 @@ def warp_outbound_from_profile(endpoint_override=None):
     }
 
 
-def ensure_base_outbounds(config):
-    outbounds = config.setdefault("outbounds", [])
-    if not any(item.get("tag") == DIRECT_TAG for item in outbounds):
-        outbounds.append({"tag": DIRECT_TAG, "protocol": "freedom"})
-    if not any(item.get("tag") == BLOCKED_TAG for item in outbounds):
-        outbounds.append({"tag": BLOCKED_TAG, "protocol": "blackhole"})
-    return outbounds
-
-
 def routing_rules(config):
     routing = config.setdefault("routing", {})
     routing.setdefault("domainStrategy", "IPIfNonMatch")
@@ -467,9 +452,10 @@ def remove_outbound(config, tag):
     return len(after) != len(before)
 
 
-def upsert_warp_outbound(config, endpoint_override=None, replace=True):
+def upsert_warp_outbound(config, endpoint_override=None, replace=True, keep_order=False):
     outbound = warp_outbound_from_profile(endpoint_override=endpoint_override)
-    outbounds = ensure_base_outbounds(config)
+    # Temporary probe configs keep the live outbound order, so other clients keep their route during the probe.
+    outbounds = config.setdefault("outbounds", []) if keep_order else cascade_config.ensure_base_outbounds(config)
     replaced = False
     for index, item in enumerate(outbounds):
         if item.get("tag") == WARP_OUTBOUND_TAG:
@@ -521,19 +507,23 @@ def enable_warp_route(config, endpoint_override=None):
     append_catchall_route(config, WARP_OUTBOUND_TAG)
 
 
-def disable_warp_route(config):
+def disable_warp_route(config, db=None):
     changed = remove_temporary_warp_test_config(config)
     changed = remove_managed_catchall_routes(config) or changed
+    changed = cascade_config.ensure_direct_first(config) or changed
     cascade_tag = cascade_config.first_cascade_tag(config)
     if cascade_tag:
         append_catchall_route(config, cascade_tag)
         changed = True
+    if db is not None:
+        # Client rules were removed while warp-out was the catch-all; selectedCascadeTag restores them.
+        changed = client_routes.ensure_all_client_route_config(config, db) or changed
     return changed
 
 
-def remove_warp(config):
+def remove_warp(config, db=None):
     changed = remove_temporary_warp_test_config(config)
-    changed = disable_warp_route(config) or changed
+    changed = disable_warp_route(config, db) or changed
     if remove_outbound(config, WARP_OUTBOUND_TAG):
         changed = True
     return changed
@@ -560,32 +550,41 @@ def print_status():
         ("profile endpoint", profile_endpoint or "-"),
         ("config endpoint", config_endpoint or "-"),
         ("outbound", "configured" if outbound else "not configured"),
-        ("route", "enabled" if catchall == WARP_OUTBOUND_TAG else f"disabled (catch-all: {catchall or 'default direct'})"),
+        ("route", "enabled" if catchall == WARP_OUTBOUND_TAG else f"disabled (catch-all: {catchall or cascade_config.default_route_label(config)})"),
     ]
     width = max(len(key) for key, _ in rows)
     for key, value in rows:
         print(f"{key.ljust(width)} : {value}")
+    client_rules = client_routes.client_route_rule_count(config) if catchall == WARP_OUTBOUND_TAG else 0
+    if client_rules:
+        print(
+            f"WARN: WARP включён, но в config.json остались клиентские правила client-route-* ({client_rules}): "
+            "трафик этих клиентов идёт мимо warp-out. Сними их командой xray-client sync-routes."
+        )
 
 
 def cmd_create(force=False):
     ensure_warp_profile(force=force)
-    endpoint = choose_working_endpoint(required=False)
-    config = load_config()
-    configure_warp_outbound(config, endpoint_override=endpoint)
-    backup = apply_config(config)
+    # Endpoint probes rewrite config.json and restart Xray, so they run under manager.lock too.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="create"):
+        endpoint = choose_working_endpoint(required=False)
+        config = load_config()
+        configure_warp_outbound(config, endpoint_override=endpoint)
+        backup = apply_config(config)
     print("WARP outbound configured but not enabled.")
     print(f"WARP endpoint: {endpoint}")
     print(f"Backup: {backup}")
 
 
 def cmd_enable():
-    config = load_config()
     if not WGCF_PROFILE.exists():
         print("WARP profile is missing. Creating it first...")
         ensure_warp_profile(force=False)
-    endpoint = choose_working_endpoint(required=True)
-    enable_warp_route(config, endpoint_override=endpoint)
-    backup = apply_config(config)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="enable"):
+        config = load_config()
+        endpoint = choose_working_endpoint(required=True)
+        enable_warp_route(config, endpoint_override=endpoint)
+        backup = apply_config(config)
     print("WARP is enabled for Xray outbound traffic.")
     print("All managed catch-all tcp/udp traffic now goes through tag: warp-out")
     print(f"WARP endpoint: {endpoint}")
@@ -593,30 +592,36 @@ def cmd_enable():
 
 
 def cmd_disable():
-    config = load_config()
-    changed = disable_warp_route(config)
-    if not changed:
-        print("WARP route is already disabled.")
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="disable"):
+        config = load_config()
+        db = load_client_db_optional()
+        changed = disable_warp_route(config, db)
+        if not changed:
+            print("WARP route is already disabled.")
+            cmd_verify_disabled()
+            return
+        backup = apply_config(config)
+        save_client_db_optional(db)
+        print("WARP route is disabled.")
+        cascade_tag = cascade_config.active_cascade_tag(config)
+        if cascade_tag:
+            print(f"Catch-all traffic restored to {cascade_tag}.")
+        else:
+            print("Catch-all traffic restored to default direct outbound.")
+        print(f"Backup: {backup}")
         cmd_verify_disabled()
-        return
-    backup = apply_config(config)
-    print("WARP route is disabled.")
-    cascade_tag = cascade_config.active_cascade_tag(config)
-    if cascade_tag:
-        print(f"Catch-all traffic restored to {cascade_tag}.")
-    else:
-        print("Catch-all traffic restored to default direct outbound.")
-    print(f"Backup: {backup}")
-    cmd_verify_disabled()
 
 
 def cmd_remove():
-    config = load_config()
-    changed = remove_warp(config)
-    if not changed:
-        print("WARP config is already removed from Xray.")
-        return
-    backup = apply_config(config)
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="remove"):
+        config = load_config()
+        db = load_client_db_optional()
+        changed = remove_warp(config, db)
+        if not changed:
+            print("WARP config is already removed from Xray.")
+            return
+        backup = apply_config(config)
+        save_client_db_optional(db)
     print("WARP outbound removed from Xray config. Local wgcf profile files were kept.")
     print(f"Backup: {backup}")
 
@@ -740,7 +745,11 @@ def probe_warp_disabled():
     try:
         install_config_without_backup(test_config)
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_xray()
+        try:
+            restart_xray()
+        except SystemdUnitStartError as exc:
+            # Сбой старта проверочного конфига — отрицательный результат; рестарт восстановления в finally фатален.
+            return False, f"Temporary Xray did not start: {exc.detail}", False
         if not wait_for_tcp(TEST_SOCKS_HOST, VERIFY_SOCKS_PORT):
             return False, "Temporary SOCKS inbound did not become ready.", False
         time.sleep(0.5)
@@ -768,7 +777,9 @@ def probe_warp_disabled():
 
 def cmd_verify_disabled():
     print("Verifying normal Xray route without forcing warp-out...")
-    ok, detail, warp_active = probe_warp_disabled()
+    # The probe rewrites config.json and restarts Xray, then restores the original text.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="verify-disabled"):
+        ok, detail, warp_active = probe_warp_disabled()
     if not ok:
         die(f"Could not verify that WARP is disabled: {detail}")
     if warp_active:
@@ -780,13 +791,17 @@ def probe_warp_endpoint(endpoint):
     original_text = CONFIG_PATH.read_text()
     config = json.loads(original_text)
     test_config = copy.deepcopy(config)
-    upsert_warp_outbound(test_config, endpoint_override=endpoint)
+    upsert_warp_outbound(test_config, endpoint_override=endpoint, keep_order=True)
     add_test_inbound(test_config)
 
     try:
         install_config_without_backup(test_config)
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_xray()
+        try:
+            restart_xray()
+        except SystemdUnitStartError as exc:
+            # Отрицательный результат пробы сохраняет переход к IPv4 fallback; ошибка восстановления в finally фатальна.
+            return False, f"Temporary Xray did not start: {exc.detail}"
         if not wait_for_tcp(TEST_SOCKS_HOST, TEST_SOCKS_PORT):
             return False, "Temporary SOCKS inbound did not become ready."
         time.sleep(1.5)
@@ -850,17 +865,25 @@ def choose_working_endpoint(required=False):
 def cmd_test():
     if not WGCF_PROFILE.exists():
         die("WARP profile is missing. Run: xray-warp create")
+    # The test rewrites config.json and restarts Xray, then restores the original text.
+    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="test"):
+        test_warp()
 
+
+def test_warp():
     original_text = CONFIG_PATH.read_text()
     config = json.loads(original_text)
     test_config = copy.deepcopy(config)
-    upsert_warp_outbound(test_config, replace=False)
+    upsert_warp_outbound(test_config, replace=False, keep_order=True)
     add_test_inbound(test_config)
 
     try:
         install_config_without_backup(test_config)
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_xray()
+        try:
+            restart_xray()
+        except SystemdUnitStartError as exc:
+            die(f"Temporary Xray with WARP test config did not start: {exc.detail}")
         proxy = f"socks5h://{TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}"
         print(f"Temporary SOCKS inbound: {TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}")
         if not wait_for_tcp(TEST_SOCKS_HOST, TEST_SOCKS_PORT):
@@ -965,6 +988,8 @@ def main():
         if stderr:
             print(stderr, file=sys.stderr)
         die(f"Command failed: {' '.join(str(item) for item in exc.cmd)}")
+    except ManagerError as exc:
+        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
 
 
 if __name__ == "__main__":
