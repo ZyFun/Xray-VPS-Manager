@@ -182,6 +182,8 @@ def routing_patches(root: Path, *, restart=None, record=None):
         enter(mock.patch.object(menu_reality_actions, "CONFIG_PATH", config_path))
         enter(mock.patch.object(menu_reality_actions, "run", side_effect=run))
         enter(mock.patch.object(menu_reality_actions, "restart_systemd_unit", side_effect=restart_xray))
+        # Пробный bind нового PORT не должен зависеть от портов машины, на которой идут тесты.
+        enter(mock.patch.object(menu_reality_actions, "tcp_port_in_use", return_value=False))
         enter(mock.patch.object(menu_reality_actions, "load_xray_config", side_effect=lambda: xray_config.load_config(config_path)))
         enter(
             mock.patch.object(

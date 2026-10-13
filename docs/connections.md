@@ -152,7 +152,7 @@ xray-client update-trojan-connection trojan-tls \
   --tls-max-version tls1.3
 ```
 
-Команда обновляет SQLite metadata, локальный Trojan inbound в Xray config и Caddy site config для этого домена. Если меняется домен site config, старый Caddy site заменяется новым с rollback при ошибке `caddy validate` или reload. После успешного изменения параметров подключения выдай клиентам новые ссылки через `xray-client link NAME`, потому что старая `trojan://` ссылка продолжит указывать на прежний домен, порт, path или fingerprint.
+Команда обновляет SQLite metadata, локальный Trojan inbound в Xray config и Caddy site config для этого домена. Если меняется `--local-port`, а этот TCP-порт на адресе inbound уже слушает другой процесс на сервере, команда завершается ошибкой `LOCAL_PORT is already in use on this server by another process: PORT` до изменения Xray config и SQLite. Если меняется домен site config, старый Caddy site заменяется новым с rollback при ошибке `caddy validate` или reload. После успешного изменения параметров подключения выдай клиентам новые ссылки через `xray-client link NAME`, потому что старая `trojan://` ссылка продолжит указывать на прежний домен, порт, path или fingerprint.
 
 Legacy-режим direct TLS/TCP с ручными cert/key path сохранён для совместимости и автоматизации, но не является основным способом:
 
