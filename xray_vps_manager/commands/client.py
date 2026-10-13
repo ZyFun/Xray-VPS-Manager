@@ -496,10 +496,6 @@ def load_traffic_db_readonly():
     return traffic_repository.load_traffic_db_for_read()
 
 
-def remove_traffic_clients(names):
-    return traffic_repository.remove_traffic_clients(names)
-
-
 def format_traffic(value):
     return traffic_formatting.format_traffic(value, none_label="n/a")
 
@@ -995,16 +991,18 @@ def cmd_connection_remove(identifier):
         except ValueError as exc:
             die(str(exc))
 
+        # save_db removes traffic of deleted clients and credentials via FK cascade; kept clients keep theirs.
         backup = save_config_restart_xray_and_db(config, db)
         if result.env_update is not None:
             save_server_env_values(result.env_update)
-        traffic_removed = remove_traffic_clients(result.removed_client_names)
 
     print(f"Removed connection: {result.display_name}")
     print(f"Tag: {result.tag}")
     print("Removed clients: " + (", ".join(result.removed_client_names) if result.removed_client_names else "none"))
-    if traffic_removed:
+    if result.removed_client_names:
         print("Removed traffic history for deleted clients.")
+    if result.detached_client_names:
+        print("Kept clients with other connections: " + ", ".join(result.detached_client_names))
     if result.env_switch_tag:
         print(f"server.env switched to connection: {result.env_switch_name} ({result.env_switch_tag})")
     print(f"Backup: {backup}")
@@ -1327,12 +1325,11 @@ def cmd_remove(name):
         except ValueError as exc:
             die(str(exc))
 
+        # save_db removes the client's traffic and history via FK cascade.
         backup = save_config_restart_xray_and_db(config, db)
-        traffic_removed = remove_traffic_clients([result.name])
 
     print(f"Removed client: {result.name}")
-    if traffic_removed:
-        print("Removed traffic history.")
+    print("Removed traffic history.")
     print(f"Backup: {backup}")
 
 

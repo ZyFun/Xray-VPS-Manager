@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from typing import Callable
 
@@ -77,6 +77,7 @@ class RemoveConnectionResult:
     tag: str
     display_name: str
     removed_client_names: list[str]
+    detached_client_names: list[str] = field(default_factory=list)
     env_switch_tag: str = ""
     env_switch_name: str = ""
     env_update: dict[str, str] | None = None
@@ -854,7 +855,7 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
         raise ValueError("Cannot remove the last Reality connection.")
 
     display_name = connection_display_name(config, db, tag)
-    removed_client_names = connection_client_names(config, db, tag)
+    client_names = connection_client_names(config, db, tag)
     config["inbounds"] = [
         inbound
         for inbound in config.get("inbounds", [])
@@ -862,16 +863,21 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
     ]
 
     db_managed_connections(db).pop(tag, None)
-    for name in removed_client_names:
+    removed_client_names = []
+    detached_client_names = []
+    for name in client_names:
         entry = db_clients(db).get(name)
         if not isinstance(entry, dict):
+            removed_client_names.append(name)
             continue
         credentials = client_credentials.normalize_entry_credentials(entry)
         credentials.pop(tag, None)
         if credentials:
             client_credentials.sync_legacy_fields(entry)
+            detached_client_names.append(name)
         else:
             db_clients(db).pop(name, None)
+            removed_client_names.append(name)
 
     env_update = None
     env_switch_tag = ""
@@ -887,6 +893,7 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
         tag=tag,
         display_name=display_name,
         removed_client_names=removed_client_names,
+        detached_client_names=detached_client_names,
         env_switch_tag=env_switch_tag,
         env_switch_name=env_switch_name,
         env_update=env_update,

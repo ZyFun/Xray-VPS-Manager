@@ -143,6 +143,8 @@ xray-client move-connection ИМЯ CONNECTION_NAME_OR_TAG
 xray-client remove ИМЯ
 ```
 
+Команда удаляет клиента со всеми credentials из `config.json` и `manager.db` вместе с накопленным трафиком и историей трафика.
+
 Повторно вывести ссылку клиента:
 
 ```bash
