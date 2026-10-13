@@ -102,6 +102,39 @@ class SequencedSystemctl:
         return completed(command)
 
 
+class AutoRestartSystemctl:
+    """Старый systemd сохраняет NRestarts при ручном restart из auto-restart (70-R07)."""
+
+    def __init__(self, *, early_restart=False, stop_code=0, reset_code=0, restart_codes=(0,)):
+        self.state = ("activating", "auto-restart")
+        self.restarts = 8
+        self.early_restart = early_restart
+        self.stop_code = stop_code
+        self.reset_code = reset_code
+        self.restart_codes = iter(restart_codes)
+        self.commands = []
+
+    def __call__(self, command, **kwargs):
+        self.commands.append(list(command))
+        action = command[1]
+        if action == "stop":
+            if self.stop_code == 0:
+                self.state = ("inactive", "dead")
+            return completed(command, self.stop_code, stderr="stop failed" if self.stop_code else "")
+        if action == "reset-failed":
+            if self.reset_code == 0:
+                self.restarts = 0
+            return completed(command, self.reset_code, stderr="reset failed" if self.reset_code else "")
+        if action == "restart":
+            code = next(self.restart_codes)
+            self.state = ("activating", "auto-restart") if code else ("active", "running")
+            self.restarts += 1 if self.early_restart else 0
+            return completed(command, code)
+        if action == "show":
+            return completed(command, stdout=show_output(*self.state, self.restarts))
+        raise AssertionError(command)
+
+
 def open_socket(address, timeout=None):
     return FakeSocket()
 
@@ -149,8 +182,8 @@ class RestartVerificationTests(unittest.TestCase):
             self.run_restart(systemctl, verify_timeout=3.0)
         self.assertIn("failed", str(caught.exception))
         self.assertIn("xray", str(caught.exception))
-        self.assertEqual(systemctl.commands[0], ["systemctl", "restart", "xray"])
-        self.assertEqual(systemctl.commands[1][:2], ["systemctl", "show"])
+        self.assertEqual(systemctl.commands[2], ["systemctl", "restart", "xray"])
+        self.assertEqual(systemctl.commands[3][:2], ["systemctl", "show"])
 
     def test_auto_restart_counts_as_failure(self) -> None:
         systemctl = FakeSystemctl([("active", "running", 0), ("activating", "auto-restart", 0)])
@@ -193,7 +226,8 @@ class RestartVerificationTests(unittest.TestCase):
             mock.patch.object(process.socket, "create_connection", side_effect=open_socket):
             with self.assertRaises(process.SystemdUnitStartError):
                 process.restart_systemd_unit("xray", ports=[("127.0.0.1", 443)])
-        self.assertEqual([item[1] for item in systemctl.commands][:3], ["restart", "reset-failed", "restart"])
+        self.assertEqual([item[1] for item in systemctl.commands][:6],
+                         ["stop", "reset-failed", "restart", "stop", "reset-failed", "restart"])
 
     def test_manual_restart_resets_historical_restart_count(self) -> None:
         """Старые автоперезапуски сбрасываются ручным restart и не мешают успешной проверке (70-R06)."""
@@ -207,6 +241,49 @@ class RestartVerificationTests(unittest.TestCase):
         result, clock = self.run_restart(run, verify_timeout=3.0)
         self.assertEqual(result.returncode, 0)
         self.assertGreaterEqual(clock.now - 100.0, 3.0)
+
+    def test_initial_auto_restart_with_historical_count_recovers(self) -> None:
+        """Исходный auto-restart/NRestarts=8 не вызывает ложный отказ после успешного запуска (70-R07)."""
+        systemctl = AutoRestartSystemctl()
+        result, clock = self.run_restart(
+            systemctl, open_ports={("127.0.0.1", 443)}, ports=[("127.0.0.1", 443)],
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(systemctl.restarts, 0)
+        self.assertEqual([command[1] for command in systemctl.commands][:3], ["stop", "reset-failed", "restart"])
+        self.assertGreaterEqual(clock.now - 100.0, 3.0)
+
+    def test_initial_auto_restart_does_not_hide_new_early_restart(self) -> None:
+        """Сброс старого счётчика не скрывает новый автоперезапуск до первого show (70-R06/70-R07)."""
+        systemctl = AutoRestartSystemctl(early_restart=True)
+        with self.assertRaises(process.SystemdUnitStartError) as caught:
+            self.run_restart(systemctl, open_ports={("127.0.0.1", 443)}, ports=[("127.0.0.1", 443)])
+        self.assertIn("NRestarts=1", str(caught.exception))
+
+    def test_initial_auto_restart_recovers_after_retry(self) -> None:
+        """Повторная попытка также сбрасывает сохранённый счётчик из auto-restart (70-R07)."""
+        systemctl = AutoRestartSystemctl(restart_codes=(1, 0))
+        result, _clock = self.run_restart(systemctl)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(systemctl.restarts, 0)
+        self.assertEqual([command[1] for command in systemctl.commands][:6],
+                         ["stop", "reset-failed", "restart", "stop", "reset-failed", "restart"])
+
+    def test_failed_stop_prevents_restart(self) -> None:
+        """Неудачная остановка не позволяет считать последующий запуск проверенным (70-R07)."""
+        systemctl = AutoRestartSystemctl(stop_code=1)
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            self.run_restart(systemctl)
+        self.assertEqual(caught.exception.cmd, ["systemctl", "stop", "xray"])
+        self.assertEqual([command[1] for command in systemctl.commands], ["stop"])
+
+    def test_failed_counter_reset_prevents_restart(self) -> None:
+        """Ошибка сброса счётчика поднимает CalledProcessError для отката, без нового запуска (70-R07)."""
+        systemctl = AutoRestartSystemctl(reset_code=1)
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            self.run_restart(systemctl)
+        self.assertEqual(caught.exception.cmd, ["systemctl", "reset-failed", "xray"])
+        self.assertEqual([command[1] for command in systemctl.commands], ["stop", "reset-failed"])
 
     def test_closed_port_until_timeout_raises(self) -> None:
         systemctl = FakeSystemctl([("active", "running", 0)])
@@ -268,7 +345,8 @@ class RestartVerificationTests(unittest.TestCase):
             mock.patch.object(process, "time", clock):
             with self.assertRaises(subprocess.CalledProcessError):
                 process.restart_systemd_unit("xray", verify_timeout=3.0)
-        self.assertEqual([item[1] for item in systemctl.commands][:3], ["restart", "reset-failed", "restart"])
+        self.assertEqual([item[1] for item in systemctl.commands][:6],
+                         ["stop", "reset-failed", "restart", "stop", "reset-failed", "restart"])
         self.assertEqual(systemctl.commands[-1][:2], ["systemctl", "show"])
 
 
@@ -304,12 +382,29 @@ class SystemctlTimeoutTests(unittest.TestCase):
 
     def test_restart_timeout_raises_start_error(self) -> None:
         def run(command, **kwargs):
-            raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+            if command[1] == "restart":
+                raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+            return completed(command)
 
         with mock.patch.object(process.subprocess, "run", side_effect=run):
             with self.assertRaises(process.SystemdUnitStartError) as caught:
                 process.restart_systemd_unit("xray", verify_timeout=3.0)
         self.assertIn("systemctl restart xray timed out", str(caught.exception))
+
+    def test_preparation_timeout_raises_start_error(self) -> None:
+        """Таймаут stop или reset-failed до запуска попадает в существующий путь отката (70-R07)."""
+        for action in ("stop", "reset-failed"):
+            with self.subTest(action=action):
+                def run(command, **kwargs):
+                    if command[1] == action:
+                        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+                    return completed(command)
+
+                with mock.patch.object(process.subprocess, "run", side_effect=run) as mocked:
+                    with self.assertRaises(process.SystemdUnitStartError) as caught:
+                        process.restart_systemd_unit("xray")
+                self.assertIn(f"systemctl {action} xray timed out", str(caught.exception))
+                self.assertFalse(any(call.args[0][1] == "restart" for call in mocked.call_args_list))
 
 
 class InboundListenEndpointsTests(unittest.TestCase):

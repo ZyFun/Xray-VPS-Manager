@@ -76,10 +76,18 @@ def restart_systemd_unit(
     `verify_timeout <= 0` отключает проверку. Ошибка проверки — SystemdUnitStartError
     (подкласс CalledProcessError), чтобы вызывающий код откатывал конфиг как при неудачном restart;
     зависание любого вызова `systemctl` внутри helper'а (TimeoutExpired) тоже становится этой ошибкой.
+    Перед проверяемой попыткой unit останавливается, затем сбрасывается NRestarts: старый systemd может
+    сохранять счётчик при ручном restart из auto-restart (70-R07). Stop исключает гонку со старым процессом
+    между reset-failed и новым запуском. При отключённой проверке сохраняется обычный restart.
     """
+    if verify_timeout > 0:
+        _prepare_verified_restart(unit, timeout)
     result = _run_systemctl(unit, ["restart", unit], timeout=timeout)
     if result.returncode != 0:
-        _run_systemctl(unit, ["reset-failed", unit], timeout=10)
+        if verify_timeout > 0:
+            _prepare_verified_restart(unit, timeout)
+        else:
+            _run_systemctl(unit, ["reset-failed", unit], timeout=10)
         if retry_delay > 0:
             time.sleep(retry_delay)
 
@@ -93,6 +101,14 @@ def restart_systemd_unit(
     if verify_timeout > 0:
         verify_systemd_unit_started(unit, verify_timeout=verify_timeout, ports=ports, poll_interval=poll_interval)
     return result
+
+
+def _prepare_verified_restart(unit: str, timeout: int) -> None:
+    """Останавливает unit и сбрасывает старый счётчик до нового запуска (70-R07)."""
+    for action, action_timeout in (("stop", timeout), ("reset-failed", 10)):
+        result = _run_systemctl(unit, [action, unit], timeout=action_timeout)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
 
 def _run_systemctl(unit: str, args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
@@ -134,8 +150,8 @@ def verify_systemd_unit_started(
 ) -> dict[str, str]:
     """Опрашивает unit всё окно после restart; возвращает последнее состояние или поднимает SystemdUnitStartError.
 
-    Вызывается после явного restart, который сбрасывает NRestarts: ненулевое значение уже в первом опросе
-    означает автоперезапуск после ручного старта (70-R06). Успех определяется только в конце окна,
+    Вызывается после stop/reset-failed/restart с известным нулевым счётчиком: ненулевое значение уже
+    в первом опросе означает новый автоперезапуск (70-R06/70-R07). Успех определяется только в конце окна,
     даже если порты открыты раньше (XR-REV-010, 70-R01).
     """
     endpoints = [(str(host), int(port)) for host, port in ports]
