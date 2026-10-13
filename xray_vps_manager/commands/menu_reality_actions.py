@@ -20,7 +20,7 @@ from xray_vps_manager.clients.settings import (
 from xray_vps_manager.core.errors import LockTimeout
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
-from xray_vps_manager.core.process import restart_systemd_unit
+from xray_vps_manager.core.process import restart_systemd_unit, tcp_port_in_use
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import (
@@ -35,6 +35,7 @@ from xray_vps_manager.xray.config import (
     INBOUND_TAG,
     XHTTP_MODES,
     XHTTP_XMUX_KEYS,
+    changed_port_listen,
     connection_name_from_tag,
     connection_settings_from_inbound,
     default_xhttp_advanced_extra,
@@ -846,6 +847,9 @@ def update_port() -> None:
     port = validate_port(prompt(current_port, "PORT"))
     if port_used_by_other_inbound(config, port, tag):
         die(f"PORT is already used by another inbound: {port}")
+    listen = changed_port_listen(config, tag, port)
+    if listen is not None and tcp_port_in_use(port, listen):
+        die(f"PORT is already in use on this server by another process: {port}")
     try:
         with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port"):
             # The answers apply to config.json read again under the lock.
@@ -853,6 +857,9 @@ def update_port() -> None:
             inbound, reality, _, sni, _ = current_settings(config, tag)
             if port_used_by_other_inbound(config, port, tag):
                 die(f"PORT is already used by another inbound: {port}")
+            listen = changed_port_listen(config, tag, port)
+            if listen is not None and tcp_port_in_use(port, listen):
+                die(f"PORT is already in use on this server by another process: {port}")
             dest = reality_dest(sni)
             inbound["port"] = port
             reality["dest"] = dest
@@ -912,6 +919,9 @@ def update_port_and_sni() -> None:
     port = validate_port(prompt(current_port, "PORT"))
     if port_used_by_other_inbound(config, port, tag):
         die(f"PORT is already used by another inbound: {port}")
+    listen = changed_port_listen(config, tag, port)
+    if listen is not None and tcp_port_in_use(port, listen):
+        die(f"PORT is already in use on this server by another process: {port}")
     sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
     try:
         with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port-sni"):
@@ -920,6 +930,9 @@ def update_port_and_sni() -> None:
             inbound, reality, _, _, _ = current_settings(config, tag)
             if port_used_by_other_inbound(config, port, tag):
                 die(f"PORT is already used by another inbound: {port}")
+            listen = changed_port_listen(config, tag, port)
+            if listen is not None and tcp_port_in_use(port, listen):
+                die(f"PORT is already in use on this server by another process: {port}")
             dest = reality_dest(sni)
             inbound["port"] = port
             reality["serverNames"] = [sni]

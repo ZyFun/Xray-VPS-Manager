@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import socket
 import subprocess
 import time
@@ -11,6 +12,7 @@ DEFAULT_VERIFY_TIMEOUT = 3.0
 DEFAULT_POLL_INTERVAL = 0.5
 SHOW_TIMEOUT_FLOOR = 2.0
 UNIT_FAILED_SUBSTATES = ("failed", "auto-restart", "stop-sigterm", "stop-sigkill", "final-sigterm", "final-sigkill")
+WILDCARD_LISTEN_HOSTS = ("", "0.0.0.0", "::")
 
 
 class SystemdUnitStartError(subprocess.CalledProcessError):
@@ -139,6 +141,39 @@ def tcp_endpoint_open(host: str, port: int, timeout: float = 0.5) -> bool:
             return True
     except OSError:
         return False
+
+
+def tcp_port_in_use(port: int, host: str = "") -> bool:
+    """Занят ли TCP-порт в системе: пробный bind без listen перед сменой порта inbound (XR-REV-010).
+
+    Пустой или wildcard `host` проверяет все адреса: `::` в dual-stack режиме, как слушает Xray, и `0.0.0.0`
+    на случай выключенного IPv6; конкретный адрес — только его. SO_REUSEADDR убирает ложную занятость
+    из-за TIME_WAIT, а bind на Linux всё равно отказывает, если порт слушает другой процесс (Caddy, другой
+    сервис). Занятым считается только EADDRINUSE: недоступное семейство адресов и прочие ошибки bind смену
+    не блокируют — фактический старт проверит `restart_systemd_unit`. Unix-сокеты TCP-порт не занимают.
+    """
+    host = str(host or "").strip()
+    if host.startswith("/") or host.startswith("@"):
+        return False
+    if host in WILDCARD_LISTEN_HOSTS:
+        candidates = ((socket.AF_INET6, "::"), (socket.AF_INET, "0.0.0.0"))
+    else:
+        candidates = ((socket.AF_INET6 if ":" in host else socket.AF_INET, host),)
+    for family, address in candidates:
+        try:
+            probe = socket.socket(family, socket.SOCK_STREAM)
+        except OSError:
+            continue
+        with probe:
+            try:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if family == socket.AF_INET6 and address == "::":
+                    probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                probe.bind((address, port))
+            except OSError as exc:
+                if exc.errno == errno.EADDRINUSE:
+                    return True
+    return False
 
 
 def verify_systemd_unit_started(

@@ -393,9 +393,12 @@ class ClientCommandReadTests(unittest.TestCase):
         )
         output = StringIO()
 
-        with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
+        config = {"inbounds": [{"tag": "trojan-tls", "listen": "127.0.0.1", "port": 10100, "protocol": "trojan"}]}
+
+        with mock.patch.object(client_command, "load_config", return_value=config), \
             mock.patch.object(client_command, "load_db", return_value={"connections": {}, "clients": {}}), \
             mock.patch.object(client_command.client_connections, "update_trojan_connection", return_value=result) as update_connection, \
+            mock.patch.object(client_command, "tcp_port_in_use", return_value=False), \
             mock.patch.object(client_command, "save_config_restart_xray_and_db", return_value="/tmp/config.bak"), \
             mock.patch.object(
                 client_command.xray_caddy,
@@ -415,7 +418,7 @@ class ClientCommandReadTests(unittest.TestCase):
             )
 
         update_connection.assert_called_once_with(
-            {"inbounds": []},
+            config,
             {"connections": {}, "clients": {}},
             "trojan-tls",
             domain="vpn.example.com",

@@ -224,6 +224,17 @@ def find_inbound_by_tag(config: dict[str, Any], tag: str) -> dict[str, Any]:
     raise ValueError(f"Connection not found: {tag}")
 
 
+def changed_port_listen(config: dict[str, Any], tag: str, port: int) -> str | None:
+    """`listen` подключения для проверки занятости нового порта в системе; None — порт не меняется.
+
+    Текущий порт подключения слушает сам Xray, поэтому системная проверка нужна только при смене порта (XR-REV-010).
+    """
+    inbound = find_inbound_by_tag(config, tag)
+    if int(inbound.get("port") or 0) == port:
+        return None
+    return str(inbound.get("listen") or "")
+
+
 def default_connection_tag(config: dict[str, Any]) -> str:
     for inbound in reality_inbounds(config):
         if inbound_tag(inbound) == INBOUND_TAG:

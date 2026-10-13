@@ -22,7 +22,7 @@ from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.clients import status as client_status
 from xray_vps_manager.core.errors import LockTimeout
 from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.process import restart_systemd_unit
+from xray_vps_manager.core.process import restart_systemd_unit, tcp_port_in_use
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
@@ -211,12 +211,25 @@ def restore_config_file(backup):
 def save_config_restart_xray_and_db(config, db):
     client_routes.ensure_all_client_route_config(config, db)
     backup = save_config(config)
+    saving_db = False
     try:
         restart_xray_with_config_test()
+        saving_db = True
         save_db(db)
-    except subprocess.CalledProcessError:
-        restore_config_backup(backup)
-        die(f"New config failed. Restored backup: {backup}")
+    except BaseException as exc:
+        # Любой сбой после записи config.json — рестарт, ValueError/IntegrityError/RuntimeError save_db, Ctrl+C
+        # на рестарте — возвращает прежний конфиг, иначе config.json и manager.db расходятся (XR-REV-059, XR-REV-056).
+        # Ошибки save_db возникают до COMMIT и откатываются транзакцией; прерывание внутри save_db могло прийти
+        # уже после COMMIT, и откат одного конфига рассогласовал бы его с базой (71-R03).
+        if saving_db and not isinstance(exc, Exception):
+            raise
+        try:
+            restore_config_backup(backup)
+        except Exception as restore_exc:
+            die(f"New config failed: {exc}. Restoring backup {backup} also failed: {restore_exc}")
+        if not isinstance(exc, Exception):
+            raise
+        die(f"New config failed: {exc}. Restored backup: {backup}")
     return backup
 
 
@@ -935,6 +948,11 @@ def cmd_trojan_connection_update(
                 xray_caddy.require_site_config_absent(result.public_host)
         except (OSError, ValueError, RuntimeError) as exc:
             die(str(exc))
+        if result.local_port != result.previous_local_port:
+            # Порт мог занять не Xray-процесс: Xray не стартует на нём, поэтому отказ до записи config.json (XR-REV-010).
+            listen = str(xray_config.find_inbound_by_tag(config, result.tag).get("listen") or "")
+            if tcp_port_in_use(result.local_port, listen):
+                die(f"LOCAL_PORT is already in use on this server by another process: {result.local_port}")
 
         backup = save_config_restart_xray_and_db(config, db)
         caddy_result = None
