@@ -18,6 +18,7 @@ from xray_vps_manager.activity import parser as activity_parser
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
+from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
@@ -94,13 +95,13 @@ def apply_config(config: dict, before: dict) -> Path:
     backup = xray_config.save_config(config, CONFIG_PATH)
     try:
         run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-    except subprocess.CalledProcessError:
+        restart_systemd_unit("xray", ports=xray_config.inbound_listen_endpoints(config))
+    except subprocess.CalledProcessError as exc:
         CONFIG_PATH.write_text(json.dumps(before, indent=2, ensure_ascii=False) + "\n")
         shutil.chown(CONFIG_PATH, user="root", group="xray")
         os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed validation. Restored previous config. Backup: {backup}")
+        restart_systemd_unit("xray", ports=xray_config.inbound_listen_endpoints(before))
+        die(f"New config failed validation: {exc}. Restored previous config. Backup: {backup}")
     return backup
 
 

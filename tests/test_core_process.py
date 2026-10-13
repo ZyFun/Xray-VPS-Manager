@@ -15,7 +15,7 @@ class CoreProcessTests(unittest.TestCase):
             "run",
             return_value=self.completed(["systemctl", "restart", "xray"]),
         ) as run:
-            result = process.restart_systemd_unit("xray", retry_delay=0)
+            result = process.restart_systemd_unit("xray", retry_delay=0, verify_timeout=0)
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(run.call_count, 1)
@@ -31,7 +31,7 @@ class CoreProcessTests(unittest.TestCase):
         with mock.patch.object(process.subprocess, "run", side_effect=calls) as run, mock.patch.object(
             process.time, "sleep"
         ) as sleep:
-            result = process.restart_systemd_unit("xray")
+            result = process.restart_systemd_unit("xray", verify_timeout=0)
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual([call.args[0] for call in run.call_args_list], [
@@ -50,7 +50,7 @@ class CoreProcessTests(unittest.TestCase):
 
         with mock.patch.object(process.subprocess, "run", side_effect=calls), mock.patch.object(process.time, "sleep"):
             with self.assertRaises(subprocess.CalledProcessError) as caught:
-                process.restart_systemd_unit("xray")
+                process.restart_systemd_unit("xray", verify_timeout=0)
 
         self.assertIn("first failure", caught.exception.stderr)
         self.assertIn("second failure", caught.exception.stderr)

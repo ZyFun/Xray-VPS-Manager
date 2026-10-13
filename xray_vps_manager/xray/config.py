@@ -152,6 +152,56 @@ def managed_connection_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+NON_TCP_NETWORKS = ("kcp", "mkcp", "quic", "udp")
+NON_TCP_PROTOCOLS = ("wireguard",)
+WILDCARD_LISTEN_LOOPBACK = {"": "127.0.0.1", "0.0.0.0": "127.0.0.1", "::": "::1"}
+
+
+def _protocol_serves_tcp(inbound: dict[str, Any]) -> bool:
+    """`settings.network` протокола (dokodemo-door, shadowsocks): строка "tcp,udp" или список; без поля — tcp."""
+    settings = inbound.get("settings")
+    if not isinstance(settings, dict) or "network" not in settings:
+        return True
+    value = settings.get("network")
+    if isinstance(value, str):
+        networks = {part.strip().lower() for part in value.split(",")}
+    elif isinstance(value, list):
+        networks = {str(part).strip().lower() for part in value}
+    else:
+        return True
+    networks.discard("")
+    return not networks or "tcp" in networks
+
+
+def inbound_listen_endpoints(config: dict[str, Any]) -> list[tuple[str, int]]:
+    """TCP-адреса (host, port), которые Xray должен слушать по config: для пробы после рестарта.
+
+    Wildcard `listen` сводится к loopback; unix-сокеты, диапазоны портов, UDP-транспорты, wireguard
+    и inbound с протокольным `settings.network` без tcp (UDP-only dokodemo-door, shadowsocks) пропускаются.
+    """
+    endpoints: list[tuple[str, int]] = []
+    for inbound in config.get("inbounds", []):
+        if not isinstance(inbound, dict):
+            continue
+        port = inbound.get("port")
+        if isinstance(port, bool) or not isinstance(port, int) or port < 1 or port > 65535:
+            continue
+        if str(inbound.get("protocol", "")).lower() in NON_TCP_PROTOCOLS:
+            continue
+        if not _protocol_serves_tcp(inbound):
+            continue
+        stream = inbound.get("streamSettings") or {}
+        network = str(stream.get("network", "tcp") or "tcp").lower() if isinstance(stream, dict) else "tcp"
+        if network in NON_TCP_NETWORKS:
+            continue
+        listen = str(inbound.get("listen", "") or "").strip()
+        if listen.startswith("/") or listen.startswith("@"):
+            continue
+        host = WILDCARD_LISTEN_LOOPBACK.get(listen, listen)
+        endpoints.append((host, port))
+    return endpoints
+
+
 def inbound_tag(inbound: dict[str, Any]) -> str:
     return inbound.get("tag") or INBOUND_TAG
 

@@ -13,12 +13,14 @@ from pathlib import Path
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.errors import LockTimeout, ManagerError
 from xray_vps_manager.core.locks import manager_lock
+from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import client_routes
+from xray_vps_manager.xray.config import inbound_listen_endpoints
 from xray_vps_manager.xray import outbound_links
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -236,11 +238,11 @@ def apply_config(config, before):
     backup = write_config(config)
     try:
         run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-    except subprocess.CalledProcessError:
+        restart_systemd_unit("xray", ports=inbound_listen_endpoints(config))
+    except subprocess.CalledProcessError as exc:
         restore_config(before)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed validation. Restored previous config. Backup: {backup}")
+        restart_systemd_unit("xray", ports=inbound_listen_endpoints(before))
+        die(f"New config failed validation: {exc}. Restored previous config. Backup: {backup}")
     return backup
 
 

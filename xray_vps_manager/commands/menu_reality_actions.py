@@ -20,6 +20,7 @@ from xray_vps_manager.clients.settings import (
 from xray_vps_manager.core.errors import LockTimeout
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
+from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import (
@@ -40,6 +41,7 @@ from xray_vps_manager.xray.config import (
     default_xhttp_packet_up_extra,
     find_inbound,
     find_inbound_by_tag,
+    inbound_listen_endpoints,
     inbound_tag,
     load_config as load_xray_config,
     managed_connection_inbounds,
@@ -361,13 +363,13 @@ def apply_config(config: dict) -> Path:
     backup = save_config(config)
     try:
         run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-    except subprocess.CalledProcessError:
+        restart_systemd_unit("xray", ports=inbound_listen_endpoints(config))
+    except subprocess.CalledProcessError as exc:
         shutil.copy2(backup, CONFIG_PATH)
         shutil.chown(CONFIG_PATH, user="root", group="xray")
         os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
+        restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
+        die(f"New config failed: {exc}. Restored backup: {backup}")
     return backup
 
 
