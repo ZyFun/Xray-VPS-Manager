@@ -7,12 +7,33 @@ import socket
 import subprocess
 import time
 from collections.abc import Iterable, Sequence
+from typing import Callable
 
 DEFAULT_VERIFY_TIMEOUT = 3.0
 DEFAULT_POLL_INTERVAL = 0.5
 SHOW_TIMEOUT_FLOOR = 2.0
 UNIT_FAILED_SUBSTATES = ("failed", "auto-restart", "stop-sigterm", "stop-sigkill", "final-sigterm", "final-sigkill")
 WILDCARD_LISTEN_HOSTS = ("", "0.0.0.0", "::")
+
+# Manager-units, которые пишут manager.db/config.json: останавливаются на время cleanup и restore (XR-REV-012).
+WRITER_STOP_UNITS = (
+    "xray-traffic-sync.timer",
+    "xray-raw-log-rotate.timer",
+    "xray-client-expire.timer",
+    "xray-traffic-sync.service",
+    "xray-raw-log-rotate.service",
+    "xray-client-expire.service",
+    "xray-telegram-poller.service",
+)
+# Units, чьё состояние запоминается до остановки: после операции запускаются только ранее активные.
+WRITER_RESTART_UNITS = (
+    "xray-traffic-sync.timer",
+    "xray-raw-log-rotate.timer",
+    "xray-client-expire.timer",
+    "xray-telegram-poller.service",
+)
+
+Runner = Callable[..., subprocess.CompletedProcess]
 
 
 class SystemdUnitStartError(subprocess.CalledProcessError):
@@ -57,6 +78,48 @@ def run_capture(
         timeout=timeout,
         **kwargs,
     )
+
+
+def _run_systemctl_units(args: list[str], *, runner: Runner = subprocess.run, check: bool = True) -> subprocess.CompletedProcess:
+    result = runner(
+        ["systemctl", *args],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if check and int(result.returncode or 0) != 0:
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        raise RuntimeError(output or f"systemctl {' '.join(args)} failed")
+    return result
+
+
+def active_units(units: Iterable[str], *, runner: Runner = subprocess.run) -> tuple[str, ...]:
+    active = []
+    for unit in units:
+        result = _run_systemctl_units(["is-active", "--quiet", unit], runner=runner, check=False)
+        if int(result.returncode or 0) == 0:
+            active.append(unit)
+    return tuple(active)
+
+
+def stop_writer_units(*, runner: Runner = subprocess.run) -> tuple[str, ...]:
+    _run_systemctl_units(["stop", *WRITER_STOP_UNITS], runner=runner)
+    return WRITER_STOP_UNITS
+
+
+def restart_units(units: Iterable[str], *, runner: Runner = subprocess.run) -> tuple[str, ...]:
+    selected = tuple(units)
+    if selected:
+        _run_systemctl_units(["start", *selected], runner=runner)
+    return selected
+
+
+def stop_systemd_unit(unit: str, timeout: int = 30) -> None:
+    """Дожидается остановки unit и его ExecStop; ошибка запрещает замену рабочих файлов."""
+    result = _run_systemctl(unit, ["stop", unit], timeout=timeout)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
 
 def restart_systemd_unit(
@@ -107,10 +170,10 @@ def restart_systemd_unit(
 
 def _prepare_verified_restart(unit: str, timeout: int) -> None:
     """Останавливает unit и сбрасывает старый счётчик до нового запуска (70-R07)."""
-    for action, action_timeout in (("stop", timeout), ("reset-failed", 10)):
-        result = _run_systemctl(unit, [action, unit], timeout=action_timeout)
-        if result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+    stop_systemd_unit(unit, timeout=timeout)
+    result = _run_systemctl(unit, ["reset-failed", unit], timeout=10)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
 
 def _run_systemctl(unit: str, args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:

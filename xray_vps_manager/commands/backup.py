@@ -11,8 +11,17 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.core.errors import ManagerError, RestoreError
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
-from xray_vps_manager.core.process import restart_systemd_unit
+from xray_vps_manager.core.process import (
+    WRITER_RESTART_UNITS,
+    active_units,
+    restart_systemd_unit,
+    restart_units,
+    stop_systemd_unit,
+    stop_writer_units,
+)
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.xray import caddy as xray_caddy
@@ -34,6 +43,7 @@ CADDYFILE_ARCNAME = xray_caddy.CADDYFILE_ARCNAME
 CADDY_CONF_DIR = xray_caddy.CADDY_CONF_DIR
 CADDY_CONF_DIR_ARCNAME = xray_caddy.CADDY_CONF_DIR_ARCNAME
 HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN")
+MANAGER_LOCK_TIMEOUT = 60
 
 BACKUP_FILES = [
     ("usr/local/etc/xray/config.json", CONFIG_PATH, True),
@@ -709,24 +719,31 @@ def restore_caddy_random_tls_state(temp_dir):
     return messages
 
 
-def apply_restore(temp_dir):
+def require_restore_members(temp_dir):
+    """Состав архива проверяется целиком до первого копирования: иначе отказ оставляет частичный restore."""
     if not (temp_dir / "usr/local/etc/xray/config.json").exists():
-        die("Backup does not contain config.json.")
+        raise RestoreError("Backup does not contain config.json.")
+    for arcname, _target, required in BACKUP_FILES:
+        if required and not (temp_dir / arcname).exists():
+            raise RestoreError(f"Backup does not contain required file: {arcname}")
+    for arcname, _target, required in BACKUP_DIRS:
+        if required and not (temp_dir / arcname).exists():
+            raise RestoreError(f"Backup does not contain required directory: {arcname}")
+
+
+def apply_restore(temp_dir):
+    require_restore_members(temp_dir)
     restored = []
-    for arcname, target, required in BACKUP_FILES:
+    for arcname, target, _required in BACKUP_FILES:
         if arcname == SERVER_ENV_ARCNAME:
             copied = copy_server_env_if_exists(temp_dir, arcname, target)
         else:
             copied = copy_if_exists(temp_dir, arcname, target, 0o640)
         if copied:
             restored.append(str(target))
-        elif required:
-            die(f"Backup does not contain required file: {arcname}")
-    for arcname, target, required in BACKUP_DIRS:
+    for arcname, target, _required in BACKUP_DIRS:
         if copy_dir_if_exists(temp_dir, arcname, target):
             restored.append(str(target))
-        elif required:
-            die(f"Backup does not contain required directory: {arcname}")
     return restored
 
 
@@ -753,40 +770,18 @@ def backup_manager_db_before_restore():
         return fallback
 
 
-def stop_timer():
-    run_capture(["systemctl", "stop", "xray-traffic-sync.timer"], timeout=10)
-
-
-def start_timers():
-    run_capture(["systemctl", "enable", "--now", "xray-traffic-sync.timer"], timeout=20)
-    run_capture(["systemctl", "enable", "--now", "xray-client-expire.timer"], timeout=20)
-
-
 def test_and_restart():
     run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
     # Проверка старта и портов inbound внутри helper'а: ошибка старта → откат restore (XR-REV-010).
     restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
 
 
-def restore_backup(value):
-    archive = resolve_archive(value)
-    pre_backup = create_backup(quiet=True, sync=True)
-    print(f"Pre-restore backup: {pre_backup}")
-    stop_timer()
-    pre_restore_manager_db = backup_manager_db_before_restore()
-    if pre_restore_manager_db:
-        print(f"Pre-restore SQLite backup: {pre_restore_manager_db}")
-    temp_dir = extract_archive(archive)
+def rollback_restore(pre_backup):
+    rollback_dir = extract_archive(pre_backup)
     try:
-        restored = apply_restore(temp_dir)
-        restored.extend(restore_caddy_config_if_present(temp_dir))
-        for message in restore_direct_tls_certificate_permissions(CONFIG_PATH):
-            print(message)
-        test_and_restart()
-        random_tls_messages = restore_caddy_random_tls_state(temp_dir)
-    except Exception as exc:
-        print("Restore failed. Rolling back to pre-restore backup...", file=sys.stderr)
-        rollback_dir = extract_archive(pre_backup)
+        # Неудачно проверенный Xray может ещё работать: его ExecStop пишет в текущую БД,
+        # поэтому нужно завершить его до копирования pre-restore снимка (67-R03).
+        stop_systemd_unit("xray")
         apply_restore(rollback_dir)
         restore_caddy_config_if_present(rollback_dir)
         for message in restore_direct_tls_certificate_permissions(CONFIG_PATH):
@@ -794,13 +789,100 @@ def restore_backup(value):
         test_and_restart()
         for message in restore_caddy_random_tls_state(rollback_dir):
             print(message)
+    finally:
         shutil.rmtree(rollback_dir, ignore_errors=True)
-        start_timers()
-        die(f"Restore failed: {exc}")
+
+
+def restore_failure_text(exc):
+    if isinstance(exc, SystemExit):
+        return f"exit code {exc.code}"
+    if isinstance(exc, ManagerError) and exc.hint:
+        return f"{exc.message.rstrip('.')}. {exc.hint}"
+    return str(exc) or type(exc).__name__
+
+
+def restore_with_writers_stopped(temp_dir):
+    """Restore с остановленными писателями: откат при любой ошибке, затем запуск только ранее активных units.
+
+    Возвращает (restored, random_tls_messages, failure, units_error). Сообщение об ошибке и код выхода
+    выдаёт вызывающий — уже после запуска units (XR-REV-012, NEW-P2-2).
+    """
+    units = active_units(WRITER_RESTART_UNITS)
+    xray_was_active = bool(active_units(("xray.service",)))
+    xray_stop_attempted = False
+    restore_started = False
+    restored = []
+    random_tls_messages = []
+    failure = None
+    units_error = None
+    try:
+        stop_writer_units()
+        # ExecStop сохраняет счётчики ещё работающего Xray в исходную manager.db.
+        # Pre-restore снимок и замена файлов разрешены только после завершения stop.
+        xray_stop_attempted = True
+        stop_systemd_unit("xray")
+        pre_backup = create_backup(quiet=True, sync=False)
+        print(f"Pre-restore backup: {pre_backup}")
+        pre_restore_manager_db = backup_manager_db_before_restore()
+        if pre_restore_manager_db:
+            print(f"Pre-restore SQLite backup: {pre_restore_manager_db}")
+        try:
+            restore_started = True
+            restored = apply_restore(temp_dir)
+            restored.extend(restore_caddy_config_if_present(temp_dir))
+            for message in restore_direct_tls_certificate_permissions(CONFIG_PATH):
+                print(message)
+            test_and_restart()
+            random_tls_messages = restore_caddy_random_tls_state(temp_dir)
+        except BaseException as exc:
+            failure = exc
+            print("Restore failed. Rolling back to pre-restore backup...", file=sys.stderr)
+            rollback_restore(pre_backup)
+            print(f"Rolled back to pre-restore backup: {pre_backup}", file=sys.stderr)
+    except BaseException as exc:
+        if failure is None:
+            failure = exc
+        else:
+            failure = RestoreError(f"{restore_failure_text(failure)}; rollback failed: {restore_failure_text(exc)}")
+    finally:
+        if xray_stop_attempted and not restore_started and xray_was_active:
+            # До применения архива откатывать нечего, но stop мог уже выключить Xray.
+            try:
+                test_and_restart()
+            except BaseException as exc:
+                failure = RestoreError(
+                    f"{restore_failure_text(failure)}; original Xray restart failed: {restore_failure_text(exc)}"
+                )
+        try:
+            restart_units(units)
+        except Exception as exc:
+            names = " ".join(units)
+            units_error = RestoreError(
+                f"Manager units were not started: {names}: {exc}",
+                hint=f"Start them manually: systemctl start {names}",
+            )
+    return restored, random_tls_messages, failure, units_error
+
+
+def restore_backup(value):
+    archive = resolve_archive(value)
+    temp_dir = extract_archive(archive)
+    try:
+        require_restore_members(temp_dir)
+        # Без sync трафика и активности: их CLI пишут manager.db без manager.lock, а под блокировкой
+        # CLI менеджера не вызываем. До блокировки restore только читает архив (67-R01).
+        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="restore"):
+            restored, random_tls_messages, failure, units_error = restore_with_writers_stopped(temp_dir)
+    except ManagerError as exc:
+        # Неполный архив (RestoreError) или занятая блокировка (LockTimeout): ничего ещё не изменено.
+        restored, random_tls_messages, failure, units_error = [], [], exc, None
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
-    start_timers()
+    if failure is not None:
+        if units_error is not None:
+            print(f"ERROR: {restore_failure_text(units_error)}", file=sys.stderr)
+        die(f"Restore failed: {restore_failure_text(failure)}")
     print(f"Restored from: {archive}")
     print("Restored files:")
     for path in restored:
@@ -808,6 +890,8 @@ def restore_backup(value):
     for message in random_tls_messages:
         print(message)
     print("Xray status: active")
+    if units_error is not None:
+        die(restore_failure_text(units_error))
 
 
 def delete_backup(value):
