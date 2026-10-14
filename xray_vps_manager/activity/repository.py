@@ -592,8 +592,6 @@ def record_pipeline_event_for_write(
             return {"storedDetail": False, "storedAlerts": 0, "storedCounters": False}
         client_name = str(event.get("client") or event.get("client_name") or "").strip()
         if client_name not in sqlite_clients.list_clients(connection):
-            if strict:
-                raise RuntimeError(f"Activity event client is missing from SQLite clients: {client_name}")
             return {"storedDetail": False, "storedAlerts": 0, "storedCounters": False}
         display_tz, _label = manager_timezone()
         detail_event_id = None

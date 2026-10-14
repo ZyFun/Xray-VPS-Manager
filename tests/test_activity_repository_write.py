@@ -134,6 +134,51 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
             finally:
                 connection.close()
 
+    def test_strict_pipeline_write_skips_client_missing_from_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+
+            result = activity_repository.record_pipeline_event_for_write(
+                activity_event("missing_client"),
+                detail_mode="all",
+                selected_clients=[],
+                alerts_enabled=True,
+                db_path=db_path,
+                strict=True,
+            )
+
+            self.assertEqual(result, {"storedDetail": False, "storedAlerts": 0, "storedCounters": False})
+            connection = database.open_database(db_path)
+            try:
+                self.assertEqual(list(sqlite_activity.iter_events(connection)), [])
+                for table in ("activity_client_counters", "activity_alert_events"):
+                    self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
+            finally:
+                connection.close()
+
+    def test_strict_pipeline_write_fails_for_missing_or_not_ready_database(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            missing_db_path = Path(tmp_dir) / "missing.db"
+            not_ready_db_path = Path(tmp_dir) / "not-ready.db"
+            self.make_sqlite_db(not_ready_db_path, ready=False)
+
+            for db_path, error in (
+                (missing_db_path, "manager database is missing"),
+                (not_ready_db_path, "database is not marked ready"),
+            ):
+                with self.subTest(db_path=db_path.name), self.assertRaisesRegex(RuntimeError, error):
+                    activity_repository.record_pipeline_event_for_write(
+                        activity_event(),
+                        detail_mode="all",
+                        selected_clients=[],
+                        alerts_enabled=True,
+                        db_path=db_path,
+                        strict=True,
+                    )
+
+            self.assertFalse(missing_db_path.exists())
+
     def test_save_and_load_exceptions_use_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"

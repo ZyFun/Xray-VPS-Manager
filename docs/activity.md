@@ -71,6 +71,7 @@ xray-activity backfill all 2026-06-01 2026-06-30 --dry-run
 
 Backfill всегда запускается явно. Сначала используй `--dry-run`: команда покажет target, период, найденные raw-файлы, сколько raw-строк было просмотрено, сколько событий распарсилось, сколько событий совпало с target/period, а также клиентов, риски и дубли. Режим `--apply` требует `--yes` и вставляет только отсутствующие detailed-события, чтобы повторный импорт не создавал дубли.
 События старше текущего `ACTIVITY_RETENTION_DAYS` для detailed log не импортируются и учитываются как `Retention skipped`.
+Backfill работает только с клиентами из базы клиентов `manager.db`. Для клиента, который есть только в `config.json`, `xray-activity backfill ИМЯ` завершается ошибкой `Unknown client`, а `backfill all` его строки не разбирает.
 
 Показать статус:
 
@@ -95,6 +96,8 @@ xray-activity cleanup 14 --yes
 ```bash
 xray-activity sync
 ```
+
+Activity учитывает только клиентов, которые есть в базе клиентов `manager.db`. Если клиент остался только в `config.json`, его строки access.log не записываются: sync пропускает их и учитывает в счётчике `skipped`. За прогон выводится одно предупреждение `WARN` с числом таких строк и именами клиентов. События остальных клиентов записываются один раз, offset чтения сдвигается, и следующий прогон их не повторяет. Минутный таймер запускает sync с `--quiet`, поэтому там предупреждение не выводится. Его видно при ручном `xray-activity sync` и в выводе ротации raw logs.
 
 ## Alert-log и счётчики
 
@@ -210,7 +213,9 @@ xray-activity raw-log-timer-sync
 xray-activity rotate-raw-logs
 ```
 
-Перед ротацией менеджер сначала запускает activity/error ingest, чтобы дочитать текущие `access.log` и `error.log` в `manager.db`. Если этот pre-sync не прошёл, ротация останавливается до переименования файлов, а ошибка записывается в `xray_error_events`. После успешного pre-sync и ротации менеджер выполняет `systemctl try-restart xray.service`, чтобы Xray переоткрыл log-файлы. Если restart не прошёл, ошибка записывается в `xray_error_events` с `source=manager` и `component=xray-logrotate`.
+Перед ротацией менеджер сначала запускает activity/error ingest, чтобы дочитать текущие `access.log` и `error.log` в `manager.db`. После ротации менеджер выполняет `systemctl try-restart xray.service`, чтобы Xray переоткрыл log-файлы. Если restart не прошёл, ошибка записывается в `xray_error_events` с `source=manager` и `component=xray-logrotate`.
+
+Если pre-sync не прошёл (например, `manager.db` недоступна или не готова), ротация всё равно выполняется, чтобы raw-логи не росли без ограничения. Ошибка записывается в `xray_error_events` одной записью `raw log rotation pre-sync failed` (`source=manager`, `component=xray-logrotate`) с подробностями и пометкой `rotation continues`. Команда выводит предупреждение `WARN` и завершается с кодом 1, поэтому `xray-raw-log-rotate.service` остаётся в состоянии `failed` до следующей успешной ротации. Недочитанные строки остаются только в ротированных архивах: `xray-activity backfill` восстановит из них detailed-события, а счётчики, alert-log и blocklist hits за этот хвост не восстанавливаются. Недочитанный хвост `error.log` не попадает в `xray_error_events` и остаётся только в архиве `error.log.*.gz`. Строки клиентов, которых нет в базе клиентов `manager.db`, сбоем pre-sync не считаются и ротацию не останавливают.
 
 В статусе `xray-activity raw-logs` строка `Backfill access range` показывает самый ранний и самый поздний timestamp, найденный в текущем и ротированных raw `access.log` файлах. Если timestamp-ов нет, backfill всё равно можно запустить, но команда не найдёт подходящих событий.
 

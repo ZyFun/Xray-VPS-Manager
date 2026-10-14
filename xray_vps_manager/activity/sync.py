@@ -23,7 +23,21 @@ LogFunc = Callable[[str], None]
 def known_clients() -> dict:
     config = repository.load_json(CONFIG_PATH, {})
     db = client_repository.load_db_sql()
-    return parser.config_clients(config, db)
+    sqlite_names = set(db.get("clients", {}))
+    return {
+        key: record
+        for key, record in parser.config_clients(config, db).items()
+        if record.get("client") in sqlite_names
+    }
+
+
+def config_only_clients(config: dict, clients: dict) -> dict:
+    known_names = {record.get("client") for record in clients.values()}
+    return {
+        key: record
+        for key, record in parser.config_clients(config, {}).items()
+        if record.get("client") not in known_names
+    }
 
 
 def initialize_access_offset(db: dict) -> None:
@@ -86,7 +100,8 @@ def sync_activity(log: LogFunc) -> int:
     repository.ensure_dirs()
     clients = known_clients()
     config = repository.load_json(CONFIG_PATH, {})
-    if not clients:
+    foreign_clients = config_only_clients(config, clients)
+    if not clients and not foreign_clients:
         log("No clients found; skipping access log parsing.")
         maintenance = run_independent_maintenance(log)
         log_maintenance_result(log, maintenance)
@@ -127,6 +142,8 @@ def sync_activity(log: LogFunc) -> int:
     counters = 0
     alerts = 0
     skipped = 0
+    foreign_names: set[str] = set()
+    foreign_lines = 0
 
     try:
         with ACCESS_LOG_PATH.open("rb") as handle:
@@ -143,6 +160,10 @@ def sync_activity(log: LogFunc) -> int:
         event = parser.parse_access_line(raw_line, clients)
         if not event:
             skipped += 1
+            foreign_event = parser.parse_access_line(raw_line, foreign_clients) if foreign_clients else None
+            if foreign_event:
+                foreign_names.add(foreign_event["client"])
+                foreign_lines += 1
             continue
         activity_bypass.append_bypass_risk(event, config=config)
         try:
@@ -156,6 +177,12 @@ def sync_activity(log: LogFunc) -> int:
         except Exception as exc:
             log(f"Activity pipeline write failed; access log offset was not advanced: {exc}")
             return 1
+        if not result.get("storedCounters"):
+            # The client was removed from SQLite after known_clients() was read.
+            skipped += 1
+            foreign_names.add(event["client"])
+            foreign_lines += 1
+            continue
         if result.get("storedDetail"):
             repository.update_summary(db, event)
             detailed += 1
@@ -163,6 +190,12 @@ def sync_activity(log: LogFunc) -> int:
             counters += 1
         alerts += int(result.get("storedAlerts") or 0)
         processed += 1
+
+    if foreign_lines:
+        log(
+            f"WARN: skipped {foreign_lines} access log line(s) of client(s) missing from SQLite: "
+            f"{', '.join(sorted(foreign_names))}; their activity is not recorded."
+        )
 
     removed = repository.prune_activity(
         db,

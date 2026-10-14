@@ -435,12 +435,12 @@ def drain_logs_before_rotation(log: Callable[[str], None] | None = None) -> int:
         activity_result = activity_sync.sync_activity(emit)
         error_result = sync_error_log(emit)
     except Exception as exc:
-        record_rotation_error("raw log rotation pre-sync failed", raw_line=str(exc))
+        record_rotation_error("raw log rotation pre-sync failed", raw_line=f"{exc}; rotation continues")
         emit(f"ERROR: raw log rotation pre-sync failed: {exc}")
         return 1
     if activity_result or error_result:
         detail = f"activity sync={activity_result}, error sync={error_result}"
-        record_rotation_error("raw log rotation pre-sync failed", raw_line=detail)
+        record_rotation_error("raw log rotation pre-sync failed", raw_line=f"{detail}; rotation continues")
         emit(f"ERROR: raw log rotation pre-sync failed: {detail}")
         return 1
     return 0
@@ -458,9 +458,13 @@ def rotate_raw_logs(
         emit(f"Raw log rotation is not due yet for {local_date} ({timezone_label}).")
         return 0
 
-    if drain_logs_before_rotation(emit):
-        emit("ERROR: raw log rotation aborted before renaming log files.")
-        return 1
+    # A failed pre-sync must not block rotation for good: unread lines stay in the archive for backfill.
+    pre_sync_failed = bool(drain_logs_before_rotation(emit))
+    if pre_sync_failed:
+        emit(
+            "WARN: rotating anyway; unread log lines stay only in the rotated archives "
+            "(backfill restores detailed events from them, but not counters or alerts)."
+        )
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
     rotated = []
@@ -502,6 +506,9 @@ def rotate_raw_logs(
     emit(f"Pruned error archives: {removed_error}")
     if restart_ok:
         emit("Xray try-restart completed.")
+        if pre_sync_failed:
+            emit("ERROR: raw logs were rotated, but pre-sync failed (see the pre-sync error above).")
+            return 1
         return 0
     emit("ERROR: Xray try-restart failed. Details were written to xray_error_events.")
     return 1
