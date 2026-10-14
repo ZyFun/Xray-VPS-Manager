@@ -19,6 +19,7 @@ from xray_vps_manager.core.process import (
     active_units,
     restart_systemd_unit,
     restart_units,
+    stop_systemd_unit,
     stop_writer_units,
 )
 from xray_vps_manager.core.terminal import print_table
@@ -778,6 +779,9 @@ def test_and_restart():
 def rollback_restore(pre_backup):
     rollback_dir = extract_archive(pre_backup)
     try:
+        # Неудачно проверенный Xray может ещё работать: его ExecStop пишет в текущую БД,
+        # поэтому нужно завершить его до копирования pre-restore снимка (67-R03).
+        stop_systemd_unit("xray")
         apply_restore(rollback_dir)
         restore_caddy_config_if_present(rollback_dir)
         for message in restore_direct_tls_certificate_permissions(CONFIG_PATH):
@@ -804,18 +808,26 @@ def restore_with_writers_stopped(temp_dir):
     выдаёт вызывающий — уже после запуска units (XR-REV-012, NEW-P2-2).
     """
     units = active_units(WRITER_RESTART_UNITS)
+    xray_was_active = bool(active_units(("xray.service",)))
+    xray_stop_attempted = False
+    restore_started = False
     restored = []
     random_tls_messages = []
     failure = None
     units_error = None
     try:
         stop_writer_units()
+        # ExecStop сохраняет счётчики ещё работающего Xray в исходную manager.db.
+        # Pre-restore снимок и замена файлов разрешены только после завершения stop.
+        xray_stop_attempted = True
+        stop_systemd_unit("xray")
         pre_backup = create_backup(quiet=True, sync=False)
         print(f"Pre-restore backup: {pre_backup}")
         pre_restore_manager_db = backup_manager_db_before_restore()
         if pre_restore_manager_db:
             print(f"Pre-restore SQLite backup: {pre_restore_manager_db}")
         try:
+            restore_started = True
             restored = apply_restore(temp_dir)
             restored.extend(restore_caddy_config_if_present(temp_dir))
             for message in restore_direct_tls_certificate_permissions(CONFIG_PATH):
@@ -833,6 +845,14 @@ def restore_with_writers_stopped(temp_dir):
         else:
             failure = RestoreError(f"{restore_failure_text(failure)}; rollback failed: {restore_failure_text(exc)}")
     finally:
+        if xray_stop_attempted and not restore_started and xray_was_active:
+            # До применения архива откатывать нечего, но stop мог уже выключить Xray.
+            try:
+                test_and_restart()
+            except BaseException as exc:
+                failure = RestoreError(
+                    f"{restore_failure_text(failure)}; original Xray restart failed: {restore_failure_text(exc)}"
+                )
         try:
             restart_units(units)
         except Exception as exc:

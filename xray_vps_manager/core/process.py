@@ -115,6 +115,13 @@ def restart_units(units: Iterable[str], *, runner: Runner = subprocess.run) -> t
     return selected
 
 
+def stop_systemd_unit(unit: str, timeout: int = 30) -> None:
+    """Дожидается остановки unit и его ExecStop; ошибка запрещает замену рабочих файлов."""
+    result = _run_systemctl(unit, ["stop", unit], timeout=timeout)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+
+
 def restart_systemd_unit(
     unit: str,
     timeout: int = 30,
@@ -163,10 +170,10 @@ def restart_systemd_unit(
 
 def _prepare_verified_restart(unit: str, timeout: int) -> None:
     """Останавливает unit и сбрасывает старый счётчик до нового запуска (70-R07)."""
-    for action, action_timeout in (("stop", timeout), ("reset-failed", 10)):
-        result = _run_systemctl(unit, [action, unit], timeout=action_timeout)
-        if result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+    stop_systemd_unit(unit, timeout=timeout)
+    result = _run_systemctl(unit, ["reset-failed", unit], timeout=10)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
 
 def _run_systemctl(unit: str, args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:

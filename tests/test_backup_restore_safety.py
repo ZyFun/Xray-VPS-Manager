@@ -7,6 +7,7 @@ Restore останавливает всех писателей (`WRITER_STOP_UNI
 
 import contextlib
 import io
+import json
 import os
 import subprocess
 import tarfile
@@ -23,6 +24,7 @@ from xray_vps_manager.core.errors import LockTimeout, RestoreError
 CONFIG_ARCNAME = "usr/local/etc/xray/config.json"
 SERVER_ENV_ARCNAME = "usr/local/etc/xray/server.env"
 MANAGER_DB_ARCNAME = "usr/local/etc/xray/manager.db"
+REAL_TEST_AND_RESTART = backup.test_and_restart
 
 CURRENT = {
     CONFIG_ARCNAME: '{"marker": "current"}\n',
@@ -51,7 +53,8 @@ def write_archive(path, members):
 class RestoreSandbox:
     """Файлы менеджера во временном каталоге и запись вызовов systemctl, блокировки и шагов restore."""
 
-    def __init__(self, root, *, active=(), restart_outcomes=(), lock_error=None, failing_systemctl=()):
+    def __init__(self, root, *, active=(), restart_outcomes=(), lock_error=None, failing_systemctl=(),
+                 xray_running=True, model_exec_stop=False, stop_outcomes=()):
         self.root = Path(root)
         self.config_dir = self.root / "etc" / "xray"
         self.config_dir.mkdir(parents=True)
@@ -73,6 +76,11 @@ class RestoreSandbox:
         self.pre_backups = []
         self.lock_held = False
         self.on_restart = None
+        self.xray_running = xray_running
+        self.model_exec_stop = model_exec_stop
+        self.stop_outcomes = list(stop_outcomes)
+        self.exec_stop_files = []
+        self.backup_error = None
 
     def files(self):
         return {arcname: path.read_text() for arcname, path in self.targets.items()}
@@ -85,8 +93,29 @@ class RestoreSandbox:
         if command[:1] == ["systemctl"]:
             self.systemctl_calls.append(command)
         if command[:2] == ["systemctl", "is-active"]:
-            code = 0 if command[-1] in self.active else 3
+            active = self.xray_running if command[-1] == "xray.service" else command[-1] in self.active
+            code = 0 if active else 3
             return subprocess.CompletedProcess(command, code, "", "")
+        if command[:3] == ["systemctl", "stop", "xray"]:
+            self.events.append(("stop_xray",))
+            outcome = self.stop_outcomes.pop(0) if self.stop_outcomes else None
+            if isinstance(outcome, subprocess.CompletedProcess):
+                return outcome
+            if outcome is not None:
+                raise outcome
+            if self.xray_running and self.model_exec_stop:
+                self.exec_stop_files.append(self.files())
+                # ExecStop пишет в manager.db, которая лежит на диске в момент остановки.
+                path = self.targets[MANAGER_DB_ARCNAME]
+                data = json.loads(path.read_text())
+                data["incoming"] += 500
+                data["history"].append(500)
+                path.write_text(json.dumps(data))
+            self.xray_running = False
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[:3] == ["systemctl", "restart", "xray"]:
+            self.xray_running = True
+            return subprocess.CompletedProcess(command, 0, "", "")
         if len(command) > 1 and command[1] in self.failing_systemctl:
             return subprocess.CompletedProcess(command, 1, "", f"systemctl {command[1]} failed")
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -106,6 +135,9 @@ class RestoreSandbox:
         self.events.append(("restart_units", selected))
         return process.restart_units(selected, runner=self.systemctl)
 
+    def stop_systemd_unit(self, unit, **kwargs):
+        return process.stop_systemd_unit(unit, **kwargs)
+
     @contextlib.contextmanager
     def manager_lock(self, timeout=None, *, purpose=""):
         self.events.append(("lock", purpose))
@@ -123,6 +155,8 @@ class RestoreSandbox:
 
     def create_backup(self, path_only=False, quiet=False, sync=True):
         self.events.append(("create_backup", sync))
+        if self.backup_error is not None:
+            raise self.backup_error
         path = self.backup_dir / f"xray-backup-pre-restore-{len(self.pre_backups) + 1}.tar.gz"
         write_archive(path, self.files())
         self.pre_backups.append(path)
@@ -137,6 +171,10 @@ class RestoreSandbox:
 
     def test_and_restart(self):
         self.events.append(("test_and_restart",))
+        if self.model_exec_stop:
+            REAL_TEST_AND_RESTART()
+        else:
+            self.xray_running = True
         hook, self.on_restart = self.on_restart, None
         if hook is not None:
             hook()
@@ -172,9 +210,13 @@ class RestoreSandbox:
             ("stop_writer_units", self.stop_writer_units),
             ("restart_units", self.restart_units),
             ("manager_lock", self.manager_lock),
+            ("stop_systemd_unit", self.stop_systemd_unit),
         ):
             stack.enter_context(mock.patch.object(backup, name, value, create=True))
         stack.enter_context(mock.patch.dict(os.environ))
+        stack.enter_context(mock.patch.object(process, "run_capture", side_effect=self.systemctl))
+        stack.enter_context(mock.patch.object(process, "verify_systemd_unit_started"))
+        stack.enter_context(mock.patch.object(backup, "run"))
         os.environ.pop("SERVER_ADDR", None)
         return stack
 
@@ -243,7 +285,9 @@ class RestoreSafetyTests(unittest.TestCase):
                 [
                     "lock",
                     "active_units",
+                    "active_units",
                     "stop_writer_units",
+                    "stop_xray",
                     "create_backup",
                     "pre_restore_db",
                     "test_and_restart",
@@ -397,6 +441,115 @@ class RestoreSafetyTests(unittest.TestCase):
             self.assertIn("Xray status: active", stdout)
             self.assertIn("xray-telegram-poller.service", stderr)
             self.assertNotIn("Traceback", stderr)
+
+
+class RestoreExecStopTests(unittest.TestCase):
+    """67-R03: настоящий helper перезапуска и модель systemd с писателем в ExecStop."""
+
+    def sandbox(self, root, **kwargs):
+        sandbox = RestoreSandbox(root, model_exec_stop=True, **kwargs)
+        sandbox.targets[MANAGER_DB_ARCNAME].write_text(json.dumps({"incoming": 2000, "history": [2000]}))
+        return sandbox
+
+    def archive(self, sandbox):
+        members = dict(ARCHIVED)
+        members[MANAGER_DB_ARCNAME] = json.dumps({"incoming": 1000, "history": [1000]})
+        return sandbox.make_archive(members), members
+
+    def pre_backup_files(self, sandbox):
+        with tarfile.open(sandbox.pre_backups[0]) as tar:
+            return {name: tar.extractfile(name).read().decode() for name in CURRENT}
+
+    def test_exec_stop_writes_current_database_before_backup_and_preserves_archive(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sandbox = self.sandbox(tmp_dir)
+            archive, archived = self.archive(sandbox)
+            before = sandbox.files()
+
+            code, _stdout, stderr = sandbox.restore(archive)
+
+            self.assertIsNone(code, stderr)
+            self.assertEqual(sandbox.files(), archived)
+            self.assertEqual(sandbox.exec_stop_files, [before])
+            saved = json.loads(self.pre_backup_files(sandbox)[MANAGER_DB_ARCNAME])
+            self.assertEqual(saved, {"incoming": 2500, "history": [2000, 500]})
+            self.assertTrue(sandbox.xray_running)
+
+    def test_rollback_stops_failed_new_instance_before_replacing_pre_restore_database(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sandbox = self.sandbox(tmp_dir, restart_outcomes=[RuntimeError("verification failed")])
+            archive, archived = self.archive(sandbox)
+            before = sandbox.files()
+
+            code, _stdout, stderr = sandbox.restore(archive)
+
+            self.assertEqual(code, 1)
+            self.assertIn("verification failed", stderr)
+            self.assertEqual(sandbox.exec_stop_files, [before, archived])
+            self.assertEqual(sandbox.files(), self.pre_backup_files(sandbox))
+            self.assertTrue(sandbox.xray_running)
+
+    def test_pre_backup_failure_restores_only_previously_running_xray(self):
+        for active in (True, False):
+            with self.subTest(active=active), tempfile.TemporaryDirectory() as tmp_dir:
+                sandbox = self.sandbox(tmp_dir, xray_running=active)
+                sandbox.backup_error = OSError("backup disk full")
+                archive, _archived = self.archive(sandbox)
+                code, _stdout, stderr = sandbox.restore(archive)
+                self.assertEqual(code, 1)
+                self.assertIn("backup disk full", stderr)
+                self.assertEqual(sandbox.xray_running, active)
+                self.assertEqual(sandbox.files()[CONFIG_ARCNAME], CURRENT[CONFIG_ARCNAME])
+                self.assertEqual(len(sandbox.exec_stop_files), int(active))
+
+    def test_stop_failure_aborts_before_backup_and_file_replacement(self):
+        failures = (subprocess.CompletedProcess(["systemctl", "stop", "xray"], 1, "", "stop failed"),
+                    subprocess.TimeoutExpired(["systemctl", "stop", "xray"], 30))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as tmp_dir:
+                sandbox = self.sandbox(tmp_dir, stop_outcomes=[failure])
+                archive, _archived = self.archive(sandbox)
+                code, _stdout, stderr = sandbox.restore(archive)
+                self.assertEqual(code, 1, stderr)
+                self.assertEqual(sandbox.pre_backups, [])
+                self.assertEqual(sandbox.files()[CONFIG_ARCNAME], CURRENT[CONFIG_ARCNAME])
+                self.assertTrue(sandbox.xray_running)
+
+    def test_pre_backup_failure_reports_failed_xray_recovery_and_restarts_manager_units(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            active = ("xray-traffic-sync.timer", "xray-telegram-poller.service")
+            sandbox = self.sandbox(tmp_dir, active=active, restart_outcomes=[RuntimeError("recovery failed")])
+            sandbox.backup_error = OSError("backup disk full")
+            archive, _archived = self.archive(sandbox)
+            code, _stdout, stderr = sandbox.restore(archive)
+            self.assertEqual(code, 1)
+            self.assertIn("backup disk full", stderr)
+            self.assertIn("original Xray restart failed", stderr)
+            self.assertIn("recovery failed", stderr)
+            self.assertEqual(sandbox.restarted, [active])
+            self.assertEqual(sandbox.files()[CONFIG_ARCNAME], CURRENT[CONFIG_ARCNAME])
+
+    def test_success_with_initially_stopped_xray_does_not_run_exec_stop_writer(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sandbox = self.sandbox(tmp_dir, xray_running=False)
+            archive, archived = self.archive(sandbox)
+            code, _stdout, stderr = sandbox.restore(archive)
+            self.assertIsNone(code, stderr)
+            self.assertEqual(sandbox.exec_stop_files, [])
+            self.assertEqual(sandbox.files(), archived)
+            self.assertTrue(sandbox.xray_running)
+
+    def test_failed_stop_before_rollback_does_not_overwrite_running_instance_database(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Stop перед pre-restore, затем stop внутри helper запуска, затем отказ stop перед rollback.
+            sandbox = self.sandbox(tmp_dir, restart_outcomes=[RuntimeError("verification failed")],
+                                   stop_outcomes=[None, None, RuntimeError("rollback stop failed")])
+            archive, archived = self.archive(sandbox)
+            code, _stdout, stderr = sandbox.restore(archive)
+            self.assertEqual(code, 1)
+            self.assertIn("rollback failed", stderr)
+            self.assertIn("rollback stop failed", stderr)
+            self.assertEqual(sandbox.files(), archived)
 
 
 if __name__ == "__main__":
