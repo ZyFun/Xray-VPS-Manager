@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 from xray_vps_manager.activity import sync as activity_sync
+from xray_vps_manager.db import database
 
 
 class ActivitySyncTests(unittest.TestCase):
@@ -37,6 +38,37 @@ class ActivitySyncTests(unittest.TestCase):
                 }
             },
         )
+
+    def test_known_clients_ignores_config_clients_missing_from_sqlite(self) -> None:
+        config = {
+            "inbounds": [
+                {
+                    "tag": "vless-reality",
+                    "protocol": "vless",
+                    "settings": {
+                        "clients": [
+                            {"email": "alice|created=2026-06-12T07:01:00Z"},
+                            {"email": "bob|created=2026-06-12T07:02:00Z"},
+                        ]
+                    },
+                }
+            ]
+        }
+        client_db = {
+            "clients": {
+                "alice": {
+                    "connection": "vless-reality",
+                    "client": {"email": "alice|created=2026-06-12T07:01:00Z"},
+                }
+            }
+        }
+
+        with mock.patch.object(activity_sync.repository, "load_json", return_value=config), \
+            mock.patch.object(activity_sync.client_repository, "load_db_sql", return_value=client_db):
+            clients = activity_sync.known_clients()
+
+        self.assertEqual(set(clients), {"alice|created=2026-06-12T07:01:00Z", "alice"})
+        self.assertEqual({record["client"] for record in clients.values()}, {"alice"})
 
     def test_sync_records_counters_and_alerts_when_detailed_mode_is_off(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -194,6 +226,62 @@ class ActivitySyncTests(unittest.TestCase):
             self.assertEqual(db["accessLog"]["offset"], 0)
             save_activity_db.assert_not_called()
             self.assertTrue(any("offset was not advanced" in message for message in messages))
+
+    def test_sync_keeps_offset_when_sqlite_is_missing_or_not_ready_for_pipeline_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            access_log = root / "access.log"
+            access_log.write_text(
+                "2026/06/12 08:00:00 accepted tcp:example.com:443 "
+                "[vless-reality -> direct] email: alice|created=2026-06-12T07:01:00Z\n"
+            )
+            missing_db = root / "missing.db"
+            not_ready_db = root / "not-ready.db"
+            database.open_database(not_ready_db).close()
+
+            for db_path, error in (
+                (missing_db, "manager database is missing"),
+                (not_ready_db, "database is not marked ready"),
+            ):
+                with self.subTest(db_path=db_path.name):
+                    db = {"accessLog": {"inode": access_log.stat().st_ino, "offset": 0}, "clients": {}}
+                    messages: list[str] = []
+
+                    with (
+                        mock.patch.object(database, "MANAGER_DB_PATH", db_path),
+                        mock.patch.object(activity_sync, "ACCESS_LOG_PATH", access_log),
+                        mock.patch.object(
+                            activity_sync,
+                            "known_clients",
+                            return_value={
+                                "alice|created=2026-06-12T07:01:00Z": {
+                                    "client": "alice",
+                                    "email": "alice|created=2026-06-12T07:01:00Z",
+                                    "connection": "vless-reality",
+                                }
+                            },
+                        ),
+                        mock.patch.object(activity_sync.settings, "activity_enabled", return_value=False),
+                        mock.patch.object(activity_sync.settings, "alerts_enabled", return_value=True),
+                        mock.patch.object(activity_sync.settings, "retention_days", return_value=365),
+                        mock.patch.object(activity_sync.repository, "ensure_dirs"),
+                        mock.patch.object(
+                            activity_sync.repository,
+                            "detail_capture_status_for_read",
+                            return_value={"mode": "off", "selectedClients": []},
+                        ),
+                        mock.patch.object(activity_sync.repository, "load_activity_db", return_value=db),
+                        mock.patch.object(activity_sync.repository, "save_activity_db") as save_activity_db,
+                    ):
+                        result = activity_sync.sync_activity(messages.append)
+
+                    self.assertEqual(result, 1)
+                    self.assertEqual(db["accessLog"]["offset"], 0)
+                    save_activity_db.assert_not_called()
+                    self.assertTrue(
+                        any(error in message and "offset was not advanced" in message for message in messages)
+                    )
+            self.assertFalse(missing_db.exists())
 
 
 if __name__ == "__main__":
