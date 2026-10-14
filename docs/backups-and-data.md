@@ -8,7 +8,7 @@
 /usr/local/etc/xray/config.json          основной конфиг Xray
 /usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, blocklist, Telegram и настроек оплаты
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
-/usr/local/etc/xray/manager.lock         блокировка изменений клиентов, подключений, маршрутизации (каскады, GeoIP bypass, WARP) и настроек Telegram-бота; служебный файл, в резервную копию не входит
+/usr/local/etc/xray/manager.lock         блокировка изменений клиентов, подключений, маршрутизации (каскады, GeoIP bypass, WARP), настроек Telegram-бота и восстановления из бэкапа; служебный файл, в резервную копию не входит
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /etc/caddy/Caddyfile                     основной Caddy config
 /etc/caddy/conf.d                        TLS site configs Caddy
@@ -103,9 +103,18 @@ scp BACKUP_ARCHIVE_PATH root@SERVER_HOST:/root/xray_backups/
 xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 ```
 
-Перед восстановлением менеджер автоматически создаёт pre-restore бэкап текущего состояния.
-Если на сервере уже есть `/usr/local/etc/xray/manager.db`, дополнительно создаётся отдельная pre-restore копия SQLite-базы в каталоге резервных копий.
-После восстановления менеджер применяет Caddy config из архива, если он там есть, выполняет `caddy validate` и reload Caddy, проверяет `config.json`, перезапускает Xray, в течение 3 секунд проверяет, что `xray.service` остаётся активным, а TCP-порты inbound из восстановленного `config.json` принимают соединения, и включает timers. Если Caddy или Xray проверка не проходит либо Xray падает после перезапуска, restore откатывается к pre-restore backup.
+Restore выполняется в таком порядке:
+
+1. Менеджер проверяет состав архива до любых изменений: если в нём нет `config.json`, `server.env` или `manager.db`, restore завершается ошибкой `Backup does not contain required file: …`, ничего не останавливая и не перезаписывая.
+2. Берёт блокировку `/usr/local/etc/xray/manager.lock`; до неё restore только читает архив и ничего на сервере не меняет. Если другая операция менеджера держит её дольше 60 секунд, restore завершается без изменений с сообщением `Другая операция менеджера ещё выполняется: …`. Пока restore держит блокировку, команды, которые берут её же (`xray-client`, `xray-set-cascade`, `xray-set-bypass`, `xray-warp`, `xray-telegram` и соответствующие пункты меню), ждут до 60 секунд и затем завершаются без изменений.
+3. Запоминает, какие из `xray-traffic-sync.timer`, `xray-raw-log-rotate.timer`, `xray-client-expire.timer` и `xray-telegram-poller.service` сейчас активны, и останавливает все units менеджера, которые пишут `manager.db` и `config.json`: эти таймеры, их сервисы и poller Telegram-бота.
+4. Создаёт pre-restore бэкап текущего состояния. Отдельной синхронизации трафика перед ним restore не запускает, поэтому в pre-restore бэкап не попадает трафик за последнюю минуту (с последнего запуска `xray-traffic-sync.timer`). Если на сервере уже есть `/usr/local/etc/xray/manager.db`, дополнительно создаётся отдельная pre-restore копия SQLite-базы в каталоге резервных копий.
+5. Применяет файлы и Caddy config из архива, если он там есть, выполняет `caddy validate` и reload Caddy, проверяет `config.json`, перезапускает Xray и в течение 3 секунд проверяет, что `xray.service` остаётся активным, а TCP-порты inbound из восстановленного `config.json` принимают соединения.
+6. Запускает обратно только те units, которые были активны до restore. Таймеры и poller, намеренно выключенные на сервере, restore не включает. Если запустить их не удалось, команда завершается с кодом 1 и печатает команду `systemctl start …` для ручного запуска.
+
+Если любой шаг после создания pre-restore бэкапа завершается ошибкой — Caddy или Xray проверка не проходит, Xray падает после перезапуска, копирование прерывается, — restore откатывается к pre-restore бэкапу, запускает ранее активные units и завершается с кодом 1: `ERROR: Restore failed: ПРИЧИНА`. Если не удался и откат, сообщение содержит обе причины (`ПРИЧИНА; rollback failed: …`); тогда проверь сервер через `xray-test` и восстанови pre-restore бэкап из `/root/xray_backups` вручную.
+
+На новом сервере, где таймеры менеджера ещё не включены, restore их не включит: включи их после restore явно и проверь `systemctl list-timers`.
 Если архив переносится на сервер с новым IP или доменом, сначала установи менеджер на новом сервере, затем восстанови архив. `SERVER_ADDR` из нового `server.env` будет сохранён, а старый адрес из архива не перезапишет новый.
 
 
