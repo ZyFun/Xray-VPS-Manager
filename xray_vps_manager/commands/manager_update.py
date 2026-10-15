@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.commands.menu import MENU_VERSION
+from xray_vps_manager.core.fs import replace_directory
 from xray_vps_manager.core.terminal import green, print_table, red, yellow
 
 REPO_OWNER = "ZyFun"
@@ -364,12 +365,15 @@ def restore_wrappers(source_root: Path) -> None:
             remove_path(target)
 
 
+def prepare_package_tree(path: Path) -> None:
+    cleanup_appledouble(path)
+    set_tree_permissions(path)
+    chown_tree(path)
+
+
 def install_python_package(source_root: Path) -> None:
     MANAGER_LIB_DIR.mkdir(parents=True, exist_ok=True)
-    copy_path(source_root / "xray_vps_manager", MANAGER_PACKAGE_DIR)
-    cleanup_appledouble(MANAGER_PACKAGE_DIR)
-    set_tree_permissions(MANAGER_PACKAGE_DIR)
-    chown_tree(MANAGER_PACKAGE_DIR)
+    replace_directory(source_root / "xray_vps_manager", MANAGER_PACKAGE_DIR, prepare=prepare_package_tree)
 
 
 def install_release_source(source_root: Path) -> None:
@@ -491,10 +495,7 @@ def restore_backup(backup: Path) -> None:
     if sbin_backup.exists():
         restore_wrappers(sbin_backup)
     if package_backup.exists():
-        copy_path(package_backup, MANAGER_PACKAGE_DIR)
-        cleanup_appledouble(MANAGER_PACKAGE_DIR)
-        set_tree_permissions(MANAGER_PACKAGE_DIR)
-        chown_tree(MANAGER_PACKAGE_DIR)
+        replace_directory(package_backup, MANAGER_PACKAGE_DIR, prepare=prepare_package_tree)
     else:
         raise ManagerUpdateError(f"В backup нет Python-пакета: {backup}")
 

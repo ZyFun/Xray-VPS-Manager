@@ -1,5 +1,6 @@
 import io
 import os
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -141,6 +142,219 @@ class ManagerUpdateTests(unittest.TestCase):
             self.assertTrue((target_sbin / "xray-menu").exists())
             self.assertTrue(os.access(target_sbin / "xray-menu", os.X_OK))
             self.assertEqual(unrelated.stat().st_mode & 0o777, 0o700)
+
+
+def snapshot(root: Path):
+    if not root.exists():
+        return None
+    return {
+        str(path.relative_to(root)): path.read_text(encoding="utf-8")
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def make_tree(root: Path, files: dict) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
+OLD_PACKAGE = {"runner.py": "value = 1\n", "cli.py": "cli = 1\n", "legacy.py": "old = 1\n"}
+NEW_PACKAGE = {"runner.py": "value = 2\n", "cli.py": "cli = 2\n", "core/fs.py": "fs = 2\n"}
+
+
+class PackageReplacementTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.release = self.root / "release"
+        self.lib_dir = self.root / "lib"
+        self.package_dir = self.lib_dir / "xray_vps_manager"
+        self.new_dir = self.lib_dir / "xray_vps_manager.new"
+        self.old_dir = self.lib_dir / "xray_vps_manager.old"
+        make_tree(self.release / "xray_vps_manager", NEW_PACKAGE)
+        make_tree(self.package_dir, OLD_PACKAGE)
+        patcher = mock.patch.multiple(
+            manager_update,
+            SOURCE_DIR=self.root / "source",
+            SBIN_DIR=self.root / "sbin",
+            MANAGER_LIB_DIR=self.lib_dir,
+            MANAGER_PACKAGE_DIR=self.package_dir,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def observe_package_operations(self):
+        observed = []
+        real_copytree = shutil.copytree
+        real_rename = os.rename
+
+        def observe(operation: str, target: str) -> None:
+            observed.append((operation, target, snapshot(self.package_dir), snapshot(self.old_dir)))
+
+        def observing_copytree(src, dst, *args, **kwargs):
+            if Path(dst).parent == self.lib_dir:  # copytree рекурсивно вызывает себя для подкаталогов
+                observe("copytree", Path(dst).name)
+            return real_copytree(src, dst, *args, **kwargs)
+
+        def observing_rename(src, dst, *args, **kwargs):
+            observe("rename", f"{Path(src).name} -> {Path(dst).name}")
+            return real_rename(src, dst, *args, **kwargs)
+
+        copytree_patch = mock.patch.object(shutil, "copytree", observing_copytree)
+        rename_patch = mock.patch.object(os, "rename", observing_rename)
+        return observed, copytree_patch, rename_patch
+
+    def assert_live_package_always_complete(self, observed) -> None:
+        # Решение VIREI-74: замена двумя rename. Единственный момент без живого каталога —
+        # между rename(live -> .old) и rename(.new -> live); тогда полный старый пакет лежит в .old.
+        self.assertTrue(observed)
+        for operation, target, live, old_copy in observed:
+            if target == "xray_vps_manager.new -> xray_vps_manager":
+                self.assertIsNone(live, f"{operation} {target}: до второго rename живой каталог уже занят: {live}")
+                self.assertEqual(old_copy, OLD_PACKAGE, f"{operation} {target}: в .old не полный старый пакет")
+                continue
+            self.assertIn(
+                live,
+                (OLD_PACKAGE, NEW_PACKAGE),
+                f"{operation} {target}: живой каталог пакета не полный старый и не полный новый: {live}",
+            )
+
+    def test_install_python_package_keeps_live_package_complete_at_every_step(self) -> None:
+        observed, copytree_patch, rename_patch = self.observe_package_operations()
+        with copytree_patch, rename_patch:
+            manager_update.install_python_package(self.release)
+
+        self.assert_live_package_always_complete(observed)
+        self.assertEqual(
+            [(operation, target) for operation, target, _, _ in observed],
+            [
+                ("copytree", "xray_vps_manager.new"),
+                ("rename", "xray_vps_manager -> xray_vps_manager.old"),
+                ("rename", "xray_vps_manager.new -> xray_vps_manager"),
+            ],
+        )
+        self.assertEqual(snapshot(self.package_dir), NEW_PACKAGE)
+
+    def test_install_python_package_prepares_new_tree_before_it_goes_live(self) -> None:
+        (self.release / "xray_vps_manager" / "._runner.py").write_text("junk", encoding="utf-8")
+        os.chmod(self.release / "xray_vps_manager" / "runner.py", 0o600)
+        prepare_calls = []
+
+        def recorder(name):
+            real = getattr(manager_update, name)
+
+            def wrapper(path: Path) -> None:
+                prepare_calls.append((name, Path(path).name, snapshot(self.package_dir)))
+                real(path)
+
+            return wrapper
+
+        with mock.patch.object(manager_update, "cleanup_appledouble", recorder("cleanup_appledouble")),             mock.patch.object(manager_update, "set_tree_permissions", recorder("set_tree_permissions")),             mock.patch.object(manager_update, "chown_tree", recorder("chown_tree")):
+            manager_update.install_python_package(self.release)
+
+        self.assertEqual(
+            prepare_calls,
+            [
+                ("cleanup_appledouble", "xray_vps_manager.new", OLD_PACKAGE),
+                ("set_tree_permissions", "xray_vps_manager.new", OLD_PACKAGE),
+                ("chown_tree", "xray_vps_manager.new", OLD_PACKAGE),
+            ],
+        )
+        self.assertEqual(snapshot(self.package_dir), NEW_PACKAGE)
+        self.assertFalse((self.package_dir / "._runner.py").exists())
+        self.assertEqual((self.package_dir / "runner.py").stat().st_mode & 0o777, 0o644)
+        self.assertEqual((self.package_dir / "core").stat().st_mode & 0o777, 0o755)
+
+    def test_install_python_package_removes_new_and_old_after_success(self) -> None:
+        manager_update.install_python_package(self.release)
+
+        self.assertEqual(snapshot(self.package_dir), NEW_PACKAGE)
+        self.assertEqual(sorted(path.name for path in self.lib_dir.iterdir()), ["xray_vps_manager"])
+
+    def test_install_python_package_copy_failure_leaves_old_package_untouched(self) -> None:
+        def failing_copytree(src, dst, *args, **kwargs):
+            Path(dst).mkdir(parents=True)
+            (Path(dst) / "runner.py").write_text("partial", encoding="utf-8")
+            raise OSError("disk full")
+
+        with mock.patch.object(shutil, "copytree", failing_copytree):
+            with self.assertRaises(OSError):
+                manager_update.install_python_package(self.release)
+
+        self.assertEqual(snapshot(self.package_dir), OLD_PACKAGE)
+        self.assertEqual(sorted(path.name for path in self.lib_dir.iterdir()), ["xray_vps_manager"])
+
+    def test_install_python_package_second_rename_failure_restores_old_package(self) -> None:
+        renames = []
+        real_rename = os.rename
+
+        def flaky_rename(src, dst, *args, **kwargs):
+            renames.append((Path(src).name, Path(dst).name))
+            if len(renames) == 2:
+                raise OSError("rename failed")
+            return real_rename(src, dst, *args, **kwargs)
+
+        with mock.patch.object(os, "rename", flaky_rename):
+            with self.assertRaises(OSError):
+                manager_update.install_python_package(self.release)
+
+        self.assertEqual(renames[1], ("xray_vps_manager.new", "xray_vps_manager"))
+        self.assertEqual(snapshot(self.package_dir), OLD_PACKAGE)
+        self.assertEqual(sorted(path.name for path in self.lib_dir.iterdir()), ["xray_vps_manager"])
+
+    def test_install_python_package_ignores_stale_new_and_old_directories(self) -> None:
+        make_tree(self.new_dir, {"runner.py": "stale new\n"})
+        make_tree(self.old_dir, {"runner.py": "stale old\n"})
+
+        manager_update.install_python_package(self.release)
+
+        self.assertEqual(snapshot(self.package_dir), NEW_PACKAGE)
+        self.assertEqual(sorted(path.name for path in self.lib_dir.iterdir()), ["xray_vps_manager"])
+
+    def test_install_python_package_recovers_old_package_left_between_renames(self) -> None:
+        # 74-R01: прошлый запуск прерван между двумя rename — рабочего каталога нет, старый пакет в .old.
+        self.package_dir.rename(self.old_dir)
+        make_tree(self.new_dir, NEW_PACKAGE)
+
+        def failing_copytree(src, dst, *args, **kwargs):
+            raise OSError("disk full")
+
+        with mock.patch.object(shutil, "copytree", failing_copytree):
+            with self.assertRaises(OSError):
+                manager_update.install_python_package(self.release)
+
+        self.assertEqual(snapshot(self.package_dir), OLD_PACKAGE)
+        self.assertEqual(sorted(path.name for path in self.lib_dir.iterdir()), ["xray_vps_manager"])
+
+        manager_update.install_python_package(self.release)
+
+        self.assertEqual(snapshot(self.package_dir), NEW_PACKAGE)
+        self.assertEqual(sorted(path.name for path in self.lib_dir.iterdir()), ["xray_vps_manager"])
+
+    def test_restore_backup_keeps_live_package_complete_at_every_step(self) -> None:
+        backup = self.root / "backup"
+        make_tree(backup / "package" / "xray_vps_manager", NEW_PACKAGE)
+        observed, copytree_patch, rename_patch = self.observe_package_operations()
+
+        with copytree_patch, rename_patch:
+            manager_update.restore_backup(backup)
+
+        self.assert_live_package_always_complete(observed)
+        self.assertEqual(
+            [(operation, target) for operation, target, _, _ in observed],
+            [
+                ("copytree", "xray_vps_manager.new"),
+                ("rename", "xray_vps_manager -> xray_vps_manager.old"),
+                ("rename", "xray_vps_manager.new -> xray_vps_manager"),
+            ],
+        )
+        self.assertEqual(snapshot(self.package_dir), NEW_PACKAGE)
+        self.assertEqual(sorted(path.name for path in self.lib_dir.iterdir()), ["xray_vps_manager"])
 
 
 if __name__ == "__main__":
