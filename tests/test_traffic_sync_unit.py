@@ -172,6 +172,23 @@ class CheckTrafficSyncServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "7 of 7"):
             self.run_with_unit(test_command.check_traffic_sync_step_independence, show_output)
 
+    def test_foreign_command_without_prefix_before_steps_is_reported(self) -> None:
+        """69-R03: drop-in сбрасывает `ExecStart=`, добавляет постороннюю команду без "-", затем семь шагов с "-"."""
+        entries = [("/usr/local/bin/custom-hook --check", False)] + [(command, True) for command in STEP_COMMANDS]
+        show_output = systemctl_show(entries)
+
+        self.assertIn("xray-traffic-sync.service", self.run_with_unit(test_command.check_traffic_sync_service, show_output))
+        with self.assertRaisesRegex(RuntimeError, "other commands without '-' prefix before later steps: ExecStart=/usr/local/bin/custom-hook --check"):
+            self.run_with_unit(test_command.check_traffic_sync_step_independence, show_output)
+
+    def test_foreign_command_without_prefix_at_the_end_does_not_block_steps(self) -> None:
+        entries = [(command, True) for command in STEP_COMMANDS] + [("/usr/local/bin/custom-hook --check", False)]
+
+        self.assertIn(
+            "independent",
+            self.run_with_unit(test_command.check_traffic_sync_step_independence, systemctl_show(entries)),
+        )
+
     def test_missing_step_fails_in_either_form(self) -> None:
         for ignore_errors in (True, False):
             with self.subTest(ignore_errors=ignore_errors):

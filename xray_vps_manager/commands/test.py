@@ -701,14 +701,25 @@ def check_traffic_sync_service():
 def check_traffic_sync_step_independence():
     # Unit до VIREI-69: шаг без префикса "-" (ignore_errors=no) прерывает цепочку ExecStart при ошибке.
     # Повторы без сброса ExecStart= в drop-in сохраняются: любое выполнение шага без "-" делает цепочку зависимой.
+    # Посторонняя команда без "-" (из drop-in) тоже обрывает цепочку, если после неё есть другие команды (69-R03).
     commands = core_process.systemd_exec_commands("xray-traffic-sync.service")
     stopping = {argv for argv, ignore_errors in commands if not ignore_errors}
     dependent = [f"ExecStart={step}" for step in TRAFFIC_SERVICE_STEPS if step in stopping]
-    if dependent:
+    foreign = []
+    for argv, ignore_errors in commands[:-1]:
+        line = f"ExecStart={argv}"
+        if not ignore_errors and argv not in TRAFFIC_SERVICE_STEPS and line not in foreign:
+            foreign.append(line)
+    if dependent or foreign:
+        problems = []
+        if dependent:
+            problems.append(
+                f"steps without '-' prefix: {len(dependent)} of {len(TRAFFIC_SERVICE_STEPS)}: " + ", ".join(dependent)
+            )
+        if foreign:
+            problems.append("other commands without '-' prefix before later steps: " + ", ".join(foreign))
         raise RuntimeError(
-            f"steps without '-' prefix: {len(dependent)} of {len(TRAFFIC_SERVICE_STEPS)} "
-            "(a failed step stops the remaining ones; update the unit to ExecStart=-…): "
-            + ", ".join(dependent)
+            "; ".join(problems) + " (a failed command stops the remaining ones; update the unit to ExecStart=-…)"
         )
     return "xray-traffic-sync.service steps are independent (ExecStart=-)"
 
