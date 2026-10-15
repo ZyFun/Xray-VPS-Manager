@@ -567,9 +567,12 @@ def execute_action(title, func):
     begin_action(title)
     try:
         func()
-    except KeyboardInterrupt:
-        print()
-        print(red("Отменено"))
+    except KeyboardInterrupt as exc:
+        # Вложенное подменю — тоже действие: «Отменено» печатает только самый внутренний уровень.
+        if not getattr(exc, "menu_cancel_reported", False):
+            exc.menu_cancel_reported = True
+            print()
+            print(red("Отменено"))
         raise
     except EOFError:
         raise

@@ -81,6 +81,18 @@ class ExecuteActionErrorTests(unittest.TestCase):
         self.assertIn("Отменено", stdout.getvalue())
         self.assertIn(SEPARATOR_END, stdout.getvalue())
 
+    def test_keyboard_interrupt_in_nested_submenu_prints_cancelled_once(self) -> None:
+        # Вход во вложенное подменю — тоже действие родителя.
+        def nested_submenu():
+            menu.execute_action("Сломанное действие", raising(KeyboardInterrupt()))
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                menu.execute_action("Подменю", nested_submenu)
+
+        self.assertEqual(stdout.getvalue().count("Отменено"), 1)
+
     def test_eof_propagates_without_error_message(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
