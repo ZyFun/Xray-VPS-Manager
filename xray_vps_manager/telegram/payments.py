@@ -17,6 +17,11 @@ PAYMENT_SETTING_KEYS = (
     "paymentCard",
     "paymentBankAccount",
 )
+# Keys changed by each apply_* function; payment commands write only these sections.
+PAYMENT_AMOUNT_KEYS = ("paymentAmount", "paymentTotalAmount", "paymentCurrency")
+PAYMENT_DOMAIN_ANNUAL_AMOUNT_KEYS = ("paymentDomainAnnualAmount", "paymentCurrency")
+PAYMENT_ROUNDING_KEYS = ("paymentRoundingMode", "paymentRoundingStep")
+PAYMENT_TRANSFER_KEYS = ("paymentTransferMethod", "paymentPhone", "paymentBank", "paymentCard", "paymentBankAccount")
 MONEY_QUANT = Decimal("0.01")
 
 PAYMENT_TRANSFER_METHODS = ("none", "phone", "card", "bank-account")

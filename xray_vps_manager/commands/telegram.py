@@ -87,10 +87,6 @@ def load_db_readonly():
     return telegram_settings.load_db_sql()
 
 
-def save_db(db):
-    telegram_settings.save_db(db)
-
-
 def save_db_sections(db, sections):
     telegram_settings.save_db_sections(db, sections)
 
@@ -296,7 +292,7 @@ def set_payment_amount(value):
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="payment-amount"):
         db = load_db()
         amount, _currency = telegram_payments.apply_payment_amount(db, value)
-        save_db(db)
+        save_db_sections(db, telegram_payments.PAYMENT_AMOUNT_KEYS)
     if amount:
         print_payment_summary(db)
     else:
@@ -307,7 +303,7 @@ def set_domain_annual_amount(value):
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="payment-domain-rent"):
         db = load_db()
         amount, _currency = telegram_payments.apply_domain_annual_amount(db, value)
-        save_db(db)
+        save_db_sections(db, telegram_payments.PAYMENT_DOMAIN_ANNUAL_AMOUNT_KEYS)
     if amount:
         print_payment_summary(db)
     else:
@@ -318,7 +314,7 @@ def set_payment_rounding(mode_value, step_value=None):
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="payment-rounding"):
         db = load_db()
         telegram_payments.apply_payment_rounding(db, mode_value, step_value)
-        save_db(db)
+        save_db_sections(db, telegram_payments.PAYMENT_ROUNDING_KEYS)
     print_payment_summary(db)
 
 
@@ -331,7 +327,7 @@ def set_payment_details(method, value="", bank=""):
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="payment-details"):
         db = load_db()
         telegram_payments.apply_payment_transfer(db, method, value, bank)
-        save_db(db)
+        save_db_sections(db, telegram_payments.PAYMENT_TRANSFER_KEYS)
     print_payment_summary(db)
 
 
