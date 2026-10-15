@@ -91,7 +91,7 @@ xray-activity cleanup 14 --yes
 
 Команда создаёт SQLite backup в `manager-db-backups`, временно останавливает manager-owned writer units (`xray-traffic-sync`, raw-log rotation, expiry и Telegram poller), применяет `ACTIVITY_RETENTION_DAYS`, запускает `PRAGMA quick_check`, выполняет `VACUUM` для `manager.db` и затем запускает обратно те timer/service units, которые были активны до очистки. Xray Core при этом не перезапускается.
 
-Синхронизация выполняется раз в минуту тем же `xray-traffic-sync.timer`, а вручную её можно запустить так:
+Синхронизация выполняется раз в минуту тем же `xray-traffic-sync.timer` вторым шагом после сохранения трафика; шаги минутного таймера независимы, и ошибка sync не останавливает лимиты, сроки доступа и уведомления (подробнее — в [минутном таймере](updates.md#минутный-таймер)). Вручную sync можно запустить так:
 
 ```bash
 xray-activity sync

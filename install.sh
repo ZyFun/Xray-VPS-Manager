@@ -1382,13 +1382,13 @@ ConditionPathExists=/usr/local/etc/xray/config.json
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/xray-traffic-sync --quiet
-ExecStart=/usr/local/sbin/xray-activity sync --quiet
-ExecStart=/usr/local/sbin/xray-telegram notify-geoip --quiet
-ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet
-ExecStart=/usr/local/sbin/xray-client expire-due --quiet
-ExecStart=/usr/local/sbin/xray-telegram notify-expiry --quiet
-ExecStart=/usr/local/sbin/xray-telegram notify-daily-summary --quiet
+ExecStart=-/usr/local/sbin/xray-traffic-sync --quiet
+ExecStart=-/usr/local/sbin/xray-activity sync --quiet
+ExecStart=-/usr/local/sbin/xray-telegram notify-geoip --quiet
+ExecStart=-/usr/local/sbin/xray-client enforce-limits --quiet
+ExecStart=-/usr/local/sbin/xray-client expire-due --quiet
+ExecStart=-/usr/local/sbin/xray-telegram notify-expiry --quiet
+ExecStart=-/usr/local/sbin/xray-telegram notify-daily-summary --quiet
 EOF
 
 cat >/etc/systemd/system/xray-telegram-poller.service <<'EOF'
