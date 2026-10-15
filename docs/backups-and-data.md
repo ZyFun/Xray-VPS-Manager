@@ -9,6 +9,7 @@
 /usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, blocklist, Telegram и настроек оплаты
 /usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
 /usr/local/etc/xray/manager.lock         блокировка изменений клиентов, подключений, маршрутизации (каскады, GeoIP bypass, WARP), настроек Telegram-бота и восстановления из бэкапа; служебный файл, в резервную копию не входит
+/usr/local/etc/xray/manager-update.lock  блокировка `xray-manager-update --update` и `--rollback`: второй одновременный запуск сразу завершается без изменений; служебный файл, в резервную копию не входит
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /etc/caddy/Caddyfile                     основной Caddy config
 /etc/caddy/conf.d                        TLS site configs Caddy

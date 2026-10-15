@@ -1,0 +1,63 @@
+"""Filesystem helpers (target architecture, section 3): atomic directory replacement."""
+
+from __future__ import annotations
+
+import os
+import shutil
+from pathlib import Path
+from typing import Callable, Optional
+
+
+def replace_directory(source: Path, destination: Path, prepare: Optional[Callable[[Path], None]] = None) -> None:
+    """Replace ``destination`` with a copy of ``source`` using two renames.
+
+    The copy is built next to the destination as ``<destination>.new``; ``prepare`` (permissions,
+    owner, cleanup) runs on that copy before it goes live. Then ``destination`` is renamed to
+    ``<destination>.old`` and ``<destination>.new`` to ``destination``. ``destination`` never holds a
+    partially copied tree: it is the complete old or the complete new one, except for the instant
+    between the two renames when it is absent and the complete old tree is in ``.old``. ``.old`` is
+    removed after a successful swap. Any error before the first rename leaves ``destination`` untouched;
+    an error on the second rename puts the old tree back. Leftovers of an interrupted run are
+    handled first: if ``destination`` is missing but ``.old`` exists (the run stopped between the
+    two renames), ``.old`` is the complete previous tree and is renamed back; otherwise a stale
+    ``.old`` is removed. A stale ``.new`` is always removed. Errors propagate as ``OSError``.
+    """
+    new_dir = destination.with_name(destination.name + ".new")
+    old_dir = destination.with_name(destination.name + ".old")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if _exists(old_dir) and not _exists(destination):
+        os.rename(old_dir, destination)
+    _remove_tree(new_dir)
+    _remove_tree(old_dir)
+
+    try:
+        shutil.copytree(source, new_dir, symlinks=False)
+        if prepare is not None:
+            prepare(new_dir)
+    except BaseException:
+        _remove_tree(new_dir)
+        raise
+
+    had_destination = _exists(destination)
+    if had_destination:
+        os.rename(destination, old_dir)
+    try:
+        os.rename(new_dir, destination)
+    except BaseException:
+        if had_destination:
+            os.rename(old_dir, destination)
+        _remove_tree(new_dir)
+        raise
+    if had_destination:
+        _remove_tree(old_dir)
+
+
+def _exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _remove_tree(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
