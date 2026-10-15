@@ -10,6 +10,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 from xray_vps_manager.commands import manager_update
+from xray_vps_manager.core import errors as core_errors
+from xray_vps_manager.core import locks as core_locks
+from xray_vps_manager.core import paths as core_paths
 
 
 class ManagerUpdateTests(unittest.TestCase):
@@ -356,6 +359,75 @@ class PackageReplacementTests(unittest.TestCase):
         self.assertEqual(snapshot(self.package_dir), NEW_PACKAGE)
         self.assertEqual(sorted(path.name for path in self.lib_dir.iterdir()), ["xray_vps_manager"])
 
+
+class ManagerUpdateLockingTests(unittest.TestCase):
+    """74-R03: два одновременных --update/--rollback не должны заменять пакет параллельно."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        patches = (
+            mock.patch.object(core_paths, "MANAGER_UPDATE_LOCK_PATH", self.root / "manager-update.lock"),
+            mock.patch.object(manager_update, "require_root", lambda: None),
+            mock.patch.object(manager_update, "current_manager_version", lambda: "2.1.0"),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_update_fails_without_changes_when_another_update_holds_lock(self) -> None:
+        download = mock.Mock()
+        with mock.patch.object(manager_update, "download_release_archive", download):
+            with core_locks.manager_update_lock(purpose="--rollback"):
+                with self.assertRaises(manager_update.ManagerUpdateError) as ctx:
+                    manager_update.update_to_tag("v2.1.1", force=True, run_xray_test=False)
+
+        download.assert_not_called()
+        self.assertIn(core_locks.MANAGER_UPDATE_LOCK_MESSAGE, str(ctx.exception))
+
+    def test_rollback_fails_without_changes_when_another_update_holds_lock(self) -> None:
+        restore = mock.Mock()
+        with mock.patch.object(manager_update, "choose_backup", lambda name: self.root / "backup"), \
+            mock.patch.object(manager_update, "restore_backup", restore):
+            with core_locks.manager_update_lock(purpose="--update"):
+                with self.assertRaises(manager_update.ManagerUpdateError):
+                    manager_update.rollback(None, run_xray_test=False)
+
+        restore.assert_not_called()
+
+    def test_update_and_auto_rollback_run_under_lock(self) -> None:
+        held = []
+
+        def lock_is_held(*args, **kwargs):
+            try:
+                with core_locks.manager_update_lock():
+                    held.append(False)
+            except core_errors.LockTimeout:
+                held.append(True)
+            return self.root
+
+        def failing_install(source):
+            lock_is_held()
+            raise OSError("disk full")
+
+        with mock.patch.multiple(
+            manager_update,
+            download_release_archive=mock.Mock(return_value=self.root / "a.tar.gz"),
+            safe_extract_archive=mock.Mock(return_value=self.root),
+            validate_release_source=mock.Mock(),
+            create_backup=mock.Mock(return_value=self.root / "backup"),
+            install_release_source=failing_install,
+            restore_backup=lock_is_held,
+            sync_raw_log_units=mock.Mock(),
+            restart_manager_services=mock.Mock(),
+        ), redirect_stdout(io.StringIO()):
+            with self.assertRaises(OSError):
+                manager_update.update_to_tag("v2.1.1", force=True, run_xray_test=False)
+
+        self.assertEqual(held, [True, True])
+        with core_locks.manager_update_lock():
+            pass
 
 if __name__ == "__main__":
     unittest.main()

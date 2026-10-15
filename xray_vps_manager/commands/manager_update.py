@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from contextlib import ExitStack, contextmanager
 import os
 import re
 import shutil
@@ -18,7 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.commands.menu import MENU_VERSION
+from xray_vps_manager.core.errors import LockTimeout
 from xray_vps_manager.core.fs import replace_directory
+from xray_vps_manager.core.locks import manager_update_lock
 from xray_vps_manager.core.terminal import green, print_table, red, yellow
 
 REPO_OWNER = "ZyFun"
@@ -500,8 +503,25 @@ def restore_backup(backup: Path) -> None:
         raise ManagerUpdateError(f"В backup нет Python-пакета: {backup}")
 
 
+@contextmanager
+def update_lock(purpose: str):
+    """Serialize --update/--rollback; a busy lock is reported as a regular update error."""
+    stack = ExitStack()
+    try:
+        stack.enter_context(manager_update_lock(purpose=purpose))
+    except LockTimeout as exc:
+        raise ManagerUpdateError(f"{exc.message}. {exc.hint}") from None
+    with stack:
+        yield
+
+
 def update_to_tag(tag: str, force: bool, run_xray_test: bool) -> None:
     require_root()
+    with update_lock(f"--update {tag}"):
+        install_tag(tag, force=force, run_xray_test=run_xray_test)
+
+
+def install_tag(tag: str, force: bool, run_xray_test: bool) -> None:
     target_tag = normalize_tag(tag)
     current = current_manager_version()
     current_tuple = parse_version_tuple(current)
@@ -544,6 +564,11 @@ def update_latest(force: bool, run_xray_test: bool) -> None:
 
 def rollback(name: str | None, run_xray_test: bool) -> None:
     require_root()
+    with update_lock(f"--rollback {name or ''}".strip()):
+        rollback_locked(name, run_xray_test=run_xray_test)
+
+
+def rollback_locked(name: str | None, run_xray_test: bool) -> None:
     backup = choose_backup(name)
     restore_backup(backup)
     sync_raw_log_units()
