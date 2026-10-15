@@ -9,6 +9,8 @@ import time
 from collections.abc import Iterable, Sequence
 from typing import Callable
 
+from xray_vps_manager.core.errors import ExternalCommandError
+
 DEFAULT_VERIFY_TIMEOUT = 3.0
 DEFAULT_POLL_INTERVAL = 0.5
 SHOW_TIMEOUT_FLOOR = 2.0
@@ -196,6 +198,34 @@ def systemd_unit_state(unit: str, timeout: float = 10) -> dict[str, str]:
         if sep:
             state[key.strip()] = value.strip()
     return state
+
+
+def systemd_exec_commands(unit: str, directive: str = "ExecStart", timeout: float = 10) -> list[tuple[str, bool]]:
+    """Команды директивы, которые systemd реально выполнит (с учётом drop-in): (argv, ignore_errors для префикса `-`)."""
+    command = ["systemctl", "show", f"--property={directive}", unit]
+    result = run_capture(command, timeout=timeout)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+        raise ExternalCommandError(
+            f"systemctl show {unit} failed: {detail}",
+            command=command,
+            returncode=result.returncode,
+            output=result.stdout or "",
+        )
+    commands: list[tuple[str, bool]] = []
+    for line in (result.stdout or "").splitlines():
+        key, sep, value = line.partition("=")
+        value = value.strip()
+        if key.strip() != directive or not sep or not value.startswith("{"):
+            continue
+        fields: dict[str, str] = {}
+        for item in value.strip("{} ").split(" ; "):
+            name, item_sep, item_value = item.partition("=")
+            if item_sep:
+                fields[name.strip()] = item_value.strip()
+        if "argv[]" in fields:
+            commands.append((fields["argv[]"], fields.get("ignore_errors") == "yes"))
+    return commands
 
 
 def tcp_endpoint_open(host: str, port: int, timeout: float = 0.5) -> bool:

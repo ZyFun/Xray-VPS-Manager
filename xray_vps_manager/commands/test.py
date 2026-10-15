@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core import process as core_process
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.clients import diagnostics as client_diagnostics
@@ -57,15 +58,16 @@ HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-manager-update",
 ]
 MANAGER_PACKAGE_DIR = Path("/usr/local/lib/xray-vps-manager/xray_vps_manager")
-TRAFFIC_SERVICE_COMMANDS = [
-    "ExecStart=/usr/local/sbin/xray-traffic-sync --quiet",
-    "ExecStart=/usr/local/sbin/xray-activity sync --quiet",
-    "ExecStart=/usr/local/sbin/xray-telegram notify-geoip --quiet",
-    "ExecStart=/usr/local/sbin/xray-client enforce-limits --quiet",
-    "ExecStart=/usr/local/sbin/xray-client expire-due --quiet",
-    "ExecStart=/usr/local/sbin/xray-telegram notify-expiry --quiet",
-    "ExecStart=/usr/local/sbin/xray-telegram notify-daily-summary --quiet",
+TRAFFIC_SERVICE_STEPS = [
+    "/usr/local/sbin/xray-traffic-sync --quiet",
+    "/usr/local/sbin/xray-activity sync --quiet",
+    "/usr/local/sbin/xray-telegram notify-geoip --quiet",
+    "/usr/local/sbin/xray-client enforce-limits --quiet",
+    "/usr/local/sbin/xray-client expire-due --quiet",
+    "/usr/local/sbin/xray-telegram notify-expiry --quiet",
+    "/usr/local/sbin/xray-telegram notify-daily-summary --quiet",
 ]
+TRAFFIC_SERVICE_COMMANDS = [f"ExecStart=-{step}" for step in TRAFFIC_SERVICE_STEPS]
 TELEGRAM_POLLER_SERVICE_COMMAND = "ExecStart=/usr/local/sbin/xray-telegram run-poller"
 TLS_EXPIRY_WARNING_DAYS = 14
 GREEN = "\033[32m"
@@ -689,13 +691,26 @@ def check_timers():
 
 
 def check_traffic_sync_service():
-    result = run(["systemctl", "cat", "xray-traffic-sync.service"], timeout=10)
-    if result.returncode != 0:
-        raise RuntimeError(compact_output(result))
-    missing = [line for line in TRAFFIC_SERVICE_COMMANDS if line not in result.stdout]
+    present = {argv for argv, _ in core_process.systemd_exec_commands("xray-traffic-sync.service")}
+    missing = [f"ExecStart=-{step}" for step in TRAFFIC_SERVICE_STEPS if step not in present]
     if missing:
         raise RuntimeError("missing service command(s): " + ", ".join(missing))
     return "xray-traffic-sync.service runs traffic sync, activity sync, Telegram notifications, limits, expiry checks, and daily summaries"
+
+
+def check_traffic_sync_step_independence():
+    # Unit до VIREI-69: шаг без префикса "-" (ignore_errors=no) прерывает цепочку ExecStart при ошибке.
+    # Повторы без сброса ExecStart= в drop-in сохраняются: любое выполнение шага без "-" делает цепочку зависимой.
+    commands = core_process.systemd_exec_commands("xray-traffic-sync.service")
+    stopping = {argv for argv, ignore_errors in commands if not ignore_errors}
+    dependent = [f"ExecStart={step}" for step in TRAFFIC_SERVICE_STEPS if step in stopping]
+    if dependent:
+        raise RuntimeError(
+            f"steps without '-' prefix: {len(dependent)} of {len(TRAFFIC_SERVICE_STEPS)} "
+            "(a failed step stops the remaining ones; update the unit to ExecStart=-…): "
+            + ", ".join(dependent)
+        )
+    return "xray-traffic-sync.service steps are independent (ExecStart=-)"
 
 
 def check_telegram_poller_service():
@@ -1500,6 +1515,7 @@ def run_diagnostics(full_integrity=False):
     diag.check("Stats API runtime", check_stats_runtime)
     diag.check("Systemd timers", check_timers)
     diag.check("Traffic sync service", check_traffic_sync_service)
+    diag.check("Traffic sync step independence", check_traffic_sync_step_independence, fatal=False)
     diag.check("Telegram poller service", check_telegram_poller_service)
     diag.check("Traffic sync runtime", check_traffic_sync_runtime)
     diag.check("Activity log runtime", check_activity_runtime)

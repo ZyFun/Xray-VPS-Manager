@@ -152,6 +152,7 @@ xray-test
 
 `xray-test` проверяет Xray, config.json, Reality-подключения и локальные порты, согласованность клиентов SQLite со всеми активными managed inbounds включая VLESS TLS/Caddy и Trojan TLS/WebSocket через Caddy, duplicate active client names между VLESS и Trojan credentials, TLS certificate diagnostics для direct TLS cert/key и managed Caddy sites, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило, глобальный blocklist routing, каскадную конфигурацию и GeoIP bypass routes.
 Проверка duplicate active client names warning-level: нормальная модель `один клиент -> несколько credentials` проходит, а проблемы выводятся только когда активный VLESS/Trojan дубль не сопоставляется с `client_credentials` в SQLite или повторно использует один и тот же active email.
+Проверка сервиса сбора трафика (`Traffic sync service`) читает итоговый список команд через `systemctl show --property=ExecStart xray-traffic-sync.service` — с учётом drop-in, без комментариев — и требует все семь шагов минутного таймера (см. ниже); если какого-то шага нет, она падает с `missing service command(s)`. Отдельная warning-level проверка `Traffic sync step independence` по тому же списку выводит `WARN` со списком шагов без префикса `-` (`ignore_errors=no`): такой unit остался от старой установки или переопределён drop-in, и ошибка одного шага в нём останавливает остальные.
 TLS certificate diagnostics проверяет абсолютные пути direct TLS `certificateFile`/`keyFile`, базовые права файлов, срок действия сертификата, соответствие сертификата `SNI`/домену, наличие Caddy site config для managed TLS/Caddy-подключений, upstream local port, route path и live TLS handshake к `DOMAIN:PUBLIC_PORT`. Эта проверка warning-level: проблемы видны в выводе, но временный DNS/ACME/network сбой не блокирует весь `xray-test`.
 Обычный запуск пропускает полный физический проход `PRAGMA quick_check` по SQLite-файлу и deep Caddy endpoint probes, потому что они могут занимать больше времени и зависеть от публичного DNS/TLS. Для глубокой проверки используйте:
 
@@ -205,3 +206,37 @@ ss -tulpn
 ```bash
 systemctl status xray-client-expire.timer --no-pager
 ```
+
+## Минутный таймер
+
+`xray-traffic-sync.timer` раз в минуту запускает `xray-traffic-sync.service`. Сервис по порядку выполняет семь шагов:
+
+1. `xray-traffic-sync --quiet` — сохраняет счётчики трафика;
+2. `xray-activity sync --quiet` — читает журнал активности;
+3. `xray-telegram notify-geoip --quiet` — GeoIP-уведомления;
+4. `xray-client enforce-limits --quiet` — лимиты трафика;
+5. `xray-client expire-due --quiet` — отключение клиентов с истёкшим сроком;
+6. `xray-telegram notify-expiry --quiet` — напоминания о сроке доступа, после `expire-due`;
+7. `xray-telegram notify-daily-summary --quiet` — ежедневная сводка.
+
+Каждый шаг записан как `ExecStart=-…`, поэтому шаги независимы: ошибка одного шага не останавливает следующие. Например, пока Xray перезапускается и Stats API недоступен, `xray-traffic-sync` завершается с кодом 1, а лимиты, сроки доступа и напоминания всё равно выполняются в ту же минуту.
+
+Из-за префикса `-` systemd не помечает `xray-traffic-sync.service` как `failed`, когда падает один из шагов. Ошибка видна только в журнале сервиса — строкой вида `status=1/FAILURE (ignoring)` рядом с выводом шага:
+
+```bash
+journalctl -u xray-traffic-sync.service --since "-1h"
+```
+
+Состояние `systemctl status xray-traffic-sync.service` и `systemctl --failed` для этого сервиса больше не показывает сбой отдельного шага.
+
+Unit-файл пишет только `install.sh`. `xray-manager-update` выполняет `daemon-reload` и `try-restart`, но unit не переписывает, поэтому на сервере, установленном до этого изменения, шаги остаются зависимыми, а `xray-test` показывает `WARN` проверки `Traffic sync step independence`. Чтобы обновить unit вручную:
+
+```bash
+cp -a /etc/systemd/system/xray-traffic-sync.service /root/xray-traffic-sync.service.bak
+sed -i 's|^ExecStart=/usr/local/sbin/|ExecStart=-/usr/local/sbin/|' /etc/systemd/system/xray-traffic-sync.service
+systemctl daemon-reload
+systemctl cat xray-traffic-sync.service
+xray-test
+```
+
+В выводе `systemctl cat` все семь строк должны начинаться с `ExecStart=-/usr/local/sbin/`, а `xray-test` — не показывать `WARN` проверки `Traffic sync step independence`. Повторный запуск `install.sh` на настроенном сервере для этого не нужен: он перегенерирует ключи и конфиг.
