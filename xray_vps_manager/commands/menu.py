@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import traceback
 
 from xray_vps_manager.commands import (
     menu_activity_actions,
@@ -566,6 +567,22 @@ def execute_action(title, func):
     begin_action(title)
     try:
         func()
+    except KeyboardInterrupt:
+        print()
+        print(red("Отменено"))
+        raise
+    except EOFError:
+        raise
+    except SystemExit as exc:
+        # menu.die() уже напечатал ERROR и вышел с кодом 1; None и 0 — штатное завершение.
+        if exc.code not in (None, 0, 1):
+            sys.stdout.flush()
+            print(red(f"ERROR: {exc.code}"), file=sys.stderr)
+    except Exception as exc:
+        sys.stdout.flush()
+        print(red(f"ERROR: {type(exc).__name__}: {exc}"), file=sys.stderr)
+        if os.environ.get("XRAY_MENU_DEBUG") == "1":
+            traceback.print_exc()
     finally:
         end_action(title)
 
@@ -1271,24 +1288,31 @@ def menu():
         die("Run this script as root.")
 
     handlers = main_menu_handlers()
-    while True:
-        print()
-        print_menu_header()
-        print()
-        print_section_title("Главное меню")
-        print()
-        print_menu_table(main_menu_actions())
-        choice = input("Выбор: ").strip()
-        if not sys.stdin.isatty():
+    try:
+        while True:
             print()
+            print_menu_header()
+            print()
+            print_section_title("Главное меню")
+            print()
+            print_menu_table(main_menu_actions())
+            choice = input("Выбор: ").strip()
+            if not sys.stdin.isatty():
+                print()
 
-        if choice == "0":
-            return
-        if choice in handlers:
-            _title, handler = handlers[choice]
-            handler()
-        else:
-            print("Неизвестный пункт меню.")
+            if choice == "0":
+                return
+            if choice in handlers:
+                _title, handler = handlers[choice]
+                handler()
+            else:
+                print("Неизвестный пункт меню.")
+    except EOFError:
+        print()
+        print("Ввод закрыт, выход из меню.")
+    except KeyboardInterrupt:
+        print()
+        sys.exit(130)
 
 
 if __name__ == "__main__":
