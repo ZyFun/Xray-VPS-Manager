@@ -36,6 +36,19 @@ def client_entry(index: int, name: str, expires_at: str) -> dict:
     return entry
 
 
+def expired_client_entry(index: int, name: str, expires_at: str) -> dict:
+    entry = client_entry(index, name, expires_at)
+    entry.update(
+        {
+            "enabled": False,
+            "disabledAt": "2026-10-04T14:01:00Z",
+            "expiredAt": "2026-10-04T14:01:00Z",
+            "disabledReason": "expired",
+        }
+    )
+    return entry
+
+
 class SetTimezoneAccessDeadlinesTests(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -129,6 +142,36 @@ class SetTimezoneAccessDeadlinesTests(unittest.TestCase):
         self.assertEqual(
             [line for line in output.splitlines() if line.startswith("WARN:")],
             ["WARN: client bob: access date changed 2026-10-20 -> 2026-10-19"],
+        )
+
+    def test_set_timezone_west_hints_enable_for_expired_client_with_future_deadline(self) -> None:
+        # 75-R01: в 01:00 по Владивостоку срок alice истёк, expire-due её отключил; в Москве срок ещё не наступил.
+        client_repository.save_db(
+            {
+                "clients": {
+                    "alice": expired_client_entry(1, "alice", "2026-10-05T00:00:00+10:00"),
+                    "bob": client_entry(2, "bob", "2026-10-20T00:00:00+10:00"),
+                }
+            },
+            db_path=self.db_path,
+        )
+
+        with self.sandbox("Asia/Vladivostok", datetime(2026, 10, 5, 1, 0, tzinfo=VLADIVOSTOK)):
+            output = self.set_timezone("Europe/Moscow")
+
+        self.assertEqual(
+            self.deadlines(),
+            {"alice": "2026-10-05T00:00+03:00", "bob": "2026-10-20T00:00+03:00"},
+        )
+        alice = client_repository.load_db_sql(db_path=self.db_path)["clients"]["alice"]
+        self.assertFalse(alice["enabled"])
+        self.assertEqual(alice["disabledReason"], "expired")
+        self.assertEqual(
+            [line for line in output.splitlines() if line.startswith("WARN:")],
+            [
+                "WARN: client alice: disabled as expired, but access until 2026-10-05 00:00 has not passed yet "
+                "in the new timezone; enable it: xray-client enable alice"
+            ],
         )
 
     def test_set_timezone_repairs_invalid_previous_timezone(self) -> None:

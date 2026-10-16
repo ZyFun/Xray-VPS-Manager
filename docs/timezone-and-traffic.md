@@ -31,10 +31,12 @@ xray-client set-timezone server
 ```text
 WARN: client ИМЯ: access date changed 2026-10-20 -> 2026-10-19
 WARN: client ИМЯ: access until 2026-10-17 00:00 has already passed in the new timezone, access is expired
+WARN: client ИМЯ: disabled as expired, but access until 2026-10-05 00:00 has not passed yet in the new timezone; enable it: xray-client enable ИМЯ
 ```
 
 - Первая строка значит, что дата в `xray-client list` до смены отличалась от новой. Так бывает только у нестандартного значения срока в `manager.db` (без смещения или в UTC, например после ручной правки); проверьте срок и при необходимости задайте его заново через `xray-client set-days`.
 - Вторая строка значит, что срок был в будущем, а полночь его даты в новой зоне уже прошла — например, при смене зоны на восток в последний день доступа. Клиент считается истёкшим, и минутная проверка `expire-due` его отключит; если это не нужно, продлите доступ через `xray-client extend-days`.
+- Третья строка — обратный случай при смене зоны на запад: срок уже истёк и `expire-due` отключил клиента, а в новой зоне полночь его даты ещё не наступила. Автоматически такой клиент не включается; включите его командой из подсказки, иначе он останется отключённым до конца срока.
 
 Эта же команда пересобирает systemd timer ротации raw Xray logs: `xray-raw-log-rotate.timer` получает точный `OnCalendar` из `MANAGER_TIMEZONE` и `XRAY_RAW_LOG_ROTATE_TIME`, поэтому после перезапуска сервера systemd продолжает запускать ротацию в выбранной зоне, а не по времени сервера.
 

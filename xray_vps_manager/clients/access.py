@@ -123,6 +123,7 @@ def access_deadline_change_warnings(
     normalized: str,
     previous_tz,
     now: datetime,
+    disabled_reason: str = "",
 ) -> list[str]:
     previous = parse_datetime(value)
     current = parse_datetime(normalized)
@@ -138,5 +139,12 @@ def access_deadline_change_warnings(
         warnings.append(
             f"client {name}: access until {current.strftime('%Y-%m-%d %H:%M')} has already passed in the new timezone, "
             "access is expired"
+        )
+    # Смена зоны на запад сдвигает момент срока позже: клиент, которого expire-due уже отключил, снова в сроке,
+    # но таймеры по сроку не включают (75-R01).
+    if disabled_reason == "expired" and not access_expired({"expiresAt": normalized}, now):
+        warnings.append(
+            f"client {name}: disabled as expired, but access until {current.strftime('%Y-%m-%d %H:%M')} has not passed yet "
+            f"in the new timezone; enable it: xray-client enable {name}"
         )
     return warnings

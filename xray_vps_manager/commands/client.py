@@ -243,7 +243,9 @@ def normalize_access_deadlines(tz, previous_tz=None, now=None):
         normalized = client_access.access_deadline_at_midnight(expires_at, tz)
         if normalized:
             warnings.extend(
-                client_access.access_deadline_change_warnings(name, expires_at, normalized, previous_tz, now)
+                client_access.access_deadline_change_warnings(
+                    name, expires_at, normalized, previous_tz, now, entry.get("disabledReason", "")
+                )
             )
         if normalized and normalized != expires_at:
             entry["expiresAt"] = normalized

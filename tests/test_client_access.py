@@ -222,6 +222,40 @@ class AccessDeadlineTimezoneChangeTests(unittest.TestCase):
 
         self.assertEqual(warnings, [])
 
+    def test_change_warning_when_expired_client_deadline_becomes_future(self) -> None:
+        # 75-R01: срок истёк в старой зоне, а после смены зоны на запад ещё не наступил — клиент остаётся отключённым.
+        vladivostok = ZoneInfo("Asia/Vladivostok")
+        value = "2026-10-05T00:00:00+10:00"
+        normalized = access.access_deadline_at_midnight(value, ZoneInfo("Europe/Moscow"))
+        now = datetime(2026, 10, 5, 1, 0, tzinfo=vladivostok)
+
+        warnings = access.access_deadline_change_warnings(
+            "alice", value, normalized, vladivostok, now, disabled_reason="expired"
+        )
+
+        self.assertEqual(
+            warnings,
+            [
+                "client alice: disabled as expired, but access until 2026-10-05 00:00 has not passed yet "
+                "in the new timezone; enable it: xray-client enable alice"
+            ],
+        )
+
+    def test_no_enable_hint_for_client_disabled_for_other_reason(self) -> None:
+        vladivostok = ZoneInfo("Asia/Vladivostok")
+        value = "2026-10-05T00:00:00+10:00"
+        normalized = access.access_deadline_at_midnight(value, ZoneInfo("Europe/Moscow"))
+        now = datetime(2026, 10, 5, 1, 0, tzinfo=vladivostok)
+
+        for reason in ("", "traffic-limit"):
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    access.access_deadline_change_warnings(
+                        "alice", value, normalized, vladivostok, now, disabled_reason=reason
+                    ),
+                    [],
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
