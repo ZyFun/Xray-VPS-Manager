@@ -233,18 +233,24 @@ def save_config_restart_xray_and_db(config, db):
     return backup
 
 
-def normalize_access_deadlines(tz):
+def normalize_access_deadlines(tz, previous_tz=None, now=None):
     db = load_db()
+    now = now or client_access.local_now()
     changed = 0
-    for entry in client_repository.db_clients(db).values():
+    warnings = []
+    for name, entry in client_repository.db_clients(db).items():
         expires_at = entry.get("expiresAt", "")
         normalized = client_access.access_deadline_at_midnight(expires_at, tz)
+        if normalized:
+            warnings.extend(
+                client_access.access_deadline_change_warnings(name, expires_at, normalized, previous_tz, now)
+            )
         if normalized and normalized != expires_at:
             entry["expiresAt"] = normalized
             changed += 1
     if changed:
         save_db(db)
-    return changed
+    return changed, warnings
 
 
 def save_server_env_values(values):
@@ -1670,14 +1676,21 @@ def cmd_timezone():
 def cmd_set_timezone(value):
     name = normalize_timezone(value)
     with client_db_lock("set-timezone"):
+        try:
+            previous_tz = client_settings.manager_timezone()
+        except ValueError:
+            # Невалидная прежняя зона: set-timezone — способ её исправить; дату «до смены» сравнить не с чем.
+            previous_tz = None
         values = client_settings.server_env_values(SERVER_ENV_PATH)
         values["MANAGER_TIMEZONE"] = name
         save_server_env_values(values)
-        normalized = normalize_access_deadlines(client_settings.manager_timezone())
+        normalized, warnings = normalize_access_deadlines(client_settings.manager_timezone(), previous_tz)
     print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
     print(f"Current time: {client_access.local_now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     if normalized:
         print(f"Normalized access deadlines: {normalized}")
+    for warning in warnings:
+        print(f"WARN: {warning}")
     try:
         from xray_vps_manager.activity import raw_logs as activity_raw_logs
 

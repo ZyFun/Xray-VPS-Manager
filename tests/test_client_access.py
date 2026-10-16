@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import unittest
+from zoneinfo import ZoneInfo
 
 from xray_vps_manager.clients import access
 from xray_vps_manager.clients.status import expire_due_clients, reconcile_client_access_status
@@ -118,6 +119,108 @@ class ClientAccessTests(unittest.TestCase):
         self.assertEqual(entry["disabledReason"], "traffic-limit")
         self.assertNotIn("expiredAt", entry)
         self.assertTrue(traffic_status["exceeded"])
+
+
+class AccessDeadlineTimezoneChangeTests(unittest.TestCase):
+    """XR-REV-057: смена MANAGER_TIMEZONE сохраняет календарную дату срока и приводит её к 00:00 новой зоны."""
+
+    def test_east_to_west_keeps_calendar_date(self) -> None:
+        self.assertEqual(
+            access.access_deadline_at_midnight("2026-10-05T00:00:00+10:00", ZoneInfo("Europe/Moscow")),
+            "2026-10-05T00:00+03:00",
+        )
+        self.assertEqual(
+            access.access_deadline_at_midnight("2026-10-05T00:00:00+03:00", ZoneInfo("Europe/Kaliningrad")),
+            "2026-10-05T00:00+02:00",
+        )
+
+    def test_west_to_east_keeps_calendar_date(self) -> None:
+        self.assertEqual(
+            access.access_deadline_at_midnight("2026-10-05T00:00:00+03:00", ZoneInfo("Asia/Vladivostok")),
+            "2026-10-05T00:00+10:00",
+        )
+
+    def test_offset_of_written_value_wins_over_new_zone_dst(self) -> None:
+        # Срок, записанный при фиксированном летнем смещении (пустой MANAGER_TIMEZONE, XR-REV-065), на зимнюю дату.
+        self.assertEqual(
+            access.access_deadline_at_midnight("2027-01-10T00:00:00+02:00", ZoneInfo("Europe/Berlin")),
+            "2027-01-10T00:00+01:00",
+        )
+
+    def test_naive_and_utc_values_keep_date_as_written(self) -> None:
+        moscow = ZoneInfo("Europe/Moscow")
+
+        self.assertEqual(access.access_deadline_at_midnight("2026-10-05T00:00:00", moscow), "2026-10-05T00:00+03:00")
+        self.assertEqual(access.access_deadline_at_midnight("2026-10-04T21:00:00Z", moscow), "2026-10-04T00:00+03:00")
+
+    def test_empty_or_invalid_value_stays_empty(self) -> None:
+        self.assertEqual(access.access_deadline_at_midnight("", ZoneInfo("Europe/Moscow")), "")
+        self.assertEqual(access.access_deadline_at_midnight("not-a-date", ZoneInfo("Europe/Moscow")), "")
+
+    def test_future_deadline_is_not_expired_after_east_to_west_normalization(self) -> None:
+        moscow = ZoneInfo("Europe/Moscow")
+        now = datetime(2026, 10, 4, 12, 0, tzinfo=moscow)
+        entry = {"expiresAt": "2026-10-05T00:00:00+10:00"}
+        self.assertFalse(access.access_expired(entry, now))
+
+        entry["expiresAt"] = access.access_deadline_at_midnight(entry["expiresAt"], moscow)
+
+        self.assertFalse(access.access_expired(entry, now))
+
+    def test_change_warnings_are_empty_for_standard_deadline(self) -> None:
+        warnings = access.access_deadline_change_warnings(
+            "alice",
+            "2026-10-05T00:00:00+10:00",
+            "2026-10-05T00:00+03:00",
+            ZoneInfo("Asia/Vladivostok"),
+            datetime(2026, 10, 4, 12, 0, tzinfo=ZoneInfo("Europe/Moscow")),
+        )
+
+        self.assertEqual(warnings, [])
+
+    def test_change_warning_when_date_shown_before_differs(self) -> None:
+        moscow = ZoneInfo("Europe/Moscow")
+        value = "2026-10-04T21:00:00Z"
+        normalized = access.access_deadline_at_midnight(value, ZoneInfo("Europe/Kaliningrad"))
+
+        warnings = access.access_deadline_change_warnings(
+            "bob",
+            value,
+            normalized,
+            moscow,
+            datetime(2026, 10, 1, 12, 0, tzinfo=moscow),
+        )
+
+        self.assertEqual(warnings, ["client bob: access date changed 2026-10-05 -> 2026-10-04"])
+
+    def test_change_warning_when_future_deadline_has_passed_in_new_zone(self) -> None:
+        moscow = ZoneInfo("Europe/Moscow")
+        vladivostok = ZoneInfo("Asia/Vladivostok")
+        value = "2026-10-17T00:00:00+03:00"
+        normalized = access.access_deadline_at_midnight(value, vladivostok)
+        now = datetime(2026, 10, 16, 22, 0, tzinfo=moscow).astimezone(vladivostok)
+
+        warnings = access.access_deadline_change_warnings("carol", value, normalized, moscow, now)
+
+        self.assertEqual(
+            warnings,
+            ["client carol: access until 2026-10-17 00:00 has already passed in the new timezone, access is expired"],
+        )
+
+    def test_change_warnings_skip_already_expired_deadline(self) -> None:
+        moscow = ZoneInfo("Europe/Moscow")
+        vladivostok = ZoneInfo("Asia/Vladivostok")
+        value = "2026-10-10T00:00:00+03:00"
+
+        warnings = access.access_deadline_change_warnings(
+            "dave",
+            value,
+            access.access_deadline_at_midnight(value, vladivostok),
+            moscow,
+            datetime(2026, 10, 16, 22, 0, tzinfo=moscow),
+        )
+
+        self.assertEqual(warnings, [])
 
 
 if __name__ == "__main__":
