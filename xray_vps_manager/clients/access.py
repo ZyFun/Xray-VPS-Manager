@@ -112,5 +112,39 @@ def access_deadline_at_midnight(value: str | None, tz) -> str:
     parsed = parse_datetime(value)
     if parsed is None:
         return ""
-    local = parsed.astimezone(tz)
-    return datetime.combine(local.date(), time.min, tzinfo=tz).isoformat(timespec="minutes")
+    # Календарная дата — как записана в значении (полночь прежней зоны со своим смещением): перевод момента
+    # в новую зону через astimezone при смене зоны на запад сдвигал срок на день назад (XR-REV-057).
+    return datetime.combine(parsed.date(), time.min, tzinfo=tz).isoformat(timespec="minutes")
+
+
+def access_deadline_change_warnings(
+    name: str,
+    value: str | None,
+    normalized: str,
+    previous_tz,
+    now: datetime,
+    disabled_reason: str = "",
+) -> list[str]:
+    previous = parse_datetime(value)
+    current = parse_datetime(normalized)
+    if previous is None or current is None:
+        return []
+    warnings = []
+    # Дата, которую `xray-client list` показывал до смены зоны (format_access_until в прежней зоне);
+    # без прежней зоны (была невалидной) сравнивать не с чем.
+    shown_before = previous.astimezone(previous_tz).date() if previous_tz is not None else current.date()
+    if shown_before != current.date():
+        warnings.append(f"client {name}: access date changed {shown_before.isoformat()} -> {current.date().isoformat()}")
+    if not access_expired({"expiresAt": value}, now) and access_expired({"expiresAt": normalized}, now):
+        warnings.append(
+            f"client {name}: access until {current.strftime('%Y-%m-%d %H:%M')} has already passed in the new timezone, "
+            "access is expired"
+        )
+    # Смена зоны на запад сдвигает момент срока позже: клиент, которого expire-due уже отключил, снова в сроке,
+    # но таймеры по сроку не включают (75-R01).
+    if disabled_reason == "expired" and not access_expired({"expiresAt": normalized}, now):
+        warnings.append(
+            f"client {name}: disabled as expired, but access until {current.strftime('%Y-%m-%d %H:%M')} has not passed yet "
+            f"in the new timezone; enable it: xray-client enable {name}"
+        )
+    return warnings
