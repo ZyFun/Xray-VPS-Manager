@@ -134,7 +134,7 @@ WARP настраивается как `wireguard` outbound внутри Xray с
 xray-warp create
 ```
 
-Если первый A-record `api.cloudflareclient.com` зависает на TLS handshake, менеджер попробует другие известные IPv4 и добавит managed-строку в `/etc/hosts` с backup исходного файла.
+Если первый A-record `api.cloudflareclient.com` зависает на TLS handshake, менеджер попробует другие известные IPv4. Найденный рабочий адрес закрепляется managed-строкой `IP api.cloudflareclient.com # xray-vps-manager WARP API pin` в `/etc/hosts` только с согласия: в интерактивном запуске (в том числе из меню) менеджер показывает строку и спрашивает подтверждение, для неинтерактивного запуска есть флаги `xray-warp create --pin-hosts` / `--no-pin-hosts` (те же флаги принимает `xray-warp enable`, если профиля ещё нет). Без терминала и без флага `/etc/hosts` не меняется: печатается `WARN` с подсказкой `--pin-hosts`, создание профиля продолжается. Перед записью делается backup `/etc/hosts.bak.xray-warp.*`; прежняя managed-строка заменяется. Строки без управляемого комментария менеджер не удаляет: если для `api.cloudflareclient.com` уже есть своя запись, пин не добавляется, а `WARN` показывает эту запись для ручной проверки.
 Endpoint `engage.cloudflareclient.com:2408` из профиля сначала тестируется как есть. IPv4 fallback записывается в `config.json` только если доменный endpoint не прошёл WARP-тест.
 
 Включить WARP для всего управляемого исходящего tcp/udp-трафика Xray:
@@ -183,6 +183,7 @@ xray-warp remove
 ```
 
 Если WARP был включён, удаление возвращает общий маршрут и клиентские правила так же, как `xray-warp disable`.
+`xray-warp remove` также снимает managed-строку пина `api.cloudflareclient.com` из `/etc/hosts` (с backup), даже если WARP outbound уже был удалён раньше; чужие строки остаются, а без managed-строки файл не меняется.
 
 
 ## Одновременные операции
