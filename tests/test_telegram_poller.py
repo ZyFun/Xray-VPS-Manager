@@ -479,7 +479,7 @@ class TelegramPollerTests(unittest.TestCase):
             events.append(("run", command, timeout))
             client_db["clients"]["alice"] = {
                 "id": "00000000-0000-0000-0000-000000000001",
-                "expiresAt": "2026-07-14T00:00:00+03:00",
+                "expiresAt": "2099-07-14T00:00:00+03:00",
                 "paymentType": "paid",
                 "connection": "vless-reality",
             }
@@ -513,7 +513,7 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertIn("Ключ доступа для бота:\n<pre><code>vpn-key:00000000-0000-0000-0000-000000000001</code></pre>", sent[2])
         self.assertIn("По ключу доступа @ExampleVpnBot будет показывать статус подписки", sent[2])
         self.assertIn("Не забудь открыть @ExampleVpnBot и подключить уведомления.", sent[2])
-        self.assertIn("Доступ до: 2026-07-14T00:00:00+03:00", sent[2])
+        self.assertIn("Доступ до: 2099-07-14T00:00:00+03:00", sent[2])
         self.assertIn("Сумма оплаты: 500 ₽", sent[2])
         self.assertIn("Перевод нужно выполнить по номеру телефона:\n+79991234567", sent[2])
         self.assertIn("Банк: Т-Банк (Тинькофф)", sent[2])

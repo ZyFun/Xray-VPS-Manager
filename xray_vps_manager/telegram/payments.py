@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 
+from xray_vps_manager.clients import payments as client_payments
+
 PAYMENT_SETTING_KEYS = (
     "paymentAmount",
     "paymentTotalAmount",
@@ -171,14 +173,27 @@ def client_entries(client_db):
     return clients if isinstance(clients, dict) else {}
 
 
-def paid_client_count(client_db):
-    return sum(1 for entry in client_entries(client_db).values() if entry.get("paymentType") == "paid")
+def paid_client_count(client_db, now=None):
+    """Count paid clients sharing the rent: disabled or expired ones are excluded."""
+    return sum(
+        1 for entry in client_entries(client_db).values() if client_payments.counts_toward_payment_share(entry, now)
+    )
 
 
-def payment_amount_label(db, client_db):
+def excluded_paid_client_count(client_db, now=None):
+    return sum(
+        1
+        for entry in client_entries(client_db).values()
+        if isinstance(entry, dict)
+        and entry.get("paymentType") == "paid"
+        and not client_payments.counts_toward_payment_share(entry, now)
+    )
+
+
+def payment_amount_label(db, client_db, now=None):
     total = effective_total_amount(db)
     currency = payment_currency(db)
-    count = paid_client_count(client_db)
+    count = paid_client_count(client_db, now)
     rounding_mode, rounding_step = payment_rounding_settings(db)
     share = payment_share_amount(total, count, rounding_mode, rounding_step)
     if not total:
@@ -188,13 +203,13 @@ def payment_amount_label(db, client_db):
     return format_payment_amount(share, currency)
 
 
-def payment_summary(db, client_db):
+def payment_summary(db, client_db, now=None):
     server_monthly = str(db.get("paymentTotalAmount") or "").strip()
     domain_annual = str(db.get("paymentDomainAnnualAmount") or "").strip()
     domain_monthly = domain_monthly_amount(db)
     total = effective_total_amount(db)
     currency = payment_currency(db)
-    count = paid_client_count(client_db)
+    count = paid_client_count(client_db, now)
     rounding_mode, rounding_step = payment_rounding_settings(db)
     share = payment_share_amount(total, count, rounding_mode, rounding_step)
     summary = {
@@ -203,6 +218,7 @@ def payment_summary(db, client_db):
         "domainMonthly": format_payment_amount(domain_monthly, currency),
         "total": format_payment_amount(total, currency),
         "paidCount": count,
+        "excludedPaidCount": excluded_paid_client_count(client_db, now),
         "rounding": payment_rounding_label(db),
         "share": format_payment_amount(share, currency) if share else "не рассчитана",
         "transfer": payment_transfer_label(db),

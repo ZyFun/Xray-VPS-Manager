@@ -280,7 +280,9 @@ def print_payment_summary(db, client_db=None):
     print(f"Domain annual rent: {summary['domainAnnual']}")
     print(f"Domain monthly rent: {summary['domainMonthly']}")
     print(f"Total monthly rent: {summary['total']}")
-    print(f"Paid clients: {summary['paidCount']}")
+    print(f"Active paid clients: {summary['paidCount']}")
+    if summary["excludedPaidCount"]:
+        print(f"Paid clients excluded (disabled or expired): {summary['excludedPaidCount']}")
     print(f"Rounding: {summary['rounding']}")
     print(f"Amount per paid client: {summary['share']}")
     print(f"Payment details: {summary['transfer']}")
@@ -428,6 +430,12 @@ def status():
         ("Domain monthly rent", payment_summary["domainMonthly"]),
         ("Total monthly rent", payment_summary["total"]),
         ("Payment per paid client", payment_summary["share"]),
+        ("Active paid clients", str(payment_summary["paidCount"])),
+        *(
+            [("Paid clients excluded (disabled or expired)", str(payment_summary["excludedPaidCount"]))]
+            if payment_summary["excludedPaidCount"]
+            else []
+        ),
         ("Payment rounding", telegram_payments.payment_rounding_label(db)),
         ("Payment details", telegram_payments.payment_transfer_label(db)),
         ("Client subscriptions", str(len(subscriptions))),
