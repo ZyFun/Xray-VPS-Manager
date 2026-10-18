@@ -12,12 +12,17 @@ from xray_vps_manager.clients.repository import db_clients, load_db_sql
 from xray_vps_manager.commands import menu_reality_actions
 from xray_vps_manager.core.terminal import green, print_table, table_border, table_row, visible_len, yellow
 from xray_vps_manager.core.time import manager_timezone, parse_time
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
+from xray_vps_manager.traffic import repository as traffic_repository
+from xray_vps_manager.traffic.formatting import format_traffic
+from xray_vps_manager.traffic.history import all_time_total
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import connection_name_from_tag, load_config as load_xray_config
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 CommandRunner = Callable[[list[str]], None]
+ConfirmCallback = Callable[[str], bool]
 
 
 def show_clients(call: CommandRunner) -> None:
@@ -309,6 +314,33 @@ def call_client_command(call: CommandRunner, command: str, action: str, mode: st
         print("Действие отменено.")
         return
     call(["xray-client", command, name])
+
+
+def client_total_traffic_label(name: str) -> str:
+    try:
+        traffic_db = traffic_repository.load_traffic_db_for_read()
+    except SQLiteReadUnavailable:
+        return "неизвестно"
+    incoming, outgoing = all_time_total(traffic_repository.traffic_entry(traffic_db, name))
+    return format_traffic(incoming + outgoing)
+
+
+def remove_client_from_menu(call: CommandRunner, confirm: ConfirmCallback) -> None:
+    row = choose_client_row("удаления", "all")
+    if not row:
+        print("Действие отменено.")
+        return
+    name = str(row["name"])
+    credentials_total = row.get("credentialsTotal")
+    print()
+    print(f"Будет удалён клиент: {name}")
+    print(f"Подключений (credentials): {credentials_total if credentials_total is not None else 'неизвестно'}")
+    print(f"Трафик за всё время: {client_total_traffic_label(name)}")
+    print("Клиент удаляется вместе со всеми подключениями, лимитами и историей трафика; отменить удаление нельзя.")
+    if not confirm(f"Удалить клиента {name}"):
+        print("Действие отменено.")
+        return
+    call(["xray-client", "remove", name])
 
 
 def client_route_rows_for_selection(name: str) -> list[dict]:

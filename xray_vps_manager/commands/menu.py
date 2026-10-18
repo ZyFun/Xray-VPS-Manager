@@ -615,7 +615,7 @@ def client_menu_handlers():
         "9": ("Перенести клиента в другое подключение", lambda: menu_client_actions.move_selected_client(call)),
         "10": (
             "Удалить клиента",
-            lambda: menu_client_actions.call_client_command(call, "remove", "удаления", "all"),
+            lambda: menu_client_actions.remove_client_from_menu(call, confirm),
         ),
         "11": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
         "12": ("Лимиты трафика", open_client_traffic_limit_menu),
