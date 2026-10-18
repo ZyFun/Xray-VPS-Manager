@@ -1111,6 +1111,11 @@ class TelegramPollerTests(unittest.TestCase):
         self.assertEqual(api_calls[0][1], "setMyCommands")
         self.assertEqual(api_calls[0][2]["scope"], {"type": "chat", "chat_id": "222"})
         self.assertIn({"command": "unsubscribe", "description": "Отписаться от бота"}, api_calls[0][2]["commands"])
+        sent = [event[2] for event in events if event[0] == "send"]
+        self.assertTrue(any("Подписка подключена." in text for text in sent))
+        self.assertTrue(
+            any("не позднее чем за 5 дней и ещё раз за 1 день до окончания доступа" in text for text in sent)
+        )
 
     def test_protocol_link_subscription_is_rejected_with_access_key_hint(self) -> None:
         db = {
