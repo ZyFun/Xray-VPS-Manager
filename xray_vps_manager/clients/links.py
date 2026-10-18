@@ -17,7 +17,7 @@ from xray_vps_manager.xray.config import (
     reality_transport_settings_from_inbound,
     xhttp_extra_json,
 )
-from xray_vps_manager.xray.crypto import reality_public_key
+from xray_vps_manager.xray.crypto import is_x25519_key, reality_public_key
 
 
 def link_for(
@@ -107,7 +107,10 @@ def link_for(
     short_id = short_ids[0] if short_ids else ""
     if not private_key or not sni:
         raise ValueError("Reality privateKey/serverNames not found in inbound.")
-    public_key = reality_public_key(private_key)
+    # Ключ из записи подключения: ссылка не зависит от бинарника Xray и формата его вывода (XR-REV-051).
+    public_key = str(entry.get("publicKey") or "").strip()
+    if not is_x25519_key(public_key):
+        public_key = reality_public_key(private_key)
 
     transport_settings = reality_transport_settings_from_inbound(inbound)
     transport = transport_settings["transport"]

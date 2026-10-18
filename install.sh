@@ -849,13 +849,34 @@ backup_and_remove_manager_db() {
 
 backup_and_remove_manager_db /usr/local/etc/xray/manager.db
 
+# Формат вывода `xray x25519` менялся между версиями Xray (XR-REV-051): метка ищется по слову
+# (Private — приватный ключ, Public/Password — публичный), Hash32 пропускается, значение — base64url из 43 символов.
+x25519_key_from_output() {
+  local kind="$1"
+  awk -v kind="$kind" '
+    {
+      separator = index($0, ":")
+      if (separator == 0) next
+      label = tolower(substr($0, 1, separator - 1))
+      value = substr($0, separator + 1)
+      gsub(/^[ \t]+|[ \t\r]+$/, "", value)
+      if (found || label ~ /hash32/ || length(value) != 43 || value !~ /^[A-Za-z0-9_-]+$/) next
+      if (label ~ /private/) {
+        if (kind == "private") { print value; found = 1 }
+      } else if (label ~ /public|password/) {
+        if (kind == "public") { print value; found = 1 }
+      }
+    }
+  '
+}
+
 server_addr="$(detect_server_addr)"
 created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 uuid="$(/usr/local/bin/xray uuid)"
 trojan_uuid="$(/usr/local/bin/xray uuid)"
 keys="$(/usr/local/bin/xray x25519)"
-private_key="$(printf '%s\n' "$keys" | awk -F': ' '/^PrivateKey:/ || /^Private key:/ {print $2}')"
-public_key="$(printf '%s\n' "$keys" | awk -F': ' '/^Password \(PublicKey\):/ || /^PublicKey:/ || /^Public key:/ {print $2}')"
+private_key="$(printf '%s\n' "$keys" | x25519_key_from_output private)"
+public_key="$(printf '%s\n' "$keys" | x25519_key_from_output public)"
 short_id="$(openssl rand -hex 8)"
 trojan_password="$(openssl rand -hex 32)"
 
