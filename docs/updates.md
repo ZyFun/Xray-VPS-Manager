@@ -112,7 +112,7 @@ xray-manager-update --rollback ИМЯ_БЭКАПА
 Переустановить тот же тег или явно поставить тег старее текущей версии:
 
 ```bash
-xray-manager-update --update v2.1.0 --force
+xray-manager-update --update v2.1.1 --force
 ```
 
 Команда обновляет только файлы менеджера:
@@ -137,6 +137,18 @@ Telegram settings
 
 Перед заменой файлов создаётся backup в `/usr/local/lib/xray-vps-manager-backups`. После update или rollback менеджер пересобирает raw-log rotation units через `xray-activity raw-log-timer-sync`, затем выполняет `systemctl daemon-reload` и `try-restart` для manager-owned units: `xray-traffic-sync.timer`, `xray-raw-log-rotate.timer`, `xray-client-expire.timer`, `xray-traffic-sync.service`, `xray-raw-log-rotate.service`, `xray-client-expire.service` и `xray-telegram-poller.service`. Xray Core при этом не перезапускается, чтобы не рвать клиентские соединения без необходимости.
 
+Пакет `/usr/local/lib/xray-vps-manager/xray_vps_manager` заменяется не поверх, а через соседний каталог. Новая копия собирается рядом как `xray_vps_manager.new`; права, владелец и чистка служебных `._*` файлов применяются к ней до замены. Затем текущий каталог переименовывается в `xray_vps_manager.old`, новый — на его место, и `.old` удаляется. Под рабочим путём никогда не бывает наполовину скопированного пакета: там лежит либо полный старый, либо полный новый. Между двумя переименованиями рабочего пути на долю миллисекунды нет, и прогон таймера, совпавший с этим моментом, может завершиться ошибкой импорта. Если копирование в `.new` не удалось, старый пакет остаётся нетронутым; если не удалось второе переименование, старый каталог возвращается на место. Если прошлый запуск прервался между переименованиями и рабочего каталога нет, следующее обновление или откат сначала возвращает `xray_vps_manager.old` на место, а остатки `xray_vps_manager.new` удаляет. После успешного `--update` или `--rollback` в `/usr/local/lib/xray-vps-manager` остаётся только `xray_vps_manager`. Так же пакет заменяется при `--rollback` и при автоматическом откате неудачного обновления.
+
+Если процесс обновления или отката убит именно между двумя переименованиями (например, `kill -9`, нехватка памяти или потеря питания), рабочего каталога пакета нет, и команды из `/usr/local/sbin` завершаются ошибкой `ModuleNotFoundError: No module named 'xray_vps_manager'`. В этом случае запусти откат копией команды из `/root/xray_server`: она берёт пакет из своей папки и не зависит от рабочего каталога.
+
+```bash
+/root/xray_server/xray-manager-update --rollback
+```
+
+Откат сначала вернёт `xray_vps_manager.old` на место, затем восстановит версию из последнего backup менеджера.
+
+`--update` и `--rollback` выполняются по одному: на всё время обновления или отката, включая `xray-test`, они берут блокировку `/usr/local/etc/xray/manager-update.lock`. Если другое обновление или откат уже идёт, команда сразу завершается без изменений с кодом `1` и сообщением `Другое обновление или откат менеджера уже выполняется: …` с данными о процессе, который держит блокировку. Блокировка отдельная от `manager.lock`, поэтому обновление не задерживает команды клиентов и шаги минутного таймера.
+
 После обновления проверяется запуск `xray-vps-manager --help`, `xray-manager-update --help` и, если не передан `--no-test`, выполняется `xray-test`. Если проверка не проходит, менеджер пытается восстановить предыдущую версию из backup.
 
 Эти действия доступны через меню `Обновления` -> `Менеджер` в `xray-menu`.
@@ -152,6 +164,7 @@ xray-test
 
 `xray-test` проверяет Xray, config.json, Reality-подключения и локальные порты, согласованность клиентов SQLite со всеми активными managed inbounds включая VLESS TLS/Caddy и Trojan TLS/WebSocket через Caddy, duplicate active client names между VLESS и Trojan credentials, TLS certificate diagnostics для direct TLS cert/key и managed Caddy sites, Stats API, SQLite-базу менеджера, `server.env`, таймзону, служебные команды, timers, сервис сбора трафика, torrent-правило, глобальный blocklist routing, каскадную конфигурацию и GeoIP bypass routes.
 Проверка duplicate active client names warning-level: нормальная модель `один клиент -> несколько credentials` проходит, а проблемы выводятся только когда активный VLESS/Trojan дубль не сопоставляется с `client_credentials` в SQLite или повторно использует один и тот же active email.
+Проверка сервиса сбора трафика (`Traffic sync service`) читает итоговый список команд через `systemctl show --property=ExecStart xray-traffic-sync.service` — с учётом drop-in, без комментариев — и требует все семь шагов минутного таймера (см. ниже); если какого-то шага нет, она падает с `missing service command(s)`. Отдельная warning-level проверка `Traffic sync step independence` по тому же списку выводит `WARN` со списком шагов без префикса `-` (`ignore_errors=no`), а также посторонних команд без `-`, после которых в списке идут другие команды: такой unit остался от старой установки или переопределён drop-in, и ошибка одной команды в нём останавливает остальные.
 TLS certificate diagnostics проверяет абсолютные пути direct TLS `certificateFile`/`keyFile`, базовые права файлов, срок действия сертификата, соответствие сертификата `SNI`/домену, наличие Caddy site config для managed TLS/Caddy-подключений, upstream local port, route path и live TLS handshake к `DOMAIN:PUBLIC_PORT`. Эта проверка warning-level: проблемы видны в выводе, но временный DNS/ACME/network сбой не блокирует весь `xray-test`.
 Обычный запуск пропускает полный физический проход `PRAGMA quick_check` по SQLite-файлу и deep Caddy endpoint probes, потому что они могут занимать больше времени и зависеть от публичного DNS/TLS. Для глубокой проверки используйте:
 
@@ -205,3 +218,37 @@ ss -tulpn
 ```bash
 systemctl status xray-client-expire.timer --no-pager
 ```
+
+## Минутный таймер
+
+`xray-traffic-sync.timer` раз в минуту запускает `xray-traffic-sync.service`. Сервис по порядку выполняет семь шагов:
+
+1. `xray-traffic-sync --quiet` — сохраняет счётчики трафика;
+2. `xray-activity sync --quiet` — читает журнал активности;
+3. `xray-telegram notify-geoip --quiet` — GeoIP-уведомления;
+4. `xray-client enforce-limits --quiet` — лимиты трафика;
+5. `xray-client expire-due --quiet` — отключение клиентов с истёкшим сроком;
+6. `xray-telegram notify-expiry --quiet` — напоминания о сроке доступа, после `expire-due`;
+7. `xray-telegram notify-daily-summary --quiet` — ежедневная сводка.
+
+Каждый шаг записан как `ExecStart=-…`, поэтому шаги независимы: ошибка одного шага не останавливает следующие. Например, пока Xray перезапускается и Stats API недоступен, `xray-traffic-sync` завершается с кодом 1, а лимиты, сроки доступа и напоминания всё равно выполняются в ту же минуту.
+
+Из-за префикса `-` systemd не помечает `xray-traffic-sync.service` как `failed`, когда падает один из шагов. Ошибка видна только в журнале сервиса — строкой вида `status=1/FAILURE (ignoring)` рядом с выводом шага:
+
+```bash
+journalctl -u xray-traffic-sync.service --since "-1h"
+```
+
+Состояние `systemctl status xray-traffic-sync.service` и `systemctl --failed` для этого сервиса больше не показывает сбой отдельного шага.
+
+Unit-файл пишет только `install.sh`. `xray-manager-update` выполняет `daemon-reload` и `try-restart`, но unit не переписывает, поэтому на сервере, установленном до этого изменения, шаги остаются зависимыми, а `xray-test` показывает `WARN` проверки `Traffic sync step independence`. Чтобы обновить unit вручную:
+
+```bash
+cp -a /etc/systemd/system/xray-traffic-sync.service /root/xray-traffic-sync.service.bak
+sed -i 's|^ExecStart=/usr/local/sbin/|ExecStart=-/usr/local/sbin/|' /etc/systemd/system/xray-traffic-sync.service
+systemctl daemon-reload
+systemctl cat xray-traffic-sync.service
+xray-test
+```
+
+В выводе `systemctl cat` все семь строк должны начинаться с `ExecStart=-/usr/local/sbin/`, а `xray-test` — не показывать `WARN` проверки `Traffic sync step independence`. Повторный запуск `install.sh` на настроенном сервере для этого не нужен: он перегенерирует ключи и конфиг.

@@ -78,7 +78,7 @@ def client_help_text(db, bot_name):
         "• включить или отключить личные уведомления активности;\n"
         "• отписаться от бота, если уведомления больше не нужны.\n\n"
         "После смены страны переподключи VPN, чтобы новые соединения пошли через выбранный маршрут.\n\n"
-        "Обычно я напоминаю об оплате в 08:00 за 5 дней и за 1 день до окончания доступа.\n\n"
+        "Обычно я напоминаю об оплате в 08:00: не позднее чем за 5 дней и ещё раз за 1 день до окончания доступа.\n\n"
         "Иногда я также присылаю технические уведомления: например, если на сервере проводятся работы "
         "или возможны краткие перебои связи."
     )
@@ -147,12 +147,21 @@ def truncate_telegram_text(text, limit=TELEGRAM_MESSAGE_LIMIT):
     return text[: limit - 80].rstrip() + "\n\n...вывод сокращён..."
 
 
-def build_expiry_reminder_message(db, entry, days_before, expiry_local, timezone_label, bot_name, payment_amount_label):
-    day_word = "день" if days_before == 1 else "дней"
+def plural_ru(count, one, few, many):
+    count = abs(int(count))
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
+
+
+def build_expiry_reminder_message(db, entry, days_left, expiry_local, timezone_label, bot_name, payment_amount_label):
+    day_word = plural_ru(days_left, "день", "дня", "дней")
     lines = [
         f"{bot_name(db)}: напоминание об оплате",
         "",
-        f"Через {days_before} {day_word} заканчивается текущий период.",
+        f"Через {days_left} {day_word} заканчивается текущий период.",
         f"Доступ до: {expiry_local.strftime('%Y-%m-%d %H:%M')} {timezone_label}",
         f"Сумма оплаты: {payment_amount_label(db)}",
     ]

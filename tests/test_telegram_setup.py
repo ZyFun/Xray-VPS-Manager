@@ -25,7 +25,7 @@ class TelegramSetupTests(unittest.TestCase):
                     with mock.patch.object(setup, "choose_private_chat", return_value={"id": "111", "label": "owner"}):
                         with mock.patch.object(setup, "initialize_geoip_offsets"):
                             with mock.patch.object(setup, "refresh_user_update_offset"):
-                                with mock.patch.object(setup.settings, "save_db", side_effect=lambda current_db: saved.append(dict(current_db))):
+                                with mock.patch.object(setup.settings, "save_db_sections", side_effect=lambda current_db, _sections: saved.append(dict(current_db))):
                                     with mock.patch.object(setup, "configure_bot_commands"):
                                         with mock.patch.object(setup.api, "send_message"):
                                             with mock.patch("builtins.print"):

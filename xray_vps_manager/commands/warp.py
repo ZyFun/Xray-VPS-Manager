@@ -20,6 +20,7 @@ from xray_vps_manager.commands.set_cascade import load_client_db_optional, save_
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.process import SystemdUnitStartError, restart_systemd_unit
+from xray_vps_manager.routing import warp as warp_routing
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import inbound_listen_endpoints
 from xray_vps_manager.xray import cascade as cascade_config
@@ -166,34 +167,83 @@ def api_candidate_ips():
     return values
 
 
-def hosts_line_contains_name(line, name):
-    body = line.split("#", 1)[0]
-    parts = body.split()
-    return name in parts[1:]
-
-
-def pin_api_host(ip):
+def write_hosts_lines(lines):
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     backup = HOSTS_PATH.with_name(f"{HOSTS_PATH.name}.bak.xray-warp.{timestamp}")
     shutil.copy2(HOSTS_PATH, backup)
-    lines = HOSTS_PATH.read_text().splitlines()
-    lines = [line for line in lines if not hosts_line_contains_name(line, API_HOST)]
-    lines.append(f"{ip} {API_HOST} {HOSTS_PIN_COMMENT}")
     tmp = HOSTS_PATH.with_suffix(".tmp")
     tmp.write_text("\n".join(lines) + "\n")
     shutil.chown(tmp, user="root", group="root")
     os.chmod(tmp, 0o644)
     tmp.replace(HOSTS_PATH)
+    return backup
+
+
+def confirm_hosts_pin(line):
+    print(f"{HOSTS_PATH} will get this line (a backup is made first):")
+    print(f"  {line}")
+    try:
+        answer = input(f"Pin {API_HOST} in {HOSTS_PATH}? [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("y", "yes")
+
+
+def warn_foreign_hosts_entry(lines, ip):
+    foreign = warp_routing.foreign_hosts_lines(lines, API_HOST, HOSTS_PIN_COMMENT)
+    if not foreign:
+        return False
+    print(f"WARN: {HOSTS_PATH} already has an entry for {API_HOST} not managed by xray-vps-manager:")
+    for line in foreign:
+        print(f"  {line}")
+    print(f"WARN: {HOSTS_PATH} was not changed; check that entry ({ip} passed TLS). Continuing; wgcf may fail.")
+    return True
+
+
+def pin_api_host(ip, pin_hosts=None):
+    """Pin ``API_HOST`` to ``ip`` with consent: ``pin_hosts`` True/False from flags, None asks in a TTY."""
+    if warn_foreign_hosts_entry(HOSTS_PATH.read_text().splitlines(), ip):
+        return False
+    line = warp_routing.managed_hosts_line(ip, API_HOST, HOSTS_PIN_COMMENT)
+    if pin_hosts is None:
+        if not sys.stdin.isatty():
+            print(
+                f"WARN: {ip} passed TLS, but {HOSTS_PATH} is changed only with consent. "
+                "Rerun with --pin-hosts to pin it. Continuing; wgcf may fail."
+            )
+            return False
+        pin_hosts = confirm_hosts_pin(line)
+    if not pin_hosts:
+        print(f"WARN: {HOSTS_PATH} was not changed ({ip} passed TLS). Continuing; wgcf may fail.")
+        return False
+    # Re-read: the file may have changed while the question was on screen.
+    lines = HOSTS_PATH.read_text().splitlines()
+    if warn_foreign_hosts_entry(lines, ip):
+        return False
+    backup = write_hosts_lines(warp_routing.pin_hosts_lines(lines, ip, API_HOST, HOSTS_PIN_COMMENT))
     print(f"Pinned {API_HOST} to {ip} in {HOSTS_PATH}. Backup: {backup}")
+    return True
 
 
-def ensure_cloudflare_api_tls():
+def unpin_api_host():
+    if not HOSTS_PATH.exists():
+        return False
+    lines = HOSTS_PATH.read_text().splitlines()
+    kept = warp_routing.unpin_hosts_lines(lines, HOSTS_PIN_COMMENT)
+    if kept == lines:
+        return False
+    backup = write_hosts_lines(kept)
+    print(f"Removed managed {API_HOST} pin from {HOSTS_PATH}. Backup: {backup}")
+    return True
+
+
+def ensure_cloudflare_api_tls(pin_hosts=None):
     if tls_handshake_ok(API_HOST):
         return
     print(f"WARN: TLS handshake to {API_HOST} through current DNS failed. Trying known A records...")
     for ip in api_candidate_ips():
         if tls_handshake_ok(ip):
-            pin_api_host(ip)
+            pin_api_host(ip, pin_hosts=pin_hosts)
             return
     print(f"WARN: Could not find a working IPv4 for {API_HOST}. Continuing; wgcf may fail.")
 
@@ -274,10 +324,10 @@ def run_wgcf(command, allow_tos_retry=False):
     raise subprocess.CalledProcessError(result.returncode, [str(WGCF_BIN), *command], result.stdout, result.stderr)
 
 
-def ensure_warp_profile(force=False):
+def ensure_warp_profile(force=False, pin_hosts=None):
     ensure_warp_dir()
     install_wgcf()
-    ensure_cloudflare_api_tls()
+    ensure_cloudflare_api_tls(pin_hosts=pin_hosts)
     if force:
         for path in (WGCF_ACCOUNT, WGCF_PROFILE):
             path.unlink(missing_ok=True)
@@ -563,8 +613,8 @@ def print_status():
         )
 
 
-def cmd_create(force=False):
-    ensure_warp_profile(force=force)
+def cmd_create(force=False, pin_hosts=None):
+    ensure_warp_profile(force=force, pin_hosts=pin_hosts)
     # Endpoint probes rewrite config.json and restart Xray, so they run under manager.lock too.
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="create"):
         endpoint = choose_working_endpoint(required=False)
@@ -576,10 +626,10 @@ def cmd_create(force=False):
     print(f"Backup: {backup}")
 
 
-def cmd_enable():
+def cmd_enable(pin_hosts=None):
     if not WGCF_PROFILE.exists():
         print("WARP profile is missing. Creating it first...")
-        ensure_warp_profile(force=False)
+        ensure_warp_profile(force=False, pin_hosts=pin_hosts)
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="enable"):
         config = load_config()
         endpoint = choose_working_endpoint(required=True)
@@ -617,13 +667,15 @@ def cmd_remove():
         config = load_config()
         db = load_client_db_optional()
         changed = remove_warp(config, db)
-        if not changed:
-            print("WARP config is already removed from Xray.")
-            return
-        backup = apply_config(config)
-        save_client_db_optional(db)
-    print("WARP outbound removed from Xray config. Local wgcf profile files were kept.")
-    print(f"Backup: {backup}")
+        if changed:
+            backup = apply_config(config)
+            save_client_db_optional(db)
+    if changed:
+        print("WARP outbound removed from Xray config. Local wgcf profile files were kept.")
+        print(f"Backup: {backup}")
+    else:
+        print("WARP config is already removed from Xray.")
+    unpin_api_host()
 
 
 def wait_for_tcp(host, port, timeout=8.0):
@@ -945,8 +997,8 @@ def usage():
     print(
         """Usage:
   xray-warp status
-  xray-warp create [--force]
-  xray-warp enable
+  xray-warp create [--force] [--pin-hosts|--no-pin-hosts]
+  xray-warp enable [--pin-hosts|--no-pin-hosts]
   xray-warp disable
   xray-warp verify-disabled
   xray-warp remove
@@ -955,20 +1007,45 @@ def usage():
     )
 
 
+PIN_HOSTS_FLAGS = ("--pin-hosts", "--no-pin-hosts")
+
+
+def parse_flags(args, allowed):
+    """Set of flags from ``args``; None on an unknown, repeated or conflicting flag."""
+    flags = set()
+    for arg in args:
+        if arg not in allowed or arg in flags:
+            return None
+        flags.add(arg)
+    if set(PIN_HOSTS_FLAGS) <= flags:
+        return None
+    return flags
+
+
+def pin_hosts_choice(flags):
+    if "--pin-hosts" in flags:
+        return True
+    if "--no-pin-hosts" in flags:
+        return False
+    return None
+
+
 def main():
     require_root()
     command = sys.argv[1] if len(sys.argv) > 1 else "status"
     try:
         if command == "status":
             print_status()
-        elif command == "create" and len(sys.argv) in (2, 3):
-            force = len(sys.argv) == 3 and sys.argv[2] == "--force"
-            if len(sys.argv) == 3 and not force:
+        elif command in ("create", "enable"):
+            allowed = ("--force", *PIN_HOSTS_FLAGS) if command == "create" else PIN_HOSTS_FLAGS
+            flags = parse_flags(sys.argv[2:], allowed)
+            if flags is None:
                 usage()
                 sys.exit(1)
-            cmd_create(force=force)
-        elif command == "enable" and len(sys.argv) == 2:
-            cmd_enable()
+            if command == "create":
+                cmd_create(force="--force" in flags, pin_hosts=pin_hosts_choice(flags))
+            else:
+                cmd_enable(pin_hosts=pin_hosts_choice(flags))
         elif command == "disable" and len(sys.argv) == 2:
             cmd_disable()
         elif command == "verify-disabled" and len(sys.argv) == 2:

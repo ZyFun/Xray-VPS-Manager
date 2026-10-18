@@ -19,6 +19,7 @@ POLL_INTERVAL = 0.2
 LOCK_FILE_MODE = 0o600
 LOCK_TIMEOUT_MESSAGE = "Другая операция менеджера ещё выполняется"
 LOCK_TIMEOUT_HINT = "Дождись её завершения и повтори команду."
+MANAGER_UPDATE_LOCK_MESSAGE = "Другое обновление или откат менеджера уже выполняется"
 
 _manager_lock_depth = 0
 
@@ -59,6 +60,31 @@ def acquire_flock(fd: int, timeout: float) -> None:
 
 
 @contextmanager
+def hold_file_lock(path: Path, timeout: float, purpose: str = "", message: str = LOCK_TIMEOUT_MESSAGE) -> Iterator[None]:
+    """Hold an exclusive flock on ``path`` and record the holder in it while the body runs."""
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, LOCK_FILE_MODE)
+    try:
+        try:
+            acquire_flock(fd, timeout)
+        except LockTimeout as exc:
+            if message == LOCK_TIMEOUT_MESSAGE:
+                raise
+            text = exc.message.replace(LOCK_TIMEOUT_MESSAGE, message, 1)
+            raise LockTimeout(text, hint=exc.hint) from None
+        write_lock_holder(fd, lock_holder_line(purpose))
+        try:
+            yield
+        finally:
+            try:
+                os.ftruncate(fd, 0)
+            except OSError:
+                pass
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
 def manager_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "") -> Iterator[None]:
     """Hold manager.lock around a state-changing operation.
 
@@ -75,19 +101,22 @@ def manager_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "") -> Iter
             _manager_lock_depth -= 1
         return
 
-    fd = os.open(str(paths.MANAGER_LOCK_PATH), os.O_RDWR | os.O_CREAT, LOCK_FILE_MODE)
-    try:
-        acquire_flock(fd, timeout)
-        write_lock_holder(fd, lock_holder_line(purpose))
+    with hold_file_lock(paths.MANAGER_LOCK_PATH, timeout, purpose):
         _manager_lock_depth = 1
         try:
             yield
         finally:
             _manager_lock_depth = 0
-            try:
-                os.ftruncate(fd, 0)
-            except OSError:
-                pass
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
+
+
+@contextmanager
+def manager_update_lock(timeout: float = 0.0, *, purpose: str = "") -> Iterator[None]:
+    """Serialize ``xray-manager-update --update/--rollback`` (manager-update.lock).
+
+    Separate from manager.lock: an update holds it for minutes (xray-test), and
+    timer writers taking manager.lock must not wait for it. By default a second
+    update fails at once instead of waiting.
+    """
+    paths.MANAGER_UPDATE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with hold_file_lock(paths.MANAGER_UPDATE_LOCK_PATH, timeout, purpose, MANAGER_UPDATE_LOCK_MESSAGE):
+        yield

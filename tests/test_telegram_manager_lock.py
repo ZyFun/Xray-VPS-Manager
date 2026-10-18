@@ -164,8 +164,9 @@ def is_save_db_call(node: ast.AST) -> bool:
     if not isinstance(node, ast.Call):
         return False
     func = node.func
-    return (isinstance(func, ast.Name) and func.id == "save_db") or (
-        isinstance(func, ast.Attribute) and func.attr == "save_db"
+    names = ("save_db", "save_db_sections")
+    return (isinstance(func, ast.Name) and func.id in names) or (
+        isinstance(func, ast.Attribute) and func.attr in names
     )
 
 
@@ -296,26 +297,26 @@ class TelegramSetupLockTests(unittest.TestCase):
     def test_configure_owner_keeps_settings_written_while_choosing_chat(self) -> None:
         """XR-REV-001: выбор чата владельца идёт без lock, запись — под lock по свежему снимку."""
         events = []
-        real_save_db = telegram_settings.save_db
+        real_save_db_sections = telegram_settings.save_db_sections
 
         def choose_chat(_db):
             events.append(("choose_private_chat", client_lock_tests.lock_is_free(self.lock_path)))
-            # Пока владелец выбирает чат, другой процесс меняет сумму оплаты.
-            self.write_payment_from_other_process()
+            # Пока владелец выбирает чат, другой процесс меняет сумму оплаты (мимо spy).
+            real_save_db_sections({"paymentTotalAmount": "1500", "paymentCurrency": "₽"}, PAYMENT_SECTIONS)
             return {"id": "555", "label": "@new-owner"}
 
-        def spy_save_db(db, *args, **kwargs):
-            events.append(("save_db", client_lock_tests.lock_is_free(self.lock_path)))
-            return real_save_db(db, *args, **kwargs)
+        def spy_save_db_sections(db, *args, **kwargs):
+            events.append(("save_db_sections", client_lock_tests.lock_is_free(self.lock_path)))
+            return real_save_db_sections(db, *args, **kwargs)
 
         with telegram_patches(self.root), \
             mock.patch.object(telegram_setup, "choose_private_chat", side_effect=choose_chat), \
-            mock.patch.object(telegram_setup.settings, "save_db", side_effect=spy_save_db), \
+            mock.patch.object(telegram_setup.settings, "save_db_sections", side_effect=spy_save_db_sections), \
             mock.patch.object(telegram_setup, "configure_bot_commands"), \
             redirect_stdout(StringIO()):
             telegram_setup.configure_owner(send_test=False)
 
-        self.assertEqual(events, [("choose_private_chat", True), ("save_db", False)])
+        self.assertEqual(events, [("choose_private_chat", True), ("save_db_sections", False)])
         settings = stored_settings(self.root)
         self.assertEqual(settings["chatId"], "555")
         self.assertEqual(settings["chatLabel"], "@new-owner")
@@ -480,9 +481,9 @@ class TelegramSetupLockTests(unittest.TestCase):
 
     def test_telegram_writes_happen_under_lock(self) -> None:
         self.assertEqual(unlocked_save_db_calls(PACKAGE_DIR / "telegram" / "setup.py"), [])
-        # save_db в commands/telegram.py — обёртка над telegram_settings.save_db; её вызывают под lock.
+        # save_db_sections в commands/telegram.py — обёртка для poller/admin/notifications, они пишут без lock.
         self.assertEqual(
-            unlocked_save_db_calls(PACKAGE_DIR / "commands" / "telegram.py", skip_functions=("save_db",)),
+            unlocked_save_db_calls(PACKAGE_DIR / "commands" / "telegram.py", skip_functions=("save_db_sections",)),
             [],
         )
 

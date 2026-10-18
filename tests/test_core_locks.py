@@ -146,6 +146,45 @@ class ManagerLockTests(unittest.TestCase):
         self.assertTrue(lock_is_free(self.lock_path))
 
 
+class ManagerUpdateLockTests(unittest.TestCase):
+    """74-R03: отдельная блокировка обновления и отката менеджера."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.lock_path = self.root / "etc" / "manager-update.lock"
+        patches = (
+            mock.patch.object(core_paths, "MANAGER_UPDATE_LOCK_PATH", self.lock_path),
+            mock.patch.object(core_paths, "MANAGER_LOCK_PATH", self.root / "manager.lock"),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_second_holder_fails_immediately_with_update_message(self) -> None:
+        with locks.manager_update_lock(purpose="--update v9"):
+            started = time.monotonic()
+            with self.assertRaises(errors.LockTimeout) as ctx:
+                with locks.manager_update_lock():
+                    pass
+            self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(ctx.exception.message.startswith(locks.MANAGER_UPDATE_LOCK_MESSAGE))
+        self.assertIn("--update v9", ctx.exception.message)
+
+    def test_is_released_after_body_and_on_error(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with locks.manager_update_lock():
+                raise RuntimeError("boom")
+        with locks.manager_update_lock():
+            pass
+        self.assertEqual(self.lock_path.read_text(encoding="utf-8"), "")
+
+    def test_does_not_take_manager_lock(self) -> None:
+        with locks.manager_update_lock():
+            with locks.manager_lock(timeout=0):
+                pass
+
 class ManagerErrorTests(unittest.TestCase):
     def test_manager_error_keeps_message_hint_and_detail(self) -> None:
         exc = errors.ManagerError("Client not found: alice", hint="xray-client list", detail="trace")

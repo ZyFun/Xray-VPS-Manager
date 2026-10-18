@@ -8,31 +8,22 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import time
-from typing import Callable, Iterable
+from typing import Callable
 
 from xray_vps_manager.activity import controls
 from xray_vps_manager.activity import repository
 from xray_vps_manager.activity import settings
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
+from xray_vps_manager.core.process import (
+    WRITER_RESTART_UNITS,
+    WRITER_STOP_UNITS,
+    Runner,
+    active_units,
+    restart_units,
+    stop_writer_units,
+)
 from xray_vps_manager.db import database
-
-
-WRITER_STOP_UNITS = (
-    "xray-traffic-sync.timer",
-    "xray-raw-log-rotate.timer",
-    "xray-client-expire.timer",
-    "xray-traffic-sync.service",
-    "xray-raw-log-rotate.service",
-    "xray-client-expire.service",
-    "xray-telegram-poller.service",
-)
-WRITER_RESTART_UNITS = (
-    "xray-traffic-sync.timer",
-    "xray-raw-log-rotate.timer",
-    "xray-client-expire.timer",
-    "xray-telegram-poller.service",
-)
 
 
 @dataclass(frozen=True)
@@ -62,7 +53,6 @@ class CleanupResult:
     restarted_units: tuple[str, ...]
 
 
-Runner = Callable[..., subprocess.CompletedProcess]
 Logger = Callable[[str], None]
 
 
@@ -116,41 +106,6 @@ def vacuum_database(db_path: str | Path = MANAGER_DB_PATH) -> float:
     finally:
         connection.close()
     return time.monotonic() - start
-
-
-def _run_systemctl(args: list[str], *, runner: Runner = subprocess.run, check: bool = True) -> subprocess.CompletedProcess:
-    result = runner(
-        ["systemctl", *args],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if check and int(result.returncode or 0) != 0:
-        output = ((result.stdout or "") + (result.stderr or "")).strip()
-        raise RuntimeError(output or f"systemctl {' '.join(args)} failed")
-    return result
-
-
-def active_units(units: Iterable[str], *, runner: Runner = subprocess.run) -> tuple[str, ...]:
-    active = []
-    for unit in units:
-        result = _run_systemctl(["is-active", "--quiet", unit], runner=runner, check=False)
-        if int(result.returncode or 0) == 0:
-            active.append(unit)
-    return tuple(active)
-
-
-def stop_writer_units(*, runner: Runner = subprocess.run) -> tuple[str, ...]:
-    _run_systemctl(["stop", *WRITER_STOP_UNITS], runner=runner)
-    return WRITER_STOP_UNITS
-
-
-def restart_units(units: Iterable[str], *, runner: Runner = subprocess.run) -> tuple[str, ...]:
-    selected = tuple(units)
-    if selected:
-        _run_systemctl(["start", *selected], runner=runner)
-    return selected
 
 
 def _apply_retention(days: int, *, db_path: str | Path = MANAGER_DB_PATH) -> tuple[int, int]:

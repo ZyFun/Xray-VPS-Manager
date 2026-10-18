@@ -251,34 +251,31 @@ def notify_daily_summary(ctx: NotificationContext, quiet=False, dry_run=False):
     return 0
 
 
-def expiry_reminder_schedule(ctx: NotificationContext, entry, days_before):
+def expiry_reminder_threshold(days_left):
+    # Пороги делят календарный остаток на полосы без пересечений: (1, 5] — порог 5, (0, 1] — порог 1.
+    # Поэтому за прогон подходит не больше одного порога, а после простоя — только актуальный (XR-REV-013).
+    thresholds = sorted(EXPIRY_REMINDER_DAYS, reverse=True)
+    for index, days_before in enumerate(thresholds):
+        lower = thresholds[index + 1] if index + 1 < len(thresholds) else 0
+        if lower < days_left <= days_before:
+            return days_before
+    return None
+
+
+def expiry_reminder_due(ctx: NotificationContext, entry, now=None):
     expires_at = ctx.parse_time(entry.get("expiresAt", ""))
     if not expires_at:
         return None
     tzinfo, label = ctx.display_timezone()
     expiry_local = expires_at.astimezone(tzinfo)
-    reminder_date = expiry_local.date() - timedelta(days=days_before)
-    reminder_local = datetime(
-        reminder_date.year,
-        reminder_date.month,
-        reminder_date.day,
-        EXPIRY_REMINDER_HOUR,
-        0,
-        0,
-        tzinfo=tzinfo,
-    )
-    return reminder_local, expiry_local, label
-
-
-def expiry_reminder_due(ctx: NotificationContext, entry, days_before, now=None):
-    schedule = expiry_reminder_schedule(ctx, entry, days_before)
-    if not schedule:
+    now_local = (now or ctx.utc_now()).astimezone(tzinfo)
+    if now_local >= expiry_local or now_local.hour < EXPIRY_REMINDER_HOUR:
         return None
-    reminder_local, expiry_local, label = schedule
-    now_local = (now or ctx.utc_now()).astimezone(reminder_local.tzinfo)
-    if now_local >= reminder_local and now_local < expiry_local:
-        return reminder_local, expiry_local, label
-    return None
+    days_left = (expiry_local.date() - now_local.date()).days
+    days_before = expiry_reminder_threshold(days_left)
+    if days_before is None:
+        return None
+    return days_before, days_left, expiry_local, label
 
 
 def expiry_reminder_key(chat_id, name, entry, days_before):
@@ -293,11 +290,11 @@ def expiry_reminder_key(chat_id, name, entry, days_before):
     )
 
 
-def build_expiry_reminder_message(ctx: NotificationContext, db, client_db, entry, days_before, expiry_local, timezone_label):
+def build_expiry_reminder_message(ctx: NotificationContext, db, client_db, entry, days_left, expiry_local, timezone_label):
     return messages.build_expiry_reminder_message(
         db,
         entry,
-        days_before,
+        days_left,
         expiry_local,
         timezone_label,
         ctx.bot_name,
@@ -330,23 +327,22 @@ def notify_expiry(ctx: NotificationContext, quiet=False):
             continue
         if not subscriptions.subscription_matches_entry(subscription, entry):
             continue
-        for days_before in EXPIRY_REMINDER_DAYS:
-            due = expiry_reminder_due(ctx, entry, days_before, now)
-            if not due:
-                continue
-            key = expiry_reminder_key(chat_id, name, entry, days_before)
-            if key in sent:
-                continue
-            _reminder_local, expiry_local, timezone_label = due
-            message = build_expiry_reminder_message(ctx, db, client_db, entry, days_before, expiry_local, timezone_label)
-            try:
-                ctx.send_chat_message(db, chat_id, message)
-            except Exception as exc:
-                if not quiet:
-                    print(f"ERROR: expiry reminder failed for {name}/{chat_id}: {exc}", file=sys.stderr)
-                continue
-            sent[key] = ctx.utc_stamp()
-            sent_count += 1
+        due = expiry_reminder_due(ctx, entry, now)
+        if not due:
+            continue
+        days_before, days_left, expiry_local, timezone_label = due
+        key = expiry_reminder_key(chat_id, name, entry, days_before)
+        if key in sent:
+            continue
+        message = build_expiry_reminder_message(ctx, db, client_db, entry, days_left, expiry_local, timezone_label)
+        try:
+            ctx.send_chat_message(db, chat_id, message)
+        except Exception as exc:
+            if not quiet:
+                print(f"ERROR: expiry reminder failed for {name}/{chat_id}: {exc}", file=sys.stderr)
+            continue
+        sent[key] = ctx.utc_stamp()
+        sent_count += 1
 
     if len(sent) > 2000:
         sent_items = sorted(sent.items(), key=lambda item: item[1])[-2000:]

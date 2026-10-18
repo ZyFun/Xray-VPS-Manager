@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 import gzip
+import subprocess
 from contextlib import redirect_stdout
 from datetime import date, datetime, timezone
 from io import StringIO
@@ -9,6 +10,7 @@ from unittest import mock
 
 from xray_vps_manager.activity import backfill
 from xray_vps_manager.activity import raw_logs
+from xray_vps_manager.activity import sync as activity_sync
 from xray_vps_manager.commands import activity as activity_command
 
 
@@ -61,19 +63,56 @@ class ActivityRawLogsTests(unittest.TestCase):
         self.assertIn("OnCalendar=*-*-* 03:00:00 Europe/Moscow", unit)
         self.assertIn("Unit=xray-raw-log-rotate.service", unit)
 
-    def test_rotate_raw_logs_aborts_before_rename_when_pre_sync_fails(self) -> None:
+    def test_rotate_raw_logs_rotates_with_warning_and_fails_when_pre_sync_fails(self) -> None:
         messages: list[str] = []
+        restarted = subprocess.CompletedProcess(["systemctl", "try-restart", "xray.service"], 0, "", "")
 
         with (
+            mock.patch.object(raw_logs, "_load_state", return_value={}),
             mock.patch.object(raw_logs, "rotation_due", return_value=(True, "2026-06-12", "UTC")),
             mock.patch.object(raw_logs, "drain_logs_before_rotation", return_value=1),
-            mock.patch.object(raw_logs, "rotate_file") as rotate_file,
+            mock.patch.object(
+                raw_logs,
+                "rotate_file",
+                side_effect=lambda path, stamp: path.with_name(f"{path.name}.{stamp}.gz"),
+            ) as rotate_file,
+            mock.patch.object(raw_logs, "prune_rotated_logs", return_value=0),
+            mock.patch.object(raw_logs, "restart_xray", return_value=restarted) as restart_xray,
+            mock.patch.object(raw_logs, "_save_state") as save_state,
         ):
             result = raw_logs.rotate_raw_logs(only_if_due=True, log=messages.append)
 
         self.assertEqual(result, 1)
-        rotate_file.assert_not_called()
-        self.assertTrue(any("aborted before renaming" in message for message in messages))
+        self.assertEqual(
+            [call.args[0] for call in rotate_file.call_args_list],
+            [raw_logs.ACCESS_LOG_PATH, raw_logs.ERROR_LOG_PATH],
+        )
+        restart_xray.assert_called_once_with()
+        self.assertEqual(save_state.call_args.args[0]["lastRunDate"], "2026-06-12")
+        self.assertTrue(any(message.startswith("WARN:") and "rotating anyway" in message for message in messages))
+        self.assertTrue(messages[-1].startswith("ERROR:"))
+        self.assertIn("pre-sync failed", messages[-1])
+        self.assertFalse(any("aborted before renaming" in message for message in messages))
+
+    def test_drain_logs_before_rotation_records_one_pre_sync_error_with_rotation_note(self) -> None:
+        cases = (
+            ("non-zero result", {"return_value": 1}, "activity sync=1, error sync=0; rotation continues"),
+            ("exception", {"side_effect": RuntimeError("database is locked")}, "database is locked; rotation continues"),
+        )
+        for name, sync_behavior, raw_line in cases:
+            with self.subTest(name):
+                messages: list[str] = []
+
+                with (
+                    mock.patch.object(activity_sync, "sync_activity", **sync_behavior),
+                    mock.patch.object(raw_logs, "sync_error_log", return_value=0),
+                    mock.patch.object(raw_logs, "record_rotation_error") as record_rotation_error,
+                ):
+                    result = raw_logs.drain_logs_before_rotation(messages.append)
+
+                self.assertEqual(result, 1)
+                record_rotation_error.assert_called_once_with("raw log rotation pre-sync failed", raw_line=raw_line)
+                self.assertTrue(any(message.startswith("ERROR: raw log rotation pre-sync failed") for message in messages))
 
     def test_raw_log_archive_rows_lists_access_and_error_archives(self) -> None:
         old_access = raw_logs.ACCESS_LOG_PATH
