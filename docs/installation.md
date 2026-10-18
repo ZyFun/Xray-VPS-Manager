@@ -53,6 +53,8 @@ bash install-caddy-download-proxy.sh
 - локальные служебные команды в `/usr/local/sbin`;
 - Python-пакет менеджера в `/usr/local/lib/xray-vps-manager`.
 
+Ключи Reality установщик разбирает из вывода `xray x25519` любой из известных версий Xray: метка с `Private` - приватный ключ, с `Public` или `Password` - публичный, строка `Hash32` пропускается, значение должно быть base64url из 43 символов. Если ключи не найдены, установка останавливается с `Failed to generate Xray credentials.`
+
 В интерактивной установке можно выбрать начальный протокол:
 
 - `vless` - режим по умолчанию и совместимость со старым install flow;
