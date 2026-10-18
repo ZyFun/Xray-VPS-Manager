@@ -23,7 +23,7 @@ from xray_vps_manager.commands import (
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 MENU_VERSION = "v2.1.0"
-MENU_UPDATED = "2026-10-13 22:12 UTC"
+MENU_UPDATED = "2026-10-18 17:59 UTC"
 
 
 def die(message):
