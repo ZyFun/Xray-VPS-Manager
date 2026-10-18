@@ -77,6 +77,25 @@ class TelegramAdminTests(unittest.TestCase):
         self.assertIn({"text": "Текущая сумма", "callback_data": "admin:payment-total"}, buttons)
         self.assertIn({"text": "Назад", "callback_data": "admin:menu"}, buttons)
 
+    def test_payment_share_excludes_disabled_paid_clients(self) -> None:
+        db = {"paymentTotalAmount": "500", "paymentCurrency": "₽"}
+        client_db = {
+            "clients": {
+                "alice": {"paymentType": "paid", "enabled": True},
+                "bob": {"paymentType": "paid", "enabled": False, "disabledReason": "expired"},
+            }
+        }
+        events = []
+        ctx = self.make_context(events, client_db=client_db)
+
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:payment-share"))
+        self.assertTrue(admin.handle_callback(ctx, db, "111", "admin:payment-total"))
+
+        for event in events:
+            self.assertIn("Платных активных клиентов: 1", event["text"])
+            self.assertIn("Платных отключённых, в расчёт не входят: 1", event["text"])
+        self.assertIn("Сумма на клиента: 500 ₽", events[0]["text"])
+
     def test_settings_status_callback_sends_settings_submenu(self) -> None:
         db = {
             "enabled": True,

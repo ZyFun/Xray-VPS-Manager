@@ -480,19 +480,27 @@ def payment_total_text(ctx: AdminContext, db):
             f"Годовая аренда домена: {summary['domainAnnual']}",
             f"Аренда домена в месяц: {summary['domainMonthly']}",
             f"Общая месячная аренда: {summary['total']}",
-            f"Платных клиентов: {payments.paid_client_count(client_db)}",
+            *paid_clients_lines(summary),
             f"Реквизиты: {payments.payment_transfer_label(db)}",
         ]
     )
 
 
+def paid_clients_lines(summary):
+    lines = [f"Платных активных клиентов: {summary['paidCount']}"]
+    if summary["excludedPaidCount"]:
+        lines.append(f"Платных отключённых, в расчёт не входят: {summary['excludedPaidCount']}")
+    return lines
+
+
 def payment_share_text(ctx: AdminContext, db):
     client_db = ctx.load_client_db()
+    summary = payments.payment_summary(db, client_db)
     return "\n".join(
         [
             "Xray VPS Manager: сумма на клиента",
             "",
-            f"Платных клиентов: {payments.paid_client_count(client_db)}",
+            *paid_clients_lines(summary),
             f"Сумма на клиента: {payments.payment_amount_label(db, client_db)}",
             f"Округление: {payments.payment_rounding_label(db)}",
         ]
