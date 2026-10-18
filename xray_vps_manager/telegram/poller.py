@@ -450,7 +450,7 @@ def handle_user_message(ctx: PollerContext, db, update):
             chat_id,
             "Подписка подключена.\n\n"
             + subscriptions.client_access_summary(entry, ctx.format_access_until, ctx.load_client_db())
-            + "\n\nНапоминания придут в 08:00 за 5 дней и за 1 день до окончания доступа.",
+            + "\n\nНапоминания придут не позднее чем за 5 дней и ещё раз за 1 день до окончания доступа, обычно в 08:00.",
         )
         return True
     if subscriptions.find_protocol_link(text):
