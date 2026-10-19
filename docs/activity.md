@@ -89,7 +89,9 @@ xray-activity cleanup --yes
 xray-activity cleanup 14 --yes
 ```
 
-Команда создаёт SQLite backup в `manager-db-backups`, временно останавливает manager-owned writer units (`xray-traffic-sync`, raw-log rotation, expiry и Telegram poller), применяет `ACTIVITY_RETENTION_DAYS`, запускает `PRAGMA quick_check`, выполняет `VACUUM` для `manager.db` и затем запускает обратно те timer/service units, которые были активны до очистки. Xray Core при этом не перезапускается.
+Сначала команда проверяет, что на диске с базой свободно не меньше трёх её размеров вместе с `manager.db-wal`: одна копия нужна под SQLite backup, ещё две — под `VACUUM`, который в режиме WAL пишет временную копию базы и копию в `manager.db-wal`. Если места меньше, команда завершается ошибкой `Activity cleanup failed: Not enough free disk space for activity cleanup: …` до любых изменений: сервисы не останавливаются, backup не создаётся, база не меняется.
+
+Затем команда создаёт SQLite backup в `manager-db-backups`, временно останавливает manager-owned writer units (`xray-traffic-sync`, raw-log rotation, expiry и Telegram poller), применяет `ACTIVITY_RETENTION_DAYS`, запускает `PRAGMA quick_check`, выполняет `VACUUM` для `manager.db`, переносит журнал в базу и усекает `manager.db-wal` до нуля (`PRAGMA wal_checkpoint(TRUNCATE)`). После этого она запускает обратно те timer/service units, которые были активны до очистки. Xray Core при этом не перезапускается.
 
 Синхронизация выполняется раз в минуту тем же `xray-traffic-sync.timer` вторым шагом после сохранения трафика; шаги минутного таймера независимы, и ошибка sync не останавливает лимиты, сроки доступа и уведомления (подробнее — в [минутном таймере](updates.md#минутный-таймер)). Вручную sync можно запустить так:
 

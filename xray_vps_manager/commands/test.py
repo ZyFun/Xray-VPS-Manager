@@ -453,6 +453,15 @@ def check_sqlite_database(diag, full_integrity=False):
         if version != sqlite_schema.CURRENT_SCHEMA_VERSION:
             raise RuntimeError(f"schema version {version}, expected {sqlite_schema.CURRENT_SCHEMA_VERSION}")
 
+        # `-wal`/`-shm` рядом с базой — норма для WAL (VIREI-245); откатный журнал в нём остаться не должен.
+        journal = sqlite_database.journal_mode(connection)
+        journal_warnings = []
+        if journal != "wal":
+            journal_warnings.append(f"journal_mode={journal}, expected wal")
+        leftover_journal = Path(f"{MANAGER_DB_PATH}-journal")
+        if leftover_journal.exists():
+            journal_warnings.append(f"leftover rollback journal {leftover_journal}")
+
         ready = sqlite_read_ready(connection)
         if not ready:
             raise RuntimeError("SQLite read-ready metadata is not true")
@@ -478,7 +487,13 @@ def check_sqlite_database(diag, full_integrity=False):
                 raise RuntimeError("; ".join(issues[:8]))
 
         count_text = ", ".join(f"{key}={value}" for key, value in counts.items())
-        return f"{MANAGER_DB_PATH} schema={version}, quick_check={quick_check_status}, sqliteReady=yes, {count_text}"
+        detail = (
+            f"{MANAGER_DB_PATH} schema={version}, journal={journal}, quick_check={quick_check_status}, "
+            f"sqliteReady=yes, {count_text}"
+        )
+        if journal_warnings:
+            raise RuntimeError(f"{'; '.join(journal_warnings)}; {detail}")
+        return detail
     finally:
         connection.close()
 

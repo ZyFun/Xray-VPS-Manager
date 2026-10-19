@@ -29,6 +29,7 @@ from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.activity import status as activity_status
 from xray_vps_manager.activity import sync as activity_sync
+from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.core.terminal import print_table
 
@@ -141,6 +142,8 @@ def cleanup_activity_data(value=None, confirmed=False):
         die(str(exc))
     try:
         result = activity_cleanup.cleanup_activity_data(retention_days=days, log=lambda message: print(message, flush=True))
+    except ManagerError as exc:
+        die(f"Activity cleanup failed: {exc.message} {exc.hint}".rstrip())
     except RuntimeError as exc:
         die(f"Activity cleanup failed: {exc}")
     print_table(

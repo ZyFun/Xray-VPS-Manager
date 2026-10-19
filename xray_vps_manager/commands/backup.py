@@ -738,6 +738,9 @@ def apply_restore(temp_dir):
         if arcname == SERVER_ENV_ARCNAME:
             copied = copy_server_env_if_exists(temp_dir, arcname, target)
         else:
+            if arcname == MANAGER_DB_ARCNAME and (temp_dir / arcname).exists():
+                # Кадры `-wal` прежней базы при следующем открытии легли бы на восстановленный файл (VIREI-245).
+                sqlite_database.remove_journal_files(target)
             copied = copy_if_exists(temp_dir, arcname, target, 0o640)
         if copied:
             restored.append(str(target))
@@ -765,9 +768,7 @@ def backup_manager_db_before_restore():
         while fallback.exists():
             fallback = backup_dir / f"{MANAGER_DB_PATH.stem}-pre-restore-{archive_stamp()}-{counter}.db"
             counter += 1
-        shutil.copy2(MANAGER_DB_PATH, fallback)
-        os.chmod(fallback, 0o600)
-        return fallback
+        return sqlite_database.copy_database_files(MANAGER_DB_PATH, fallback)
 
 
 def test_and_restart():
