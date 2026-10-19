@@ -199,7 +199,14 @@ def remove_journal_files(path: str | Path) -> tuple[Path, ...]:
 def database_disk_bytes(path: str | Path | None = None) -> int:
     """Размер базы на диске вместе с `-wal`."""
     db_path = database_path(path)
-    return sum(item.stat().st_size for item in (db_path, Path(f"{db_path}-wal")) if item.exists())
+    total = 0
+    for item in (db_path, Path(f"{db_path}-wal")):
+        try:
+            total += item.stat().st_size
+        except FileNotFoundError:
+            # `-wal` удаляет последнее закрытое соединение другого процесса, в том числе между проверками.
+            continue
+    return total
 
 
 def ensure_free_space(path: str | Path | None, required_bytes: int, *, purpose: str) -> None:

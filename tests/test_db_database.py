@@ -291,6 +291,20 @@ class SQLiteWalModeTests(unittest.TestCase):
             with mock.patch("shutil.disk_usage", return_value=mock.Mock(free=3072)):
                 database.ensure_free_space(db_path, 3072, purpose="activity cleanup")
 
+    def test_database_disk_bytes_tolerates_wal_removed_between_checks(self) -> None:
+        """245-R03: `exists()` видит `-wal`, а к `stat()` его уже удалило закрытие чужого соединения."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            db_path.write_bytes(b"x" * 1000)
+            wal_path = Path(f"{db_path}-wal")
+            original_exists = Path.exists
+
+            def wal_seen_then_gone(self, *args, **kwargs):
+                return True if self == wal_path else original_exists(self, *args, **kwargs)
+
+            with mock.patch.object(Path, "exists", wal_seen_then_gone):
+                self.assertEqual(database.database_disk_bytes(db_path), 1000)
+
 
 if __name__ == "__main__":
     unittest.main()
