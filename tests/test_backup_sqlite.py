@@ -2,6 +2,7 @@ from pathlib import Path
 from contextlib import redirect_stderr
 from io import StringIO
 import json
+import shutil
 import sqlite3
 import tarfile
 import tempfile
@@ -10,6 +11,26 @@ from unittest import mock
 
 from xray_vps_manager.commands import backup
 from xray_vps_manager.db import database
+
+
+def open_with_pending_wal_frames(db_path: Path, value: str) -> sqlite3.Connection:
+    """Открытое соединение, последняя запись которого лежит только в `-wal` (без checkpoint)."""
+    connection = sqlite3.connect(str(db_path))
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA wal_autocheckpoint = 0")
+    connection.execute("INSERT OR REPLACE INTO manager_metadata(key, value) VALUES ('sample', ?)", (value,))
+    connection.commit()
+    return connection
+
+
+def metadata_value(db_path: Path, key: str):
+    connection = sqlite3.connect(str(db_path))
+    try:
+        assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        row = connection.execute("SELECT value FROM manager_metadata WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+    finally:
+        connection.close()
 
 
 class BackupSQLiteTests(unittest.TestCase):
@@ -388,6 +409,91 @@ class BackupSQLiteTests(unittest.TestCase):
 
             self.assertEqual(manager_db_target.read_text(), "restored")
             self.assertIn(str(manager_db_target), restored)
+
+    def test_backup_then_restore_with_pending_wal_replaces_stale_wal_files(self) -> None:
+        """VIREI-245: архив забирает данные из `-wal`, restore не оставляет `-wal`/`-shm` прежней базы."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config_dir = root / "etc" / "xray"
+            config_dir.mkdir(parents=True)
+            (config_dir / "config.json").write_text("{}\n")
+            (config_dir / "server.env").write_text("SERVER_NAME=Virei\n")
+            db_path = config_dir / "manager.db"
+            database.open_database(db_path).close()
+            holder = open_with_pending_wal_frames(db_path, "from-wal")
+
+            backup_files = [
+                ("usr/local/etc/xray/config.json", config_dir / "config.json", True),
+                ("usr/local/etc/xray/server.env", config_dir / "server.env", True),
+                ("usr/local/etc/xray/manager.db", db_path, True),
+            ]
+            try:
+                with mock.patch.object(backup, "BACKUP_DIR", root / "backups"), mock.patch.object(
+                    backup, "BACKUP_FILES", backup_files
+                ), mock.patch.object(backup, "BACKUP_DIRS", []), mock.patch.object(
+                    backup, "CADDY_CONFIG_FILES", []
+                ), mock.patch.object(backup, "CADDY_CONFIG_DIRS", []), mock.patch.object(
+                    backup, "MANAGER_DB_PATH", db_path
+                ):
+                    archive = backup.create_backup(quiet=True, sync=False)
+
+                with tarfile.open(archive, "r:gz") as tar:
+                    archived_db = tar.extractfile("usr/local/etc/xray/manager.db").read()
+                self.assertEqual(archived_db[18:20], b"\x01\x01")
+                alone = root / "alone" / "manager.db"
+                alone.parent.mkdir()
+                alone.write_bytes(archived_db)
+                self.assertEqual(metadata_value(alone, "sample"), "from-wal")
+
+                # Писатель убит сигналом: рядом с базой остались `-wal`/`-shm` с другими данными.
+                holder.execute("UPDATE manager_metadata SET value = 'stale' WHERE key = 'sample'")
+                holder.commit()
+                target_dir = root / "target" / "xray"
+                target_dir.mkdir(parents=True)
+                for suffix in ("", "-wal", "-shm"):
+                    shutil.copy2(f"{db_path}{suffix}", f"{target_dir / 'manager.db'}{suffix}")
+            finally:
+                holder.close()
+
+            temp_dir = backup.extract_archive(archive)
+            try:
+                restore_files = [
+                    ("usr/local/etc/xray/config.json", target_dir / "config.json", True),
+                    ("usr/local/etc/xray/manager.db", target_dir / "manager.db", True),
+                ]
+                with mock.patch.object(backup, "CONFIG_DIR", target_dir), mock.patch.object(
+                    backup, "BACKUP_FILES", restore_files
+                ), mock.patch.object(backup, "BACKUP_DIRS", []), mock.patch.object(
+                    backup, "chown_xray"
+                ), mock.patch.object(
+                    backup.shutil, "chown"
+                ):
+                    backup.apply_restore(temp_dir)
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+            self.assertEqual(sorted(path.name for path in target_dir.iterdir()), ["config.json", "manager.db"])
+            self.assertEqual(metadata_value(target_dir / "manager.db", "sample"), "from-wal")
+
+    def test_pre_restore_fallback_copy_keeps_pending_wal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "manager.db"
+            database.open_database(db_path).close()
+            holder = open_with_pending_wal_frames(db_path, "from-wal")
+            try:
+                with mock.patch.object(backup, "BACKUP_DIR", root / "backups"), mock.patch.object(
+                    backup, "MANAGER_DB_PATH", db_path
+                ), mock.patch.object(
+                    backup.sqlite_database, "backup_database", side_effect=sqlite3.DatabaseError("boom")
+                ):
+                    fallback = backup.backup_manager_db_before_restore()
+            finally:
+                holder.close()
+
+            self.assertTrue(Path(f"{fallback}-wal").exists())
+            self.assertEqual(Path(f"{fallback}-wal").stat().st_mode & 0o777, 0o600)
+            self.assertEqual(metadata_value(fallback, "sample"), "from-wal")
 
     def test_restore_direct_tls_certificate_permissions_updates_existing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

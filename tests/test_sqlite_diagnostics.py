@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
@@ -134,6 +135,53 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
             self.assertIn("sqliteReady=yes", result)
             self.assertIn("clients=1", result)
             quick_check.assert_not_called()
+
+    def test_wal_database_with_wal_and_shm_files_is_healthy(self) -> None:
+        """VIREI-245: `-wal`/`-shm` рядом с базой — норма, режим журнала виден в выводе."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+            holder = sqlite3.connect(str(db_path))
+            try:
+                holder.execute("SELECT COUNT(*) FROM clients").fetchall()
+                self.assertTrue(Path(f"{db_path}-wal").exists())
+                self.assertTrue(Path(f"{db_path}-shm").exists())
+
+                with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
+                    result = test_command.check_sqlite_database(self.make_diag())
+            finally:
+                holder.close()
+
+            self.assertIn("journal=wal", result)
+            self.assertIn("clients=1", result)
+
+    def test_delete_journal_mode_is_a_warning_and_is_not_switched_by_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+            raw = sqlite3.connect(str(db_path))
+            raw.execute("PRAGMA journal_mode = DELETE")
+            raw.close()
+
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
+                with self.assertRaisesRegex(RuntimeError, "journal_mode=delete, expected wal"):
+                    test_command.check_sqlite_database(self.make_diag())
+
+            raw = sqlite3.connect(str(db_path))
+            try:
+                self.assertEqual(raw.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+            finally:
+                raw.close()
+
+    def test_leftover_rollback_journal_is_a_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+            Path(f"{db_path}-journal").write_bytes(b"")
+
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
+                with self.assertRaisesRegex(RuntimeError, "leftover rollback journal .*manager.db-journal"):
+                    test_command.check_sqlite_database(self.make_diag())
 
     def test_ready_sqlite_database_full_integrity_runs_quick_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
