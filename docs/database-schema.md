@@ -377,7 +377,7 @@ clients.name -> activity_blocklist_hits.client_name
 
 `activity_events.raw_json` хранит исходное metadata-событие для внутренних отчётов и экспорта. Журнал активности не хранит содержимое HTTPS, сообщений, файлов или тела запросов.
 `activity_alert_events` отделяет уведомления и security-события от detailed log: отключение detailed log не останавливает запись alert-log и клиентские GeoIP-уведомления.
-Window-level alert риски `burst`, `unique-hosts` и `unique-ports` используют короткое состояние `activity.alertWindows` в `manager_metadata`; там хранятся timestamp-ы rolling-окна и хэши host/port, а не полный список адресов.
+Window-level alert риски `burst`, `unique-hosts` и `unique-ports` используют короткое состояние `activity.alertWindows` в `manager_metadata`; там хранятся timestamp-ы rolling-окна и хэши host/port, а не полный список адресов. `xray-activity sync` читает это состояние один раз в начале прогона и записывает один раз в конце в одной транзакции с offset access.log, а не на каждое событие; если прогон прерван ошибкой записи, offset и состояние окон не сохраняются, и следующий прогон учитывает перечитанные строки в окнах один раз.
 `activity_client_counters` обновляется независимо от detailed log и нужен для статистики количества событий по клиентам.
 `activity_blocklist` задаёт глобальные Xray routing rules, а не клиентские ограничения: `source_client_name` нужен для истории и сортировки, но блокировка применяется ко всему трафику. `activity_blocklist_hits.last_seen_at` используется для отображения времени последнего срабатывания.
 

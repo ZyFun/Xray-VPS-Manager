@@ -56,14 +56,25 @@ def save_activity_db(db: dict, *, db_path: str | Path | None = None) -> None:
     write_activity_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
-def load_activity_db(retention_days: int, enabled: bool, *, db_path: str | Path | None = None) -> dict:
+def load_activity_db(
+    retention_days: int,
+    enabled: bool,
+    *,
+    db_path: str | Path | None = None,
+    with_alert_windows: bool = False,
+) -> dict:
+    """Снимок состояния активности; ``with_alert_windows`` добавляет ключ ``alertWindows``
+    (состояние окон подозрительной активности), который ``save_activity_db`` записывает
+    вместе с summary и offset. Без ключа строка ``activity.alertWindows`` не трогается."""
     if not database.database_file_exists(db_path):
         raise SQLiteReadUnavailable("SQLite manager database is missing.")
     connection = None
     try:
         connection = database.open_database(db_path)
         if sqlite_read_ready(connection):
-            return load_activity_db_from_sqlite(connection, retention_days, enabled)
+            return load_activity_db_from_sqlite(
+                connection, retention_days, enabled, with_alert_windows=with_alert_windows
+            )
         raise SQLiteReadUnavailable("SQLite database is not marked ready.")
     except SQLiteReadUnavailable:
         raise
@@ -74,7 +85,13 @@ def load_activity_db(retention_days: int, enabled: bool, *, db_path: str | Path 
             connection.close()
 
 
-def load_activity_db_from_sqlite(connection, retention_days: int, enabled: bool) -> dict:
+def load_activity_db_from_sqlite(
+    connection,
+    retention_days: int,
+    enabled: bool,
+    *,
+    with_alert_windows: bool = False,
+) -> dict:
     metadata = sqlite_activity.get_source_metadata(connection)
     summary = sqlite_activity.get_summary(connection)
     db = {
@@ -87,6 +104,10 @@ def load_activity_db_from_sqlite(connection, retention_days: int, enabled: bool)
     for key in ("lastSync", "lastPrune"):
         if metadata.get(key):
             db[key] = metadata[key]
+    if with_alert_windows:
+        db["alertWindows"] = sqlite_activity.get_metadata_json(
+            connection, sqlite_activity.ACTIVITY_ALERT_WINDOW_STATE_KEY
+        )
     return db
 
 
@@ -577,7 +598,16 @@ def record_pipeline_event_for_write(
     alerts_enabled: bool,
     db_path: str | Path | None = None,
     strict: bool = False,
+    window_state: dict | None = None,
+    risk_limits: dict | None = None,
+    display_tz=None,
 ) -> dict:
+    """Записывает одно событие конвейера: счётчики, detailed-событие, alert-строки, blocklist hit.
+
+    ``window_state``, ``risk_limits`` и ``display_tz`` передаёт прогон sync, прочитав их один раз
+    (VIREI-246): состояние окон тогда меняется в памяти и не пишется на каждое событие.
+    Без них — прежнее поведение: часовой пояс и лимиты читаются здесь, окна — в ``manager_metadata``.
+    """
     if not database.database_file_exists(db_path):
         if strict:
             raise RuntimeError("SQLite manager database is missing")
@@ -593,7 +623,8 @@ def record_pipeline_event_for_write(
         client_name = str(event.get("client") or event.get("client_name") or "").strip()
         if client_name not in sqlite_clients.list_clients(connection):
             return {"storedDetail": False, "storedAlerts": 0, "storedCounters": False}
-        display_tz, _label = manager_timezone()
+        if display_tz is None:
+            display_tz, _label = manager_timezone()
         detail_event_id = None
         with database.transaction(connection):
             sqlite_activity.upsert_client_counters(connection, event, display_tz)
@@ -608,14 +639,17 @@ def record_pipeline_event_for_write(
                         raw_ref_event_id=detail_event_id,
                     )
                 )
-                from xray_vps_manager.activity import settings as activity_settings
+                if risk_limits is None:
+                    from xray_vps_manager.activity import settings as activity_settings
 
+                    risk_limits = activity_settings.risk_limits()
                 alert_ids.extend(
                     sqlite_activity.add_window_alerts_for_event(
                         connection,
                         event,
-                        activity_settings.risk_limits(),
+                        risk_limits,
                         display_tz,
+                        state=window_state,
                     )
                 )
             from xray_vps_manager.activity import blocklist as activity_blocklist
@@ -698,10 +732,16 @@ def write_activity_db_to_sqlite_for_write(
             "lastSync": db.get("lastSync"),
             "lastPrune": db.get("lastPrune"),
         }
+        alert_windows = db.get("alertWindows")
         with database.transaction(connection):
             sqlite_activity.set_summary(connection, clients)
             sqlite_activity.set_source_metadata(connection, metadata)
             sqlite_activity.upsert_access_log_state(connection, db.get("accessLog"))
+            if isinstance(alert_windows, dict):
+                # В одной транзакции с offset: окна сохранены ровно тогда, когда offset продвинут.
+                sqlite_activity.set_metadata_json(
+                    connection, sqlite_activity.ACTIVITY_ALERT_WINDOW_STATE_KEY, alert_windows
+                )
         return True
     except Exception:
         if strict:
