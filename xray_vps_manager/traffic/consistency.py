@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
 
+from xray_vps_manager.traffic.history import HistoryChanges
+
 
 @dataclass(frozen=True)
 class RetainedHistoryGap:
@@ -140,6 +142,7 @@ def repair_retained_history_gaps(
     client_entries: dict[str, Any],
     cutoff_date: date,
     bucket_time: datetime,
+    history_changes: HistoryChanges | None = None,
 ) -> list[RetainedHistoryGap]:
     repaired = retained_history_gaps(traffic_db, client_entries, cutoff_date)
     traffic_clients = traffic_db.get("clients", {})
@@ -149,10 +152,8 @@ def repair_retained_history_gaps(
         entry = traffic_clients.get(gap.name, {})
         if not isinstance(entry, dict):
             continue
-        add_history_delta(
-            entry,
-            repair_bucket_time(entry, bucket_time),
-            gap.missing_incoming,
-            gap.missing_outgoing,
-        )
+        repair_time = repair_bucket_time(entry, bucket_time)
+        add_history_delta(entry, repair_time, gap.missing_incoming, gap.missing_outgoing)
+        if history_changes is not None:
+            history_changes.add_client(gap.name, repair_time, gap.missing_incoming, gap.missing_outgoing)
     return repaired

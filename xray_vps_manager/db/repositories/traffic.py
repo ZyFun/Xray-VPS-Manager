@@ -12,6 +12,13 @@ TRAFFIC_ACCESS_LOG_OFFSET = "traffic-access-log"
 
 
 def upsert_traffic_entry(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
+    with database.transaction(connection):
+        upsert_traffic_totals(connection, name, entry)
+        sync_history(connection, name, entry)
+
+
+def upsert_traffic_totals(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
+    """Итоги, `last`-счётчики и время онлайна клиента без перезаписи его истории."""
     last = entry.get("last") if isinstance(entry.get("last"), dict) else {}
     with database.transaction(connection):
         connection.execute(
@@ -45,7 +52,6 @@ def upsert_traffic_entry(connection: sqlite3.Connection, name: str, entry: dict[
                 entry.get("updated") or None,
             ),
         )
-        sync_history(connection, name, entry)
 
 
 def upsert_credential_traffic_entry(
@@ -54,6 +60,18 @@ def upsert_credential_traffic_entry(
     connection_tag: str,
     entry: dict[str, Any],
 ) -> None:
+    with database.transaction(connection):
+        upsert_credential_traffic_totals(connection, name, connection_tag, entry)
+        sync_credential_history(connection, name, connection_tag, entry)
+
+
+def upsert_credential_traffic_totals(
+    connection: sqlite3.Connection,
+    name: str,
+    connection_tag: str,
+    entry: dict[str, Any],
+) -> None:
+    """Итоги, `last`-счётчики и время онлайна credential без перезаписи его истории."""
     last = entry.get("last") if isinstance(entry.get("last"), dict) else {}
     with database.transaction(connection):
         connection.execute(
@@ -88,7 +106,6 @@ def upsert_credential_traffic_entry(
                 entry.get("updated") or None,
             ),
         )
-        sync_credential_history(connection, name, connection_tag, entry)
 
 
 def get_traffic_entry(connection: sqlite3.Connection, name: str) -> dict[str, Any]:
@@ -142,6 +159,15 @@ def _traffic_entry_from_row(connection: sqlite3.Connection, row, *, credential: 
         if row[db_key]:
             entry[json_key] = row[db_key]
     return entry
+
+
+def traffic_client_names(connection: sqlite3.Connection) -> set[str]:
+    return {row["client_name"] for row in connection.execute("SELECT client_name FROM traffic_totals")}
+
+
+def credential_traffic_keys(connection: sqlite3.Connection) -> set[tuple[str, str]]:
+    rows = connection.execute("SELECT client_name, connection_tag FROM credential_traffic_totals")
+    return {(row["client_name"], row["connection_tag"]) for row in rows}
 
 
 def list_traffic_entries(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
@@ -364,6 +390,13 @@ def add_credential_history_delta(
             """,
             (name, connection_tag, day_key, int(hour), int(incoming), int(outgoing)),
         )
+
+
+def delete_history_before(connection: sqlite3.Connection, day_key: str) -> None:
+    """Обрезка истории клиентов и credentials старше `day_key` (ISO-даты сравниваются строкой)."""
+    with database.transaction(connection):
+        connection.execute("DELETE FROM traffic_history WHERE bucket_date < ?", (day_key,))
+        connection.execute("DELETE FROM credential_traffic_history WHERE bucket_date < ?", (day_key,))
 
 
 def history_for_client(connection: sqlite3.Connection, name: str) -> dict[str, dict[str, dict[str, int]]]:

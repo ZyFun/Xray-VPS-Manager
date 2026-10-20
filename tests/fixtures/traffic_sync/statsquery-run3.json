@@ -1,0 +1,28 @@
+{
+    "stat": [
+        {
+            "name": "user>>>alice|created=2025-12-01T10:00:00Z>>>traffic>>>uplink",
+            "value": "70"
+        },
+        {
+            "name": "user>>>alice|created=2025-12-01T10:00:00Z>>>traffic>>>downlink",
+            "value": "90"
+        },
+        {
+            "name": "user>>>alice|created=2026-03-01T10:00:00Z|connection=trojan-tls>>>traffic>>>uplink",
+            "value": "6"
+        },
+        {
+            "name": "user>>>alice|created=2026-03-01T10:00:00Z|connection=trojan-tls>>>traffic>>>downlink",
+            "value": "7"
+        },
+        {
+            "name": "user>>>bob|created=2026-09-01T10:00:00Z>>>traffic>>>uplink",
+            "value": "5"
+        },
+        {
+            "name": "user>>>bob|created=2026-09-01T10:00:00Z>>>traffic>>>downlink",
+            "value": "30"
+        }
+    ]
+}
