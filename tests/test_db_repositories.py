@@ -299,6 +299,33 @@ class SQLiteRepositoryTests(unittest.TestCase):
         self.assertEqual(risks["unique-ports"]["event_count"], 2)
         self.assertEqual(len(ids), 3)
 
+    def test_activity_window_alerts_with_caller_state_do_not_write_metadata(self) -> None:
+        """VIREI-246: переданное состояние окон меняется в памяти и не пишется в manager_metadata на событие."""
+        limits = {"burstEvents": 2, "burstWindowMinutes": 15, "uniqueHosts": 5, "uniquePorts": 5}
+        events = [
+            {"time": "2026-06-12T08:00:00Z", "client": "alice", "connection": "vless-reality", "host": "one.example", "port": "443"},
+            {"time": "2026-06-12T08:01:00Z", "client": "alice", "connection": "vless-reality", "host": "two.example", "port": "8443"},
+        ]
+        state: dict = {}
+
+        ids = []
+        for event in events:
+            ids.extend(activity.add_window_alerts_for_event(self.connection, event, limits, timezone.utc, state=state))
+
+        self.assertEqual(len(ids), 1)
+        self.assertEqual([row["risk"] for row in activity.list_alert_events(self.connection, limit=10)], ["burst"])
+        alice = state["clients"]["alice"]
+        self.assertEqual(alice["eventTimes"], ["2026-06-12T08:00:00Z", "2026-06-12T08:01:00Z"])
+        self.assertEqual(alice["lastAlerts"], {"burst": "2026-06-12T08:00:00+00:00"})
+        self.assertEqual(activity.get_metadata_json(self.connection, activity.ACTIVITY_ALERT_WINDOW_STATE_KEY), {})
+
+        # Без параметра — прежнее поведение: чтение и запись manager_metadata на каждое событие.
+        activity.add_window_alerts_for_event(self.connection, events[0], limits, timezone.utc)
+
+        stored = activity.get_metadata_json(self.connection, activity.ACTIVITY_ALERT_WINDOW_STATE_KEY)
+        self.assertEqual(stored["clients"]["alice"]["eventTimes"], ["2026-06-12T08:00:00Z"])
+        self.assertEqual(alice["eventTimes"], ["2026-06-12T08:00:00Z", "2026-06-12T08:01:00Z"])
+
     def test_xray_error_events_can_filter_multiple_levels(self) -> None:
         for level in ("info", "warning", "error"):
             activity.upsert_xray_error_event(

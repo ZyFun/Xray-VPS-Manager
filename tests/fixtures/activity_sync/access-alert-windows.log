@@ -1,0 +1,6 @@
+2026/06/12 08:00:00.101234 from 203.0.113.10:51000 accepted tcp:one.example:443 [vless-reality -> direct] email: alice|created=2026-06-12T07:01:00Z
+2026/06/12 08:01:00.202345 from 203.0.113.10:51001 accepted tcp:two.example:443 [vless-reality -> direct] email: alice|created=2026-06-12T07:01:00Z
+2026/06/12 08:02:00.303456 from 203.0.113.10:51002 accepted tcp:three.example:8443 [vless-reality -> direct] email: alice|created=2026-06-12T07:01:00Z
+2026/06/12 08:03:00.404567 from 203.0.113.10:51003 accepted tcp:one.example:8080 [vless-reality -> direct] email: alice|created=2026-06-12T07:01:00Z
+2026/06/12 08:04:00.505678 from 203.0.113.10:51004 accepted udp:one.example:443 [vless-reality -> direct] email: alice|created=2026-06-12T07:01:00Z
+2026/06/12 08:05:00.606789 from 198.51.100.7:40000 accepted tcp:bob.example:443 [vless-reality -> direct] email: bob|created=2026-06-12T07:02:00Z

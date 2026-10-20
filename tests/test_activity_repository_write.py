@@ -2,9 +2,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
@@ -178,6 +180,79 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
                     )
 
             self.assertFalse(missing_db_path.exists())
+
+    def test_pipeline_write_uses_window_state_limits_and_timezone_from_caller(self) -> None:
+        """VIREI-246: sync передаёт состояние окон, лимиты и часовой пояс, прочитанные один раз за прогон."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+            window_state: dict = {}
+            limits = {"burstEvents": 1, "burstWindowMinutes": 15, "uniqueHosts": 100, "uniquePorts": 100}
+
+            with mock.patch.object(activity_repository, "manager_timezone", side_effect=AssertionError("timezone read per event")), \
+                    mock.patch.object(activity_settings, "risk_limits", side_effect=AssertionError("limits read per event")):
+                result = activity_repository.record_pipeline_event_for_write(
+                    activity_event(),
+                    detail_mode="off",
+                    selected_clients=[],
+                    alerts_enabled=True,
+                    window_state=window_state,
+                    risk_limits=limits,
+                    display_tz=timezone.utc,
+                    db_path=db_path,
+                    strict=True,
+                )
+
+            self.assertEqual(result, {"storedDetail": False, "storedAlerts": 2, "storedCounters": True})
+            self.assertEqual(window_state["clients"]["alice"]["eventTimes"], ["2026-06-12T08:00:00Z"])
+            connection = database.open_database(db_path)
+            try:
+                self.assertEqual(
+                    {row["risk"] for row in sqlite_activity.list_alert_events(connection, limit=10)},
+                    {"xray-geoip:RU", "burst"},
+                )
+                self.assertEqual(
+                    sqlite_activity.get_metadata_json(connection, sqlite_activity.ACTIVITY_ALERT_WINDOW_STATE_KEY),
+                    {},
+                )
+            finally:
+                connection.close()
+
+    def test_save_activity_db_writes_alert_windows_only_when_loaded(self) -> None:
+        """VIREI-246: `alertWindows` сохраняется вместе с summary и offset; снимок без ключа строку не трогает."""
+        key = sqlite_activity.ACTIVITY_ALERT_WINDOW_STATE_KEY
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            self.make_sqlite_db(db_path)
+            connection = database.open_database(db_path)
+            try:
+                sqlite_activity.set_metadata_json(
+                    connection, key, {"clients": {"alice": {"eventTimes": ["2026-06-12T07:30:00Z"]}}}
+                )
+            finally:
+                connection.close()
+
+            plain = activity_repository.load_activity_db(30, True, db_path=db_path)
+            db = activity_repository.load_activity_db(30, True, db_path=db_path, with_alert_windows=True)
+
+            self.assertNotIn("alertWindows", plain)
+            self.assertEqual(db["alertWindows"], {"clients": {"alice": {"eventTimes": ["2026-06-12T07:30:00Z"]}}})
+
+            db["alertWindows"]["clients"]["alice"]["eventTimes"].append("2026-06-12T08:00:00Z")
+            db["accessLog"]["offset"] = 2000
+            activity_repository.save_activity_db(db, db_path=db_path)
+            plain["accessLog"]["offset"] = 3000
+            activity_repository.save_activity_db(plain, db_path=db_path)
+
+            connection = database.open_database(db_path)
+            try:
+                self.assertEqual(
+                    sqlite_activity.get_metadata_json(connection, key)["clients"]["alice"]["eventTimes"],
+                    ["2026-06-12T07:30:00Z", "2026-06-12T08:00:00Z"],
+                )
+                self.assertEqual(sqlite_activity.get_access_log_state(connection)["offset"], 3000)
+            finally:
+                connection.close()
 
     def test_save_and_load_exceptions_use_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

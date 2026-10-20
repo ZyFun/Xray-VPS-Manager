@@ -35,6 +35,8 @@ dist/
 *.sqlite
 *.sqlite3
 *.log
+# Фикстуры логов реального формата для тестов
+!/tests/fixtures/**/*.log
 
 # Local backup/export artifacts
 /xray_backups/
