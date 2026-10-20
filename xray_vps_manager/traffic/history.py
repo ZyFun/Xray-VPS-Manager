@@ -3,11 +3,57 @@
 from __future__ import annotations
 
 from calendar import monthrange
-from datetime import date, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from typing import Callable, Iterable
 
 
 TrafficFormatter = Callable[[int], str]
+
+
+@dataclass
+class HistoryChanges:
+    """Изменения часовых бакетов истории за один прогон `xray-traffic-sync` (VIREI-247).
+
+    В базу прогон пишет только эти дельты и обрезку истории старше `cutoff`, а не всю историю заново.
+    Ключи — `(клиент, дата, час)` и `(клиент, connection, дата, час)`, значения — `[incoming, outgoing]`.
+    """
+
+    cutoff: date
+    clients: dict[tuple[str, str, int], list[int]] = field(default_factory=dict)
+    credentials: dict[tuple[str, str, str, int], list[int]] = field(default_factory=dict)
+
+    def add_client(self, name: str, bucket_time: datetime, incoming: int, outgoing: int) -> None:
+        add_bucket_delta(self.clients, (name, *history_bucket_key(bucket_time)), incoming, outgoing)
+
+    def add_credential(
+        self,
+        name: str,
+        connection_tag: str,
+        bucket_time: datetime,
+        incoming: int,
+        outgoing: int,
+    ) -> None:
+        add_bucket_delta(
+            self.credentials,
+            (name, connection_tag, *history_bucket_key(bucket_time)),
+            incoming,
+            outgoing,
+        )
+
+
+def history_bucket_key(bucket_time: datetime) -> tuple[str, int]:
+    return bucket_time.strftime("%Y-%m-%d"), int(bucket_time.strftime("%H"))
+
+
+def add_bucket_delta(deltas: dict, key: tuple, incoming: int, outgoing: int) -> None:
+    incoming = int(incoming or 0)
+    outgoing = int(outgoing or 0)
+    if incoming <= 0 and outgoing <= 0:
+        return
+    totals = deltas.setdefault(key, [0, 0])
+    totals[0] += incoming
+    totals[1] += outgoing
 
 
 def iter_dates(start: date, end: date) -> Iterable[date]:

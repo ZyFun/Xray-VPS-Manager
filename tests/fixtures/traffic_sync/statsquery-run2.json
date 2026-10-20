@@ -1,0 +1,23 @@
+{
+    "stat": [
+        {
+            "name": "user>>>alice|created=2025-12-01T10:00:00Z>>>traffic>>>uplink",
+            "value": "30"
+        },
+        {
+            "name": "user>>>alice|created=2025-12-01T10:00:00Z>>>traffic>>>downlink",
+            "value": "40"
+        },
+        {
+            "name": "user>>>alice|created=2026-03-01T10:00:00Z|connection=trojan-tls>>>traffic>>>uplink"
+        },
+        {
+            "name": "user>>>bob|created=2026-09-01T10:00:00Z>>>traffic>>>uplink",
+            "value": "5"
+        },
+        {
+            "name": "user>>>bob|created=2026-09-01T10:00:00Z>>>traffic>>>downlink",
+            "value": "30"
+        }
+    ]
+}
