@@ -175,6 +175,13 @@ class ManagerPythonShellTests(unittest.TestCase):
             with self.subTest(configured=str(configured)):
                 self.assert_refused("without whitespace", manager_python=str(configured))
 
+    def test_path_with_quotes_is_refused(self) -> None:
+        # 81-R07: кавычки по краям значения server.env не сохраняются, как и в core.interpreter.check_interpreter.
+        for name in ("py'", 'py"', "a'b"):
+            with self.subTest(name=name):
+                quoted = write_fake_python(self.root / "opt" / name, "3.12.7")
+                self.assert_refused("without whitespace or quotes", manager_python=str(quoted))
+
     def test_path_length_is_counted_in_bytes_in_utf8_locale(self) -> None:
         # 125 символов кириллицы — это больше 125 байт: строка `#!<путь>` не поместится в буфер ядра.
         name = "п" * (125 - len(str(self.root)) - 1)

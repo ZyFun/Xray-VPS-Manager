@@ -102,6 +102,9 @@ def check_interpreter(path: str) -> Tuple[Optional[Interpreter], str]:
     # Ядро делит строку shebang по пробельным символам ASCII — те же, что [[:space:]] в bootstrap.sh/install.sh.
     if any(char in string.whitespace for char in path):
         return None, "пробел в пути не поддерживается в shebang"
+    # read_server_env срезает кавычки по краям значения: такой MANAGER_PYTHON не прочитался бы обратно (81-R07).
+    if "'" in path or '"' in path:
+        return None, "кавычки в пути не сохраняются в server.env"
     if len(shebang_line(path).encode("utf-8")) > MAX_SHEBANG_BYTES:
         return None, f"строка shebang длиннее {MAX_SHEBANG_BYTES} байт"
     if not os.path.isfile(path) or not os.access(path, os.X_OK):

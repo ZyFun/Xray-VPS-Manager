@@ -93,6 +93,15 @@ class InterpreterSelectionTests(unittest.TestCase):
         self.assertEqual(interpreter.check_interpreter(str(tabbed)), (None, "пробел в пути не поддерживается в shebang"))
         self.assertEqual(interpreter.check_interpreter(str(multibyte)), (None, "строка shebang длиннее 127 байт"))
 
+    def test_interpreter_path_with_quotes_is_rejected(self) -> None:
+        # 81-R07: read_server_env срезает кавычки по краям значения — такой MANAGER_PYTHON не прочитался бы обратно.
+        python312 = write_fake_python(self.bin / "python3.12", "3.12.3")
+        for name in ("py'", 'py"', "a'b"):
+            with self.subTest(name=name):
+                quoted = write_fake_python(self.root / "opt" / name, "3.12.7")
+                self.assertEqual(interpreter.check_interpreter(str(quoted)), (None, "кавычки в пути не сохраняются в server.env"))
+                self.assertEqual(interpreter.select_interpreter(str(quoted), which=self.which).interpreter.path, str(python312))
+
     def test_unusable_manager_python_falls_back_to_path_candidates(self) -> None:
         write_fake_python(self.bin / "python3.12", "3.12.3")
         old = write_fake_python(self.root / "opt" / "python3.11", "3.11.2")
