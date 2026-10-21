@@ -62,7 +62,7 @@ class ManagerPythonShellTests(unittest.TestCase):
         for tool in ("readlink", "cat"):
             os.symlink(shutil.which(tool), self.bin / tool)
 
-    def require(self, script: Path, manager_python: str = "") -> subprocess.CompletedProcess:
+    def require(self, script: Path, manager_python: str = "", locale: str = "") -> subprocess.CompletedProcess:
         code = (
             "set -Eeuo pipefail\n"
             + "".join(function_source(script, name) for name in PYTHON_FUNCTIONS)
@@ -71,6 +71,8 @@ class ManagerPythonShellTests(unittest.TestCase):
         env = {"PATH": str(self.bin)}
         if manager_python:
             env["MANAGER_PYTHON"] = manager_python
+        if locale:
+            env["LANG"] = env["LC_ALL"] = locale
         return subprocess.run(
             [BASH, "-c", code],
             env=env,
@@ -157,9 +159,34 @@ class ManagerPythonShellTests(unittest.TestCase):
         self.assert_selected(longest, manager_python=str(longest))
         self.assert_refused(
             f"MANAGER_PYTHON={too_long} must be an absolute path to an executable Python >= 3.12",
-            "at most 125 characters",
+            "at most 125 bytes long",
             manager_python=str(too_long),
         )
+
+    def test_any_path_without_whitespace_fits_shebang(self) -> None:
+        # 81-R06: проверяются только ограничения shebang, как в core.interpreter.check_interpreter:
+        # путь с `@` (Homebrew `python@3.12`) подходит, пробельные символы — нет.
+        brewed = write_fake_python(self.root / "opt" / "python@3.12" / "bin" / "python3.12", "3.12.7")
+        spaced = write_fake_python(self.root / "opt" / "with space" / "python3.12", "3.12.7")
+        tabbed = write_fake_python(self.root / "opt" / "with\ttab" / "python3.12", "3.12.7")
+
+        self.assert_selected(brewed, manager_python=str(brewed))
+        for configured in (spaced, tabbed):
+            with self.subTest(configured=str(configured)):
+                self.assert_refused("without whitespace", manager_python=str(configured))
+
+    def test_path_length_is_counted_in_bytes_in_utf8_locale(self) -> None:
+        # 125 символов кириллицы — это больше 125 байт: строка `#!<путь>` не поместится в буфер ядра.
+        name = "п" * (125 - len(str(self.root)) - 1)
+        configured = write_fake_python(self.root / name, "3.12.7")
+        self.assertEqual(len(str(configured)), 125)
+        self.assertGreater(len(str(configured).encode("utf-8")), 125)
+
+        for script in SCRIPTS:
+            with self.subTest(script=script.name):
+                result = self.require(script, str(configured), locale="en_US.UTF-8")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("at most 125 bytes long", result.stderr)
 
     def test_new_system_python3_is_selected_by_its_versioned_path(self) -> None:
         python314 = write_fake_python(self.bin / "python3.14", "3.14.0")

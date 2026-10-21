@@ -257,9 +257,11 @@ print("%d.%d.%d" % sys.version_info[:3], *missing)
 manager_python_supported() {
   local path="$1"
   local probe version missing major minor
-  [[ "$path" =~ ^/[A-Za-z0-9._/+-]+$ && -f "$path" && -x "$path" ]] || return 1
-  # Строка `#!<путь>` — не длиннее 127 байт (буфер ядра до Linux 5.1), иначе Exec format error.
-  (( ${#path} <= 125 )) || return 1
+  # Только ограничения shebang, как в core.interpreter.check_interpreter: абсолютный путь без пробельных
+  # символов ASCII, строка `#!<путь>` не длиннее 127 байт (буфер ядра до Linux 5.1, иначе Exec format error).
+  # LC_ALL=C: длина считается в байтах и в UTF-8-локали.
+  ( LC_ALL=C; [[ "$path" == /* && "$path" != *[[:space:]]* ]] && (( ${#path} <= 125 )) ) || return 1
+  [[ -f "$path" && -x "$path" ]] || return 1
   probe="$(manager_python_probe "$path")" || return 1
   read -r version missing <<<"$probe"
   [[ -z "$missing" ]] || return 1
@@ -296,7 +298,7 @@ require_manager_python() {
     return 0
   fi
   if [[ -n "${MANAGER_PYTHON:-}" ]]; then
-    echo "MANAGER_PYTHON=${MANAGER_PYTHON} must be an absolute path to an executable Python >= 3.12 with the sqlite3, ssl, zlib, lzma and zoneinfo modules, at most 125 characters long." >&2
+    echo "MANAGER_PYTHON=${MANAGER_PYTHON} must be an absolute path to an executable Python >= 3.12 with the sqlite3, ssl, zlib, lzma and zoneinfo modules, without whitespace and at most 125 bytes long." >&2
     exit 1
   fi
   for name in python3.13 python3.12 python3; do

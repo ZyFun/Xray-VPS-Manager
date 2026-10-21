@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import string
 import subprocess
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
@@ -98,7 +99,8 @@ def check_interpreter(path: str) -> Tuple[Optional[Interpreter], str]:
     otherwise (None, reason)."""
     if not path or not os.path.isabs(path):
         return None, "не абсолютный путь"
-    if any(char.isspace() for char in path):
+    # Ядро делит строку shebang по пробельным символам ASCII — те же, что [[:space:]] в bootstrap.sh/install.sh.
+    if any(char in string.whitespace for char in path):
         return None, "пробел в пути не поддерживается в shebang"
     if len(shebang_line(path).encode("utf-8")) > MAX_SHEBANG_BYTES:
         return None, f"строка shebang длиннее {MAX_SHEBANG_BYTES} байт"

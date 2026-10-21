@@ -83,6 +83,16 @@ class InterpreterSelectionTests(unittest.TestCase):
         self.assertEqual(selection.interpreter.path, str(python312))
         self.assertEqual(selection.skipped, ((str(too_long), "строка shebang длиннее 127 байт"),))
 
+    def test_interpreter_path_may_contain_any_non_whitespace_character(self) -> None:
+        # 81-R06: те же ограничения shebang, что в bootstrap.sh/install.sh; путь с `@` (Homebrew) подходит.
+        brewed = write_fake_python(self.root / "opt" / "python@3.12" / "bin" / "python3.12", "3.12.7")
+        tabbed = write_fake_python(self.root / "opt" / "with\ttab" / "python3.12", "3.12.7")
+        multibyte = write_fake_python(self.root / ("п" * (125 - len(str(self.root)) - 1)), "3.12.7")
+
+        self.assertEqual(interpreter.check_interpreter(str(brewed)), (interpreter.Interpreter(str(brewed), (3, 12, 7)), ""))
+        self.assertEqual(interpreter.check_interpreter(str(tabbed)), (None, "пробел в пути не поддерживается в shebang"))
+        self.assertEqual(interpreter.check_interpreter(str(multibyte)), (None, "строка shebang длиннее 127 байт"))
+
     def test_unusable_manager_python_falls_back_to_path_candidates(self) -> None:
         write_fake_python(self.bin / "python3.12", "3.12.3")
         old = write_fake_python(self.root / "opt" / "python3.11", "3.11.2")
