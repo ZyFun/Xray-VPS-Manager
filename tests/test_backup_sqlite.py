@@ -48,7 +48,10 @@ class BackupSQLiteTests(unittest.TestCase):
             config_dir.mkdir(parents=True)
             files = {
                 "config.json": "{}\n",
-                "server.env": "SERVER_ADDR=old.example.com\nSERVER_NAME=Virei\nSECURITY_AUDIT_LAST_RUN=2026-06-01T00:00:00Z\n",
+                "server.env": (
+                    "SERVER_ADDR=old.example.com\nSERVER_NAME=Virei\nSECURITY_AUDIT_LAST_RUN=2026-06-01T00:00:00Z\n"
+                    "MANAGER_PYTHON=/usr/bin/python3.12\n"
+                ),
                 "manager.db": "sqlite bytes",
             }
             for name, content in files.items():
@@ -89,10 +92,12 @@ class BackupSQLiteTests(unittest.TestCase):
             self.assertEqual(manager_db, "sqlite snapshot")
             self.assertNotIn("SERVER_ADDR", server_env)
             self.assertNotIn("SECURITY_AUDIT_LAST_RUN", server_env)
+            # VIREI-81: интерпретатор обёрток привязан к серверу и в архив не попадает.
+            self.assertNotIn("MANAGER_PYTHON", server_env)
             self.assertIn("SERVER_NAME=Virei", server_env)
             self.assertEqual(
                 manifest["hostSpecificServerEnvKeysOmitted"],
-                ["SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN"],
+                ["SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN", "MANAGER_PYTHON"],
             )
             self.assertNotIn("hostname", manifest)
             self.assertTrue(
@@ -311,6 +316,7 @@ class BackupSQLiteTests(unittest.TestCase):
                 "SERVER_NAME=Virei\n"
                 "MANAGER_TIMEZONE=Europe/Moscow\n"
                 "SECURITY_AUDIT_LAST_RUN=2026-06-01T00:00:00Z\n"
+                "MANAGER_PYTHON=/usr/local/bin/python3.13\n"
             )
 
             target_config_dir = root / "target" / "xray"
@@ -318,6 +324,7 @@ class BackupSQLiteTests(unittest.TestCase):
             (target_config_dir / "server.env").write_text(
                 "SERVER_ADDR=new.example.com\n"
                 "SECURITY_AUDIT_LAST_RUN=2026-06-12T00:00:00Z\n"
+                "MANAGER_PYTHON=/usr/bin/python3.12\n"
             )
             config_target = target_config_dir / "config.json"
             server_env_target = target_config_dir / "server.env"
@@ -342,6 +349,8 @@ class BackupSQLiteTests(unittest.TestCase):
             )
             self.assertEqual(values["SERVER_ADDR"], "new.example.com")
             self.assertEqual(values["SECURITY_AUDIT_LAST_RUN"], "2026-06-12T00:00:00Z")
+            # VIREI-81: архив старого кода мог содержать MANAGER_PYTHON — остаётся значение целевого сервера.
+            self.assertEqual(values["MANAGER_PYTHON"], "/usr/bin/python3.12")
             self.assertEqual(values["SERVER_NAME"], "Virei")
             self.assertEqual(values["MANAGER_TIMEZONE"], "Europe/Moscow")
             self.assertIn(str(server_env_target), restored)
@@ -356,6 +365,7 @@ class BackupSQLiteTests(unittest.TestCase):
                 "SERVER_ADDR=old.example.com\n"
                 "SERVER_NAME=Virei\n"
                 "SECURITY_AUDIT_LAST_RUN=2026-06-01T00:00:00Z\n"
+                "MANAGER_PYTHON=/usr/local/bin/python3.13\n"
             )
 
             target_config_dir = root / "target" / "xray"
@@ -380,6 +390,7 @@ class BackupSQLiteTests(unittest.TestCase):
             server_env = server_env_target.read_text()
             self.assertNotIn("SERVER_ADDR", server_env)
             self.assertNotIn("SECURITY_AUDIT_LAST_RUN", server_env)
+            self.assertNotIn("MANAGER_PYTHON", server_env)
             self.assertIn("SERVER_NAME=Virei", server_env)
 
     def test_apply_restore_restores_manager_database(self) -> None:

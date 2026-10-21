@@ -1,4 +1,4 @@
-"""Filesystem helpers (target architecture, section 3): atomic directory replacement."""
+"""Filesystem helpers (target architecture, section 3): atomic directory and file replacement, modes and removal."""
 
 from __future__ import annotations
 
@@ -50,6 +50,39 @@ def replace_directory(source: Path, destination: Path, prepare: Optional[Callabl
         raise
     if had_destination:
         _remove_tree(old_dir)
+
+
+def replace_file(destination: Path, data: bytes, prepare: Optional[Callable[[Path], None]] = None) -> None:
+    """Replace ``destination`` with ``data`` using one rename.
+
+    The data is written next to the destination as hidden ``.<name>.new``; ``prepare`` (mode, owner)
+    runs on that copy before ``os.replace`` makes it live, so ``destination`` is always the complete
+    old or the complete new file. Any error leaves ``destination`` untouched and removes the copy;
+    a stale copy from an interrupted run is overwritten. Errors propagate as ``OSError``.
+    """
+    new_file = destination.with_name("." + destination.name + ".new")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _remove_tree(new_file)
+    try:
+        new_file.write_bytes(data)
+        if prepare is not None:
+            prepare(new_file)
+        os.replace(new_file, destination)
+    except BaseException:
+        _remove_tree(new_file)
+        raise
+
+
+def set_root_executable(path: Path) -> None:
+    """Mode 0755 and owner root:root (only when running as root) for a command in /usr/local/sbin."""
+    os.chmod(path, 0o755)
+    if os.geteuid() == 0:
+        shutil.chown(path, user="root", group="root")
+
+
+def remove_path(path: Path) -> None:
+    """Remove a file, a symlink or a directory tree; a missing path is ignored."""
+    _remove_tree(path)
 
 
 def _exists(path: Path) -> bool:

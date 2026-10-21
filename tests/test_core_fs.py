@@ -155,5 +155,99 @@ class ReplaceDirectoryTests(unittest.TestCase):
             self.assertEqual(snapshot(destination), {"runner.py": "value = 3\n"})
             self.assertEqual(sorted(path.name for path in destination.parent.iterdir()), ["package"])
 
+
+class ReplaceFileTests(unittest.TestCase):
+    """core/fs.replace_file: обёртка в /usr/local/sbin заменяется одним rename (VIREI-81)."""
+
+    def test_replace_file_writes_new_content_and_leaves_no_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sbin = Path(tmp_dir) / "sbin"
+            destination = sbin / "xray-menu"
+
+            fs.replace_file(destination, b"#!/usr/bin/python3.12\nvalue = 1\n")
+
+            self.assertEqual(destination.read_bytes(), b"#!/usr/bin/python3.12\nvalue = 1\n")
+            self.assertEqual(sorted(path.name for path in sbin.iterdir()), ["xray-menu"])
+
+    def test_replace_file_prepares_copy_before_it_goes_live(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sbin = Path(tmp_dir)
+            destination = sbin / "xray-menu"
+            destination.write_bytes(b"old\n")
+            prepare_calls = []
+
+            def prepare(path: Path) -> None:
+                prepare_calls.append((path.parent == sbin, path.name != destination.name, path.read_bytes(), destination.read_bytes()))
+                os.chmod(path, 0o755)
+
+            fs.replace_file(destination, b"new\n", prepare=prepare)
+
+            self.assertEqual(prepare_calls, [(True, True, b"new\n", b"old\n")])
+            self.assertEqual(destination.read_bytes(), b"new\n")
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(sorted(path.name for path in sbin.iterdir()), ["xray-menu"])
+
+    def test_replace_file_failure_leaves_destination_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sbin = Path(tmp_dir)
+            destination = sbin / "xray-menu"
+            destination.write_bytes(b"old\n")
+
+            def prepare(path: Path) -> None:
+                raise PermissionError("chown failed")
+
+            with self.assertRaises(PermissionError):
+                fs.replace_file(destination, b"new\n", prepare=prepare)
+            with mock.patch.object(fs.os, "replace", side_effect=OSError("rename failed")):
+                with self.assertRaises(OSError):
+                    fs.replace_file(destination, b"new\n")
+
+            self.assertEqual(destination.read_bytes(), b"old\n")
+            self.assertEqual(sorted(path.name for path in sbin.iterdir()), ["xray-menu"])
+
+    def test_set_root_executable_sets_mode_and_changes_owner_only_as_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            command = Path(tmp_dir) / "xray-menu"
+            command.write_bytes(b"#!/usr/bin/python3.12\n")
+            os.chmod(command, 0o600)
+
+            with mock.patch.object(fs.os, "geteuid", return_value=1000), mock.patch.object(fs.shutil, "chown") as chown:
+                fs.set_root_executable(command)
+            self.assertEqual(command.stat().st_mode & 0o777, 0o755)
+            chown.assert_not_called()
+
+            with mock.patch.object(fs.os, "geteuid", return_value=0), mock.patch.object(fs.shutil, "chown") as chown:
+                fs.set_root_executable(command)
+            chown.assert_called_once_with(command, user="root", group="root")
+
+    def test_remove_path_removes_file_symlink_and_directory_and_ignores_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            target = root / "target"
+            target.write_text("keep\n", encoding="utf-8")
+            link = root / "link"
+            os.symlink(target, link)
+            make_tree(root / "tree", {"sub/file.py": "x = 1\n"})
+            (root / "file").write_text("x\n", encoding="utf-8")
+
+            for name in ("link", "tree", "file", "missing"):
+                fs.remove_path(root / name)
+
+            self.assertEqual(sorted(path.name for path in root.iterdir()), ["target"])
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep\n")
+
+    def test_replace_file_overwrites_stale_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sbin = Path(tmp_dir)
+            destination = sbin / "xray-menu"
+            stale = sbin / ".xray-menu.new"
+            stale.write_bytes(b"partial")
+
+            fs.replace_file(destination, b"new\n")
+
+            self.assertEqual(destination.read_bytes(), b"new\n")
+            self.assertEqual(sorted(path.name for path in sbin.iterdir()), ["xray-menu"])
+
+
 if __name__ == "__main__":
     unittest.main()

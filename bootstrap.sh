@@ -6,6 +6,8 @@ INSTALL_DIR="${XRAY_MANAGER_INSTALL_DIR:-/root/xray_server}"
 REQUESTED_VERSION="${XRAY_MANAGER_VERSION:-}"
 RUN_INSTALL="${XRAY_MANAGER_RUN_INSTALL:-true}"
 FORCE_INSTALL="false"
+MANAGER_PYTHON="${MANAGER_PYTHON:-}"
+XRAY_PYTHON=""
 
 usage() {
   cat <<'EOF'
@@ -23,6 +25,8 @@ Environment:
   XRAY_MANAGER_VERSION      Release tag to install, for example v2.1.1.
   XRAY_MANAGER_INSTALL_DIR  Target source directory, default /root/xray_server.
   XRAY_MANAGER_RUN_INSTALL  Set false to download only.
+  MANAGER_PYTHON            Absolute path to Python >= 3.12 for the manager.
+                            Default: python3.13, python3.12, then python3 if it is >= 3.12.
 EOF
 }
 
@@ -132,7 +136,88 @@ install_dependencies() {
   fi
   log "Installing bootstrap dependencies"
   apt_get_with_lock_retry update
-  apt_get_with_lock_retry install -y ca-certificates curl tar
+  apt_get_with_lock_retry install -y ca-certificates curl tar python3
+}
+
+# Python >= 3.12 для процессов менеджера (шаг 0a плана миграции). Порядок выбора (решение 2026-10-21):
+# MANAGER_PYTHON, python3.13, python3.12, затем python3, если он сам >= 3.12 (берётся его версионный путь).
+# Кандидат без модулей sqlite3, ssl, zlib, lzma или zoneinfo (сборка без dev-пакетов) пропускается.
+# Системный python3 не заменяется и не затеняется. Функции одинаковы в bootstrap.sh и install.sh.
+manager_python_probe() {
+  # Версия X.Y.Z и через пробел модули, которые не импортируются; -I — без текущего каталога в sys.path.
+  "$1" -I -c '
+import importlib, sys
+missing = []
+for name in ("sqlite3", "ssl", "zlib", "lzma", "zoneinfo"):
+    try:
+        importlib.import_module(name)
+    except Exception:
+        missing.append(name)
+print("%d.%d.%d" % sys.version_info[:3], *missing)
+' 2>/dev/null
+}
+
+manager_python_supported() {
+  local path="$1"
+  local probe version missing major minor
+  [[ "$path" =~ ^/[A-Za-z0-9._/+-]+$ && -f "$path" && -x "$path" ]] || return 1
+  probe="$(manager_python_probe "$path")" || return 1
+  read -r version missing <<<"$probe"
+  [[ -z "$missing" ]] || return 1
+  IFS=. read -r major minor _ <<<"$version"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  (( major > 3 || (major == 3 && minor >= 12) ))
+}
+
+find_manager_python() {
+  local candidate path
+  if [[ -n "${MANAGER_PYTHON:-}" ]]; then
+    manager_python_supported "$MANAGER_PYTHON" || return 1
+    printf '%s\n' "$MANAGER_PYTHON"
+    return 0
+  fi
+  for candidate in python3.13 python3.12; do
+    path="$(command -v "$candidate" 2>/dev/null || true)"
+    if manager_python_supported "$path"; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+  done
+  path="$(command -v python3 2>/dev/null || true)"
+  if [[ "$path" == /* ]] && path="$(readlink -f "$path")" && manager_python_supported "$path"; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  return 1
+}
+
+require_manager_python() {
+  local name path probe version missing found=""
+  if XRAY_PYTHON="$(find_manager_python)"; then
+    return 0
+  fi
+  if [[ -n "${MANAGER_PYTHON:-}" ]]; then
+    echo "MANAGER_PYTHON=${MANAGER_PYTHON} must be an absolute path to an executable Python >= 3.12 with the sqlite3, ssl, zlib, lzma and zoneinfo modules." >&2
+    exit 1
+  fi
+  for name in python3.13 python3.12 python3; do
+    path="$(command -v "$name" 2>/dev/null || true)"
+    [[ -n "$path" ]] || continue
+    probe="$(manager_python_probe "$path" || true)"
+    read -r version missing <<<"$probe"
+    found="${found:+${found}; }${name} ${version:-(does not run)}${missing:+ without ${missing}}"
+  done
+  cat >&2 <<EOF
+Xray VPS Manager needs Python >= 3.12 with the sqlite3, ssl, zlib, lzma and zoneinfo modules next to the system python3 (found: ${found:-no python3}).
+Fresh install is supported on Ubuntu 24.04+ and Debian 13+, where the system Python is already 3.12 or newer.
+Ubuntu 22.04: apt-get install -y software-properties-common && add-apt-repository -y ppa:deadsnakes/ppa && apt-get install -y python3.12
+Debian 12/11: install the dev packages first (libsqlite3-dev libssl-dev zlib1g-dev liblzma-dev and others from docs/installation.md),
+build Python 3.12 from source with "make altinstall" (it installs /usr/local/bin/python3.12 and keeps the system python3),
+or pass its path explicitly: MANAGER_PYTHON=/path/to/python3.12.
+Never replace the system python3 ("make install", python3 symlinks, update-alternatives).
+See docs/installation.md, section "Python 3.12", then run the installer again.
+EOF
+  exit 1
 }
 
 latest_release_tag() {
@@ -209,6 +294,10 @@ main() {
   local tmp_dir
 
   install_dependencies
+  if [[ "$RUN_INSTALL" != "false" ]]; then
+    require_manager_python
+    log "Manager Python: ${XRAY_PYTHON}"
+  fi
   version="$(resolve_version "$REQUESTED_VERSION")"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT

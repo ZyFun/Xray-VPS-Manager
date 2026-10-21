@@ -28,6 +28,8 @@ TROJAN_WS_PATH="${TROJAN_WS_PATH:-/trojan}"
 TROJAN_TLS_MIN_VERSION="${TROJAN_TLS_MIN_VERSION:-tls1.2}"
 TROJAN_TLS_MAX_VERSION="${TROJAN_TLS_MAX_VERSION:-tls1.3}"
 MANAGER_TIMEZONE="${MANAGER_TIMEZONE:-}"
+MANAGER_PYTHON="${MANAGER_PYTHON:-}"
+XRAY_PYTHON=""
 TIMEZONE_SEARCH_LIMIT=30
 TIMEZONE_PRESETS=(
   "Europe/Moscow|Москва"
@@ -232,6 +234,87 @@ validate_manager_timezone() {
     echo "MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time." >&2
     exit 1
   fi
+}
+
+# Python >= 3.12 для процессов менеджера (шаг 0a плана миграции). Порядок выбора (решение 2026-10-21):
+# MANAGER_PYTHON, python3.13, python3.12, затем python3, если он сам >= 3.12 (берётся его версионный путь).
+# Кандидат без модулей sqlite3, ssl, zlib, lzma или zoneinfo (сборка без dev-пакетов) пропускается.
+# Системный python3 не заменяется и не затеняется. Функции одинаковы в bootstrap.sh и install.sh.
+manager_python_probe() {
+  # Версия X.Y.Z и через пробел модули, которые не импортируются; -I — без текущего каталога в sys.path.
+  "$1" -I -c '
+import importlib, sys
+missing = []
+for name in ("sqlite3", "ssl", "zlib", "lzma", "zoneinfo"):
+    try:
+        importlib.import_module(name)
+    except Exception:
+        missing.append(name)
+print("%d.%d.%d" % sys.version_info[:3], *missing)
+' 2>/dev/null
+}
+
+manager_python_supported() {
+  local path="$1"
+  local probe version missing major minor
+  [[ "$path" =~ ^/[A-Za-z0-9._/+-]+$ && -f "$path" && -x "$path" ]] || return 1
+  probe="$(manager_python_probe "$path")" || return 1
+  read -r version missing <<<"$probe"
+  [[ -z "$missing" ]] || return 1
+  IFS=. read -r major minor _ <<<"$version"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+  (( major > 3 || (major == 3 && minor >= 12) ))
+}
+
+find_manager_python() {
+  local candidate path
+  if [[ -n "${MANAGER_PYTHON:-}" ]]; then
+    manager_python_supported "$MANAGER_PYTHON" || return 1
+    printf '%s\n' "$MANAGER_PYTHON"
+    return 0
+  fi
+  for candidate in python3.13 python3.12; do
+    path="$(command -v "$candidate" 2>/dev/null || true)"
+    if manager_python_supported "$path"; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+  done
+  path="$(command -v python3 2>/dev/null || true)"
+  if [[ "$path" == /* ]] && path="$(readlink -f "$path")" && manager_python_supported "$path"; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  return 1
+}
+
+require_manager_python() {
+  local name path probe version missing found=""
+  if XRAY_PYTHON="$(find_manager_python)"; then
+    return 0
+  fi
+  if [[ -n "${MANAGER_PYTHON:-}" ]]; then
+    echo "MANAGER_PYTHON=${MANAGER_PYTHON} must be an absolute path to an executable Python >= 3.12 with the sqlite3, ssl, zlib, lzma and zoneinfo modules." >&2
+    exit 1
+  fi
+  for name in python3.13 python3.12 python3; do
+    path="$(command -v "$name" 2>/dev/null || true)"
+    [[ -n "$path" ]] || continue
+    probe="$(manager_python_probe "$path" || true)"
+    read -r version missing <<<"$probe"
+    found="${found:+${found}; }${name} ${version:-(does not run)}${missing:+ without ${missing}}"
+  done
+  cat >&2 <<EOF
+Xray VPS Manager needs Python >= 3.12 with the sqlite3, ssl, zlib, lzma and zoneinfo modules next to the system python3 (found: ${found:-no python3}).
+Fresh install is supported on Ubuntu 24.04+ and Debian 13+, where the system Python is already 3.12 or newer.
+Ubuntu 22.04: apt-get install -y software-properties-common && add-apt-repository -y ppa:deadsnakes/ppa && apt-get install -y python3.12
+Debian 12/11: install the dev packages first (libsqlite3-dev libssl-dev zlib1g-dev liblzma-dev and others from docs/installation.md),
+build Python 3.12 from source with "make altinstall" (it installs /usr/local/bin/python3.12 and keeps the system python3),
+or pass its path explicitly: MANAGER_PYTHON=/path/to/python3.12.
+Never replace the system python3 ("make install", python3 symlinks, update-alternatives).
+See docs/installation.md, section "Python 3.12", then run the installer again.
+EOF
+  exit 1
 }
 
 resolve_install_path() {
@@ -690,6 +773,12 @@ prompt_install_options() {
   echo
 }
 
+# Python >= 3.12 проверяется до вопросов: на старой ОС установка останавливается сразу.
+# Если python3 ещё не установлен, проверка выполняется после apt ниже.
+if [[ -n "$MANAGER_PYTHON" ]] || command -v python3 >/dev/null 2>&1; then
+  require_manager_python
+fi
+
 prompt_install_options
 
 apt_get_with_lock_retry() {
@@ -792,6 +881,8 @@ if initial_has_trojan; then
   install_packages+=(caddy)
 fi
 apt_get_with_lock_retry install -y "${install_packages[@]}"
+require_manager_python
+echo "Manager Python: ${XRAY_PYTHON}"
 
 echo "Xray source: ${XRAY_SOURCE}"
 if [[ "$XRAY_SOURCE" == "local" ]]; then
@@ -1102,6 +1193,7 @@ TROJAN_WS_PATH=${TROJAN_WS_PATH}
 TROJAN_TLS_MIN_VERSION=${TROJAN_TLS_MIN_VERSION}
 TROJAN_TLS_MAX_VERSION=${TROJAN_TLS_MAX_VERSION}
 MANAGER_TIMEZONE=${MANAGER_TIMEZONE}
+MANAGER_PYTHON=${XRAY_PYTHON}
 ACTIVITY_LOGGING_ENABLED=false
 ACTIVITY_RETENTION_DAYS=365
 ACTIVITY_RISK_BURST_EVENTS=1000
@@ -1120,19 +1212,33 @@ EOF
 chown root:xray /usr/local/etc/xray/config.json /usr/local/etc/xray/server.env
 chmod 0640 /usr/local/etc/xray/config.json /usr/local/etc/xray/server.env
 
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-client" /usr/local/sbin/xray-client
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-cascade" /usr/local/sbin/xray-set-cascade
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-set-bypass" /usr/local/sbin/xray-set-bypass
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-menu" /usr/local/sbin/xray-menu
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-activity" /usr/local/sbin/xray-activity
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-traffic-sync" /usr/local/sbin/xray-traffic-sync
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-update" /usr/local/sbin/xray-update
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-backup" /usr/local/sbin/xray-backup
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-test" /usr/local/sbin/xray-test
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-warp" /usr/local/sbin/xray-warp
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-telegram" /usr/local/sbin/xray-telegram
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-vps-manager" /usr/local/sbin/xray-vps-manager
-install -o root -g root -m 0755 "$SCRIPT_DIR/xray-manager-update" /usr/local/sbin/xray-manager-update
+# Обёртки получают абсолютный shebang выбранного интерпретатора (шаг 0a):
+# первая строка бандла `#!/usr/bin/env python3` заменяется на `#!$XRAY_PYTHON`.
+install_manager_wrapper() {
+  local name="$1"
+  local tmp
+  tmp="$(mktemp)"
+  {
+    printf '#!%s\n' "$XRAY_PYTHON"
+    tail -n +2 "$SCRIPT_DIR/$name"
+  } >"$tmp"
+  install -o root -g root -m 0755 "$tmp" "/usr/local/sbin/$name"
+  rm -f "$tmp"
+}
+
+install_manager_wrapper xray-client
+install_manager_wrapper xray-set-cascade
+install_manager_wrapper xray-set-bypass
+install_manager_wrapper xray-menu
+install_manager_wrapper xray-activity
+install_manager_wrapper xray-traffic-sync
+install_manager_wrapper xray-update
+install_manager_wrapper xray-backup
+install_manager_wrapper xray-test
+install_manager_wrapper xray-warp
+install_manager_wrapper xray-telegram
+install_manager_wrapper xray-vps-manager
+install_manager_wrapper xray-manager-update
 install -d -o root -g root -m 0755 /usr/local/lib/xray-vps-manager
 rm -rf /usr/local/lib/xray-vps-manager/xray_vps_manager
 cp -a "$SCRIPT_DIR/xray_vps_manager" /usr/local/lib/xray-vps-manager/
@@ -1164,7 +1270,7 @@ INSTALL_SHORT_ID="$short_id" \
 INSTALL_UUID="$uuid" \
 INSTALL_TROJAN_UUID="$trojan_uuid" \
 PYTHONPATH=/usr/local/lib/xray-vps-manager \
-python3 <<'PY'
+"$XRAY_PYTHON" <<'PY'
 import json
 import os
 import shutil
@@ -1300,7 +1406,7 @@ if initial_has_trojan; then
   INSTALL_TROJAN_TLS_MIN_VERSION="$TROJAN_TLS_MIN_VERSION" \
   INSTALL_TROJAN_TLS_MAX_VERSION="$TROJAN_TLS_MAX_VERSION" \
   PYTHONPATH=/usr/local/lib/xray-vps-manager \
-  python3 <<'PY'
+  "$XRAY_PYTHON" <<'PY'
 import os
 
 from xray_vps_manager.xray import caddy
