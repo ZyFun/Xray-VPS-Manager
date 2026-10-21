@@ -102,7 +102,7 @@ def sync_activity(log: LogFunc) -> int:
 
     Состояние окон подозрительной активности ``activity.alertWindows``, лимиты ``risk_limits()``
     и часовой пояс менеджера читаются один раз за прогон; окна меняются в памяти и сохраняются
-    один раз в конце в той же транзакции, что summary и offset (VIREI-246).
+    один раз в конце в той же транзакции, что и offset (VIREI-246).
 
     Сбой посреди прогона: события до сбоя уже записаны (счётчики, alert-строки), offset не
     продвигается и состояние окон не сохраняется, поэтому повторный прогон перечитает те же
@@ -214,7 +214,6 @@ def sync_activity(log: LogFunc) -> int:
             foreign_lines += 1
             continue
         if result.get("storedDetail"):
-            repository.update_summary(db, event)
             detailed += 1
         if result.get("storedCounters"):
             counters += 1

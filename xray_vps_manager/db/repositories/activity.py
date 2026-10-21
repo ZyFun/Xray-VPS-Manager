@@ -1150,12 +1150,9 @@ def get_source_metadata(connection: sqlite3.Connection) -> dict[str, Any]:
     return get_metadata_json(connection, ACTIVITY_SOURCE_METADATA_KEY)
 
 
-def set_summary(connection: sqlite3.Connection, value: dict[str, Any]) -> None:
-    set_metadata_json(connection, ACTIVITY_SUMMARY_KEY, value)
-
-
-def get_summary(connection: sqlite3.Connection) -> dict[str, Any]:
-    return get_metadata_json(connection, ACTIVITY_SUMMARY_KEY)
+def delete_summary(connection: sqlite3.Connection) -> None:
+    """Удаляет устаревшую сводку ``activity.summary``, которую менеджер больше не ведёт (VIREI-248)."""
+    connection.execute("DELETE FROM manager_metadata WHERE key = ?", (ACTIVITY_SUMMARY_KEY,))
 
 
 def set_metadata_json(connection: sqlite3.Connection, key: str, value: dict[str, Any]) -> None:
