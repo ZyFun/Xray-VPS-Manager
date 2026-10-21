@@ -65,7 +65,7 @@ def load_activity_db(
 ) -> dict:
     """Снимок состояния активности; ``with_alert_windows`` добавляет ключ ``alertWindows``
     (состояние окон подозрительной активности), который ``save_activity_db`` записывает
-    вместе с summary и offset. Без ключа строка ``activity.alertWindows`` не трогается."""
+    вместе с offset. Без ключа строка ``activity.alertWindows`` не трогается."""
     if not database.database_file_exists(db_path):
         raise SQLiteReadUnavailable("SQLite manager database is missing.")
     connection = None
@@ -93,10 +93,10 @@ def load_activity_db_from_sqlite(
     with_alert_windows: bool = False,
 ) -> dict:
     metadata = sqlite_activity.get_source_metadata(connection)
-    summary = sqlite_activity.get_summary(connection)
     db = {
         "version": int(metadata.get("version") or 1),
-        "clients": summary if isinstance(summary, dict) else {},
+        # Сводка по клиентам больше не ведётся (VIREI-248); ключ оставлен пустым для вызывающих.
+        "clients": {},
         "accessLog": sqlite_activity.get_access_log_state(connection),
         "retentionDays": retention_days,
         "enabled": enabled,
@@ -200,51 +200,6 @@ def should_store_detail_event(event: dict, mode: str, selected_clients: Iterable
     return False
 
 
-def update_summary(db: dict, event: dict) -> None:
-    clients = db.setdefault("clients", {})
-    entry = clients.setdefault(event["client"], {"days": {}, "totalEvents": 0})
-    entry["email"] = event.get("email", "")
-    entry["connection"] = event.get("connection", "")
-    entry["totalEvents"] = int(entry.get("totalEvents", 0)) + 1
-    entry.setdefault("firstSeen", event["time"])
-    entry["lastSeen"] = event["time"]
-
-    day_key = event["time"][:10]
-    day = entry.setdefault("days", {}).setdefault(
-        day_key,
-        {
-            "events": 0,
-            "hosts": {},
-            "ports": {},
-            "outbounds": {},
-            "risks": {},
-        },
-    )
-    day["events"] = int(day.get("events", 0)) + 1
-    if event.get("host"):
-        day.setdefault("hosts", {})[event["host"]] = int(day.setdefault("hosts", {}).get(event["host"], 0)) + 1
-    if event.get("port"):
-        day.setdefault("ports", {})[str(event["port"])] = int(day.setdefault("ports", {}).get(str(event["port"]), 0)) + 1
-    if event.get("outbound"):
-        day.setdefault("outbounds", {})[event["outbound"]] = int(day.setdefault("outbounds", {}).get(event["outbound"], 0)) + 1
-    for risk in event.get("risks", []):
-        day.setdefault("risks", {})[risk] = int(day.setdefault("risks", {}).get(risk, 0)) + 1
-
-
-def prune_db_summary(db: dict, cutoff: date) -> None:
-    for entry in db.setdefault("clients", {}).values():
-        days = entry.get("days", {})
-        if not isinstance(days, dict):
-            entry["days"] = {}
-            continue
-        for key in list(days):
-            try:
-                if date.fromisoformat(key) < cutoff:
-                    del days[key]
-            except ValueError:
-                del days[key]
-
-
 def prune_activity(
     db: dict,
     retention_days: int,
@@ -259,7 +214,6 @@ def prune_activity(
         return 0
     cutoff_date = today - timedelta(days=retention_days - 1)
     cutoff_dt = datetime.combine(cutoff_date, datetime.min.time(), tzinfo=timezone.utc)
-    prune_db_summary(db, cutoff_date)
     removed = prune_sqlite_activity_for_write(cutoff_dt, db_path=db_path, strict=True)
     db["lastPrune"] = utc_stamp()
     return removed
@@ -724,7 +678,6 @@ def write_activity_db_to_sqlite_for_write(
             if strict:
                 raise RuntimeError("SQLite database is not marked ready")
             return False
-        clients = db.get("clients") if isinstance(db.get("clients"), dict) else {}
         metadata = {
             "version": db.get("version", 1),
             "enabled": db.get("enabled"),
@@ -734,7 +687,8 @@ def write_activity_db_to_sqlite_for_write(
         }
         alert_windows = db.get("alertWindows")
         with database.transaction(connection):
-            sqlite_activity.set_summary(connection, clients)
+            # Накопленную сводку удаляем здесь же: после первого сохранения это пустая операция.
+            sqlite_activity.delete_summary(connection)
             sqlite_activity.set_source_metadata(connection, metadata)
             sqlite_activity.upsert_access_log_state(connection, db.get("accessLog"))
             if isinstance(alert_windows, dict):

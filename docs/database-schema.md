@@ -300,7 +300,7 @@ erDiagram
 | Таблица | Назначение |
 |---|---|
 | `schema_migrations` | История применённых миграций схемы. |
-| `manager_metadata` | Служебные флаги и метаданные менеджера: read-ready, activity summary, detailed mode, source metadata и короткое состояние `activity.alertWindows` для window-level alert рисков. |
+| `manager_metadata` | Служебные флаги и метаданные менеджера: read-ready, detailed mode, source metadata и короткое состояние `activity.alertWindows` для window-level alert рисков. |
 | `file_offsets` | Позиции чтения файлов, например access log offset для traffic/activity sync. |
 
 ### Подключения и клиенты

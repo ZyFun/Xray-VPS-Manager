@@ -81,7 +81,10 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
                     "createdAt": "2026-06-12T07:30:00Z",
                 },
             )
-            sqlite_activity.set_summary(connection, {"alice": {"totalEvents": 1}})
+            # Устаревшая сводка, которую менеджер больше не ведёт (VIREI-248): load её игнорирует, save удаляет.
+            sqlite_activity.set_metadata_json(
+                connection, sqlite_activity.ACTIVITY_SUMMARY_KEY, {"alice": {"totalEvents": 1}}
+            )
             sqlite_activity.set_source_metadata(
                 connection,
                 {
@@ -267,20 +270,21 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
                 [{"value": "*.example.com", "kind": "mask", "source": "manual", "createdAt": "2026-06-12T08:01:00Z"}],
             )
 
-    def test_load_activity_db_reads_summary_and_offset_from_sqlite(self) -> None:
+    def test_load_activity_db_reads_offset_from_sqlite_and_ignores_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
 
             db = activity_repository.load_activity_db(30, True, db_path=db_path)
 
-            self.assertEqual(db["clients"]["alice"]["totalEvents"], 1)
+            # Изменённое ожидание VIREI-248: сводка по клиентам больше не читается.
+            self.assertEqual(db["clients"], {})
             self.assertEqual(db["accessLog"]["offset"], 1000)
             self.assertEqual(db["retentionDays"], 30)
             self.assertEqual(db["enabled"], True)
             self.assertEqual(db["lastSync"], "2026-06-12T07:40:00Z")
 
-    def test_save_activity_db_writes_summary_and_offset_to_sqlite(self) -> None:
+    def test_save_activity_db_writes_offset_and_removes_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
@@ -303,7 +307,12 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
 
             connection = database.open_database(db_path)
             try:
-                self.assertEqual(sqlite_activity.get_summary(connection)["alice"]["totalEvents"], 2)
+                # Изменённое ожидание VIREI-248: вместо записи сводки сохранение удаляет накопленную.
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT 1 FROM manager_metadata WHERE key = ?", (sqlite_activity.ACTIVITY_SUMMARY_KEY,)
+                    ).fetchone()
+                )
                 self.assertEqual(sqlite_activity.get_access_log_state(connection)["offset"], 2000)
                 self.assertEqual(sqlite_activity.get_source_metadata(connection)["lastSync"], "2026-06-12T08:10:00Z")
             finally:
@@ -319,16 +328,7 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
                 sqlite_activity.add_event(connection, {**activity_event(), "time": "2026-06-12T08:00:00Z"})
             finally:
                 connection.close()
-            db = {
-                "clients": {
-                    "alice": {
-                        "days": {
-                            "2026-06-01": {"events": 1},
-                            "2026-06-12": {"events": 1},
-                        }
-                    }
-                }
-            }
+            db = {}
 
             removed = activity_repository.prune_activity(
                 db,
@@ -346,7 +346,8 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
                 connection.close()
             self.assertEqual(removed, 1)
             self.assertEqual([event["time"] for event in events], ["2026-06-12T08:00:00Z"])
-            self.assertNotIn("2026-06-01", db["clients"]["alice"]["days"])
+            # Изменённое ожидание VIREI-248: обрезки сводки в памяти больше нет, только lastPrune.
+            self.assertIn("lastPrune", db)
 
     def test_activity_write_fails_for_missing_or_not_ready_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
