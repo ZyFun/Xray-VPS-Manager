@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core import interpreter as manager_interpreter
 from xray_vps_manager.core import process as core_process
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.activity import time as activity_time
@@ -263,10 +264,45 @@ def check_helpers():
     return "helper scripts are installed and executable"
 
 
+def helper_paths():
+    return [Path(path) for path in HELPER_SCRIPTS]
+
+
+def helper_interpreter_command():
+    """argv of the wrappers' interpreter from the first installed helper's shebang; python3 when there is none."""
+    return manager_interpreter.wrappers_command(helper_paths())
+
+
+def check_helper_interpreter():
+    check = manager_interpreter.check_wrappers(helper_paths())
+    version_text = manager_interpreter.format_version(check.probe.version) if check.probe else "unknown"
+    if check.problem == manager_interpreter.WRAPPERS_NOT_INSTALLED:
+        raise RuntimeError("no helper scripts installed")
+    if check.problem == manager_interpreter.WRAPPERS_MIXED:
+        detail = "; ".join(f"{line or 'no shebang'}: {', '.join(names)}" for line, names in sorted(check.shebangs.items()))
+        raise RuntimeError(f"helper scripts use different interpreters: {detail}")
+    if check.problem == manager_interpreter.WRAPPERS_NO_SHEBANG:
+        raise RuntimeError(f"helper scripts have no shebang: {check.line!r}")
+    if check.problem == manager_interpreter.WRAPPERS_ENV:
+        raise RuntimeError(
+            f"helper scripts use '{check.line}' (Python {version_text}) instead of an absolute path to Python >= 3.12; "
+            "install Python >= 3.12 next to the system python3 if it is missing and run xray-manager-update --update --force"
+        )
+    if check.problem == manager_interpreter.WRAPPERS_NOT_RUNNING:
+        raise RuntimeError(f"helper interpreter {check.interpreter} does not run")
+    if check.problem == manager_interpreter.WRAPPERS_OLD:
+        raise RuntimeError(f"helper interpreter {check.interpreter} is Python {version_text}, Python >= 3.12 is required")
+    if check.problem == manager_interpreter.WRAPPERS_MISSING_MODULES:
+        raise RuntimeError(
+            f"helper interpreter {check.interpreter} (Python {version_text}) lacks modules: {', '.join(check.probe.missing)}"
+        )
+    return f"helper scripts use {check.interpreter} (Python {version_text})"
+
+
 def check_helper_syntax():
     env = os.environ.copy()
     env["PYTHONPYCACHEPREFIX"] = "/tmp/xray-test-pycache"
-    run_ok(["python3", "-m", "py_compile", *HELPER_SCRIPTS], timeout=30, env=env)
+    run_ok([*helper_interpreter_command(), "-m", "py_compile", *HELPER_SCRIPTS], timeout=30, env=env)
     return "helper Python scripts compile"
 
 
@@ -278,7 +314,7 @@ def check_manager_package():
         raise RuntimeError(f"manager package has no Python files: {MANAGER_PACKAGE_DIR}")
     env = os.environ.copy()
     env["PYTHONPYCACHEPREFIX"] = "/tmp/xray-test-pycache"
-    run_ok(["python3", "-m", "py_compile", *files], timeout=60, env=env)
+    run_ok([*helper_interpreter_command(), "-m", "py_compile", *files], timeout=60, env=env)
     return f"manager Python package installed and compiles: {len(files)} files"
 
 
@@ -1521,6 +1557,7 @@ def run_diagnostics(full_integrity=False):
     diag.check("Xray binary", lambda: check_xray_binary(diag))
     diag.check("Xray assets", check_assets)
     diag.check("Helper scripts", check_helpers)
+    diag.check("Helper interpreter", check_helper_interpreter, fatal=False)
     diag.check("Helper script syntax", check_helper_syntax)
     diag.check("Manager package", check_manager_package)
     diag.check("Config JSON", lambda: check_config_json(diag))

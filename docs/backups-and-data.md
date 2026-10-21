@@ -9,8 +9,8 @@
 /usr/local/etc/xray/manager.db           основная SQLite-база клиентов, трафика, активности, blocklist, Telegram и настроек оплаты
 /usr/local/etc/xray/manager.db-wal       журнал записи SQLite в режиме WAL; появляется рядом с базой во время работы, отдельно в резервную копию не входит
 /usr/local/etc/xray/manager.db-shm       индекс журнала WAL для одновременного чтения; служебный файл SQLite
-/usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone
-/usr/local/etc/xray/manager.lock         блокировка изменений клиентов, подключений, маршрутизации (каскады, GeoIP bypass, WARP), настроек Telegram-бота и восстановления из бэкапа; служебный файл, в резервную копию не входит
+/usr/local/etc/xray/server.env           параметры подключения, имя сервера, порт, SNI, DEST, fingerprint, timezone, интерпретатор команд менеджера (MANAGER_PYTHON)
+/usr/local/etc/xray/manager.lock         блокировка изменений клиентов, подключений, маршрутизации (каскады, GeoIP bypass, WARP), настроек Telegram-бота, восстановления из бэкапа и записи `MANAGER_PYTHON` обновлением менеджера; служебный файл, в резервную копию не входит
 /usr/local/etc/xray/manager-update.lock  блокировка `xray-manager-update --update` и `--rollback`: второй одновременный запуск сразу завершается без изменений; служебный файл, в резервную копию не входит
 /usr/local/etc/xray/warp                 локальный WARP account/profile для Xray WireGuard outbound
 /etc/caddy/Caddyfile                     основной Caddy config
@@ -66,7 +66,7 @@ xray-backup create
 
 Обычный `xray-backup` теперь включает настройки Caddy, чтобы Trojan TLS/WebSocket и VLESS TLS/XHTTP подключения восстанавливались вместе со связанными Caddy site configs. Сертификатный кеш Caddy не копируется: Caddy может выпустить сертификаты заново после восстановления. Для legacy direct TLS/TCP подключений в backup сохраняются пути `certificateFile` и `keyFile`, но не сами cert/key файлы. После restore менеджер автоматически выставляет безопасные права для существующих файлов: cert `root:xray 0644`, key `root:xray 0640`; если файл отсутствует, restore выводит warning до проверки и перезапуска Xray. Статические файлы сайта не входят в общий backup; для них остаются отдельные backup-пункты в меню `Подключения и TLS` -> `Caddy / TLS` -> `Бэкапы`.
 
-`server.env` сохраняется как переносимая конфигурация. Host-specific значения, например `SERVER_ADDR` и `SECURITY_AUDIT_LAST_RUN`, в новый архив не записываются. При восстановлении `xray-backup restore` сохраняет текущий `SERVER_ADDR` нового сервера, чтобы новые VLESS-ссылки генерировались с актуальным адресом.
+`server.env` сохраняется как переносимая конфигурация. Host-specific значения `SERVER_ADDR`, `SECURITY_AUDIT_LAST_RUN` и `MANAGER_PYTHON` в новый архив не записываются. При восстановлении `xray-backup restore` сохраняет их текущие значения на целевом сервере, а значения из архива (если архив создан старой версией и содержит их) не переносит: `SERVER_ADDR` остаётся адресом нового сервера, чтобы новые VLESS-ссылки генерировались с актуальным адресом, а `MANAGER_PYTHON` — путём к Python 3.12+ этого сервера, который записан в первую строку команд `/usr/local/sbin/xray-*` (см. [Python 3.12](installation.md#python-312)). Если на целевом сервере такого ключа нет, после restore его тоже не будет.
 
 Показать бэкапы на сервере:
 

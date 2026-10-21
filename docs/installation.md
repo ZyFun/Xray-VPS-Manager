@@ -39,7 +39,7 @@ bash install-caddy-download-proxy.sh
 
 `install.sh` предназначен для новой установки менеджера на сервер. При запуске на уже настроенном сервере он создаёт новый Reality-конфиг, новые ключи, новый UUID и стартового клиента, поэтому для обновления установленного сервера нужно использовать меню: `xray-manager-update` обновляет сам менеджер, а `xray-update` обновляет Xray Core и geo assets.
 
-`bootstrap.sh` - это первый вход для чистого сервера. Он ставит минимальные зависимости `curl`, `ca-certificates` и `tar`, скачивает release-архив `ZyFun/Xray-VPS-Manager`, переносит старую папку `/root/xray_server` в backup-папку при необходимости и запускает `install.sh`. Если на сервере уже есть `/usr/local/etc/xray/config.json` или `/usr/local/etc/xray/manager.db`, bootstrap останавливается и предлагает использовать `xray-manager-update`, чтобы не пересоздать рабочий конфиг.
+`bootstrap.sh` - это первый вход для чистого сервера. Он ставит минимальные зависимости `curl`, `ca-certificates`, `tar` и `python3`, проверяет, что на сервере есть Python 3.12 или новее (см. [Python 3.12](#python-312)), скачивает release-архив `ZyFun/Xray-VPS-Manager`, переносит старую папку `/root/xray_server` в backup-папку при необходимости и запускает `install.sh`. Если на сервере уже есть `/usr/local/etc/xray/config.json` или `/usr/local/etc/xray/manager.db`, bootstrap останавливается и предлагает использовать `xray-manager-update`, чтобы не пересоздать рабочий конфиг.
 
 Новая установка по умолчанию создаёт:
 
@@ -50,7 +50,8 @@ bash install-caddy-download-proxy.sh
 - основную SQLite-базу `/usr/local/etc/xray/manager.db`;
 - systemd timers для синхронизации трафика и проверки сроков доступа;
 - запрет BitTorrent-трафика через routing rule `protocol=bittorrent -> blocked`;
-- локальные служебные команды в `/usr/local/sbin`;
+- локальные служебные команды в `/usr/local/sbin` с абсолютным путём к Python 3.12+ в первой строке;
+- ключ `MANAGER_PYTHON` в `/usr/local/etc/xray/server.env` с путём к этому интерпретатору;
 - Python-пакет менеджера в `/usr/local/lib/xray-vps-manager`.
 
 Ключи Reality установщик разбирает из вывода `xray x25519` любой из известных версий Xray: метка с `Private` - приватный ключ, с `Public` или `Password` - публичный, строка `Hash32` пропускается, значение должно быть base64url из 43 символов. Если ключи не найдены, установка останавливается с `Failed to generate Xray credentials.`
@@ -127,6 +128,59 @@ Add cascade upstream VLESS link now? [y/N]:
 
 Нажми Enter или введи `n`, чтобы продолжить без каскада.
 Введи `y`, чтобы сразу вставить ссылку исходящего/root-сервера вида `vless://...`.
+
+## Python 3.12
+
+Команды менеджера в `/usr/local/sbin`, systemd-таймеры и Telegram poller работают на Python 3.12 или новее. Системный `python3` сервера не заменяется: установщик находит подходящий интерпретатор рядом с ним и записывает его абсолютный путь в первую строку (shebang) каждой команды `/usr/local/sbin/xray-*`, например `#!/usr/bin/python3.12`. Этот же путь сохраняется в `/usr/local/etc/xray/server.env` как `MANAGER_PYTHON`, а встроенные Python-шаги `install.sh` выполняются им же.
+
+Интерпретатор выбирается в таком порядке:
+
+1. `MANAGER_PYTHON` из окружения — абсолютный путь к исполняемому Python 3.12+ без пробелов и кавычек, не длиннее 125 байт. Если путь не подходит, установка останавливается с сообщением `MANAGER_PYTHON=… must be an absolute path to an executable Python >= 3.12 with the sqlite3, ssl, zlib, lzma and zoneinfo modules, without whitespace or quotes and at most 125 bytes long.`
+2. `python3.13` из `PATH`.
+3. `python3.12` из `PATH`.
+4. Системный `python3`, если он сам 3.12 или новее. В shebang записывается его версионный путь, например `/usr/bin/python3.14`, а не ссылка `python3`.
+
+Подходящим считается только интерпретатор, у которого импортируются модули `sqlite3`, `ssl`, `zlib`, `lzma` и `zoneinfo`. Python, собранный без dev-пакетов, пропускается, даже если версия подходит. Путь интерпретатора должен умещаться в первую строку команды: ядро Linux читает её ограниченным буфером, поэтому строка `#!<путь>` не длиннее 127 байт, а более длинный путь или путь с пробелами пропускается. Путь с кавычками `'` и `"` тоже пропускается: `server.env` не сохраняет их по краям значения. Другие символы в пути допустимы, например `@` в путях Homebrew (`python@3.12`).
+
+Новая установка поддерживается на Ubuntu 24.04+ и Debian 13+: системный Python там уже 3.12 или 3.13, ставить ничего не нужно. На более старой ОС `bootstrap.sh` и `install.sh` останавливаются до вопросов установки и печатают инструкцию. Варианты:
+
+- Ubuntu 22.04 — пакет `python3.12` из PPA deadsnakes:
+
+```bash
+apt-get install -y software-properties-common
+add-apt-repository -y ppa:deadsnakes/ppa
+apt-get install -y python3.12
+```
+
+- Debian 12 и 11 — сборка Python 3.12 из исходников с `make altinstall`: она ставит `/usr/local/bin/python3.12` и не создаёт `python3`. Без dev-пакетов собранный Python останется без модулей `sqlite3`, `ssl`, `zlib` и `lzma` и не будет выбран, поэтому их нужно поставить до сборки. Версию `3.12.X` возьми актуальную с python.org; сборка занимает 15–30 минут на 1–2 vCPU.
+
+```bash
+apt-get install -y build-essential libssl-dev zlib1g-dev libffi-dev libsqlite3-dev libbz2-dev liblzma-dev libreadline-dev
+curl -fsSLO https://www.python.org/ftp/python/3.12.X/Python-3.12.X.tgz
+tar -xzf Python-3.12.X.tgz
+cd Python-3.12.X
+./configure --enable-optimizations --with-lto
+make -j"$(nproc)"
+make altinstall
+```
+
+Перед повторным запуском установки проверь модули:
+
+```bash
+python3.12 -c "import sqlite3, zoneinfo, ssl, lzma, zlib; print(sqlite3.sqlite_version)"
+```
+
+Если интерпретатор лежит вне `PATH`, передай путь явно:
+
+```bash
+MANAGER_PYTHON=/opt/python3.12/bin/python3.12 bash install.sh
+```
+
+Для установки через `bootstrap.sh` переменная передаётся так же: `curl -fsSL …/bootstrap.sh | MANAGER_PYTHON=/opt/python3.12/bin/python3.12 bash`.
+
+Системный `python3` подменять нельзя: не запускай `make install`, не меняй ссылку `/usr/bin/python3` и не переключай `update-alternatives` — системные утилиты Debian и Ubuntu рассчитаны на свой Python.
+
+Код менеджера пока остаётся совместимым с Python 3.9, поэтому уже установленный сервер без Python 3.12 продолжает работать и обновляться (см. [Интерпретатор Python](updates.md#интерпретатор-python)). Python 3.12 понадобится такому серверу до перехода на мажорную версию 3.0.0, которая поднимет минимальную версию Python.
 
 ## Альтернативный Источник Xray
 
