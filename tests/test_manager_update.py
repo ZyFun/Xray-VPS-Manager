@@ -278,6 +278,19 @@ class WrapperInterpreterTests(unittest.TestCase):
         self.assert_wrappers_use(f"#!{target}")
         self.assertEqual(env_values(self.server_env)["MANAGER_PYTHON"], str(target))
 
+    def test_install_wrappers_skips_manager_python_longer_than_shebang_limit(self) -> None:
+        # 81-R05: иначе обёртки и автооткат получили бы `#!<путь>`, который ядро не запускает.
+        long_dir = self.root / ("d" * (130 - len(str(self.root))))
+        too_long = write_fake_python(long_dir / "python3.12", "3.12.7")
+        python312 = write_fake_python(self.bin / "python3.12", "3.12.3")
+        self.server_env.write_text(f"MANAGER_PYTHON={too_long}\n", encoding="utf-8")
+
+        output = self.install_wrappers()
+
+        self.assert_wrappers_use(f"#!{python312}")
+        self.assertIn(f"WARN: MANAGER_PYTHON={too_long} пропущен: строка shebang длиннее 127 байт.", output)
+        self.assertEqual(env_values(self.server_env)["MANAGER_PYTHON"], str(python312))
+
     def test_install_wrappers_replaces_stale_manager_python_with_warning(self) -> None:
         write_fake_python(self.bin / "python3.12", "3.12.3")
         stale = self.root / "removed" / "python3.13"

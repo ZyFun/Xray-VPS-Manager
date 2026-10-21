@@ -64,6 +64,25 @@ class InterpreterSelectionTests(unittest.TestCase):
 
         self.assertEqual(selection.interpreter, interpreter.Interpreter(str(self.bin / "python3.13"), (3, 13, 1)))
 
+    def path_of_length(self, length: int) -> Path:
+        """Путь к файлу в self.root ровно из ``length`` символов."""
+        padding = length - len(str(self.root)) - 1
+        self.assertGreater(padding, 0)
+        return self.root / ("p" * padding)
+
+    def test_interpreter_path_must_fit_kernel_shebang_buffer(self) -> None:
+        # 81-R05: ядро читает строку `#!<путь>` буфером (128 байт до Linux 5.1); длинный путь даёт Exec format error.
+        longest = write_fake_python(self.path_of_length(interpreter.MAX_SHEBANG_BYTES - 2), "3.12.7")
+        too_long = write_fake_python(self.path_of_length(interpreter.MAX_SHEBANG_BYTES - 1), "3.12.7")
+        python312 = write_fake_python(self.bin / "python3.12", "3.12.3")
+
+        self.assertEqual(interpreter.MAX_SHEBANG_BYTES, 127)
+        self.assertEqual(interpreter.check_interpreter(str(longest)), (interpreter.Interpreter(str(longest), (3, 12, 7)), ""))
+        self.assertEqual(interpreter.check_interpreter(str(too_long)), (None, "строка shebang длиннее 127 байт"))
+        selection = interpreter.select_interpreter(str(too_long), which=self.which)
+        self.assertEqual(selection.interpreter.path, str(python312))
+        self.assertEqual(selection.skipped, ((str(too_long), "строка shebang длиннее 127 байт"),))
+
     def test_unusable_manager_python_falls_back_to_path_candidates(self) -> None:
         write_fake_python(self.bin / "python3.12", "3.12.3")
         old = write_fake_python(self.root / "opt" / "python3.11", "3.11.2")

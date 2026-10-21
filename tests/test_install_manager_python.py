@@ -146,6 +146,21 @@ class ManagerPythonShellTests(unittest.TestCase):
                     manager_python=configured,
                 )
 
+    def test_manager_python_must_fit_kernel_shebang_buffer(self) -> None:
+        # 81-R05: `#!<путь>` не длиннее 127 байт, иначе все команды падают с Exec format error.
+        def path_of_length(length: int) -> Path:
+            return self.root / ("p" * (length - len(str(self.root)) - 1))
+
+        longest = write_fake_python(path_of_length(125), "3.12.7")
+        too_long = write_fake_python(path_of_length(126), "3.12.7")
+
+        self.assert_selected(longest, manager_python=str(longest))
+        self.assert_refused(
+            f"MANAGER_PYTHON={too_long} must be an absolute path to an executable Python >= 3.12",
+            "at most 125 characters",
+            manager_python=str(too_long),
+        )
+
     def test_new_system_python3_is_selected_by_its_versioned_path(self) -> None:
         python314 = write_fake_python(self.bin / "python3.14", "3.14.0")
         os.symlink(python314.name, self.bin / "python3")

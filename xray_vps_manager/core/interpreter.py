@@ -27,6 +27,9 @@ VERSIONED_CANDIDATES = ("python3.13", "python3.12")
 # lzma completes the module check of the migration plan (step 0a).
 REQUIRED_MODULES = ("sqlite3", "ssl", "zlib", "lzma", "zoneinfo")
 ENV_SHEBANG = "#!/usr/bin/env python3"
+# The kernel reads the `#!` line into BINPRM_BUF_SIZE bytes (128 before Linux 5.1, then 256); since Linux 5.0
+# a truncated interpreter path fails with "Exec format error" (81-R05). 127 fits any kernel.
+MAX_SHEBANG_BYTES = 127
 # Prints "X.Y.Z" and the REQUIRED_MODULES that do not import, separated by spaces
 # (the same probe as manager_python_probe in bootstrap.sh and install.sh).
 PROBE_SCRIPT = """\
@@ -97,6 +100,8 @@ def check_interpreter(path: str) -> Tuple[Optional[Interpreter], str]:
         return None, "не абсолютный путь"
     if any(char.isspace() for char in path):
         return None, "пробел в пути не поддерживается в shebang"
+    if len(shebang_line(path).encode("utf-8")) > MAX_SHEBANG_BYTES:
+        return None, f"строка shebang длиннее {MAX_SHEBANG_BYTES} байт"
     if not os.path.isfile(path) or not os.access(path, os.X_OK):
         return None, "файл не найден или не исполняемый"
     result = probe([path])
