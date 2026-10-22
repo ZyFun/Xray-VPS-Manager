@@ -1,0 +1,11 @@
+[Unit]
+Description=Persist Xray user traffic counters every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=xray-traffic-sync.service
+
+[Install]
+WantedBy=timers.target

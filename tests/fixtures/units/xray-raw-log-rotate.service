@@ -1,0 +1,8 @@
+[Unit]
+Description=Rotate raw Xray access/error logs
+After=xray.service
+ConditionPathExists=/usr/local/etc/xray/config.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xray-activity rotate-raw-logs --due

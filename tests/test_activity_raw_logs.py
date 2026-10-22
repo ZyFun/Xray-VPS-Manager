@@ -1,8 +1,10 @@
+import functools
 import unittest
 import tempfile
 import gzip
 import subprocess
-from contextlib import redirect_stdout
+import sys
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -10,6 +12,7 @@ from unittest import mock
 
 from xray_vps_manager.activity import backfill
 from xray_vps_manager.activity import raw_logs
+from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.activity import sync as activity_sync
 from xray_vps_manager.commands import activity as activity_command
 
@@ -264,6 +267,119 @@ class ActivityRawLogsTests(unittest.TestCase):
                 retention_start,
             )
         )
+
+
+class RawLogTimerSyncCommandTests(unittest.TestCase):
+    """VIREI-84 (T1): `xray-activity raw-log-timer-sync [--no-systemctl]` и итоговый OnCalendar до шага 1 (`units sync`)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.env_path = self.root / "server.env"
+        self.service_path = self.root / "xray-raw-log-rotate.service"
+        self.timer_path = self.root / "xray-raw-log-rotate.timer"
+        self.systemctl_calls = []
+        self.enable_code = 0
+        sync = functools.partial(raw_logs.sync_raw_log_timer, service_path=self.service_path, timer_path=self.timer_path)
+        for patcher in (
+            mock.patch.object(raw_logs, "sync_raw_log_timer", sync),
+            mock.patch.object(activity_settings, "SERVER_ENV_PATH", self.env_path),
+            mock.patch.object(activity_command, "LOCK_PATH", self.root / "activity.lock"),
+            mock.patch.object(raw_logs.subprocess, "run", side_effect=self.systemctl),
+            mock.patch("os.geteuid", return_value=0),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def systemctl(self, command, **kwargs):
+        self.systemctl_calls.append(list(command))
+        code = self.enable_code if command[1] == "enable" else 0
+        return subprocess.CompletedProcess(command, code, stdout="", stderr="Failed to enable unit" if code else "")
+
+    def run_command(self, *args):
+        stdout = StringIO()
+        stderr = StringIO()
+        code = 0
+        with mock.patch.object(sys, "argv", ["xray-activity", *args]), redirect_stdout(stdout), redirect_stderr(stderr):
+            try:
+                activity_command.main()
+            except SystemExit as exc:
+                code = exc.code
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_no_systemctl_writes_units_and_prints_summary(self) -> None:
+        self.env_path.write_text("MANAGER_TIMEZONE=Europe/Moscow\n")
+
+        code, stdout, stderr = self.run_command("raw-log-timer-sync", "--no-systemctl")
+
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(
+            stdout,
+            f"Raw Xray log rotate service synced: {self.service_path}\n"
+            f"Raw Xray log rotate timer synced: {self.timer_path}\n"
+            "OnCalendar: *-*-* 03:00:00 Europe/Moscow\n"
+            "systemctl: no\n",
+        )
+        self.assertEqual(self.service_path.read_text(), raw_logs.raw_log_service_unit())
+        self.assertIn("OnCalendar=*-*-* 03:00:00 Europe/Moscow\n", self.timer_path.read_text())
+        self.assertEqual(self.systemctl_calls, [])
+
+    def test_with_systemctl_reloads_enables_and_restarts_timer(self) -> None:
+        self.env_path.write_text("MANAGER_TIMEZONE=\nXRAY_RAW_LOG_ROTATE_TIME=04:30\n")
+
+        code, stdout, _stderr = self.run_command("raw-log-timer-sync")
+
+        self.assertEqual(code, 0)
+        self.assertTrue(stdout.endswith("OnCalendar: *-*-* 04:30:00\nsystemctl: yes\n"), stdout)
+        self.assertEqual(
+            self.systemctl_calls,
+            [
+                ["systemctl", "daemon-reload"],
+                ["systemctl", "enable", "--now", "xray-raw-log-rotate.timer"],
+                ["systemctl", "restart", "xray-raw-log-rotate.timer"],
+            ],
+        )
+
+    def test_systemctl_failure_exits_after_units_are_written(self) -> None:
+        self.env_path.write_text("MANAGER_TIMEZONE=Europe/Moscow\n")
+        self.enable_code = 1
+
+        code, stdout, stderr = self.run_command("raw-log-timer-sync")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "ERROR: Raw Xray log rotate timer sync failed: Failed to enable unit\n")
+        self.assertTrue(self.service_path.exists())
+        self.assertIn("OnCalendar=*-*-* 03:00:00 Europe/Moscow\n", self.timer_path.read_text())
+        self.assertEqual([call[1] for call in self.systemctl_calls], ["daemon-reload", "enable"])
+
+    def test_unknown_option_prints_usage_and_writes_nothing(self) -> None:
+        code, stdout, _stderr = self.run_command("raw-log-timer-sync", "--bogus")
+
+        self.assertEqual(code, 1)
+        self.assertTrue(stdout.startswith("Usage:\n"), stdout)
+        self.assertFalse(self.timer_path.exists())
+        self.assertEqual(self.systemctl_calls, [])
+
+    def test_on_calendar_copies_manager_timezone_value_as_is(self) -> None:
+        """Текущее поведение, баги XR-REV-038 и XR-REV-069: невалидная зона и хвостовой комментарий попадают в OnCalendar."""
+        cases = {
+            "MANAGER_TIMEZONE=Europe/Moscow\n": "*-*-* 03:00:00 Europe/Moscow",
+            "MANAGER_TIMEZONE=\n": "*-*-* 03:00:00",
+            "MANAGER_TIMEZONE=Mars/Base\n": "*-*-* 03:00:00 Mars/Base",
+            "MANAGER_TIMEZONE=Europe/Moscow # основная зона\n": "*-*-* 03:00:00 Europe/Moscow # основная зона",
+            "MANAGER_TIMEZONE=Europe/Moscow\nXRAY_RAW_LOG_ROTATE_TIME=25:00\n": "*-*-* 03:00:00 Europe/Moscow",
+        }
+
+        for env_text, on_calendar in cases.items():
+            with self.subTest(env=env_text):
+                self.env_path.write_text(env_text)
+                code, stdout, _stderr = self.run_command("raw-log-timer-sync", "--no-systemctl")
+
+                self.assertEqual(code, 0)
+                self.assertIn(f"OnCalendar: {on_calendar}\n", stdout)
+                self.assertIn(f"OnCalendar={on_calendar}\n", self.timer_path.read_text())
 
 
 if __name__ == "__main__":

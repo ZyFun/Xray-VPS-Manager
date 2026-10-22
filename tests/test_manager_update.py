@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -7,11 +8,15 @@ import tarfile
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+import urllib.error
+import urllib.request
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import xray_vps_manager
+from xray_vps_manager import runner
 from xray_vps_manager.commands import manager_update
 from xray_vps_manager.core import errors as core_errors
 from xray_vps_manager.core import locks as core_locks
@@ -761,6 +766,103 @@ class ManagerUpdateLockingTests(unittest.TestCase):
         self.assertEqual(held, [True, True])
         with core_locks.manager_update_lock():
             pass
+
+class FakeGitHubResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        return False
+
+
+class ManagerUpdateCheckTests(unittest.TestCase):
+    """VIREI-84 (T1): `xray-manager-update --check` с фейковым GitHub до шага 1 (`core/http.py`); сеть не используется."""
+
+    CURRENT = f"v{xray_vps_manager.__version__}"
+    RELEASE_PAGE = "https://github.com/ZyFun/Xray-VPS-Manager/releases/tag/"
+
+    def run_check(self, response) -> tuple:
+        requests = []
+
+        def urlopen(request, timeout=None):
+            requests.append((request.full_url, request.get_header("User-agent"), timeout))
+            if isinstance(response, Exception):
+                raise response
+            return FakeGitHubResponse(response)
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(urllib.request, "urlopen", side_effect=urlopen), \
+                mock.patch.object(sys, "argv", ["xray-manager-update", "--check"]), \
+                mock.patch("os.geteuid", return_value=1000), redirect_stdout(stdout), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as caught:
+                runner.run_command("manager-update")
+        self.assertEqual(requests, [(manager_update.GITHUB_API_LATEST, "xray-manager-update", 20)])
+        self.assertEqual(stderr.getvalue(), "")
+        return caught.exception.code, stdout.getvalue()
+
+    def release(self, tag: str) -> dict:
+        return {"tag_name": tag, "html_url": self.RELEASE_PAGE + tag}
+
+    def header(self, tag: str, page: bool = True) -> str:
+        lines = f"Current manager version: {self.CURRENT}\nLatest GitHub release: {tag}\n"
+        if page:
+            lines += f"Release page: {self.RELEASE_PAGE}{tag}\n"
+        return lines
+
+    def test_check_asks_latest_release_of_manager_repository(self) -> None:
+        self.assertEqual(
+            manager_update.GITHUB_API_LATEST,
+            "https://api.github.com/repos/ZyFun/Xray-VPS-Manager/releases/latest",
+        )
+        self.assertEqual(manager_update.current_manager_version(), self.CURRENT)
+
+    def test_check_reports_newer_equal_and_older_release_with_exit_0_without_root(self) -> None:
+        cases = {
+            "v99.0.0": f"\033[32mOK: Доступно обновление менеджера: {self.CURRENT} -> v99.0.0\033[0m\n",
+            self.CURRENT: "\033[32mOK: Установлена версия latest release.\033[0m\n",
+            "v0.0.1": f"\033[33mWARN: Локальная версия новее latest release: {self.CURRENT} > v0.0.1\033[0m\n",
+        }
+
+        for tag, verdict in cases.items():
+            with self.subTest(tag=tag):
+                self.assertEqual(self.run_check(self.release(tag)), (0, self.header(tag) + verdict))
+
+    def test_check_with_non_semver_tag_and_without_release_page_warns_and_exits_0(self) -> None:
+        self.assertEqual(
+            self.run_check({"tag_name": "nightly"}),
+            (
+                0,
+                self.header("nightly", page=False)
+                + "\033[33mWARN: Не удалось сравнить версии как semver; сравни теги вручную.\033[0m\n",
+            ),
+        )
+
+    def test_check_errors_print_fail_and_exit_1(self) -> None:
+        url = manager_update.GITHUB_API_LATEST
+        cases = {
+            "404": (
+                urllib.error.HTTPError(url, 404, "Not Found", {}, None),
+                "В репозитории ZyFun/Xray-VPS-Manager пока нет опубликованных релизов.",
+            ),
+            "500": (
+                urllib.error.HTTPError(url, 500, "Server Error", {}, None),
+                "Не удалось получить latest release: HTTP 500",
+            ),
+            "network": (urllib.error.URLError("timed out"), "Не удалось подключиться к GitHub: timed out"),
+            "no tag": ({"html_url": self.RELEASE_PAGE}, "GitHub latest release не содержит tag_name."),
+        }
+
+        for name, (response, message) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.run_check(response), (1, f"\033[31mFAIL: {message}\033[0m\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,11 @@
+[Unit]
+Description=Rotate raw Xray access/error logs
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Europe/Moscow
+Persistent=true
+AccuracySec=1min
+Unit=xray-raw-log-rotate.service
+
+[Install]
+WantedBy=timers.target

@@ -8,6 +8,7 @@ import time
 import unittest
 from unittest import mock
 
+from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.core import errors
 from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, update_server_env, write_server_env
@@ -143,6 +144,149 @@ class ServerEnvTests(unittest.TestCase):
                 env_path.read_text().splitlines(),
                 ["SERVER_ADDR=example.com", "SERVER_NAME=Demo", "MANAGER_PYTHON=/usr/bin/python3.12", "CUSTOM=value"],
             )
+
+
+class ServerEnvCurrentBehaviorTests(unittest.TestCase):
+    """VIREI-84 (T1): чтение и запись server.env на фикстурах до шага 1 (перенос в `core/settings.py`)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.env_path = Path(tmp.name) / "server.env"
+
+    def test_read_keeps_raw_keys_export_prefix_and_trailing_comment(self) -> None:
+        """Текущее поведение, баг XR-REV-069: ключи не нормализуются, хвостовой комментарий остаётся в значении."""
+        self.env_path.write_text(
+            "  SERVER_NAME=Xray\n"
+            "PORT =443\n"
+            "export FINGERPRINT=chrome\n"
+            "MANAGER_TIMEZONE=Europe/Moscow # основная зона\n"
+        )
+
+        values = read_server_env(self.env_path)
+
+        self.assertEqual(
+            values,
+            {
+                "  SERVER_NAME": "Xray",
+                "PORT ": "443",
+                "export FINGERPRINT": "chrome",
+                "MANAGER_TIMEZONE": "Europe/Moscow # основная зона",
+            },
+        )
+        self.assertIsNone(values.get("PORT"))
+        self.assertIsNone(values.get("SERVER_NAME"))
+
+    def test_read_strips_whitespace_then_double_then_single_quotes(self) -> None:
+        self.env_path.write_bytes(
+            "\n".join(
+                [
+                    "  # отступ перед комментарием",
+                    "#COMMENTED=yes",
+                    'DOUBLE="value"',
+                    "SINGLE='value'",
+                    "APOSTROPHE=\"it's\"",
+                    "SINGLE_OUTSIDE='\"both\"'",
+                    "DOUBLE_OUTSIDE=\"'both'\"",
+                    'UNBALANCED="open',
+                    'QUOTED_COMMENT="value" # note',
+                    "EQUALS=a=b",
+                    "EMPTY=",
+                    "SPACED=  spaced value  ",
+                    "DUPLICATE=first",
+                    "DUPLICATE=second",
+                    "CRLF=windows\r",
+                ]
+            ).encode()
+            + b"\n"
+        )
+
+        self.assertEqual(
+            read_server_env(self.env_path),
+            {
+                "DOUBLE": "value",
+                "SINGLE": "value",
+                "APOSTROPHE": "it's",
+                "SINGLE_OUTSIDE": '"both"',
+                "DOUBLE_OUTSIDE": "both",
+                "UNBALANCED": "open",
+                "QUOTED_COMMENT": 'value" # note',
+                "EQUALS": "a=b",
+                "EMPTY": "",
+                "SPACED": "spaced value",
+                "DUPLICATE": "second",
+                "CRLF": "windows",
+            },
+        )
+
+    def test_write_after_read_drops_comments_and_quotes_and_keeps_raw_keys(self) -> None:
+        """Текущее поведение, баг XR-REV-069: запись после чтения сохраняет ненормализованные ключи как есть."""
+        self.env_path.write_text(
+            "# managed by install.sh\n"
+            "\n"
+            "  SERVER_NAME=Xray\n"
+            "PORT =443\n"
+            "export FINGERPRINT=chrome\n"
+            "MANAGER_TIMEZONE=Europe/Moscow # основная зона\n"
+            "SERVER_ADDR='Demo Server'\n"
+        )
+
+        write_server_env(read_server_env(self.env_path), self.env_path)
+
+        self.assertEqual(
+            self.env_path.read_text(),
+            "SERVER_ADDR=Demo Server\n"
+            "MANAGER_TIMEZONE=Europe/Moscow # основная зона\n"
+            "  SERVER_NAME=Xray\n"
+            "PORT =443\n"
+            "export FINGERPRINT=chrome\n",
+        )
+        self.assertEqual(self.env_path.stat().st_mode & 0o777, 0o640)
+
+    def test_two_key_orders_depend_on_last_writer(self) -> None:
+        """Текущее поведение, баг XR-REV-038: `clients.settings` пишет свои 11 ключей в своём порядке, остальные — по алфавиту."""
+        values = {
+            "SECURITY_AUDIT_LAST_RUN": "2026-10-01T00:00:00Z",
+            "MANAGER_PYTHON": "/usr/bin/python3.12",
+            "ACTIVITY_LOGGING_ENABLED": "true",
+            "SERVER_ADDR": "example.com",
+            "MANAGER_TIMEZONE": "Europe/Moscow",
+        }
+
+        write_server_env(values, self.env_path)
+        core_lines = self.env_path.read_text().splitlines()
+        client_settings.save_server_env_values(values, self.env_path)
+        client_lines = self.env_path.read_text().splitlines()
+
+        self.assertEqual(
+            core_lines,
+            [
+                "SERVER_ADDR=example.com",
+                "MANAGER_TIMEZONE=Europe/Moscow",
+                "MANAGER_PYTHON=/usr/bin/python3.12",
+                "SECURITY_AUDIT_LAST_RUN=2026-10-01T00:00:00Z",
+                "ACTIVITY_LOGGING_ENABLED=true",
+            ],
+        )
+        self.assertEqual(
+            client_lines,
+            [
+                "SERVER_ADDR=example.com",
+                "SERVER_NAME=",
+                "PORT=",
+                "REALITY_SNI=",
+                "REALITY_DEST=",
+                "FINGERPRINT=",
+                "REALITY_TRANSPORT=",
+                "GRPC_SERVICE_NAME=",
+                "XHTTP_PATH=",
+                "XHTTP_MODE=",
+                "MANAGER_TIMEZONE=Europe/Moscow",
+                "ACTIVITY_LOGGING_ENABLED=true",
+                "MANAGER_PYTHON=/usr/bin/python3.12",
+                "SECURITY_AUDIT_LAST_RUN=2026-10-01T00:00:00Z",
+            ],
+        )
 
 
 class UpdateServerEnvLockTests(unittest.TestCase):
