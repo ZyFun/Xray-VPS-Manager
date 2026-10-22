@@ -1,11 +1,23 @@
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from pathlib import Path
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
 
 from xray_vps_manager import cli
 from xray_vps_manager import runner
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+HELP_OUTPUT = (
+    "Usage: xray-vps-manager COMMAND [ARGS...]\n"
+    "\n"
+    "Commands: activity, backup, bypass, caddy, cascade, client, manager-update, menu, sqlite, telegram, test, "
+    "traffic-sync, update, warp\n"
+    "\n"
+    "Compatibility command names remain available: xray-menu, xray-client, xray-telegram, ...\n"
+)
 
 
 class CliSmokeTests(unittest.TestCase):
@@ -19,6 +31,21 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("caddy", output)
         self.assertIn("manager-update", output)
         self.assertIn("telegram", output)
+
+    def test_help_output_is_exact_for_every_help_form(self) -> None:
+        """VIREI-84 (T1): полный вывод `xray-vps-manager --help` через обёртку репозитория — до шага 1 (R1.5)."""
+        for args in (["--help"], ["-h"], ["help"], []):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    [sys.executable, str(REPO_ROOT / "xray-vps-manager"), *args],
+                    cwd=str(REPO_ROOT),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                )
+
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, HELP_OUTPUT, ""))
 
     def test_unknown_command_exits_with_error(self) -> None:
         stdout = StringIO()

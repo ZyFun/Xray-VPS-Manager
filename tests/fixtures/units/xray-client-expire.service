@@ -1,0 +1,8 @@
+[Unit]
+Description=Disable expired Xray clients
+After=xray.service
+ConditionPathExists=/usr/local/etc/xray/config.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/xray-client expire-due --quiet

@@ -55,6 +55,44 @@ class CoreProcessTests(unittest.TestCase):
         self.assertIn("first failure", caught.exception.stderr)
         self.assertIn("second failure", caught.exception.stderr)
 
+    def test_restart_systemd_unit_retry_passes_timeouts_and_skips_sleep_without_delay(self) -> None:
+        """VIREI-84 (T1): restart — с таймаутом вызова, reset-failed — всегда 10 с; retry_delay=0 — без паузы."""
+        calls = [
+            self.completed(["systemctl", "restart", "xray"], code=1),
+            self.completed(["systemctl", "reset-failed", "xray"]),
+            self.completed(["systemctl", "restart", "xray"]),
+        ]
+
+        with mock.patch.object(process.subprocess, "run", side_effect=calls) as run, mock.patch.object(
+            process.time, "sleep"
+        ) as sleep:
+            process.restart_systemd_unit("xray", timeout=45, retry_delay=0, verify_timeout=0)
+
+        self.assertEqual(
+            [(call.args[0][1], call.kwargs["timeout"]) for call in run.call_args_list],
+            [("restart", 45), ("reset-failed", 10), ("restart", 45)],
+        )
+        sleep.assert_not_called()
+
+    def test_verified_restart_prepares_unit_with_timeouts_before_restart(self) -> None:
+        """VIREI-84 (T1): проверка старта из A4 — stop и restart с таймаутом вызова, reset-failed — 10 с, show — остаток окна, не меньше 2 с."""
+        commands = []
+
+        def systemctl(command, **kwargs):
+            commands.append((command[1], kwargs["timeout"]))
+            stdout = "ActiveState=active\nSubState=running\nNRestarts=0\n" if command[1] == "show" else ""
+            return self.completed(command, stdout=stdout)
+
+        clock = mock.Mock()
+        clock.now = 100.0
+        clock.monotonic.side_effect = lambda: clock.now
+        clock.sleep.side_effect = lambda seconds: setattr(clock, "now", clock.now + seconds)
+        with mock.patch.object(process.subprocess, "run", side_effect=systemctl), mock.patch.object(process, "time", clock):
+            process.restart_systemd_unit("xray", timeout=45, verify_timeout=3.0, poll_interval=3.0)
+
+        self.assertEqual(commands[:3], [("stop", 45), ("reset-failed", 10), ("restart", 45)])
+        self.assertEqual(commands[3:], [("show", 3.0), ("show", 2.0)])
+
 
 if __name__ == "__main__":
     unittest.main()
