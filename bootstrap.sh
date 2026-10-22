@@ -22,7 +22,7 @@ Examples:
   curl -fsSL "https://raw.githubusercontent.com/ZyFun/Xray-VPS-Manager/${TAG}/bootstrap.sh" | bash -s -- "$TAG"
 
 Environment:
-  XRAY_MANAGER_VERSION      Release tag to install, for example v2.1.1.
+  XRAY_MANAGER_VERSION      Release tag to install, for example v2.2.0.
   XRAY_MANAGER_INSTALL_DIR  Target source directory, default /root/xray_server.
   XRAY_MANAGER_RUN_INSTALL  Set false to download only.
   MANAGER_PYTHON            Absolute path to Python >= 3.12 for the manager.
