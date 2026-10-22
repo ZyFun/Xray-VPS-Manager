@@ -481,10 +481,13 @@ def backup_file(path: Path) -> Path | None:
     return backup
 
 
-def prune_site_backups(*paths: Path) -> None:
-    """After a successful change keep only the SITE_BACKUP_KEEP newest copies of each file (VIREI-241)."""
+def prune_site_backups(*paths: Path, protect: tuple[Path | None, ...] = ()) -> None:
+    """After a successful change keep only the SITE_BACKUP_KEEP newest copies of each file (VIREI-241).
+
+    ``protect`` are the copies made by this operation: they stay even if the clock went back.
+    """
     for path in paths:
-        fs.prune_backups(path, keep=SITE_BACKUP_KEEP)
+        fs.prune_backups(path, keep=SITE_BACKUP_KEEP, protect=protect)
 
 
 def restore_file(backup: Path | None, path: Path) -> None:
@@ -1188,7 +1191,7 @@ def update_site_config(
         except Exception:
             pass
         raise
-    prune_site_backups(site_path)
+    prune_site_backups(site_path, protect=(backup,))
     return SiteWriteResult(written, backup)
 
 
@@ -1221,7 +1224,7 @@ def update_site_tls_config(
         except Exception:
             pass
         raise
-    prune_site_backups(site_path)
+    prune_site_backups(site_path, protect=(backup,))
     return SiteWriteResult(site_path, backup)
 
 
@@ -1262,7 +1265,7 @@ def delete_site_config(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> Path | N
     backup = backup_file(site_path)
     if site_path.exists():
         site_path.unlink()
-    prune_site_backups(site_path)
+    prune_site_backups(site_path, protect=(backup,))
     return backup
 
 

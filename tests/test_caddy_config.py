@@ -537,6 +537,17 @@ class SiteBackupRotationTests(unittest.TestCase):
         self.assertIn("protocols tls1.3 tls1.3", path.read_text())
         self.assertTrue(all(item.exists() for item in foreign))
 
+    def test_update_site_config_keeps_current_copy_when_clock_went_back(self) -> None:
+        path = self.write_site()
+        future = [path.with_name(f"{path.name}.bak.2099010100000000{index:04d}") for index in range(7)]
+        for copy in future:
+            copy.write_text("future\n")
+
+        result = caddy.update_site_config("api.example.com", 10300, tls_min_version="tls1.3", tls_max_version="tls1.3", runner=ok_runner)
+
+        self.assertTrue(result.backup.exists())
+        self.assertEqual(self.copies_of(path), sorted([result.backup, *future[-4:]]))
+
     def test_update_site_config_failure_restores_file_and_keeps_copies(self) -> None:
         path = self.write_site()
         original = path.read_text()

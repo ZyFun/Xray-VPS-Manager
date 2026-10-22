@@ -327,6 +327,21 @@ class PruneBackupsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             self.assertEqual(fs.prune_backups(Path(tmp_dir) / "missing" / "site.caddy", keep=5), [])
 
+    def test_prune_backups_keeps_protected_copy_when_clock_went_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "site.caddy"
+            future = [path.with_name(f"site.caddy.bak.2099010100000000{index:04d}") for index in range(6)]
+            for copy in future:
+                copy.write_text("future\n", encoding="utf-8")
+            current = path.with_name("site.caddy.bak.20261022000000000000")
+            current.write_text("current\n", encoding="utf-8")
+
+            removed = fs.prune_backups(path, keep=5, protect=(current, None))
+
+            self.assertTrue(current.exists())
+            self.assertEqual(removed, future[:2])
+            self.assertEqual(sorted(p for p in Path(tmp_dir).iterdir()), sorted([current, *future[2:]]))
+
     def test_prune_backups_requires_keeping_at_least_one_copy(self) -> None:
         with self.assertRaises(ValueError):
             fs.prune_backups(Path("/nonexistent/site.caddy"), keep=0)

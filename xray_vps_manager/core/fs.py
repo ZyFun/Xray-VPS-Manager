@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 
 def replace_directory(source: Path, destination: Path, prepare: Optional[Callable[[Path], None]] = None) -> None:
@@ -86,17 +86,20 @@ def remove_path(path: Path) -> None:
     _remove_tree(path)
 
 
-def prune_backups(path: Path, *, keep: int) -> list[Path]:
+def prune_backups(path: Path, *, keep: int, protect: Iterable[Optional[Path]] = ()) -> list[Path]:
     """Keep the ``keep`` newest ``<name>.bak.<digits>`` copies of ``path`` and remove the older ones.
 
     Only regular files in ``path.parent`` whose name is exactly ``<path.name>.bak.<digits>`` count
     as copies; copies of other files, other suffixes (``.bak.telegram.*``) and directories are left
-    alone. Copies are ordered by the numeric timestamp, so the newest stay. Rotation is best effort:
-    a missing directory or a copy that cannot be removed is skipped. Returns the removed copies,
-    oldest first. ``keep`` must be at least 1 so the copy just made by the caller survives.
+    alone. Copies are ordered by the numeric timestamp, so the newest stay. Copies in ``protect``
+    (the ones the caller has just made; ``None`` is ignored) are never removed and count towards
+    ``keep``, so they survive even when the clock went back and older-named copies look newer.
+    Rotation is best effort: a missing directory or a copy that cannot be removed is skipped.
+    Returns the removed copies, oldest first. ``keep`` must be at least 1.
     """
     if keep < 1:
         raise ValueError("keep must be at least 1")
+    protected = {Path(item).name for item in protect if item is not None}
     pattern = re.compile(re.escape(path.name) + r"\.bak\.([0-9]+)")
     try:
         entries = list(path.parent.iterdir())
@@ -108,8 +111,11 @@ def prune_backups(path: Path, *, keep: int) -> list[Path]:
         if match and entry.is_file() and not entry.is_symlink():
             copies.append((len(match.group(1)), match.group(1), entry))
     copies.sort()
+    kept_protected = sum(1 for _, _, entry in copies if entry.name in protected)
+    candidates = [entry for _, _, entry in copies if entry.name not in protected]
+    keep_others = max(keep - kept_protected, 0)
     removed = []
-    for _, _, entry in copies[:-keep]:
+    for entry in candidates[: len(candidates) - keep_others]:
         try:
             entry.unlink()
         except OSError:
