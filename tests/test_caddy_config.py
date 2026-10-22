@@ -1,6 +1,10 @@
+import contextlib
+import functools
+import subprocess
 import unittest
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 from unittest import mock
 
 from xray_vps_manager.xray import caddy
@@ -450,6 +454,166 @@ class CaddyConfigTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 caddy.delete_site_backup(str(outside), backup_dir)
+
+
+def ok_runner(command, check=False, **kwargs):
+    return SimpleNamespace(returncode=0)
+
+
+def failing_runner(command, check=False, **kwargs):
+    if command[0] == "caddy":
+        raise subprocess.CalledProcessError(1, command)
+    return SimpleNamespace(returncode=0)
+
+
+class SiteBackupRotationTests(unittest.TestCase):
+    """После успешной правки сайта Caddy рядом с файлом остаётся не больше N копий (VIREI-241)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.conf_dir = Path(tmp.name) / "conf.d"
+        self.conf_dir.mkdir()
+        self.caddyfile = Path(tmp.name) / "Caddyfile"
+        conf_dir = self.conf_dir
+        patches = [
+            mock.patch.object(
+                caddy, "site_config_path", lambda domain, conf_dir_arg=None: conf_dir / caddy.site_filename(domain)
+            ),
+            mock.patch.object(
+                caddy,
+                "write_site_config",
+                functools.partial(caddy.write_site_config, conf_dir=conf_dir, caddyfile_path=self.caddyfile),
+            ),
+            mock.patch.object(caddy, "random_tls_lock", contextlib.nullcontext),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def write_site(self, domain: str = "api.example.com") -> Path:
+        path = self.conf_dir / caddy.site_filename(domain)
+        path.write_text(caddy.caddy_site_block(domain, 10300))
+        return path
+
+    def make_copies(self, path: Path, count: int) -> list:
+        copies = []
+        for index in range(count):
+            copy = path.with_name(f"{path.name}.bak.2026010100000000{index:04d}")
+            copy.write_text(f"old {index}\n")
+            copies.append(copy)
+        return copies
+
+    def copies_of(self, path: Path) -> list:
+        prefix = f"{path.name}.bak."
+        return sorted(
+            item for item in path.parent.iterdir() if item.name.startswith(prefix) and item.name[len(prefix):].isdigit()
+        )
+
+    def make_foreign_files(self) -> list:
+        other = self.write_site("other.example.com")
+        foreign = [other, *self.make_copies(other, 7)]
+        for name in (
+            "api.example.com.caddy.bak.telegram.20250101000000",
+            "x.api.example.com.caddy.bak.20250101000000000000",
+            "api.example.com.caddy.bak.20250101000000000000.tar.gz",
+        ):
+            path = self.conf_dir / name
+            path.write_text("foreign\n")
+            foreign.append(path)
+        return foreign
+
+    def test_update_site_config_keeps_newest_copies_after_success(self) -> None:
+        path = self.write_site()
+        old = self.make_copies(path, 7)
+        foreign = self.make_foreign_files()
+
+        result = caddy.update_site_config("api.example.com", 10300, tls_min_version="tls1.3", tls_max_version="tls1.3", runner=ok_runner)
+
+        copies = self.copies_of(path)
+        self.assertEqual(len(copies), caddy.SITE_BACKUP_KEEP)
+        self.assertEqual(copies, sorted([*old[-4:], result.backup]))
+        self.assertTrue(result.backup.exists())
+        self.assertIn("protocols tls1.3 tls1.3", path.read_text())
+        self.assertTrue(all(item.exists() for item in foreign))
+
+    def test_update_site_config_keeps_current_copy_when_clock_went_back(self) -> None:
+        path = self.write_site()
+        future = [path.with_name(f"{path.name}.bak.2099010100000000{index:04d}") for index in range(7)]
+        for copy in future:
+            copy.write_text("future\n")
+
+        result = caddy.update_site_config("api.example.com", 10300, tls_min_version="tls1.3", tls_max_version="tls1.3", runner=ok_runner)
+
+        self.assertTrue(result.backup.exists())
+        self.assertEqual(self.copies_of(path), sorted([result.backup, *future[-4:]]))
+
+    def test_update_site_config_keeps_copies_below_limit(self) -> None:
+        path = self.write_site()
+        old = self.make_copies(path, 3)
+
+        result = caddy.update_site_config("api.example.com", 10300, tls_min_version="tls1.3", tls_max_version="tls1.3", runner=ok_runner)
+
+        self.assertEqual(self.copies_of(path), sorted([*old, result.backup]))
+
+    def test_update_site_config_failure_restores_file_and_keeps_copies(self) -> None:
+        path = self.write_site()
+        original = path.read_text()
+        self.make_copies(path, 7)
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            caddy.update_site_config("api.example.com", 10300, tls_min_version="tls1.3", tls_max_version="tls1.3", runner=failing_runner)
+
+        self.assertEqual(path.read_text(), original)
+        self.assertEqual(len(self.copies_of(path)), 8)
+
+    def test_update_site_tls_config_keeps_newest_copies_after_success(self) -> None:
+        path = self.write_site()
+        old = self.make_copies(path, 7)
+
+        result = caddy.update_site_tls_config(path, tls_min_version="tls1.3", tls_max_version="tls1.3", validator=lambda: None)
+
+        self.assertEqual(self.copies_of(path), sorted([*old[-4:], result.backup]))
+
+    def test_update_site_tls_config_failure_restores_file_and_keeps_copies(self) -> None:
+        path = self.write_site()
+        original = path.read_text()
+        self.make_copies(path, 7)
+
+        def validator() -> None:
+            raise subprocess.CalledProcessError(1, ["caddy", "validate"])
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            caddy.update_site_tls_config(path, tls_min_version="tls1.3", tls_max_version="tls1.3", validator=validator)
+
+        self.assertEqual(path.read_text(), original)
+        self.assertEqual(len(self.copies_of(path)), 8)
+
+    def test_delete_site_config_keeps_newest_copies_of_deleted_site(self) -> None:
+        path = self.write_site()
+        old = self.make_copies(path, 7)
+        foreign = self.make_foreign_files()
+
+        backup = caddy.delete_site_config("api.example.com", self.conf_dir)
+
+        self.assertFalse(path.exists())
+        self.assertEqual(self.copies_of(path), sorted([*old[-4:], backup]))
+        self.assertTrue(all(item.exists() for item in foreign))
+
+    def test_random_tls_switch_prunes_accumulated_copies(self) -> None:
+        path = self.write_site()
+        self.make_copies(path, 60)
+        self.write_site("other.example.com")
+
+        result = caddy.apply_random_tls_switch(
+            caddy.RandomTlsConfig("api.example.com", 10300),
+            runner=ok_runner,
+            chooser=lambda options: options[0],
+        )
+
+        copies = self.copies_of(path)
+        self.assertEqual(len(copies), caddy.SITE_BACKUP_KEEP)
+        self.assertEqual(copies[-1], result.backup)
 
 
 if __name__ == "__main__":

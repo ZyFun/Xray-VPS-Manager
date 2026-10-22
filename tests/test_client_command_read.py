@@ -1,3 +1,4 @@
+import functools
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -462,6 +463,52 @@ class ClientCommandReadTests(unittest.TestCase):
         require_absent.assert_called_once_with("vpn.example.com")
         add_connection.assert_not_called()
         save_config.assert_not_called()
+
+
+class TrojanCaddySiteBackupRotationTests(unittest.TestCase):
+    """Смена домена сайта Caddy в `xray-client` оставляет не больше N копий (VIREI-241)."""
+
+    def test_update_trojan_caddy_site_domain_change_prunes_copies(self) -> None:
+        caddy = client_command.xray_caddy
+        with tempfile.TemporaryDirectory() as tmp:
+            conf_dir = Path(tmp) / "conf.d"
+            conf_dir.mkdir()
+            caddyfile = Path(tmp) / "Caddyfile"
+            old_path = conf_dir / caddy.site_filename("old.example.com")
+            old_path.write_text(caddy.caddy_site_block("old.example.com", 10100))
+            new_path = conf_dir / caddy.site_filename("new.example.com")
+            for path in (old_path, new_path):
+                for index in range(7):
+                    path.with_name(f"{path.name}.bak.2026010100000000{index:04d}").write_text("old\n")
+            result = SimpleNamespace(
+                caddy_enabled=True,
+                public_host="new.example.com",
+                previous_public_host="old.example.com",
+                local_port=10100,
+                tls_min_version="tls1.2",
+                tls_max_version="tls1.3",
+                ws_path="/trojan",
+            )
+
+            with mock.patch.object(caddy, "site_config_path", lambda domain, conf_dir_arg=None: conf_dir / caddy.site_filename(domain)), \
+                mock.patch.object(
+                    caddy,
+                    "write_site_config",
+                    functools.partial(caddy.write_site_config, conf_dir=conf_dir, caddyfile_path=caddyfile),
+                ), \
+                mock.patch.object(caddy, "validate_and_reload_caddy"):
+                written = client_command.update_trojan_caddy_site(result)
+
+            old_copies = sorted(conf_dir.glob("old.example.com.caddy.bak.*"))
+            new_copies = sorted(conf_dir.glob("new.example.com.caddy.bak.*"))
+            old_exists = old_path.exists()
+            new_exists = new_path.exists()
+
+        self.assertFalse(old_exists)
+        self.assertTrue(new_exists)
+        self.assertEqual(len(old_copies), caddy.SITE_BACKUP_KEEP)
+        self.assertEqual(old_copies[-1], written.backup)
+        self.assertEqual(len(new_copies), caddy.SITE_BACKUP_KEEP)
 
 
 if __name__ == "__main__":

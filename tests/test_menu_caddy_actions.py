@@ -1,8 +1,15 @@
+import functools
+import subprocess
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
 from unittest import mock
 
 from xray_vps_manager.commands import menu_caddy_actions
 from xray_vps_manager.clients import connections as client_connections
+from xray_vps_manager.xray import caddy
 
 
 class MenuCaddyActionsTests(unittest.TestCase):
@@ -91,6 +98,115 @@ class MenuCaddyActionsTests(unittest.TestCase):
         self.assertEqual(options[0]["routePath"], "/vless")
         self.assertEqual(options[1]["upstreamTransport"], "http")
         self.assertEqual(options[1]["routePath"], "/trojan")
+
+
+class MenuCaddyBackupRotationTests(unittest.TestCase):
+    """Действия меню Caddy с копией файла оставляют не больше N копий (VIREI-241)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.conf_dir = Path(tmp.name) / "conf.d"
+        self.conf_dir.mkdir()
+        self.caddyfile = Path(tmp.name) / "Caddyfile"
+        self.caddyfile.write_text(f"import {self.conf_dir}/*.caddy\n")
+        conf_dir = self.conf_dir
+        list_site_configs = caddy.list_site_configs
+        self.reload = mock.Mock()
+        patches = [
+            mock.patch.object(caddy, "CADDYFILE_PATH", self.caddyfile),
+            mock.patch.object(
+                caddy, "site_config_path", lambda domain, conf_dir_arg=None: conf_dir / caddy.site_filename(domain)
+            ),
+            mock.patch.object(
+                caddy,
+                "write_site_config",
+                functools.partial(caddy.write_site_config, conf_dir=conf_dir, caddyfile_path=self.caddyfile),
+            ),
+            mock.patch.object(caddy, "list_site_configs", lambda: list_site_configs(conf_dir)),
+            mock.patch.object(
+                caddy,
+                "remove_site_block_from_caddyfile",
+                functools.partial(caddy.remove_site_block_from_caddyfile, caddyfile_path=self.caddyfile),
+            ),
+            mock.patch.object(caddy, "validate_and_reload_caddy", self.reload),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def write_site(self, domain: str) -> Path:
+        path = self.conf_dir / caddy.site_filename(domain)
+        path.write_text(caddy.caddy_site_block(domain, 10300))
+        return path
+
+    def make_copies(self, path: Path, count: int) -> list:
+        copies = []
+        for index in range(count):
+            copy = path.with_name(f"{path.name}.bak.2026010100000000{index:04d}")
+            copy.write_text(f"old {index}\n")
+            copies.append(copy)
+        return copies
+
+    def copies_of(self, path: Path) -> list:
+        prefix = f"{path.name}.bak."
+        return sorted(
+            item for item in path.parent.iterdir() if item.name.startswith(prefix) and item.name[len(prefix):].isdigit()
+        )
+
+    def test_update_site_domain_prunes_copies_of_old_site(self) -> None:
+        old_path = self.write_site("old.example.com")
+        old = self.make_copies(old_path, 7)
+        new_path = self.conf_dir / caddy.site_filename("new.example.com")
+        new_old = self.make_copies(new_path, 7)
+
+        with mock.patch("builtins.input", return_value="new.example.com"), redirect_stdout(StringIO()):
+            menu_caddy_actions.update_site_domain()
+
+        self.assertFalse(old_path.exists())
+        self.assertTrue(new_path.exists())
+        old_copies = self.copies_of(old_path)
+        self.assertEqual(len(old_copies), caddy.SITE_BACKUP_KEEP)
+        self.assertEqual(old_copies[:-1], old[-4:])
+        self.assertEqual(self.copies_of(new_path), new_old[-5:])
+
+    def test_delete_site_prunes_copies_and_keeps_reported_backup(self) -> None:
+        path = self.write_site("api.example.com")
+        old = self.make_copies(path, 7)
+        output = StringIO()
+
+        with mock.patch("builtins.input", return_value="1"), redirect_stdout(output):
+            menu_caddy_actions.delete_site(lambda message: True)
+
+        copies = self.copies_of(path)
+        self.assertFalse(path.exists())
+        self.assertEqual(copies[:-1], old[-4:])
+        self.assertIn(f"Backup: {copies[-1]}", output.getvalue())
+
+    def test_delete_site_failure_restores_file_and_keeps_copies(self) -> None:
+        path = self.write_site("api.example.com")
+        self.make_copies(path, 7)
+        self.reload.side_effect = subprocess.CalledProcessError(1, ["caddy", "validate"])
+
+        with mock.patch("builtins.input", return_value="1"), redirect_stdout(StringIO()):
+            with self.assertRaises(SystemExit):
+                menu_caddy_actions.delete_site(lambda message: True)
+
+        self.assertTrue(path.exists())
+        self.assertEqual(len(self.copies_of(path)), 8)
+
+    def test_remove_default_http_site_prunes_caddyfile_copies(self) -> None:
+        self.caddyfile.write_text(f":80 {{\n    file_server\n}}\n\nimport {self.conf_dir}/*.caddy\n")
+        old = self.make_copies(self.caddyfile, 7)
+        output = StringIO()
+
+        with redirect_stdout(output):
+            menu_caddy_actions.remove_default_http_site(lambda message: True)
+
+        copies = self.copies_of(self.caddyfile)
+        self.assertNotIn(":80 {", self.caddyfile.read_text())
+        self.assertEqual(copies[:-1], old[-4:])
+        self.assertIn(f"Backup: {copies[-1]}", output.getvalue())
 
 
 if __name__ == "__main__":
