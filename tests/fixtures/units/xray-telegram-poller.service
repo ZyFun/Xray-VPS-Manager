@@ -1,0 +1,13 @@
+[Unit]
+Description=Poll Telegram user messages for Xray VPS Manager
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/xray-telegram run-poller
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

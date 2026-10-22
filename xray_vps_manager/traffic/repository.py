@@ -13,6 +13,7 @@ from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
     sqlite_read_ready,
 )
+from xray_vps_manager.traffic.history import HistoryChanges
 
 
 @dataclass(frozen=True)
@@ -75,8 +76,9 @@ def save_traffic_db(
     path: Path | None = None,
     *,
     db_path: str | Path | None = None,
+    history_changes: HistoryChanges | None = None,
 ) -> None:
-    write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
+    write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=True, history_changes=history_changes)
 
 
 def traffic_clients(db: dict | None) -> dict:
@@ -158,7 +160,15 @@ def write_traffic_db_to_sqlite_for_write(
     *,
     db_path: str | Path | None = None,
     strict: bool = False,
+    history_changes: HistoryChanges | None = None,
 ) -> bool:
+    """Сохраняет итоги и историю трафика одной транзакцией.
+
+    Без `history_changes` история каждой записи переписывается целиком из снимка `db`.
+    С `history_changes` (прогон `xray-traffic-sync`, VIREI-247) записи, которые уже есть в базе,
+    получают только дельты изменённых бакетов и общую обрезку старше `cutoff`; целиком пишется
+    история только новых записей (например, первой credential, скопировавшей историю клиента).
+    """
     if not database.database_file_exists(db_path):
         if strict:
             raise RuntimeError("SQLite manager database is missing")
@@ -179,8 +189,21 @@ def write_traffic_db_to_sqlite_for_write(
         mirrorable_clients = desired_clients & known_clients
 
         with database.transaction(connection):
+            stored_clients: set[str] = set()
+            stored_credentials: set[tuple[str, str]] = set()
+            if history_changes is not None:
+                # Первой — запись: в WAL отложенная транзакция, начатая чтением, после чужого commit
+                # не становится пишущей (`database is locked` без busy_timeout), а poller пишет параллельно.
+                # Обрезка до дельт — тот же порядок, что в памяти: prune_history до восстановления пропусков.
+                sqlite_traffic.delete_history_before(connection, history_changes.cutoff.isoformat())
+                stored_clients = sqlite_traffic.traffic_client_names(connection)
+                stored_credentials = sqlite_traffic.credential_traffic_keys(connection)
             for name in sorted(mirrorable_clients):
-                sqlite_traffic.upsert_traffic_entry(connection, name, entries[name])
+                if name in stored_clients:
+                    sqlite_traffic.upsert_traffic_totals(connection, name, entries[name])
+                else:
+                    sqlite_traffic.upsert_traffic_entry(connection, name, entries[name])
+            written_credentials: set[tuple[str, str]] = set()
             if "credentials" in db:
                 known_credentials = {
                     client_name: set(sqlite_clients.list_client_credentials(connection, client_name))
@@ -191,15 +214,33 @@ def write_traffic_db_to_sqlite_for_write(
                         continue
                     for connection_tag, entry in credentials.items():
                         if isinstance(entry, dict) and str(connection_tag) in known_credentials[name]:
-                            sqlite_traffic.upsert_credential_traffic_entry(
-                                connection,
-                                str(name),
-                                str(connection_tag),
-                                entry,
-                            )
+                            key = (str(name), str(connection_tag))
+                            if key in stored_credentials:
+                                sqlite_traffic.upsert_credential_traffic_totals(connection, *key, entry)
+                            else:
+                                sqlite_traffic.upsert_credential_traffic_entry(connection, *key, entry)
+                            written_credentials.add(key)
+            if history_changes is not None:
+                for (name, day_key, hour), (incoming, outgoing) in sorted(history_changes.clients.items()):
+                    if name in mirrorable_clients and name in stored_clients:
+                        sqlite_traffic.add_history_delta(connection, name, day_key, hour, incoming, outgoing)
+                for (name, connection_tag, day_key, hour), (incoming, outgoing) in sorted(
+                    history_changes.credentials.items()
+                ):
+                    key = (name, connection_tag)
+                    if key in written_credentials and key in stored_credentials:
+                        sqlite_traffic.add_credential_history_delta(
+                            connection,
+                            name,
+                            connection_tag,
+                            day_key,
+                            hour,
+                            incoming,
+                            outgoing,
+                        )
             sqlite_traffic.upsert_access_log_state(connection, db.get("accessLog"))
 
-            current_clients = set(sqlite_traffic.list_traffic_entries(connection))
+            current_clients = sqlite_traffic.traffic_client_names(connection)
             stale_clients = current_clients - mirrorable_clients
             if stale_clients:
                 sqlite_traffic.remove_traffic_clients(connection, stale_clients)

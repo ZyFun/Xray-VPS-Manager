@@ -372,7 +372,15 @@ def add_window_alerts_for_event(
     event: dict[str, Any],
     limits: dict[str, Any],
     display_tz,
+    *,
+    state: dict[str, Any] | None = None,
 ) -> list[int]:
+    """Обновляет окна burst/unique-hosts/unique-ports клиента и пишет сработавшие alert-строки.
+
+    Без ``state`` состояние окон читается из ``manager_metadata`` и записывается обратно
+    на каждое событие. С ``state`` (VIREI-246) вызывающий держит состояние в памяти на весь
+    прогон: оно меняется на месте, а сохраняет его вызывающий один раз в конце прогона.
+    """
     moment = _parse_event_time(_event_time(event))
     client_name = _event_client(event)
     if moment is None or not client_name:
@@ -386,7 +394,9 @@ def add_window_alerts_for_event(
     except (TypeError, ValueError):
         return []
 
-    state = get_metadata_json(connection, ACTIVITY_ALERT_WINDOW_STATE_KEY)
+    persist_state = state is None
+    if state is None:
+        state = get_metadata_json(connection, ACTIVITY_ALERT_WINDOW_STATE_KEY)
     clients = state.setdefault("clients", {})
     client_state = clients.setdefault(client_name, {})
     last_alerts = client_state.setdefault("lastAlerts", {})
@@ -456,7 +466,8 @@ def add_window_alerts_for_event(
         )
         last_alerts["unique-ports"] = day_bucket
 
-    set_metadata_json(connection, ACTIVITY_ALERT_WINDOW_STATE_KEY, state)
+    if persist_state:
+        set_metadata_json(connection, ACTIVITY_ALERT_WINDOW_STATE_KEY, state)
     return ids
 
 
@@ -1139,12 +1150,9 @@ def get_source_metadata(connection: sqlite3.Connection) -> dict[str, Any]:
     return get_metadata_json(connection, ACTIVITY_SOURCE_METADATA_KEY)
 
 
-def set_summary(connection: sqlite3.Connection, value: dict[str, Any]) -> None:
-    set_metadata_json(connection, ACTIVITY_SUMMARY_KEY, value)
-
-
-def get_summary(connection: sqlite3.Connection) -> dict[str, Any]:
-    return get_metadata_json(connection, ACTIVITY_SUMMARY_KEY)
+def delete_summary(connection: sqlite3.Connection) -> None:
+    """Удаляет устаревшую сводку ``activity.summary``, которую менеджер больше не ведёт (VIREI-248)."""
+    connection.execute("DELETE FROM manager_metadata WHERE key = ?", (ACTIVITY_SUMMARY_KEY,))
 
 
 def set_metadata_json(connection: sqlite3.Connection, key: str, value: dict[str, Any]) -> None:

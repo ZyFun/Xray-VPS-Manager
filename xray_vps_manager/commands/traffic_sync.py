@@ -17,6 +17,7 @@ from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.models import split_email as split_client_email
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import consistency as traffic_consistency
+from xray_vps_manager.traffic import history as traffic_history
 from xray_vps_manager.traffic import repository as traffic_repository
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
@@ -102,8 +103,8 @@ def load_json(path, default):
         return default
 
 
-def save_traffic(db):
-    traffic_repository.save_traffic_db(db)
+def save_traffic(db, history_changes=None):
+    traffic_repository.save_traffic_db(db, history_changes=history_changes)
 
 
 def split_email(email):
@@ -412,6 +413,8 @@ def sync_locked():
 
     stamp = now()
     bucket_time = local_bucket_time()
+    history_cutoff = subtract_months(bucket_time.date(), HISTORY_RETENTION_MONTHS)
+    history_changes = traffic_history.HistoryChanges(history_cutoff)
     db = traffic_repository.load_traffic_db_for_read()
     db["version"] = 2
     db["historyRetentionMonths"] = HISTORY_RETENTION_MONTHS
@@ -430,9 +433,11 @@ def sync_locked():
         credential_entry["incoming"] = int(credential_entry.get("incoming", 0)) + delta_up
         credential_entry["outgoing"] = int(credential_entry.get("outgoing", 0)) + delta_down
         add_history_delta(credential_entry, bucket_time, delta_up, delta_down)
+        history_changes.add_credential(name, connection_tag, bucket_time, delta_up, delta_down)
         entry["incoming"] = int(entry.get("incoming", 0)) + delta_up
         entry["outgoing"] = int(entry.get("outgoing", 0)) + delta_down
         add_history_delta(entry, bucket_time, delta_up, delta_down)
+        history_changes.add_client(name, bucket_time, delta_up, delta_down)
         traffic_changed = delta_up > 0 or delta_down > 0
         if traffic_changed and (name, connection_tag) not in access_seen:
             set_last_online(credential_entry, stamp, "traffic", stamp)
@@ -468,13 +473,14 @@ def sync_locked():
         repaired = traffic_consistency.repair_retained_history_gaps(
             db,
             client_repository.db_clients(client_db),
-            subtract_months(bucket_time.date(), HISTORY_RETENTION_MONTHS),
+            history_cutoff,
             bucket_time,
+            history_changes,
         )
         if repaired:
             log(f"Repaired retained traffic history gaps for clients: {', '.join(gap.name for gap in repaired)}")
     db["updated"] = stamp
-    save_traffic(db)
+    save_traffic(db, history_changes)
     log(f"Traffic stats saved: {MANAGER_DB_PATH}")
     return 0
 

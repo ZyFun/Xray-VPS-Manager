@@ -5,8 +5,11 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import Mapping
 
 from xray_vps_manager.core.paths import SERVER_ENV_PATH
+
+UPDATE_LOCK_TIMEOUT = 60.0
 
 ORDERED_ENV_KEYS = [
     "SERVER_ADDR",
@@ -20,6 +23,7 @@ ORDERED_ENV_KEYS = [
     "XHTTP_PATH",
     "XHTTP_MODE",
     "MANAGER_TIMEZONE",
+    "MANAGER_PYTHON",
     "TRAFFIC_TOTAL_MULTIPLIER_ENABLED",
     "TRAFFIC_TOTAL_MULTIPLIER",
     "SECURITY_AUDIT_LAST_RUN",
@@ -98,3 +102,26 @@ def write_server_env(
     chown_server_env(tmp)
     os.chmod(tmp, 0o640)
     tmp.replace(path)
+
+
+def update_server_env(
+    changes: Mapping[str, str],
+    path: Path = SERVER_ENV_PATH,
+    *,
+    timeout: float = UPDATE_LOCK_TIMEOUT,
+) -> dict[str, str]:
+    """Set ``changes`` in server.env and keep every other key; returns the written values.
+
+    The file is re-read and written under manager_lock (re-entrant), as ``core.settings.update_env``
+    of the target architecture (section 3.3): this update and a writer holding the lock (routing,
+    restore, Reality menu actions) cannot overwrite each other's keys (81-R02). Writers that still
+    change server.env without the lock move to update_env in step 1. LockTimeout propagates.
+    """
+    # core.locks → core.time → core.server_env: импорт внутри функции разрывает цикл импортов.
+    from xray_vps_manager.core.locks import manager_lock
+
+    with manager_lock(timeout, purpose="server.env"):
+        values = read_server_env(path)
+        values.update(changes)
+        write_server_env(values, path=path)
+    return values

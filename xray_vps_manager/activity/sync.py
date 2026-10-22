@@ -15,6 +15,7 @@ from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.activity.constants import DETAIL_MODE_OFF
 from xray_vps_manager.activity.constants import ACCESS_LOG_PATH, CONFIG_PATH
 from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.core import time as core_time
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 LogFunc = Callable[[str], None]
@@ -97,6 +98,22 @@ def log_maintenance_result(log: LogFunc, result: dict[str, int]) -> None:
 
 
 def sync_activity(log: LogFunc) -> int:
+    """Читает новые строки access.log и записывает события конвейера в ``manager.db``.
+
+    Состояние окон подозрительной активности ``activity.alertWindows``, лимиты ``risk_limits()``
+    и часовой пояс менеджера читаются один раз за прогон; окна меняются в памяти и сохраняются
+    один раз в конце в той же транзакции, что и offset (VIREI-246).
+
+    Сбой посреди прогона: события до сбоя уже записаны (счётчики, alert-строки), offset не
+    продвигается и состояние окон не сохраняется, поэтому повторный прогон перечитает те же
+    строки и учтёт их в окнах один раз, а не дважды. Alert-строки не задваиваются: dedupe-ключ
+    ``add_alert_event`` суммирует ``event_count`` в существующей строке. Счётчики клиентов при
+    перечитывании учитывают события второй раз — прежнее поведение (XR-REV-006, VIREI-167).
+
+    Параллельных прогонов нет: таймер, меню и ротация вызывают sync только через ``xray-activity``,
+    который держит ``activity.lock`` на всё время команды; перенос блокировки внутрь сценария —
+    шаг 7 плана миграции (VIREI-163).
+    """
     repository.ensure_dirs()
     clients = known_clients()
     config = repository.load_json(CONFIG_PATH, {})
@@ -131,8 +148,18 @@ def sync_activity(log: LogFunc) -> int:
     detail_mode = str(capture_status.get("mode") or DETAIL_MODE_OFF)
     selected_clients = capture_status.get("selectedClients") or []
     alert_log_enabled = settings.alerts_enabled()
+    risk_limits = settings.risk_limits()
+    display_tz, _timezone_label = core_time.manager_timezone()
 
-    db = repository.load_activity_db(settings.retention_days(), detail_mode != DETAIL_MODE_OFF)
+    db = repository.load_activity_db(
+        settings.retention_days(),
+        detail_mode != DETAIL_MODE_OFF,
+        with_alert_windows=True,
+    )
+    window_state = db.get("alertWindows")
+    if not isinstance(window_state, dict):
+        # Снимок без окон (подменённый load): прежнее чтение и запись на событие.
+        window_state = None
     state = db.setdefault("accessLog", {})
     previous_inode = state.get("inode")
     previous_offset = int(state.get("offset", 0) or 0)
@@ -173,6 +200,9 @@ def sync_activity(log: LogFunc) -> int:
                 selected_clients=selected_clients,
                 alerts_enabled=alert_log_enabled,
                 strict=True,
+                window_state=window_state,
+                risk_limits=risk_limits,
+                display_tz=display_tz,
             )
         except Exception as exc:
             log(f"Activity pipeline write failed; access log offset was not advanced: {exc}")
@@ -184,7 +214,6 @@ def sync_activity(log: LogFunc) -> int:
             foreign_lines += 1
             continue
         if result.get("storedDetail"):
-            repository.update_summary(db, event)
             detailed += 1
         if result.get("storedCounters"):
             counters += 1

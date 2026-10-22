@@ -1,11 +1,12 @@
-"""Filesystem helpers (target architecture, section 3): atomic directory replacement."""
+"""Filesystem helpers (target architecture, section 3): atomic directory and file replacement, modes, removal and backup rotation."""
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 
 def replace_directory(source: Path, destination: Path, prepare: Optional[Callable[[Path], None]] = None) -> None:
@@ -50,6 +51,78 @@ def replace_directory(source: Path, destination: Path, prepare: Optional[Callabl
         raise
     if had_destination:
         _remove_tree(old_dir)
+
+
+def replace_file(destination: Path, data: bytes, prepare: Optional[Callable[[Path], None]] = None) -> None:
+    """Replace ``destination`` with ``data`` using one rename.
+
+    The data is written next to the destination as hidden ``.<name>.new``; ``prepare`` (mode, owner)
+    runs on that copy before ``os.replace`` makes it live, so ``destination`` is always the complete
+    old or the complete new file. Any error leaves ``destination`` untouched and removes the copy;
+    a stale copy from an interrupted run is overwritten. Errors propagate as ``OSError``.
+    """
+    new_file = destination.with_name("." + destination.name + ".new")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _remove_tree(new_file)
+    try:
+        new_file.write_bytes(data)
+        if prepare is not None:
+            prepare(new_file)
+        os.replace(new_file, destination)
+    except BaseException:
+        _remove_tree(new_file)
+        raise
+
+
+def set_root_executable(path: Path) -> None:
+    """Mode 0755 and owner root:root (only when running as root) for a command in /usr/local/sbin."""
+    os.chmod(path, 0o755)
+    if os.geteuid() == 0:
+        shutil.chown(path, user="root", group="root")
+
+
+def remove_path(path: Path) -> None:
+    """Remove a file, a symlink or a directory tree; a missing path is ignored."""
+    _remove_tree(path)
+
+
+def prune_backups(path: Path, *, keep: int, protect: Iterable[Optional[Path]] = ()) -> list[Path]:
+    """Keep the ``keep`` newest ``<name>.bak.<digits>`` copies of ``path`` and remove the older ones.
+
+    Only regular files in ``path.parent`` whose name is exactly ``<path.name>.bak.<digits>`` count
+    as copies; copies of other files, other suffixes (``.bak.telegram.*``) and directories are left
+    alone. Copies are ordered by the numeric timestamp, so the newest stay. Copies in ``protect``
+    (the ones the caller has just made; ``None`` is ignored) are never removed and count towards
+    ``keep``, so they survive even when the clock went back and older-named copies look newer.
+    Rotation is best effort: a missing directory or a copy that cannot be removed is skipped.
+    Returns the removed copies, oldest first. ``keep`` must be at least 1.
+    """
+    if keep < 1:
+        raise ValueError("keep must be at least 1")
+    protected = {Path(item).name for item in protect if item is not None}
+    pattern = re.compile(re.escape(path.name) + r"\.bak\.([0-9]+)")
+    try:
+        entries = list(path.parent.iterdir())
+    except OSError:
+        return []
+    copies = []
+    for entry in entries:
+        match = pattern.fullmatch(entry.name)
+        if match and entry.is_file() and not entry.is_symlink():
+            copies.append((len(match.group(1)), match.group(1), entry))
+    copies.sort()
+    kept_protected = sum(1 for _, _, entry in copies if entry.name in protected)
+    candidates = [entry for _, _, entry in copies if entry.name not in protected]
+    keep_others = max(keep - kept_protected, 0)
+    to_remove = max(len(candidates) - keep_others, 0)
+    removed = []
+    for entry in candidates[:to_remove]:
+        try:
+            entry.unlink()
+        except OSError:
+            continue
+        removed.append(entry)
+    return removed
 
 
 def _exists(path: Path) -> bool:

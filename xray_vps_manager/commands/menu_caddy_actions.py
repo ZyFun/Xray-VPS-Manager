@@ -535,6 +535,7 @@ def update_site_domain() -> None:
         except Exception:
             pass
         die(f"Caddy config failed. Restored backups. Detail: {exc}")
+    caddy.prune_site_backups(old_path, new_path, protect=(old_backup, new_backup))
     print(f"Caddy site domain changed: {site.domain} -> {new_domain}")
     print("Важно: это не меняет VLESS-подключение в manager.db и не перевыпускает клиентские ссылки.")
 
@@ -560,6 +561,7 @@ def delete_site(confirm: ConfirmCallback) -> None:
         except Exception:
             pass
         die(f"Caddy config failed. Restored backup: {backup}. Detail: {exc}")
+    caddy.prune_site_backups(site.path, protect=(backup,))
     print(f"Caddy site removed. Backup: {backup}")
 
 
@@ -583,6 +585,7 @@ def remove_default_http_site(confirm: ConfirmCallback) -> None:
         except Exception:
             pass
         die(f"Caddy config failed. Restored backup: {backup}. Detail: {exc}")
+    caddy.prune_site_backups(caddy.CADDYFILE_PATH, protect=(backup,))
     print(f"Default :80 site removed. Backup: {backup}")
 
 

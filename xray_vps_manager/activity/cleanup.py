@@ -25,6 +25,11 @@ from xray_vps_manager.core.process import (
 )
 from xray_vps_manager.db import database
 
+# Pre-cleanup бэкап (1×) и VACUUM в WAL: временная копия и копия в `-wal` (2×).
+CLEANUP_FREE_SPACE_FACTOR = 3
+# Сколько VACUUM и checkpoint ждут читателей, которые не входят в остановленные writer units.
+VACUUM_BUSY_TIMEOUT_SECONDS = 300
+
 
 @dataclass(frozen=True)
 class CleanupStats:
@@ -100,11 +105,19 @@ def quick_check(db_path: str | Path = MANAGER_DB_PATH) -> str:
 
 def vacuum_database(db_path: str | Path = MANAGER_DB_PATH) -> float:
     start = time.monotonic()
-    connection = sqlite3.connect(str(db_path), timeout=300)
+    connection = sqlite3.connect(str(db_path), timeout=VACUUM_BUSY_TIMEOUT_SECONDS)
     try:
         connection.execute("VACUUM")
+        # В WAL VACUUM пишет копию базы в `-wal`: переносим её в файл базы и усекаем `-wal` до нуля.
+        # Занятость читателем checkpoint возвращает строкой (busy=1), а не исключением.
+        busy, _wal_frames, _checkpointed = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     finally:
         connection.close()
+    if busy:
+        raise RuntimeError(
+            "VACUUM finished, but manager.db-wal was not truncated: another connection is still reading "
+            "manager.db; close it and run cleanup again."
+        )
     return time.monotonic() - start
 
 
@@ -137,6 +150,12 @@ def cleanup_activity_data(
 ) -> CleanupResult:
     days = retention_days or settings.retention_days()
     before = database_stats(db_path, retention_days=days)
+    # До остановки units, бэкапа и retention: при нехватке места база не меняется.
+    database.ensure_free_space(
+        db_path,
+        CLEANUP_FREE_SPACE_FACTOR * database.database_disk_bytes(db_path),
+        purpose="activity cleanup",
+    )
     log = log or (lambda _message: None)
     units_to_restart: tuple[str, ...] = ()
     stopped_units: tuple[str, ...] = ()
@@ -158,7 +177,7 @@ def cleanup_activity_data(
         if check != "ok":
             raise RuntimeError(f"PRAGMA quick_check returned: {check}")
 
-        log("Compacting manager.db with VACUUM...")
+        log("Compacting manager.db with VACUUM and truncating manager.db-wal...")
         vacuum_seconds = vacuum_database(db_path)
         after = database_stats(db_path, retention_days=actual_days)
         return CleanupResult(

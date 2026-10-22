@@ -42,7 +42,8 @@ CADDYFILE_PATH = xray_caddy.CADDYFILE_PATH
 CADDYFILE_ARCNAME = xray_caddy.CADDYFILE_ARCNAME
 CADDY_CONF_DIR = xray_caddy.CADDY_CONF_DIR
 CADDY_CONF_DIR_ARCNAME = xray_caddy.CADDY_CONF_DIR_ARCNAME
-HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN")
+# MANAGER_PYTHON — интерпретатор обёрток этого сервера (шаг 0a): restore оставляет значение целевого сервера.
+HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN", "MANAGER_PYTHON")
 MANAGER_LOCK_TIMEOUT = 60
 
 BACKUP_FILES = [
@@ -738,6 +739,9 @@ def apply_restore(temp_dir):
         if arcname == SERVER_ENV_ARCNAME:
             copied = copy_server_env_if_exists(temp_dir, arcname, target)
         else:
+            if arcname == MANAGER_DB_ARCNAME and (temp_dir / arcname).exists():
+                # Кадры `-wal` прежней базы при следующем открытии легли бы на восстановленный файл (VIREI-245).
+                sqlite_database.remove_journal_files(target)
             copied = copy_if_exists(temp_dir, arcname, target, 0o640)
         if copied:
             restored.append(str(target))
@@ -765,9 +769,7 @@ def backup_manager_db_before_restore():
         while fallback.exists():
             fallback = backup_dir / f"{MANAGER_DB_PATH.stem}-pre-restore-{archive_stamp()}-{counter}.db"
             counter += 1
-        shutil.copy2(MANAGER_DB_PATH, fallback)
-        os.chmod(fallback, 0o600)
-        return fallback
+        return sqlite_database.copy_database_files(MANAGER_DB_PATH, fallback)
 
 
 def test_and_restart():

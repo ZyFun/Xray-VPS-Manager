@@ -19,10 +19,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.commands.menu import MENU_VERSION
+from xray_vps_manager.core import interpreter as manager_interpreter
 from xray_vps_manager.core.errors import LockTimeout
 from xray_vps_manager.core.fs import replace_directory
 from xray_vps_manager.core.locks import manager_update_lock
+from xray_vps_manager.core.paths import SERVER_ENV_PATH
 from xray_vps_manager.core.terminal import green, print_table, red, yellow
+from xray_vps_manager.system import manager_update as system_manager_update
 
 REPO_OWNER = "ZyFun"
 REPO_NAME = "Xray-VPS-Manager"
@@ -35,6 +38,7 @@ SBIN_DIR = Path("/usr/local/sbin")
 MANAGER_LIB_DIR = Path("/usr/local/lib/xray-vps-manager")
 MANAGER_PACKAGE_DIR = MANAGER_LIB_DIR / "xray_vps_manager"
 BACKUP_DIR = Path("/usr/local/lib/xray-vps-manager-backups")
+MANAGER_PYTHON_LOCK_TIMEOUT = system_manager_update.MANAGER_PYTHON_LOCK_TIMEOUT
 MANAGER_SYSTEMD_UNITS = (
     "xray-traffic-sync.timer",
     "xray-raw-log-rotate.timer",
@@ -345,27 +349,51 @@ def create_backup(target_tag: str) -> Path:
     return backup
 
 
+def report_wrappers(result: system_manager_update.WrappersResult) -> None:
+    """Print what system.manager_update.write_wrappers did with the wrappers' interpreter (step 0a)."""
+    if result.server_env_error:
+        warn(f"{SERVER_ENV_PATH} не прочитан ({result.server_env_error}); MANAGER_PYTHON не учитывается.")
+    for path, reason in result.skipped:
+        label = f"MANAGER_PYTHON={path}" if path == result.configured else path
+        warn(f"{label} пропущен: {reason}.")
+    if result.interpreter is None:
+        warn(
+            f"Python >= 3.12 с модулями {', '.join(manager_interpreter.REQUIRED_MODULES)} не найден: "
+            f"обёртки остаются с {manager_interpreter.ENV_SHEBANG}. Код менеджера совместим с Python 3.9 "
+            "до версии 3.0.0; установи Python 3.12 рядом с системным python3 (docs/installation.md) "
+            "и повтори обновление."
+        )
+    else:
+        ok(
+            f"Обёртки менеджера используют {result.interpreter.path} "
+            f"(Python {manager_interpreter.format_version(result.interpreter.version)})."
+        )
+    if result.recorded:
+        ok(f"MANAGER_PYTHON={result.interpreter.path} записан в {SERVER_ENV_PATH}.")
+    if result.record_error:
+        warn(f"MANAGER_PYTHON не записан в {SERVER_ENV_PATH}: {result.record_error}")
+
+
+def write_wrappers(source_root: Path, *, remove_missing: bool) -> None:
+    result = system_manager_update.write_wrappers(
+        source_root,
+        SBIN_DIR,
+        MANAGER_WRAPPERS,
+        server_env_path=SERVER_ENV_PATH,
+        remove_missing=remove_missing,
+        lock_timeout=MANAGER_PYTHON_LOCK_TIMEOUT,
+    )
+    report_wrappers(result)
+
+
 def install_wrappers(source_root: Path) -> None:
-    SBIN_DIR.mkdir(parents=True, exist_ok=True)
-    for wrapper in MANAGER_WRAPPERS:
-        source = source_root / wrapper
-        target = SBIN_DIR / wrapper
-        copy_path(source, target)
-        os.chmod(target, 0o755)
-        chown_root(target)
+    write_wrappers(source_root, remove_missing=False)
 
 
 def restore_wrappers(source_root: Path) -> None:
-    SBIN_DIR.mkdir(parents=True, exist_ok=True)
-    for wrapper in MANAGER_WRAPPERS:
-        source = source_root / wrapper
-        target = SBIN_DIR / wrapper
-        if source.exists():
-            copy_path(source, target)
-            os.chmod(target, 0o755)
-            chown_root(target)
-        else:
-            remove_path(target)
+    # Shebang выставляется заново тем же выбором, что при обновлении (решение 2026-10-21): бэкап до
+    # переключения хранит `#!/usr/bin/env python3`, а путь в бэкапе может вести к удалённому интерпретатору.
+    write_wrappers(source_root, remove_missing=True)
 
 
 def prepare_package_tree(path: Path) -> None:

@@ -300,7 +300,7 @@ erDiagram
 | Таблица | Назначение |
 |---|---|
 | `schema_migrations` | История применённых миграций схемы. |
-| `manager_metadata` | Служебные флаги и метаданные менеджера: read-ready, activity summary, detailed mode, source metadata и короткое состояние `activity.alertWindows` для window-level alert рисков. |
+| `manager_metadata` | Служебные флаги и метаданные менеджера: read-ready, detailed mode, source metadata и короткое состояние `activity.alertWindows` для window-level alert рисков. |
 | `file_offsets` | Позиции чтения файлов, например access log offset для traffic/activity sync. |
 
 ### Подключения и клиенты
@@ -344,6 +344,8 @@ clients.name -> client_traffic_limits.client_name
 clients.name -> client_traffic_limit_state.client_name
 ```
 
+`xray-traffic-sync` хранит историю за 6 месяцев по календарю `MANAGER_TIMEZONE`. Каждый прогон добавляет дельты счётчиков Xray только в текущий часовой бакет активных клиентов и credentials (и восстановленные пропуски — в бакет клиента), а бакеты старше границы хранения удаляет у всех клиентов, включая простаивающих; вся история заново не переписывается. Итоги, `last`-счётчики и дельты истории пишутся одной транзакцией, поэтому прерванный ошибкой прогон не удваивает и не теряет трафик.
+
 ### Журнал активности
 
 | Таблица | Назначение |
@@ -377,7 +379,7 @@ clients.name -> activity_blocklist_hits.client_name
 
 `activity_events.raw_json` хранит исходное metadata-событие для внутренних отчётов и экспорта. Журнал активности не хранит содержимое HTTPS, сообщений, файлов или тела запросов.
 `activity_alert_events` отделяет уведомления и security-события от detailed log: отключение detailed log не останавливает запись alert-log и клиентские GeoIP-уведомления.
-Window-level alert риски `burst`, `unique-hosts` и `unique-ports` используют короткое состояние `activity.alertWindows` в `manager_metadata`; там хранятся timestamp-ы rolling-окна и хэши host/port, а не полный список адресов.
+Window-level alert риски `burst`, `unique-hosts` и `unique-ports` используют короткое состояние `activity.alertWindows` в `manager_metadata`; там хранятся timestamp-ы rolling-окна и хэши host/port, а не полный список адресов. `xray-activity sync` читает это состояние один раз в начале прогона и записывает один раз в конце в одной транзакции с offset access.log, а не на каждое событие; если прогон прерван ошибкой записи, offset и состояние окон не сохраняются, и следующий прогон учитывает перечитанные строки в окнах один раз.
 `activity_client_counters` обновляется независимо от detailed log и нужен для статистики количества событий по клиентам.
 `activity_blocklist` задаёт глобальные Xray routing rules, а не клиентские ограничения: `source_client_name` нужен для истории и сортировки, но блокировка применяется ко всему трафику. `activity_blocklist_hits.last_seen_at` используется для отображения времени последнего срабатывания.
 

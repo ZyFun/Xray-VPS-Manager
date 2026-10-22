@@ -1,0 +1,10 @@
+[Unit]
+Description=Randomize Caddy TLS protocol profile for %i
+After=network-online.target caddy.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/etc/xray/caddy-random-tls.d/%i.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/usr/local/etc/xray/caddy-random-tls.d/%i.env
+ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --domain %i --quiet

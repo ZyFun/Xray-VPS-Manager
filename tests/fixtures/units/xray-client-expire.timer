@@ -1,0 +1,11 @@
+[Unit]
+Description=Disable expired Xray clients every day at midnight
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+Persistent=true
+AccuracySec=1min
+Unit=xray-client-expire.service
+
+[Install]
+WantedBy=timers.target

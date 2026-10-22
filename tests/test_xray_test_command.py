@@ -1,6 +1,10 @@
+import inspect
+import io
+import os
 import tempfile
 import sqlite3
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -632,6 +636,145 @@ class XrayTestCommandTests(unittest.TestCase):
                     str(package / "client.py"),
                 ],
             )
+
+
+def write_logging_python(path: Path, version: str, log: Path, missing: str = "") -> Path:
+    """Подмена интерпретатора: на пробу `-c` печатает версию и недостающие модули, остальные вызовы
+    (`-m py_compile …`) пишет в журнал."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "#!/bin/sh\n"
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "-c" ]; then\n'
+        f'    echo "{version} {missing}"\n'
+        "    exit 0\n"
+        "  fi\n"
+        "done\n"
+        f'echo "{path.name} $*" >> "{log}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o755)
+    return path
+
+
+class HelperInterpreterTests(unittest.TestCase):
+    """VIREI-81: xray-test проверяет shebang обёрток (WARN) и компилирует их и пакет тем же интерпретатором."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        self.bin = self.root / "bin"
+        self.log = self.root / "calls.log"
+        self.sbin = self.root / "sbin"
+        self.sbin.mkdir()
+        self.helpers = [str(self.sbin / "xray-menu"), str(self.sbin / "xray-test")]
+        self.package = self.root / "lib" / "xray_vps_manager"
+        self.package.mkdir(parents=True)
+        (self.package / "__init__.py").write_text("", encoding="utf-8")
+        # `#!/usr/bin/env python3` находит python3 через PATH — здесь это подмена с журналом.
+        write_logging_python(self.bin / "python3", "3.12.3", self.log)
+        patches = (
+            mock.patch.object(test_command, "HELPER_SCRIPTS", self.helpers),
+            mock.patch.object(test_command, "MANAGER_PACKAGE_DIR", self.package),
+            mock.patch.dict(os.environ, {"PATH": str(self.bin)}),
+        )
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def write_helpers(self, *shebangs: str) -> None:
+        for helper, shebang in zip(self.helpers, shebangs):
+            Path(helper).write_text(f"{shebang}\nimport sys\n", encoding="utf-8")
+            os.chmod(helper, 0o755)
+
+    def compile_calls(self) -> list:
+        test_command.check_helper_syntax()
+        test_command.check_manager_package()
+        return self.log.read_text(encoding="utf-8").splitlines()
+
+    def run_interpreter_check(self):
+        diag = test_command.Diagnostics()
+        with redirect_stdout(io.StringIO()) as output:
+            diag.check("Helper interpreter", test_command.check_helper_interpreter, fatal=False)
+        return diag, output.getvalue()
+
+    def test_env_shebang_warns_and_compiles_with_python3_from_path(self) -> None:
+        self.write_helpers("#!/usr/bin/env python3", "#!/usr/bin/env python3")
+
+        diag, output = self.run_interpreter_check()
+
+        self.assertEqual(diag.failures, [])
+        self.assertEqual(len(diag.warnings), 1)
+        self.assertIn("'#!/usr/bin/env python3' (Python 3.12.3)", diag.warnings[0])
+        self.assertIn("WARN: Helper interpreter:", output)
+        self.assertEqual(
+            self.compile_calls(),
+            [
+                f"python3 -m py_compile {' '.join(self.helpers)}",
+                f"python3 -m py_compile {self.package / '__init__.py'}",
+            ],
+        )
+
+    def test_absolute_shebang_to_old_python_warns_and_compiles_with_it(self) -> None:
+        old = write_logging_python(self.root / "opt" / "python3.9", "3.9.18", self.log)
+        self.write_helpers(f"#!{old}", f"#!{old}")
+
+        diag, _output = self.run_interpreter_check()
+
+        self.assertEqual(diag.failures, [])
+        self.assertEqual(len(diag.warnings), 1)
+        self.assertIn(f"{old} is Python 3.9.18", diag.warnings[0])
+        self.assertIn(">= 3.12", diag.warnings[0])
+        self.assertEqual(
+            self.compile_calls(),
+            [
+                f"python3.9 -m py_compile {' '.join(self.helpers)}",
+                f"python3.9 -m py_compile {self.package / '__init__.py'}",
+            ],
+        )
+
+    def test_absolute_shebang_to_supported_python_passes(self) -> None:
+        python312 = write_logging_python(self.root / "opt" / "python3.12", "3.12.7", self.log)
+        self.write_helpers(f"#!{python312}", f"#!{python312}")
+
+        self.assertEqual(test_command.check_helper_interpreter(), f"helper scripts use {python312} (Python 3.12.7)")
+        self.assertEqual(
+            self.compile_calls(),
+            [
+                f"python3.12 -m py_compile {' '.join(self.helpers)}",
+                f"python3.12 -m py_compile {self.package / '__init__.py'}",
+            ],
+        )
+
+    def test_absolute_shebang_to_python_without_required_modules_warns(self) -> None:
+        # 81-R01: версия подходит, но без sqlite3 менеджер на этом интерпретаторе не запускается.
+        broken = write_logging_python(self.root / "opt" / "python3.12", "3.12.7", self.log, "sqlite3 lzma")
+        self.write_helpers(f"#!{broken}", f"#!{broken}")
+
+        diag, _output = self.run_interpreter_check()
+
+        self.assertEqual(diag.failures, [])
+        self.assertEqual(len(diag.warnings), 1)
+        self.assertIn(f"{broken} (Python 3.12.7) lacks modules: sqlite3, lzma", diag.warnings[0])
+
+    def test_missing_interpreter_and_mixed_shebangs_warn(self) -> None:
+        python312 = write_logging_python(self.root / "opt" / "python3.12", "3.12.7", self.log)
+
+        self.write_helpers(f"#!{self.root / 'removed' / 'python3.12'}", f"#!{self.root / 'removed' / 'python3.12'}")
+        with self.assertRaisesRegex(RuntimeError, "does not run"):
+            test_command.check_helper_interpreter()
+
+        self.write_helpers(f"#!{python312}", "#!/usr/bin/env python3")
+        with self.assertRaisesRegex(RuntimeError, "different interpreters"):
+            test_command.check_helper_interpreter()
+
+    def test_helper_interpreter_check_is_a_warning_in_diagnostics(self) -> None:
+        source = inspect.getsource(test_command.run_diagnostics)
+
+        self.assertIn('diag.check("Helper interpreter", check_helper_interpreter, fatal=False)', source)
+        self.assertLess(source.index('"Helper interpreter"'), source.index('"Helper script syntax"'))
 
 
 if __name__ == "__main__":
