@@ -114,8 +114,9 @@ def prune_backups(path: Path, *, keep: int, protect: Iterable[Optional[Path]] = 
     kept_protected = sum(1 for _, _, entry in copies if entry.name in protected)
     candidates = [entry for _, _, entry in copies if entry.name not in protected]
     keep_others = max(keep - kept_protected, 0)
+    to_remove = max(len(candidates) - keep_others, 0)
     removed = []
-    for entry in candidates[: len(candidates) - keep_others]:
+    for entry in candidates[:to_remove]:
         try:
             entry.unlink()
         except OSError:

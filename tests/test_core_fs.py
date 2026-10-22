@@ -342,6 +342,21 @@ class PruneBackupsTests(unittest.TestCase):
             self.assertEqual(removed, future[:2])
             self.assertEqual(sorted(p for p in Path(tmp_dir).iterdir()), sorted([current, *future[2:]]))
 
+    def test_prune_backups_with_protected_copy_keeps_everything_below_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "site.caddy"
+            for count in (1, 3, 4):
+                for item in Path(tmp_dir).iterdir():
+                    item.unlink()
+                copies = self.make_copies(path, count)
+                current = path.with_name("site.caddy.bak.20261022000000000000")
+                current.write_text("current\n", encoding="utf-8")
+
+                removed = fs.prune_backups(path, keep=5, protect=(current,))
+
+                self.assertEqual(removed, [], count)
+                self.assertTrue(all(copy.exists() for copy in [*copies, current]), count)
+
     def test_prune_backups_requires_keeping_at_least_one_copy(self) -> None:
         with self.assertRaises(ValueError):
             fs.prune_backups(Path("/nonexistent/site.caddy"), keep=0)

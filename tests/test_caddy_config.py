@@ -548,6 +548,14 @@ class SiteBackupRotationTests(unittest.TestCase):
         self.assertTrue(result.backup.exists())
         self.assertEqual(self.copies_of(path), sorted([result.backup, *future[-4:]]))
 
+    def test_update_site_config_keeps_copies_below_limit(self) -> None:
+        path = self.write_site()
+        old = self.make_copies(path, 3)
+
+        result = caddy.update_site_config("api.example.com", 10300, tls_min_version="tls1.3", tls_max_version="tls1.3", runner=ok_runner)
+
+        self.assertEqual(self.copies_of(path), sorted([*old, result.backup]))
+
     def test_update_site_config_failure_restores_file_and_keeps_copies(self) -> None:
         path = self.write_site()
         original = path.read_text()
