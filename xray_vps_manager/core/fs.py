@@ -1,8 +1,9 @@
-"""Filesystem helpers (target architecture, section 3): atomic directory and file replacement, modes and removal."""
+"""Filesystem helpers (target architecture, section 3): atomic directory and file replacement, modes, removal and backup rotation."""
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Callable, Optional
@@ -83,6 +84,38 @@ def set_root_executable(path: Path) -> None:
 def remove_path(path: Path) -> None:
     """Remove a file, a symlink or a directory tree; a missing path is ignored."""
     _remove_tree(path)
+
+
+def prune_backups(path: Path, *, keep: int) -> list[Path]:
+    """Keep the ``keep`` newest ``<name>.bak.<digits>`` copies of ``path`` and remove the older ones.
+
+    Only regular files in ``path.parent`` whose name is exactly ``<path.name>.bak.<digits>`` count
+    as copies; copies of other files, other suffixes (``.bak.telegram.*``) and directories are left
+    alone. Copies are ordered by the numeric timestamp, so the newest stay. Rotation is best effort:
+    a missing directory or a copy that cannot be removed is skipped. Returns the removed copies,
+    oldest first. ``keep`` must be at least 1 so the copy just made by the caller survives.
+    """
+    if keep < 1:
+        raise ValueError("keep must be at least 1")
+    pattern = re.compile(re.escape(path.name) + r"\.bak\.([0-9]+)")
+    try:
+        entries = list(path.parent.iterdir())
+    except OSError:
+        return []
+    copies = []
+    for entry in entries:
+        match = pattern.fullmatch(entry.name)
+        if match and entry.is_file() and not entry.is_symlink():
+            copies.append((len(match.group(1)), match.group(1), entry))
+    copies.sort()
+    removed = []
+    for _, _, entry in copies[:-keep]:
+        try:
+            entry.unlink()
+        except OSError:
+            continue
+        removed.append(entry)
+    return removed
 
 
 def _exists(path: Path) -> bool:

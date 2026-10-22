@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.core import fs
 from xray_vps_manager.core.server_env import read_server_env, write_server_env
 
 CADDYFILE_PATH = Path("/etc/caddy/Caddyfile")
@@ -26,6 +27,7 @@ CADDY_SITE_BACKUP_DIR = Path("/root/xray_caddy_site_backups")
 CADDY_RANDOM_TLS_ENV_PATH = Path("/usr/local/etc/xray/caddy-random-tls.env")
 CADDY_RANDOM_TLS_CONFIG_DIR = Path("/usr/local/etc/xray/caddy-random-tls.d")
 RANDOM_TLS_LOCK_PATH = Path("/tmp/xray-caddy-random-tls.lock")
+SITE_BACKUP_KEEP = 5
 SYSTEMD_DIR = Path("/etc/systemd/system")
 LEGACY_RANDOM_TLS_SERVICE = "xray-caddy-random-tls.service"
 LEGACY_RANDOM_TLS_TIMER = "xray-caddy-random-tls.timer"
@@ -477,6 +479,12 @@ def backup_file(path: Path) -> Path | None:
     backup = backup_path(path)
     shutil.copy2(path, backup)
     return backup
+
+
+def prune_site_backups(*paths: Path) -> None:
+    """After a successful change keep only the SITE_BACKUP_KEEP newest copies of each file (VIREI-241)."""
+    for path in paths:
+        fs.prune_backups(path, keep=SITE_BACKUP_KEEP)
 
 
 def restore_file(backup: Path | None, path: Path) -> None:
@@ -1180,6 +1188,7 @@ def update_site_config(
         except Exception:
             pass
         raise
+    prune_site_backups(site_path)
     return SiteWriteResult(written, backup)
 
 
@@ -1212,6 +1221,7 @@ def update_site_tls_config(
         except Exception:
             pass
         raise
+    prune_site_backups(site_path)
     return SiteWriteResult(site_path, backup)
 
 
@@ -1252,6 +1262,7 @@ def delete_site_config(domain: str, conf_dir: Path = CADDY_CONF_DIR) -> Path | N
     backup = backup_file(site_path)
     if site_path.exists():
         site_path.unlink()
+    prune_site_backups(site_path)
     return backup
 
 

@@ -249,5 +249,88 @@ class ReplaceFileTests(unittest.TestCase):
             self.assertEqual(sorted(path.name for path in sbin.iterdir()), ["xray-menu"])
 
 
+class PruneBackupsTests(unittest.TestCase):
+    """Ротация копий `<файл>.bak.<цифры>` (VIREI-241)."""
+
+    def make_copies(self, path: Path, count: int) -> list:
+        copies = []
+        for index in range(count):
+            copy = path.with_name(f"{path.name}.bak.2026010100000000{index:04d}")
+            copy.write_text(f"copy {index}\n", encoding="utf-8")
+            copies.append(copy)
+        return copies
+
+    def test_prune_backups_keeps_newest_copies_and_removes_older(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "api.example.com.caddy"
+            path.write_text("site\n", encoding="utf-8")
+            copies = self.make_copies(path, 8)
+
+            removed = fs.prune_backups(path, keep=5)
+
+            self.assertEqual(removed, copies[:3])
+            self.assertEqual(sorted(p for p in Path(tmp_dir).iterdir() if p != path), copies[3:])
+            self.assertEqual(path.read_text(encoding="utf-8"), "site\n")
+
+    def test_prune_backups_orders_copies_by_timestamp_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "Caddyfile"
+            short = path.with_name("Caddyfile.bak.9")
+            long_old = path.with_name("Caddyfile.bak.10")
+            long_new = path.with_name("Caddyfile.bak.11")
+            for copy in (short, long_old, long_new):
+                copy.write_text("x\n", encoding="utf-8")
+
+            removed = fs.prune_backups(path, keep=2)
+
+            self.assertEqual(removed, [short])
+            self.assertTrue(long_old.exists())
+            self.assertTrue(long_new.exists())
+
+    def test_prune_backups_touches_only_exact_copies_of_this_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            path = root / "example.com.caddy"
+            path.write_text("site\n", encoding="utf-8")
+            copies = self.make_copies(path, 3)
+            foreign_names = [
+                "api.example.com.caddy",
+                "api.example.com.caddy.bak.20250101000000000000",
+                "example.com.caddy.bak.telegram.20250101000000",
+                "example.com.caddy.bak.",
+                "example.com.caddy.bak.20250101000000000000.tar.gz",
+                "exampleXcom.caddy.bak.20250101000000000000",
+                "example.com.caddy.bak.2025a",
+                "config.json.bak.20250101000000",
+            ]
+            for name in foreign_names:
+                (root / name).write_text("foreign\n", encoding="utf-8")
+            (root / "example.com.caddy.bak.20240101000000000000").mkdir()
+
+            removed = fs.prune_backups(path, keep=1)
+
+            self.assertEqual(removed, copies[:2])
+            for name in foreign_names:
+                self.assertTrue((root / name).exists(), name)
+            self.assertTrue((root / "example.com.caddy.bak.20240101000000000000").is_dir())
+            self.assertTrue(copies[2].exists())
+
+    def test_prune_backups_keeps_everything_when_copies_fit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "site.caddy"
+            copies = self.make_copies(path, 5)
+
+            self.assertEqual(fs.prune_backups(path, keep=5), [])
+            self.assertTrue(all(copy.exists() for copy in copies))
+
+    def test_prune_backups_ignores_missing_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self.assertEqual(fs.prune_backups(Path(tmp_dir) / "missing" / "site.caddy", keep=5), [])
+
+    def test_prune_backups_requires_keeping_at_least_one_copy(self) -> None:
+        with self.assertRaises(ValueError):
+            fs.prune_backups(Path("/nonexistent/site.caddy"), keep=0)
+
+
 if __name__ == "__main__":
     unittest.main()

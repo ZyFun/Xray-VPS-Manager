@@ -906,6 +906,7 @@ def update_trojan_caddy_site(result):
         except Exception:
             pass
         raise
+    xray_caddy.prune_site_backups(old_path, new_path)
     return xray_caddy.SiteWriteResult(new_path, old_backup)
 
 
