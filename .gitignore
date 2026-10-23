@@ -16,6 +16,8 @@ htmlcov/
 .venv/
 venv/
 env/
+# Обезличенные фикстуры server.env
+!/tests/fixtures/env/
 
 # Build and packaging artifacts
 build/

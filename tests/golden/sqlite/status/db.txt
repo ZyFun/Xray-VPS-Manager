@@ -1,0 +1,4 @@
+[clients]
+["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
+[client_credentials]
+["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
