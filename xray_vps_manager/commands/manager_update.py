@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import json
 from contextlib import ExitStack, contextmanager
 import os
@@ -18,6 +19,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.core.http import http_json as _http_json
+from xray_vps_manager.core.systemd import MANAGER_UNITS
 from xray_vps_manager.commands.menu import MENU_VERSION
 from xray_vps_manager.core import interpreter as manager_interpreter
 from xray_vps_manager.core.errors import LockTimeout
@@ -39,15 +42,7 @@ MANAGER_LIB_DIR = Path("/usr/local/lib/xray-vps-manager")
 MANAGER_PACKAGE_DIR = MANAGER_LIB_DIR / "xray_vps_manager"
 BACKUP_DIR = Path("/usr/local/lib/xray-vps-manager-backups")
 MANAGER_PYTHON_LOCK_TIMEOUT = system_manager_update.MANAGER_PYTHON_LOCK_TIMEOUT
-MANAGER_SYSTEMD_UNITS = (
-    "xray-traffic-sync.timer",
-    "xray-raw-log-rotate.timer",
-    "xray-client-expire.timer",
-    "xray-traffic-sync.service",
-    "xray-raw-log-rotate.service",
-    "xray-client-expire.service",
-    "xray-telegram-poller.service",
-)
+MANAGER_SYSTEMD_UNITS = MANAGER_UNITS
 
 MANAGER_WRAPPERS = (
     "xray-client",
@@ -147,10 +142,7 @@ def release_archive_url(tag: str) -> str:
     return GITHUB_TAG_ARCHIVE.format(tag=tag)
 
 
-def http_json(url: str, timeout: int = 20) -> dict:
-    request = urllib.request.Request(url, headers={"User-Agent": "xray-manager-update"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+http_json = partial(_http_json, user_agent='xray-manager-update')
 
 
 def latest_release() -> dict:

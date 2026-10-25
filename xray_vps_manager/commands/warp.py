@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import configparser
 import copy
+from functools import partial
 import json
 import os
 import platform
@@ -12,10 +13,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.request import Request, urlopen
 
+from xray_vps_manager.core.http import http_json as _http_json
 from xray_vps_manager.commands.set_cascade import load_client_db_optional, save_client_db_optional
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
@@ -248,10 +250,7 @@ def ensure_cloudflare_api_tls(pin_hosts=None):
     print(f"WARN: Could not find a working IPv4 for {API_HOST}. Continuing; wgcf may fail.")
 
 
-def http_json(url):
-    request = Request(url, headers={"User-Agent": "xray-vps-manager"})
-    with urlopen(request, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+http_json = partial(_http_json, user_agent='xray-vps-manager', timeout=30)
 
 
 def machine_arch():
@@ -286,8 +285,8 @@ def install_wgcf():
     name, url = sorted(candidates, key=lambda item: len(item[0]))[0]
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         tmp_path = Path(tmp.name)
-        request = Request(url, headers={"User-Agent": "xray-vps-manager"})
-        with urlopen(request, timeout=120) as response:
+        request = urllib.request.Request(url, headers={"User-Agent": "xray-vps-manager"})
+        with urllib.request.urlopen(request, timeout=120) as response:
             shutil.copyfileobj(response, tmp)
 
     os.chmod(tmp_path, 0o755)

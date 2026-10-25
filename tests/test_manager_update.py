@@ -767,20 +767,6 @@ class ManagerUpdateLockingTests(unittest.TestCase):
         with core_locks.manager_update_lock():
             pass
 
-class FakeGitHubResponse:
-    def __init__(self, payload: dict) -> None:
-        self.payload = payload
-
-    def read(self) -> bytes:
-        return json.dumps(self.payload).encode("utf-8")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info) -> bool:
-        return False
-
-
 class ManagerUpdateCheckTests(unittest.TestCase):
     """VIREI-84 (T1): `xray-manager-update --check` с фейковым GitHub до шага 1 (`core/http.py`); сеть не используется."""
 
@@ -788,24 +774,16 @@ class ManagerUpdateCheckTests(unittest.TestCase):
     RELEASE_PAGE = "https://github.com/ZyFun/Xray-VPS-Manager/releases/tag/"
 
     def run_check(self, response) -> tuple:
-        requests = []
-
-        def urlopen(request, timeout=None):
-            requests.append((request.full_url, request.get_header("User-agent"), timeout))
-            if isinstance(response, Exception):
-                raise response
-            return FakeGitHubResponse(response)
-
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with mock.patch.object(urllib.request, "urlopen", side_effect=urlopen), \
-                mock.patch.object(sys, "argv", ["xray-manager-update", "--check"]), \
-                mock.patch("os.geteuid", return_value=1000), redirect_stdout(stdout), redirect_stderr(stderr):
-            with self.assertRaises(SystemExit) as caught:
-                runner.run_command("manager-update")
-        self.assertEqual(requests, [(manager_update.GITHUB_API_LATEST, "xray-manager-update", 20)])
-        self.assertEqual(stderr.getvalue(), "")
-        return caught.exception.code, stdout.getvalue()
+        from support.sandbox import Sandbox
+        with Sandbox() as box:
+            box.http.script({manager_update.GITHUB_API_LATEST:
+                             response if isinstance(response, Exception) else box.http.json(response)})
+            with mock.patch("os.geteuid", return_value=1000):
+                result = box.run_cli('manager-update', '--check')
+            self.assertEqual(box.http.calls, [(manager_update.GITHUB_API_LATEST,
+                                               {'User-agent': 'xray-manager-update'}, 20)])
+        self.assertEqual(result.stderr, "")
+        return result.exit_code, result.stdout
 
     def release(self, tag: str) -> dict:
         return {"tag_name": tag, "html_url": self.RELEASE_PAGE + tag}
