@@ -45,7 +45,7 @@ assert box.processes.calls == [("/usr/local/bin/xray", "version")]
 со списком попыток после восстановления зависимостей. Уже выходящее из блока
 исключение сохраняется. При проверке самого запрета размещайте `assertRaises`
 снаружи контекста `Sandbox`, чтобы проверить также ошибку выхода.
-Реальные HTTP-запросы через urlopen, соединения через create_connection,
+Незапланированные HTTP-запросы через urlopen, соединения через create_connection,
 DNS через getaddrinfo и создание socket (включая bind-пробы портов)
 также запрещены и записываются в `unexpected`. Успешные сетевые проверки
 требуют отдельной явной подмены на уровне сценария.
@@ -54,7 +54,8 @@ DNS через getaddrinfo и создание socket (включая bind-пр�
 
 После VIREI-103 время задаётся через `core.clock.frozen`; для немигрированного
 кода фасад подменяет старые пути, defaults (включая `__wrapped__`),
-классы datetime/date и захваченные runner-параметры (процессы — VIREI-104). `LEGACY_PATH_ATTRS` —
+классы datetime/date и захваченные runner-параметры. После VIREI-104 процессы
+подключены через `core.process.fake`, HTTP — через `core.http.fake`. `LEGACY_PATH_ATTRS` —
 явный реестр рабочих модульных констант, в том числе списков и производных путей.
 Защитные списки отдельно перечислены в `LEGACY_GUARD_PATH_ATTRS`: для них
 сохраняются исходные и перенесённые пути, а также их значения после `resolve()`.
@@ -149,3 +150,58 @@ Activity оставляет совместимый адаптер: его CLI у
 `clients.runtime.parse_time` использует общий ISO-парсер с сохранением исходного
 смещения и значимых пробелов. Activity/Telegram обрезают микросекунды у `utc_now`,
 а `core.time.utc_now` сохраняет их; форматирование штампов оставлено прежним.
+
+## Процессы, systemd и HTTP (R1.3)
+
+`core.process.run` захватывает текстовые stdout/stderr, поддерживает `input_text`,
+`timeout`, `env` и `check`. При `check=True` ошибка является одновременно
+`ExternalCommandError` и `CalledProcessError`; старый `run_capture` сохраняет
+прежний контракт. `run_stream` возвращает код завершения и выводит оба потока
+в терминал, поэтому применяется только в интерфейсах. В Sandbox он не запускает
+настоящий Popen. `processes.requests` дополняет журнал argv параметрами запуска.
+Ответом `script` также может быть callable `(argv, **kwargs) → ProcessResult`
+или `CompletedProcess` для сценария, состояние которого меняется между вызовами.
+
+`core.process.fake(handler)` возвращает журнал argv. Callable-handler принимает
+argv и возвращает `CompletedProcess`; `None` означает неизвестную команду и
+ошибку без запуска процесса. Объект с методом `run(argv, **kwargs)`, например
+`FakeProcesses`, получает также параметры запуска. Вложенные контексты процессов
+и HTTP восстанавливают внешний обработчик даже после исключения.
+
+HTTP задаётся отдельно, без патчей `commands.*`:
+
+```python
+from xray_vps_manager.core.http import http_json
+
+with Sandbox() as box:
+    url = "https://example.invalid/release"
+    box.http.script({url: box.http.json({"tag_name": "v1.0.0"})})
+    assert http_json(url) == {"tag_name": "v1.0.0"}
+    assert box.http.calls == [(url, {"User-agent": "xray-vps-manager"}, 20)]
+```
+
+Ответ — байты (для проверок декодирования), `http.json(value)` или исключение.
+Список ответов расходуется по порядку; неизвестный URL записывается в
+`http.unexpected` и приводит к ошибке выхода, даже если сценарий её перехватил.
+Подмена применяется и к оставшимся прямым `urlopen`, включая загрузку архива
+manager-update. JSON-клиент сохраняет исключения urllib и декодирования;
+интерфейсы сохраняют собственную обработку, User-Agent и таймауты 20/20/30 с.
+
+`core.systemd` владеет единственным `MANAGER_UNITS` и проверкой рестарта.
+Старые импорты из `core.process` остаются совместимыми алиасами. Сохранены окно
+3 с, retry/reset-failed, проверки портов, результат `CompletedProcess` и
+`SystemdUnitStartError`, наследующий `CalledProcessError`.
+
+По уточнению пользователя при разборе 104-R02 новый `writers_paused` останавливает
+все переданные units, включая oneshot в `activating`, и запускает только ранее
+активные в `finally`, в том числе после частично неудачной остановки. Это закрывает
+запуск service таймером между проверкой и остановкой. Legacy restore/cleanup
+сохраняют `active_units(WRITER_RESTART_UNITS)` → `stop_writer_units()` →
+`restart_units(selected)`: остановку всех семи писателей и восстановление только
+ранее активных таймеров/poller, без повторного запуска минутных service.
+Эти контракты нельзя взаимозаменять без отдельного изменения поведения.
+Ошибки stop/start нового `writers_paused` являются `ExternalCommandError`
+с командой, кодом завершения и выводом. Legacy-helper'ы сохраняют `RuntimeError`.
+`support.restore_sandbox.RestoreSandbox` подключает общий Sandbox и канонический
+фейк процессов, а старые подмены шагов restore держит внутри переходного фасада
+до переноса самого сценария backup. Ожидания XR-REV-012 и ExecStop сохранены.

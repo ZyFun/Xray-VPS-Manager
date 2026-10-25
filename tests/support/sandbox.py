@@ -2,7 +2,7 @@
 
 Фасад рассчитан на последовательные тесты в одном процессе. Это подмена
 зависимостей, а не граница безопасности для исполнения недоверенного кода.
-Канонические часы подключены в R1.2; перенос процессов остаётся R1.3.
+Канонические часы подключены в R1.2, процессы и HTTP — в R1.3.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 import xray_vps_manager
 from xray_vps_manager.core import paths as path_module
-from xray_vps_manager.core import clock
+from xray_vps_manager.core import clock, process, http
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.db import database
 from xray_vps_manager.runner import command_main
@@ -179,6 +179,7 @@ class FakeProcesses:
     """Точные argv → ответ или конечная последовательность ответов; журнал всех попыток."""
     def __init__(self):
         self.calls = []
+        self.requests = []
         self.unexpected = []
         self.executables = {}
         self._scripts = {}
@@ -212,6 +213,7 @@ class FakeProcesses:
             self._reject('Sandbox запрещает shell и неоднозначный запуск: '+repr(args))
         key = tuple(map(str, args))
         self.calls.append(key)
+        self.requests.append((key, dict(kwargs)))
         response = self._scripts.get(key)
         if isinstance(response, list):
             response = response.pop(0) if response else None
@@ -219,6 +221,8 @@ class FakeProcesses:
             self._reject('Не задана внешняя команда: '+shlex.join(key))
         if isinstance(response, BaseException):
             raise response
+        if callable(response):
+            response = response(list(args), **kwargs)
         text_mode = kwargs.get('text') or kwargs.get('universal_newlines') or kwargs.get('encoding')
         stdout, stderr = response.stdout, response.stderr
         if not text_mode:
@@ -260,6 +264,36 @@ class FakeProcesses:
         return 0
 
 
+class FakeHTTP:
+    """Точные URL → байты/ошибка; журнал параметров и запрет неизвестных запросов."""
+    def __init__(self):
+        self.calls = []
+        self.unexpected = []
+        self._scripts = {}
+
+    def script(self, responses):
+        self._scripts.update(responses)
+
+    @staticmethod
+    def json(value):
+        return json.dumps(value).encode('utf-8')
+
+    def open(self, request, timeout=None, **kwargs):
+        url = request if isinstance(request, str) else request.full_url
+        headers = {} if isinstance(request, str) else dict(request.header_items())
+        self.calls.append((url, headers, timeout))
+        response = self._scripts.get(url)
+        if isinstance(response, list):
+            response = response.pop(0) if response else None
+        if response is None:
+            message = 'Не задан HTTP-запрос: '+url
+            self.unexpected.append(message)
+            raise UnexpectedCommand(message)
+        if isinstance(response, BaseException):
+            raise response
+        return io.BytesIO(response)
+
+
 @dataclass(frozen=True)
 class CliResult:
     stdout: str
@@ -299,6 +333,7 @@ class Sandbox:
             raise ValueError('Sandbox.now требует часовой пояс')
         self.tz = ZoneInfo(tz)
         self.processes = FakeProcesses()
+        self.http = FakeHTTP()
         self._stack = None
 
     def _patch(self, obj, name, value):
@@ -376,9 +411,9 @@ class Sandbox:
             suppressed = self._stack.__exit__(*exc)
         finally:
             self._stack = None
-        if (exc[0] is None or suppressed) and self.processes.unexpected:
+        if (exc[0] is None or suppressed) and (self.processes.unexpected or self.http.unexpected):
             raise AssertionError('Незапланированные внешние операции в Sandbox:\n'
-                                 +'\n'.join(self.processes.unexpected))
+                                 +'\n'.join(self.processes.unexpected + self.http.unexpected))
         return suppressed
 
     @staticmethod
@@ -416,6 +451,8 @@ class Sandbox:
             check(getattr(owner, name))
 
     def _install_processes_and_defaults(self):
+        self._stack.enter_context(process.fake(self.processes))
+        self._stack.enter_context(http.fake(self.http.open))
         # Включая runner=subprocess.run, захваченный при определении функции.
         replacements = [(subprocess.run, self.processes.run),
                         (subprocess.check_output, self.processes.check_output),
@@ -460,7 +497,12 @@ class Sandbox:
         self._patch(os, 'chown', lambda *a, **kw: None)
         self._patch(shutil, 'chown', lambda *a, **kw: None)
         import urllib.request
-        self._patch(urllib.request, 'urlopen', self.processes.deny)
+        original_open = urllib.request.urlopen
+        for module in self._modules:
+            for name, value in list(vars(module).items()):
+                if value is original_open:
+                    self._patch(module, name, self.http.open)
+        self._patch(urllib.request, 'urlopen', self.http.open)
         import socket
         self._patch(socket, 'create_connection', self.processes.deny)
         self._patch(socket, 'getaddrinfo', self.processes.deny)
