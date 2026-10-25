@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.core import fs
-from xray_vps_manager.core.server_env import read_server_env, write_server_env
+from xray_vps_manager.core.settings import read_env as read_server_env, write_env as write_server_env
 
 CADDYFILE_PATH = Path("/etc/caddy/Caddyfile")
 CADDY_CONF_DIR = Path("/etc/caddy/conf.d")

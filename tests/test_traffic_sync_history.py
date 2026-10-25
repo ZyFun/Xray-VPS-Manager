@@ -6,12 +6,12 @@ from io import StringIO
 import json
 from pathlib import Path
 import sqlite3
-import subprocess
-import tempfile
 import unittest
 from unittest import mock
 
 from xray_vps_manager.commands import traffic_sync
+from xray_vps_manager.core import clock
+from support.sandbox import Sandbox
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
@@ -65,17 +65,6 @@ TABLES = {
         "client_name, connection_tag, bucket_date, bucket_hour",
     ),
 }
-
-
-def frozen_datetime(instant: datetime):
-    class FrozenDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            if tz is None:
-                return instant.astimezone().replace(tzinfo=None)
-            return instant.astimezone(tz)
-
-    return FrozenDatetime
 
 
 def statsquery_output(stats: dict) -> str:
@@ -137,27 +126,18 @@ class TrafficSyncSandbox:
 
     def __init__(self, test: unittest.TestCase) -> None:
         self.test = test
-        tmp = tempfile.TemporaryDirectory()
-        test.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        self.db_path = self.root / "manager.db"
-        (self.root / "server.env").write_text(f'MANAGER_TIMEZONE="{MANAGER_TIMEZONE}"\n')
-        self._patch(database, "MANAGER_DB_PATH", self.db_path)
-        self._patch(traffic_sync, "CONFIG_PATH", self.root / "config.json")
-        self._patch(traffic_sync, "SERVER_ENV_PATH", self.root / "server.env")
-        self._patch(traffic_sync, "LOCK_PATH", self.root / "traffic.lock")
-        self._patch(traffic_sync, "ACCESS_LOG_PATH", self.root / "access.log")
-
-    def _patch(self, target, attribute: str, value) -> None:
-        patcher = mock.patch.object(target, attribute, value)
-        patcher.start()
-        self.test.addCleanup(patcher.stop)
+        self.box = Sandbox(now=RUN1.isoformat(), tz=MANAGER_TIMEZONE, db=None)
+        self.box.__enter__()
+        test.addCleanup(self.box.__exit__, None, None, None)
+        self.root = self.box.root
+        self.db_path = self.box.paths.manager_db
+        self.box.paths.server_env.write_text(f'MANAGER_TIMEZONE="{MANAGER_TIMEZONE}"\n')
 
     def open(self):
         return database.open_database(self.db_path)
 
     def seed(self, clients: dict, config_inbounds: list, traffic: dict, credential_traffic: dict) -> None:
-        (self.root / "config.json").write_text(json.dumps({"inbounds": config_inbounds}))
+        self.box.paths.config.write_text(json.dumps({"inbounds": config_inbounds}))
         connection = self.open()
         try:
             for tag in ("vless-reality", "trojan-tls"):
@@ -190,14 +170,13 @@ class TrafficSyncSandbox:
             stdout = (FIXTURES / stats).read_text()
         else:
             stdout = statsquery_output(stats)
-        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+        command = ("/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
+        self.box.processes.script({command: self.box.processes.ok(stdout)})
         output = StringIO()
-        with mock.patch.object(traffic_sync, "datetime", frozen_datetime(instant)), \
-            mock.patch.object(traffic_sync, "run_capture", return_value=completed) as run_capture, \
-            redirect_stdout(output):
+        with clock.frozen(instant), redirect_stdout(output):
             result = traffic_sync.sync()
         self.test.assertEqual(result, 0, output.getvalue())
-        self.test.assertIn("statsquery", run_capture.call_args.args[0])
+        self.test.assertIn("statsquery", self.box.processes.calls[-1])
         return output.getvalue()
 
     def rows(self, table: str, *, with_rowid: bool = False) -> list:

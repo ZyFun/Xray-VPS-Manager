@@ -11,10 +11,7 @@ from contextlib import redirect_stdout
 from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 import os
-from pathlib import Path
 import sys
-import tempfile
-import time
 import unittest
 from unittest import mock
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -31,6 +28,7 @@ from xray_vps_manager.commands import traffic_sync
 from xray_vps_manager.core import time as core_time
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.telegram import traffic as telegram_traffic
+from support.sandbox import Sandbox
 
 VALID = "Europe/Moscow"
 INVALID = "Mars/Base"
@@ -45,16 +43,15 @@ class TimezoneLabelCase(unittest.TestCase):
     server_tz = SERVER_TZ
 
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.env_path = Path(tmp.name) / "server.env"
+        self.box = Sandbox(tz=self.server_tz)
+        self.box.__enter__()
+        self.addCleanup(self.box.__exit__, None, None, None)
+        self.env_path = self.box.paths.server_env
         self.write_env("")
-        environ = mock.patch.dict(os.environ, {"TZ": self.server_tz})
-        self.addCleanup(time.tzset)
+        environ = mock.patch.dict(os.environ)
         environ.start()
         self.addCleanup(environ.stop)
         os.environ.pop("MANAGER_TIMEZONE", None)
-        time.tzset()
 
     def write_env(self, zone: str, extra: str = "") -> None:
         self.env_path.write_text(f"MANAGER_TIMEZONE={zone}\n{extra}")
@@ -65,12 +62,6 @@ class TimezoneLabelCase(unittest.TestCase):
 
 class MenuHeaderTimezoneTests(TimezoneLabelCase):
     """Шапка `xray-menu`: `menu_status.normalize_timezone` строгий, ошибка — `die()` = SystemExit."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        patcher = mock.patch.object(menu_status, "SERVER_ENV_PATH", self.env_path)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def test_valid_zone_label_is_zone_name(self) -> None:
         self.write_env(VALID)
@@ -111,12 +102,6 @@ class MenuHeaderTimezoneTests(TimezoneLabelCase):
 
 class TelegramEventTimeTests(TimezoneLabelCase):
     """`xray-telegram`: `format_event_time` и подпись отчётов трафика бота (`display_timezone`)."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        patcher = mock.patch.object(telegram_command, "SERVER_ENV_PATH", self.env_path)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def test_event_time_label_for_valid_empty_and_invalid_zone(self) -> None:
         cases = {
@@ -161,12 +146,6 @@ class TelegramEventTimeTests(TimezoneLabelCase):
 
 class ActivityReportTimezoneTests(TimezoneLabelCase):
     """Отчёты активности: `activity_display_timezone` и `timezoneLabel` в `geoip_risk_details`."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        patcher = mock.patch.object(activity_settings, "SERVER_ENV_PATH", self.env_path)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def test_display_timezone_for_valid_empty_and_invalid_zone(self) -> None:
         self.write_env(VALID)
@@ -223,12 +202,6 @@ class ActivityReportTimezoneTests(TimezoneLabelCase):
 
 class TrafficSyncBucketTimezoneTests(TimezoneLabelCase):
     """Bucket `xray-traffic-sync`: своя копия `manager_timezone` с записью в лог при невалидной зоне."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        patcher = mock.patch.object(traffic_sync, "SERVER_ENV_PATH", self.env_path)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def bucket_timezone(self, argv):
         output = StringIO()
@@ -297,12 +270,6 @@ class XrayTestTimezoneTests(TimezoneLabelCase):
 
 class ClientTimezoneTests(TimezoneLabelCase):
     """`xray-client timezone` и `clients/settings`: строгая зона, ошибка — ValueError."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        patcher = mock.patch.object(client_settings, "read_server_env", self.read_env)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def run_timezone_command(self) -> list:
         output = StringIO()
@@ -387,10 +354,8 @@ class CoreTimeTimezoneTests(TimezoneLabelCase):
         for zone, (label, on_calendar) in cases.items():
             with self.subTest(zone=zone):
                 self.write_env(zone)
-                with mock.patch.object(core_time, "read_server_env", self.read_env), \
-                        mock.patch.object(activity_settings, "SERVER_ENV_PATH", self.env_path):
-                    self.assertEqual(raw_logs.next_rotation_label(now), label)
-                    self.assertEqual(raw_logs.raw_log_on_calendar(), on_calendar)
+                self.assertEqual(raw_logs.next_rotation_label(now), label)
+                self.assertEqual(raw_logs.raw_log_on_calendar(), on_calendar)
 
 
 class FixedOffsetServerTimeTests(TimezoneLabelCase):
@@ -404,11 +369,10 @@ class FixedOffsetServerTimeTests(TimezoneLabelCase):
         winter = datetime(2026, 1, 15, 12, 0)
         summer = datetime(2026, 7, 15, 12, 0)
 
-        with mock.patch.object(client_settings, "read_server_env", self.read_env):
-            zones = {
-                "core/time": core_time.manager_timezone(self.env_path)[0],
-                "clients/settings": client_settings.manager_timezone(),
-            }
+        zones = {
+            "core/time": core_time.manager_timezone(self.env_path)[0],
+            "clients/settings": client_settings.manager_timezone(),
+        }
 
         for name, tzinfo in zones.items():
             with self.subTest(name):

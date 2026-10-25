@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
-from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
+from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env, write_env as write_server_env
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import bypass as bypass_config

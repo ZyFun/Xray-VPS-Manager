@@ -3,14 +3,13 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core import clock
 from xray_vps_manager.core.errors import LockTimeout, ManagerError
 from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.core.settings import read_env as read_server_env
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.telegram import admin as telegram_admin
@@ -57,27 +56,14 @@ def require_root():
 
 
 def utc_now():
-    return datetime.now(timezone.utc).replace(microsecond=0)
+    return clock.now().replace(microsecond=0)
 
 
 def utc_stamp():
     return utc_now().isoformat().replace("+00:00", "Z")
 
 
-def parse_time(value):
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
+parse_time = clock.parse_time
 
 def load_db():
     return telegram_settings.load_db_sql()
@@ -115,14 +101,9 @@ def server_name_fragment():
 
 
 def display_timezone():
-    configured = (server_env_values().get("MANAGER_TIMEZONE") or "").strip()
-    if configured:
-        try:
-            return ZoneInfo(configured), configured
-        except ZoneInfoNotFoundError:
-            return timezone.utc, f"UTC (invalid MANAGER_TIMEZONE: {configured})"
-    local = datetime.now().astimezone().tzinfo or timezone.utc
-    return local, "server local time"
+    result = clock.manager_timezone(server_env_values(), invalid="utc")
+    label = result.label
+    return result.tz, label
 
 
 def format_event_time(value):

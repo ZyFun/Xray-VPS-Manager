@@ -13,7 +13,7 @@ from pathlib import Path
 
 from xray_vps_manager.core.errors import ManagerError, RestoreError
 from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
+from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env, write_env as write_server_env
 from xray_vps_manager.core.process import (
     WRITER_RESTART_UNITS,
     active_units,

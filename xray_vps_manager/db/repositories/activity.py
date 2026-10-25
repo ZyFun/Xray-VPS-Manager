@@ -349,7 +349,7 @@ def _window_event(event: dict[str, Any], risk: str, count: int) -> dict[str, Any
 
 
 def _parse_event_time(value: str):
-    from xray_vps_manager.activity.time import parse_time
+    from xray_vps_manager.core.clock import parse_time
 
     return parse_time(value)
 
@@ -601,7 +601,7 @@ def mark_alerts_admin_notified(connection: sqlite3.Connection, alert_ids: Iterab
 
 
 def _counter_bucket_key(event: dict[str, Any], bucket_type: str, display_tz) -> str:
-    from xray_vps_manager.activity.time import parse_time
+    from xray_vps_manager.core.clock import parse_time
 
     parsed = parse_time(_event_time(event))
     if parsed is None:

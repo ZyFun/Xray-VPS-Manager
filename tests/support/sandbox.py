@@ -2,7 +2,7 @@
 
 Фасад рассчитан на последовательные тесты в одном процессе. Это подмена
 зависимостей, а не граница безопасности для исполнения недоверенного кода.
-Полный перенос часов/процессов остаётся R1.2/R1.3.
+Канонические часы подключены в R1.2; перенос процессов остаётся R1.3.
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 
 import xray_vps_manager
 from xray_vps_manager.core import paths as path_module
+from xray_vps_manager.core import clock
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.db import database
 from xray_vps_manager.runner import command_main
@@ -142,7 +143,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PACKAGES_PATH'),
     ('xray_vps_manager.telegram.setup', 'CONFIG_PATH'),
     ('xray_vps_manager.telegram.setup', 'XRAY_BIN'),
-    ('xray_vps_manager.traffic.settings', 'SERVER_ENV_PATH'),
     ('xray_vps_manager.xray.caddy', 'CADDYFILE_PATH'),
     ('xray_vps_manager.xray.caddy', 'CADDY_CONF_DIR'),
     ('xray_vps_manager.xray.caddy', 'CADDY_BACKUP_DIR'),
@@ -491,6 +491,7 @@ class Sandbox:
 
     def _install_clock(self):
         instant, zone = self.now, self.tz
+        self._stack.enter_context(clock.frozen(instant, local_timezone=zone))
         class FrozenDateTime(datetime):
             @classmethod
             def now(cls, tz=None):

@@ -15,7 +15,7 @@ from typing import Optional, Sequence, Tuple
 from xray_vps_manager.core import interpreter as manager_interpreter
 from xray_vps_manager.core.errors import LockTimeout
 from xray_vps_manager.core.fs import remove_path, replace_file, set_root_executable
-from xray_vps_manager.core.server_env import read_server_env, update_server_env
+from xray_vps_manager.core.settings import read_env as read_server_env, update_env as update_server_env
 
 MANAGER_PYTHON_LOCK_TIMEOUT = 60.0
 

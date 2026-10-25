@@ -4,20 +4,21 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from xray_vps_manager.core.settings import update_env
 from xray_vps_manager.traffic import settings
 
 
+def _update_settings(changes: dict[str, str]) -> dict[str, str]:
+    return update_env(changes, defaults=settings.with_total_multiplier_defaults({}))
+
+
 def set_total_multiplier_enabled(value: bool) -> None:
-    env = settings.with_total_multiplier_defaults(settings.server_env_values())
-    env[settings.TOTAL_MULTIPLIER_ENABLED_KEY] = "true" if value else "false"
-    settings.write_server_env(env)
+    _update_settings({settings.TOTAL_MULTIPLIER_ENABLED_KEY: "true" if value else "false"})
 
 
 def set_total_multiplier(value: str) -> Decimal:
     multiplier = settings.parse_total_multiplier(value)
-    env = settings.with_total_multiplier_defaults(settings.server_env_values())
-    env[settings.TOTAL_MULTIPLIER_KEY] = settings.format_total_multiplier(multiplier)
-    settings.write_server_env(env)
+    _update_settings({settings.TOTAL_MULTIPLIER_KEY: settings.format_total_multiplier(multiplier)})
     return multiplier
 
 
