@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.core.settings import read_env as read_server_env
 
 
 def default_ssh_target() -> str:

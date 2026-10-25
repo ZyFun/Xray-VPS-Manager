@@ -5,8 +5,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
-from xray_vps_manager.core.paths import SERVER_ENV_PATH
-from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
+from xray_vps_manager.core.settings import read_env as read_server_env
 
 TOTAL_MULTIPLIER_ENABLED_KEY = "TRAFFIC_TOTAL_MULTIPLIER_ENABLED"
 TOTAL_MULTIPLIER_KEY = "TRAFFIC_TOTAL_MULTIPLIER"
@@ -16,12 +15,8 @@ MAX_TOTAL_MULTIPLIER = Decimal("100")
 TRUTHY_VALUES = {"1", "true", "yes", "y", "on", "вкл", "да"}
 
 
-def server_env_values(path: Path = SERVER_ENV_PATH) -> dict[str, str]:
+def server_env_values(path: Path | None = None) -> dict[str, str]:
     return read_server_env(path)
-
-
-def write_server_env(values: dict[str, str], path: Path = SERVER_ENV_PATH) -> None:
-    write_server_env_file(values, path=path, ordered_keys=ORDERED_ENV_KEYS)
 
 
 def with_total_multiplier_defaults(env: dict[str, str]) -> dict[str, str]:

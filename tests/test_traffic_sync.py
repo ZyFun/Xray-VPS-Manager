@@ -1,11 +1,30 @@
-from datetime import datetime, timezone
-from pathlib import Path
-import tempfile
+from contextlib import contextmanager, redirect_stdout
+from io import StringIO
+import json
 import unittest
 from unittest import mock
 from zoneinfo import ZoneInfo
 
 from xray_vps_manager.commands import traffic_sync
+from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.traffic import repository as traffic_repository
+from support.sandbox import Sandbox
+
+
+@contextmanager
+def sync_environment(credentials, runtime, now, tz="UTC"):
+    with Sandbox(now=now, tz=tz, db='fixtures/db/empty-ready.sql') as box:
+        inbounds = []
+        for (name, tag), email in credentials.items():
+            inbounds.append({"tag": tag, "protocol": "trojan" if tag.startswith("trojan") else "vless",
+                             "settings": {"clients": [{"email": email}]}})
+        box.paths.config.write_text(json.dumps({"inbounds": inbounds}))
+        box.paths.access_log.unlink()
+        box.processes.script({("/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>"):
+                              box.processes.ok(json.dumps({"stat": [{"name": name, "value": str(value)} for name, value in runtime.items()]}))})
+        with redirect_stdout(StringIO()):
+            yield box
+
 
 
 class TrafficSyncTests(unittest.TestCase):
@@ -52,12 +71,12 @@ class TrafficSyncTests(unittest.TestCase):
             }
         }
 
-        with mock.patch.object(traffic_sync, "load_json", return_value=config), \
-            mock.patch.object(
-                traffic_sync.client_repository,
+        with Sandbox() as box, mock.patch.object(
+                client_repository,
                 "load_db_sql",
                 return_value=db,
             ) as load_db_sql:
+            box.paths.config.write_text(json.dumps(config))
             self.assertEqual(
                 traffic_sync.known_clients(),
                 {
@@ -86,28 +105,18 @@ class TrafficSyncTests(unittest.TestCase):
             f"user>>>{email}>>>traffic>>>downlink": 30,
         }
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            with mock.patch.object(traffic_sync, "known_credentials", return_value={("alice", "vless-reality"): email}), \
-                mock.patch.object(traffic_sync, "query_runtime_stats", return_value=runtime), \
-                mock.patch.object(
-                    traffic_sync,
-                    "local_bucket_time",
-                    return_value=datetime(2026, 6, 12, 8, 0, tzinfo=timezone.utc),
-                ), \
-                mock.patch.object(traffic_sync, "now", return_value="2026-06-12T05:00:00Z"), \
-                mock.patch.object(traffic_sync, "ACCESS_LOG_PATH", Path(tmp_dir) / "missing-access.log"), \
-                mock.patch.object(traffic_sync, "log"), \
-                mock.patch.object(
-                    traffic_sync.traffic_repository,
+        with sync_environment({("alice", "vless-reality"): email}, runtime, "2026-06-12T05:00:00Z", "Europe/Moscow"):
+            with mock.patch.object(
+                    traffic_repository,
                     "load_traffic_db_for_read",
                     return_value=db,
                 ) as load_for_read, \
                 mock.patch.object(
-                    traffic_sync.traffic_repository,
+                    traffic_repository,
                     "load_traffic_db",
                     side_effect=AssertionError("traffic sync must use read-aware load"),
                 ), \
-                mock.patch.object(traffic_sync, "save_traffic") as save_traffic:
+                mock.patch.object(traffic_repository, "save_traffic_db") as save_traffic:
                 result = traffic_sync.sync_locked()
 
         self.assertEqual(result, 0)
@@ -154,29 +163,13 @@ class TrafficSyncTests(unittest.TestCase):
             f"user>>>{trojan_email}>>>traffic>>>downlink": 120_000,
         }
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        with sync_environment({("alice", "vless-reality"): vless_email, ("alice", "trojan-tls"): trojan_email}, runtime, "2026-06-23T17:05:00Z"):
             with mock.patch.object(
-                traffic_sync,
-                "known_credentials",
-                return_value={
-                    ("alice", "vless-reality"): vless_email,
-                    ("alice", "trojan-tls"): trojan_email,
-                },
-            ), mock.patch.object(traffic_sync, "query_runtime_stats", return_value=runtime), \
-                mock.patch.object(
-                    traffic_sync,
-                    "local_bucket_time",
-                    return_value=datetime(2026, 6, 23, 17, 0, tzinfo=timezone.utc),
-                ), \
-                mock.patch.object(traffic_sync, "now", return_value="2026-06-23T17:05:00Z"), \
-                mock.patch.object(traffic_sync, "ACCESS_LOG_PATH", Path(tmp_dir) / "missing-access.log"), \
-                mock.patch.object(traffic_sync, "log"), \
-                mock.patch.object(
-                    traffic_sync.traffic_repository,
+                    traffic_repository,
                     "load_traffic_db_for_read",
                     return_value=db,
                 ), \
-                mock.patch.object(traffic_sync, "save_traffic") as save_traffic:
+                mock.patch.object(traffic_repository, "save_traffic_db") as save_traffic:
                 result = traffic_sync.sync_locked()
 
         self.assertEqual(result, 0)
@@ -212,23 +205,13 @@ class TrafficSyncTests(unittest.TestCase):
             f"user>>>{email}>>>traffic>>>downlink": 200,
         }
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            with mock.patch.object(traffic_sync, "known_credentials", return_value={("iphone", "vless-reality"): email}), \
-                mock.patch.object(traffic_sync, "query_runtime_stats", return_value=runtime), \
-                mock.patch.object(
-                    traffic_sync,
-                    "local_bucket_time",
-                    return_value=datetime(2026, 6, 20, 23, 0, tzinfo=timezone.utc),
-                ), \
-                mock.patch.object(traffic_sync, "now", return_value="2026-06-20T23:31:00Z"), \
-                mock.patch.object(traffic_sync, "ACCESS_LOG_PATH", Path(tmp_dir) / "missing-access.log"), \
-                mock.patch.object(traffic_sync, "log"), \
-                mock.patch.object(
-                    traffic_sync.traffic_repository,
+        with sync_environment({("iphone", "vless-reality"): email}, runtime, "2026-06-20T23:31:00Z"):
+            with mock.patch.object(
+                    traffic_repository,
                     "load_traffic_db_for_read",
                     return_value=db,
                 ), \
-                mock.patch.object(traffic_sync, "save_traffic") as save_traffic:
+                mock.patch.object(traffic_repository, "save_traffic_db") as save_traffic:
                 result = traffic_sync.sync_locked()
 
         self.assertEqual(result, 0)

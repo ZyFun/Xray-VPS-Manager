@@ -5,10 +5,12 @@ from __future__ import annotations
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfoNotFoundError
 
+from xray_vps_manager.core import clock
 from xray_vps_manager.core.paths import SERVER_ENV_PATH, XRAY_ASSET_DIR
-from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
+from xray_vps_manager.core.settings import update_env
+from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env
 
 SECURITY_AUDIT_ENV_KEY = "SECURITY_AUDIT_LAST_RUN"
 SECURITY_AUDIT_STALE_DAYS = 30
@@ -48,22 +50,13 @@ def server_env() -> dict[str, str]:
     return read_server_env(SERVER_ENV_PATH)
 
 
-def write_server_env_values(values: dict[str, str]) -> None:
-    updated = dict(values)
-    for key in MENU_ENV_REQUIRED_KEYS:
-        updated.setdefault(key, "")
-    write_server_env_file(updated, path=SERVER_ENV_PATH, ordered_keys=ORDERED_ENV_KEYS)
-
-
 def normalize_timezone(value: str | None) -> str:
-    raw = (value or "").strip()
-    if raw.lower() in ("", "server", "local", "default", "system", "сервер", "локально", "по умолчанию"):
-        return ""
     try:
-        ZoneInfo(raw)
-    except ZoneInfoNotFoundError:
-        die("MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time.")
-    return raw
+        return clock.normalize_timezone_name(value)
+    except ValueError as exc:
+        if isinstance(exc.__cause__, ZoneInfoNotFoundError):
+            die(str(exc))
+        raise
 
 
 def configured_timezone_name() -> str:
@@ -73,15 +66,15 @@ def configured_timezone_name() -> str:
 def manager_timezone():
     name = configured_timezone_name()
     if name:
-        return ZoneInfo(name)
-    return datetime.now().astimezone().tzinfo
+        return clock.timezone_named(name)
+    return clock.server_local_timezone()
 
 
 def manager_timezone_label() -> str:
     name = configured_timezone_name()
     if name:
         return name
-    current = datetime.now().astimezone()
+    current = clock.now().astimezone(clock.server_local_timezone())
     suffix = current.tzname() or "server local time"
     return f"server local time ({suffix})"
 
@@ -104,7 +97,7 @@ def parse_utc_timestamp(value: str | None) -> datetime | None:
 
 
 def utc_stamp() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return clock.now().replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def format_manager_time(moment: datetime) -> str:
@@ -147,7 +140,7 @@ def security_audit_is_stale() -> bool:
     last_run = last_security_audit_time()
     if not last_run:
         return True
-    return datetime.now(timezone.utc) - last_run >= timedelta(days=SECURITY_AUDIT_STALE_DAYS)
+    return clock.now() - last_run >= timedelta(days=SECURITY_AUDIT_STALE_DAYS)
 
 
 def security_audit_header_warning() -> str:
@@ -157,8 +150,11 @@ def security_audit_header_warning() -> str:
 
 
 def record_security_audit_run() -> datetime | None:
-    values = server_env()
     stamp = utc_stamp()
-    values[SECURITY_AUDIT_ENV_KEY] = stamp
-    write_server_env_values(values)
+    update_env(
+        {SECURITY_AUDIT_ENV_KEY: stamp},
+        defaults={key: "" for key in MENU_ENV_REQUIRED_KEYS},
+        path=SERVER_ENV_PATH,
+        ordered_keys=ORDERED_ENV_KEYS,
+    )
     return parse_utc_timestamp(stamp)

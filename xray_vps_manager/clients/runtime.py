@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, tzinfo
 from typing import Any
 
+from xray_vps_manager.core import clock
 from xray_vps_manager.traffic.repository import credential_traffic_entry, traffic_entry
 
 ONLINE_WINDOW_SECONDS = 300
@@ -47,15 +48,11 @@ def credential_traffic_for(
 
 
 def parse_time(value: str | None) -> datetime | None:
+    # Контракт клиентов отличается от UTC-парсера: пробелы значимы,
+    # исходное смещение сохраняется, Z заменяется по всей строке.
     if not value or value in ("never", "unknown"):
         return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    return clock.parse_time(str(value).replace("Z", "+00:00"), strip_whitespace=False, normalize_utc=False)
 
 
 def format_time(value: str | None, display_timezone: tzinfo) -> str:

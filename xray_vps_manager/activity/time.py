@@ -2,34 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Iterable
 
+from xray_vps_manager.core import clock
 from xray_vps_manager.core.time import xray_access_time_to_iso
 
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(microsecond=0)
+def utc_now():
+    return clock.now().replace(microsecond=0)
 
 
-def utc_stamp() -> str:
+def utc_stamp():
     return utc_now().isoformat().replace("+00:00", "Z")
 
 
-def parse_time(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    raw = str(value).strip()
-    if raw.endswith("Z"):
-        raw = raw[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
+parse_time = clock.parse_time
 
 def access_time_to_iso(value: str) -> str:
     return xray_access_time_to_iso(value)

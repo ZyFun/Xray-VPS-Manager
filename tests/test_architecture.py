@@ -17,7 +17,6 @@ AREA_ORDER = (
 ALLOWED_IMPORTS = frozenset({
     # Нормализация и константы ещё находятся в областях clients/activity.
     ("db.repositories.activity", "activity.constants"),
-    ("db.repositories.activity", "activity.time"),
     ("db.repositories.clients", "clients.credentials"),
     ("db.repositories.clients", "clients.payments"),
     # Чтение клиентских данных и разбор email ещё не перенесены из xray.

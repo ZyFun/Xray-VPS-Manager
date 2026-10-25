@@ -19,7 +19,7 @@ from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.process import restart_systemd_unit
-from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
+from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env, write_env as write_server_env
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
