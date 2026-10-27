@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from collections.abc import Iterable
@@ -114,7 +115,9 @@ def restart_unit(
     зависание любого вызова `systemctl` внутри helper'а (TimeoutExpired) тоже становится этой ошибкой.
     Перед проверяемой попыткой unit останавливается, затем сбрасывается NRestarts: старый systemd может
     сохранять счётчик при ручном restart из auto-restart (70-R07). Stop исключает гонку со старым процессом
-    между reset-failed и новым запуском. При отключённой проверке сохраняется обычный restart.
+    между reset-failed и новым запуском. Выгруженный после stop сервис допускается только после
+    подтверждения его загрузки, покоя и нулевого счётчика через show (VIREI-251).
+    При отключённой проверке сохраняется обычный restart.
     """
     if verify_timeout > 0:
         _prepare_verified_restart(unit, timeout)
@@ -142,22 +145,60 @@ def restart_unit(
 def _prepare_verified_restart(unit: str, timeout: int) -> None:
     """Останавливает unit и сбрасывает старый счётчик до нового запуска (70-R07)."""
     stop_systemd_unit(unit, timeout=timeout)
-    result = _run_systemctl(unit, ["reset-failed", unit], timeout=10)
+    # Текст ошибки — только предварительный фильтр; безопасность подтверждает show ниже.
+    result = _run_systemctl(unit, ["reset-failed", unit], timeout=10, env={**os.environ, "LC_ALL": "C"})
     if result.returncode != 0:
+        if _unloaded_service_is_ready(unit, result):
+            return
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
 
-def _run_systemctl(unit: str, args: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+def _unloaded_service_is_ready(unit: str, result: subprocess.CompletedProcess[str]) -> bool:
+    """VIREI-251: отсутствие загруженного unit не равно отсутствию его файла.
+
+    reset-failed не загружает unit; show загружает существующее определение. После выгрузки
+    счётчик уже нулевой. Нельзя принимать за baseline первое значение после нового старта:
+    оно может включать раннее падение. Неполный ответ, старый процесс или новое задание
+    не подтверждают безопасное состояние; ошибка содержит отвергнутые поля (251-R01).
+    """
+    name = unit if unit.endswith(".service") else unit + ".service"
+    expected = f"Failed to reset failed state of unit {name}: Unit {name} not loaded."
+    if result.returncode != 1 or (result.stderr or "").strip() != expected:
+        return False
+    state = _systemd_unit_properties(
+        unit, "LoadState,ActiveState,SubState,NRestarts,MainPID,ControlPID,Job", timeout=10, show_empty=True,
+    )
+    # systemctl печатает отсутствие Job как пустое значение, а не 0; --all сохраняет поле.
+    expected_state = {
+        "LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead",
+        "NRestarts": "0", "MainPID": "0", "ControlPID": "0", "Job": "",
+    }
+    if not all(state.get(key) == value for key, value in expected_state.items()):
+        summary = " ".join(f"{key}={state.get(key, '<missing>')!r}" for key in expected_state)
+        raise SystemdUnitStartError(
+            unit, f"reset-failed: {(result.stderr or '').strip()}; state after stop not confirmed: {summary}",
+            result.stdout or "",
+        )
+    return True
+
+
+def _run_systemctl(unit: str, args: list[str], timeout: float, *, env=None) -> subprocess.CompletedProcess[str]:
     """`systemctl ARGS`; таймаут превращается в SystemdUnitStartError, чтобы вызывающий код откатил конфиг (70-R02)."""
     try:
-        return process.run_capture(["systemctl", *args], timeout=timeout)
+        kwargs = {"env": env} if env is not None else {}
+        return process.run_capture(["systemctl", *args], timeout=timeout, **kwargs)
     except subprocess.TimeoutExpired as exc:
         raise SystemdUnitStartError(unit, f"systemctl {' '.join(args)} timed out after {timeout:g}s") from exc
 
 
 def systemd_unit_state(unit: str, timeout: float = 10) -> dict[str, str]:
     """ActiveState, SubState и NRestarts unit через `systemctl show`."""
-    result = _run_systemctl(unit, ["show", "--property=ActiveState,SubState,NRestarts", unit], timeout=timeout)
+    return _systemd_unit_properties(unit, "ActiveState,SubState,NRestarts", timeout)
+
+
+def _systemd_unit_properties(unit: str, properties: str, timeout: float, *, show_empty: bool = False) -> dict[str, str]:
+    args = ["show", f"--property={properties}", *(["--all"] if show_empty else []), unit]
+    result = _run_systemctl(unit, args, timeout=timeout)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
         raise SystemdUnitStartError(unit, f"systemctl show failed: {detail}", result.stdout or "")
