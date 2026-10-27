@@ -12,7 +12,7 @@ from typing import Iterator
 
 from xray_vps_manager.core import paths
 from xray_vps_manager.core.errors import LockTimeout
-from xray_vps_manager.core.time import utc_stamp
+from xray_vps_manager.core.clock import utc_stamp
 
 DEFAULT_TIMEOUT = 60.0
 POLL_INTERVAL = 0.2

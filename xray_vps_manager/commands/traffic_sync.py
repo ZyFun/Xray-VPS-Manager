@@ -6,12 +6,13 @@ import re
 import subprocess
 import sys
 from calendar import monthrange
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfoNotFoundError
 
+from xray_vps_manager.core import clock
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
-from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.core.settings import read_env as read_server_env
 from xray_vps_manager.core.time import parse_time, xray_access_time_to_iso
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.models import split_email as split_client_email
@@ -36,7 +37,7 @@ def log(message):
 
 
 def now():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return clock.now().replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def server_env_values():
@@ -46,16 +47,16 @@ def server_env_values():
 def manager_timezone():
     value = (server_env_values().get("MANAGER_TIMEZONE") or "").strip()
     if not value:
-        return datetime.now().astimezone().tzinfo
+        return clock.server_local_timezone()
     try:
-        return ZoneInfo(value)
+        return clock.timezone_named(value)
     except ZoneInfoNotFoundError:
         log(f"Invalid MANAGER_TIMEZONE={value!r}. Falling back to server local time.")
-        return datetime.now().astimezone().tzinfo
+        return clock.server_local_timezone()
 
 
 def local_bucket_time():
-    return datetime.now(manager_timezone()).replace(microsecond=0)
+    return clock.now().astimezone(manager_timezone()).replace(microsecond=0)
 
 
 def subtract_months(day, months):

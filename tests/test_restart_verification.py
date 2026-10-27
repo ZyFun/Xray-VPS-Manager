@@ -11,8 +11,9 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 from xray_vps_manager.commands import backup, menu_reality_actions, set_cascade, update, warp
-from xray_vps_manager.core import process
+from xray_vps_manager.core import process, systemd
 from xray_vps_manager.xray import config as xray_config
+from support.sandbox import Sandbox
 
 
 def completed(args, code=0, stdout="", stderr=""):
@@ -171,7 +172,7 @@ class RestartVerificationTests(unittest.TestCase):
             raise ConnectionRefusedError(f"{address} closed")
 
         with mock.patch.object(process.subprocess, "run", side_effect=systemctl), \
-            mock.patch.object(process, "time", clock), \
+            mock.patch.object(systemd, "time", clock), \
             mock.patch.object(process.socket, "create_connection", side_effect=connect):
             return process.restart_systemd_unit("xray", **kwargs), clock
 
@@ -222,7 +223,7 @@ class RestartVerificationTests(unittest.TestCase):
             return systemctl(command, **kwargs)
 
         with mock.patch.object(process.subprocess, "run", side_effect=run), \
-            mock.patch.object(process, "time", FakeClock()), \
+            mock.patch.object(systemd, "time", FakeClock()), \
             mock.patch.object(process.socket, "create_connection", side_effect=open_socket):
             with self.assertRaises(process.SystemdUnitStartError):
                 process.restart_systemd_unit("xray", ports=[("127.0.0.1", 443)])
@@ -342,7 +343,7 @@ class RestartVerificationTests(unittest.TestCase):
 
         clock = FakeClock()
         with mock.patch.object(process.subprocess, "run", side_effect=restart_then_show), \
-            mock.patch.object(process, "time", clock):
+            mock.patch.object(systemd, "time", clock):
             with self.assertRaises(subprocess.CalledProcessError):
                 process.restart_systemd_unit("xray", verify_timeout=3.0)
         self.assertEqual([item[1] for item in systemctl.commands][:6],
@@ -356,7 +357,7 @@ class SystemctlTimeoutTests(unittest.TestCase):
     def test_show_timeout_raises_start_error_bounded_by_window(self) -> None:
         systemctl = HangingShowSystemctl()
         with mock.patch.object(process.subprocess, "run", side_effect=systemctl), \
-            mock.patch.object(process, "time", FakeClock()):
+            mock.patch.object(systemd, "time", FakeClock()):
             with self.assertRaises(process.SystemdUnitStartError) as caught:
                 process.restart_systemd_unit("xray", verify_timeout=3.0)
         self.assertIsInstance(caught.exception, subprocess.CalledProcessError)
@@ -374,7 +375,7 @@ class SystemctlTimeoutTests(unittest.TestCase):
             return systemctl(command, **kwargs)
 
         with mock.patch.object(process.subprocess, "run", side_effect=run), \
-            mock.patch.object(process, "time", FakeClock()):
+            mock.patch.object(systemd, "time", FakeClock()):
             process.restart_systemd_unit("xray", verify_timeout=3.0, poll_interval=1.0)
         self.assertEqual(timeouts[0], 3.0)
         self.assertTrue(all(timeout >= process.SHOW_TIMEOUT_FLOOR for timeout in timeouts))
@@ -528,47 +529,44 @@ class ApplyConfigRollbackTests(unittest.TestCase):
         self.assertEqual(calls[0][1]["ports"], [("127.0.0.1", 2443)])
         self.assertEqual(calls[1][1]["ports"], [("127.0.0.1", 443)])
 
+    def rollback_sandbox(self, systemctl, clock):
+        with ExitStack() as stack:
+            box = stack.enter_context(Sandbox())
+            self.config_path = box.paths.config
+            self.config_path.write_text(json.dumps(config_with_port(443)))
+            box.processes.script({
+                ('systemctl', action, 'xray'): systemctl for action in ('stop', 'reset-failed', 'restart')})
+            box.processes.script({
+                ('systemctl', 'show', '--property=ActiveState,SubState,NRestarts', 'xray'): systemctl,
+                (str(menu_reality_actions.XRAY_BIN), 'run', '-test', '-config', str(box.paths.config)): box.processes.ok()})
+            stack.enter_context(mock.patch.object(systemd, 'time', clock))
+            stack.enter_context(mock.patch.object(process.socket, 'create_connection', side_effect=open_socket))
+            return stack.pop_all()
+
     def test_menu_reality_rolls_back_when_xray_fails_after_active_on_busy_port(self) -> None:
         """Сценарий XR-REV-010 через настоящий helper: PORT → 2443 занят чужим процессом, Xray падает после active."""
         systemctl = SequencedSystemctl([
             [("active", "running", 0), ("failed", "failed", 0)],
             [("active", "running", 0)],
         ])
-        clock = FakeClock()
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch.object(menu_reality_actions, "CONFIG_PATH", self.config_path))
-            stack.enter_context(mock.patch.object(menu_reality_actions, "save_config",
-                                                  side_effect=lambda config: xray_config.save_config(config, self.config_path)))
-            stack.enter_context(mock.patch.object(menu_reality_actions, "run"))
-            stack.enter_context(mock.patch.object(process.subprocess, "run", side_effect=systemctl))
-            stack.enter_context(mock.patch.object(process, "time", clock))
-            stack.enter_context(mock.patch.object(process.socket, "create_connection", side_effect=open_socket))
-            stack.enter_context(mock.patch("shutil.chown"))
+        with self.rollback_sandbox(systemctl, FakeClock()):
             with self.assertRaises(SystemExit) as caught:
                 menu_reality_actions.apply_config(config_with_port(2443))
-        self.assertIn("Restored backup", str(caught.exception))
-        self.assertIn("ActiveState=failed", str(caught.exception))
-        self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
-        self.assertEqual([item[1] for item in systemctl.commands].count("restart"), 2)
+            self.assertIn("Restored backup", str(caught.exception))
+            self.assertIn("ActiveState=failed", str(caught.exception))
+            self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
+            self.assertEqual([item[1] for item in systemctl.commands].count("restart"), 2)
 
     def test_menu_reality_rolls_back_when_systemctl_show_times_out(self) -> None:
         """Зависший `systemctl show` после рестарта нового конфига → откат на прежний конфиг (70-R02)."""
         systemctl = HangingShowSystemctl()
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch.object(menu_reality_actions, "CONFIG_PATH", self.config_path))
-            stack.enter_context(mock.patch.object(menu_reality_actions, "save_config",
-                                                  side_effect=lambda config: xray_config.save_config(config, self.config_path)))
-            stack.enter_context(mock.patch.object(menu_reality_actions, "run"))
-            stack.enter_context(mock.patch.object(process.subprocess, "run", side_effect=systemctl))
-            stack.enter_context(mock.patch.object(process, "time", FakeClock()))
-            stack.enter_context(mock.patch.object(process.socket, "create_connection", side_effect=open_socket))
-            stack.enter_context(mock.patch("shutil.chown"))
+        with self.rollback_sandbox(systemctl, FakeClock()):
             with self.assertRaises(SystemExit) as caught:
                 menu_reality_actions.apply_config(config_with_port(2443))
-        self.assertIn("Restored backup", str(caught.exception))
-        self.assertIn("timed out", str(caught.exception))
-        self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
-        self.assertEqual(systemctl.restarts, 2)
+            self.assertIn("Restored backup", str(caught.exception))
+            self.assertIn("timed out", str(caught.exception))
+            self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
+            self.assertEqual(systemctl.restarts, 2)
 
     def test_backup_test_and_restart_passes_inbound_ports(self) -> None:
         calls = []

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import re
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core import clock
 from xray_vps_manager.core.paths import SERVER_ENV_PATH
-from xray_vps_manager.core.server_env import read_server_env, write_server_env
+from xray_vps_manager.core.settings import read_env as read_server_env, write_env as write_server_env, env_value
 
 DEFAULT_SERVER_ADDR = ""
 DEFAULT_SERVER_NAME = "Xray"
@@ -28,15 +26,15 @@ FINGERPRINTS = {
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 
 
-def server_env_values(path: Path = SERVER_ENV_PATH) -> dict[str, str]:
+def server_env_values(path: Path | None = None) -> dict[str, str]:
     return read_server_env(path)
 
 
-def server_env_value(key: str, default: str = "", path: Path = SERVER_ENV_PATH) -> str:
-    return server_env_values(path).get(key) or os.environ.get(key, default)
+def server_env_value(key: str, default: str = "", path: Path | None = None) -> str:
+    return env_value(key, default, path)
 
 
-def save_server_env_values(values: dict[str, str], path: Path = SERVER_ENV_PATH) -> None:
+def save_server_env_values(values: dict[str, str], path: Path | None = None) -> None:
     ordered = [
         "SERVER_ADDR",
         "SERVER_NAME",
@@ -57,14 +55,7 @@ def save_server_env_values(values: dict[str, str], path: Path = SERVER_ENV_PATH)
 
 
 def normalize_timezone(value: str | None) -> str:
-    raw = (value or "").strip()
-    if raw.lower() in ("", "server", "local", "default", "system", "сервер", "локально", "по умолчанию"):
-        return ""
-    try:
-        ZoneInfo(raw)
-    except ZoneInfoNotFoundError as exc:
-        raise ValueError("MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time.") from exc
-    return raw
+    return clock.normalize_timezone_name(value)
 
 
 def configured_timezone_name() -> str:
@@ -74,15 +65,15 @@ def configured_timezone_name() -> str:
 def manager_timezone():
     name = configured_timezone_name()
     if name:
-        return ZoneInfo(name)
-    return datetime.now().astimezone().tzinfo
+        return clock.timezone_named(name)
+    return clock.server_local_timezone()
 
 
 def manager_timezone_label() -> str:
     name = configured_timezone_name()
     if name:
         return name
-    current = datetime.now().astimezone()
+    current = clock.now().astimezone(clock.server_local_timezone())
     suffix = current.tzname() or "server local time"
     return f"server local time ({suffix})"
 

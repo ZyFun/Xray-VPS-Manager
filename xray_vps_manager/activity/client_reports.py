@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import timedelta
 
+from xray_vps_manager.core import clock
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import reports as activity_reports
@@ -254,18 +254,13 @@ def counter_growth_rows(counter_rows: list[dict], limit: int = 50) -> list[dict]
 
 
 def activity_display_timezone():
-    configured = (activity_settings.server_env_values().get("MANAGER_TIMEZONE") or "").strip()
-    if configured:
-        try:
-            return ZoneInfo(configured), configured
-        except ZoneInfoNotFoundError:
-            return timezone.utc, f"UTC (invalid MANAGER_TIMEZONE: {configured})"
-    local = datetime.now().astimezone().tzinfo or timezone.utc
-    local_name = datetime.now(local).tzname()
-    label = "server local time"
-    if local_name:
-        label += f" ({local_name})"
-    return local, label
+    result = clock.manager_timezone(activity_settings.server_env_values(), invalid="utc")
+    label = result.label
+    if not result.name:
+        local_name = clock.now().astimezone(result.tz).tzname()
+        if local_name:
+            label += f" ({local_name})"
+    return result.tz, label
 
 
 def format_event_time(value, tzinfo):

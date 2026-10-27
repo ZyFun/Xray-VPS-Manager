@@ -10,11 +10,12 @@ import sys
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfoNotFoundError
 
+from xray_vps_manager.core import clock
 from xray_vps_manager.core import interpreter as manager_interpreter
 from xray_vps_manager.core import process as core_process
-from xray_vps_manager.core.server_env import read_server_env
+from xray_vps_manager.core.settings import read_env as read_server_env
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.clients import diagnostics as client_diagnostics
 from xray_vps_manager.db import database as sqlite_database
@@ -595,7 +596,7 @@ def check_manager_timezone(diag):
     if not value:
         return "MANAGER_TIMEZONE uses server local time"
     try:
-        ZoneInfo(value)
+        clock.timezone_named(value)
     except ZoneInfoNotFoundError:
         raise RuntimeError(f"invalid MANAGER_TIMEZONE: {value}")
     return f"MANAGER_TIMEZONE={value}"
@@ -843,8 +844,8 @@ def check_traffic_db_alignment(diag):
 def manager_timezone(diag):
     value = (diag.context.get("server_env", {}).get("MANAGER_TIMEZONE") or "").strip()
     if not value:
-        return datetime.now().astimezone().tzinfo
-    return ZoneInfo(value)
+        return clock.server_local_timezone()
+    return clock.timezone_named(value)
 
 
 def parse_datetime(value):

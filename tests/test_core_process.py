@@ -2,7 +2,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from xray_vps_manager.core import process
+from xray_vps_manager.core import process, systemd
 
 
 class CoreProcessTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class CoreProcessTests(unittest.TestCase):
         ]
 
         with mock.patch.object(process.subprocess, "run", side_effect=calls) as run, mock.patch.object(
-            process.time, "sleep"
+            systemd.time, "sleep"
         ) as sleep:
             result = process.restart_systemd_unit("xray", verify_timeout=0)
 
@@ -48,7 +48,7 @@ class CoreProcessTests(unittest.TestCase):
             self.completed(["systemctl", "restart", "xray"], code=1, stderr="second failure"),
         ]
 
-        with mock.patch.object(process.subprocess, "run", side_effect=calls), mock.patch.object(process.time, "sleep"):
+        with mock.patch.object(process.subprocess, "run", side_effect=calls), mock.patch.object(systemd.time, "sleep"):
             with self.assertRaises(subprocess.CalledProcessError) as caught:
                 process.restart_systemd_unit("xray", verify_timeout=0)
 
@@ -64,7 +64,7 @@ class CoreProcessTests(unittest.TestCase):
         ]
 
         with mock.patch.object(process.subprocess, "run", side_effect=calls) as run, mock.patch.object(
-            process.time, "sleep"
+            systemd.time, "sleep"
         ) as sleep:
             process.restart_systemd_unit("xray", timeout=45, retry_delay=0, verify_timeout=0)
 
@@ -87,7 +87,7 @@ class CoreProcessTests(unittest.TestCase):
         clock.now = 100.0
         clock.monotonic.side_effect = lambda: clock.now
         clock.sleep.side_effect = lambda seconds: setattr(clock, "now", clock.now + seconds)
-        with mock.patch.object(process.subprocess, "run", side_effect=systemctl), mock.patch.object(process, "time", clock):
+        with mock.patch.object(process.subprocess, "run", side_effect=systemctl), mock.patch.object(systemd, "time", clock):
             process.restart_systemd_unit("xray", timeout=45, verify_timeout=3.0, poll_interval=3.0)
 
         self.assertEqual(commands[:3], [("stop", 45), ("reset-failed", 10), ("restart", 45)])

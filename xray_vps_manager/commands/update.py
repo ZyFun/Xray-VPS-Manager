@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+from functools import partial
 import json
 import os
 import re
@@ -8,11 +9,11 @@ import socket
 import subprocess
 import sys
 import tempfile
-import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.core.http import http_json as _http_json
 from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.xray.config import inbound_listen_endpoints
 
@@ -244,10 +245,7 @@ def preflight(verbose=True):
     return failures
 
 
-def http_json(url, timeout=20):
-    request = urllib.request.Request(url, headers={"User-Agent": "xray-update"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+http_json = partial(_http_json, user_agent='xray-update')
 
 
 def latest_from_redirect():

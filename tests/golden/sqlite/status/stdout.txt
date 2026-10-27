@@ -1,0 +1,15 @@
+Database: <ROOT>/usr/local/etc/xray/manager.db
+Schema: 8
+Quick check: ok
+SQLite ready: yes
+activity_alert_events: 0
+activity_blocklist: 0
+activity_blocklist_hits: 0
+activity_client_counters: 0
+activity_events: 0
+activity_exceptions: 0
+clients: 1
+connections: 1
+telegram_subscriptions: 0
+traffic: 0
+xray_error_events: 0

@@ -17,7 +17,7 @@ from xray_vps_manager.activity.constants import (
     DEFAULT_RISK_UNIQUE_PORTS,
     SERVER_ENV_PATH,
 )
-from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env as write_server_env_file
+from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env, write_env as write_server_env_file
 
 
 def server_env_values() -> dict[str, str]:
