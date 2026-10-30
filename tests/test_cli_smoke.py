@@ -14,7 +14,7 @@ HELP_OUTPUT = (
     "Usage: xray-vps-manager COMMAND [ARGS...]\n"
     "\n"
     "Commands: activity, backup, bypass, caddy, cascade, client, manager-update, menu, sqlite, telegram, test, "
-    "traffic-sync, update, warp\n"
+    "traffic-sync, units, update, warp\n"
     "\n"
     "Compatibility command names remain available: xray-menu, xray-client, xray-telegram, ...\n"
 )

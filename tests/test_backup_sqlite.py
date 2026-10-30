@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from support.sandbox import Sandbox, ProcessResult
+from xray_vps_manager.system import units as system_units
 from xray_vps_manager.commands import backup
 from xray_vps_manager.db import database
 
@@ -627,8 +629,8 @@ class BackupSQLiteTests(unittest.TestCase):
         validator.assert_not_called()
 
     def test_restore_caddy_random_tls_state_enables_site_timer_when_archive_enabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
+        with Sandbox() as server:
+            root = server.root
             temp_dir = root / "restore"
             restored_config_dir = temp_dir / backup.CADDY_RANDOM_TLS_CONFIG_DIR_ARCNAME
             restored_config_dir.mkdir(parents=True)
@@ -660,32 +662,26 @@ class BackupSQLiteTests(unittest.TestCase):
                 )
             )
 
-            target_config_dir = root / "target" / "xray" / "caddy-random-tls.d"
-            backup_files = [
-                ("usr/local/etc/xray/config.json", root / "target" / "xray" / "config.json", True),
+            target_config_dir = server.paths.caddy_random_tls_dir
+            # Полный набор обязательных файлов обычного restore.
+            for arcname, _target, required in backup.BACKUP_FILES:
+                source = temp_dir / arcname
+                if required and not source.exists():
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    if arcname == backup.MANAGER_DB_ARCNAME:
+                        shutil.copy2(server.paths.manager_db, source)
+                    else:
+                        source.write_text("")
+            commands = [
+                ("systemctl", "daemon-reload"),
+                ("systemctl", "disable", "--now", "xray-caddy-random-tls.timer"),
+                ("systemctl", "stop", "xray-caddy-random-tls.service"),
+                ("systemctl", "enable", "--now", "xray-caddy-random-tls@api.example.com.timer"),
             ]
-            backup_dirs = [
-                (backup.CADDY_RANDOM_TLS_CONFIG_DIR_ARCNAME, target_config_dir, False),
-            ]
-            calls = []
-
-            def fake_systemctl(args, timeout=20):
-                calls.append(args)
-                return backup.subprocess.CompletedProcess(["systemctl", *args], 0, "", "")
-
-            with mock.patch.object(backup, "BACKUP_FILES", backup_files), mock.patch.object(
-                backup, "BACKUP_DIRS", backup_dirs
-            ), mock.patch.object(backup, "CADDY_RANDOM_TLS_CONFIG_DIR", target_config_dir), mock.patch.object(
-                backup, "chown_xray"
-            ), mock.patch.object(
-                backup.shutil, "chown"
-            ), mock.patch.object(
-                backup.xray_caddy, "write_random_tls_systemd_units"
-            ), mock.patch.object(
-                backup, "run_systemctl", side_effect=fake_systemctl
-            ):
-                restored = backup.apply_restore(temp_dir)
-                messages = backup.restore_caddy_random_tls_state(temp_dir)
+            server.processes.script({command: ProcessResult() for command in commands})
+            restored = backup.apply_restore(temp_dir)
+            messages = backup.restore_caddy_random_tls_state(temp_dir)
+            calls = [list(command[1:]) for command in server.processes.calls]
 
             target_env = target_config_dir / "api.example.com.env"
             self.assertEqual(target_env.read_text(), "TLS_RANDOM_DOMAIN=api.example.com\nTLS_RANDOM_LOCAL_PORT=10300\n")
@@ -693,10 +689,12 @@ class BackupSQLiteTests(unittest.TestCase):
             self.assertIn(["daemon-reload"], calls)
             self.assertIn(["enable", "--now", "xray-caddy-random-tls@api.example.com.timer"], calls)
             self.assertEqual(messages[-1], "Caddy TLS randomizer timer restored for api.example.com: enabled")
+            self.assertEqual((server.paths.systemd_dir / "xray-caddy-random-tls@.service").read_text(),
+                             system_units.random_tls_service_unit())
 
     def test_restore_caddy_random_tls_state_converts_legacy_env_to_site_timer(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
+        with Sandbox() as server:
+            root = server.root
             temp_dir = root / "restore"
             (temp_dir / "usr/local/etc/xray").mkdir(parents=True)
             (temp_dir / "manifest.json").write_text(
@@ -713,24 +711,19 @@ class BackupSQLiteTests(unittest.TestCase):
                 )
             )
 
-            target_env = root / "target" / "xray" / "caddy-random-tls.env"
-            target_config_dir = root / "target" / "xray" / "caddy-random-tls.d"
-            target_env.parent.mkdir(parents=True)
+            target_env = server.paths.config_dir / "caddy-random-tls.env"
+            target_config_dir = server.paths.caddy_random_tls_dir
+            target_env.parent.mkdir(parents=True, exist_ok=True)
             target_env.write_text("TLS_RANDOM_DOMAIN=api.example.com\nTLS_RANDOM_LOCAL_PORT=10300\n")
-            calls = []
-
-            def fake_systemctl(args, timeout=20):
-                calls.append(args)
-                return backup.subprocess.CompletedProcess(["systemctl", *args], 0, "", "")
-
-            with mock.patch.object(backup, "CADDY_RANDOM_TLS_ENV_PATH", target_env), mock.patch.object(
-                backup, "CADDY_RANDOM_TLS_CONFIG_DIR", target_config_dir
-            ), mock.patch.object(
-                backup.xray_caddy, "write_random_tls_systemd_units"
-            ), mock.patch.object(
-                backup, "run_systemctl", side_effect=fake_systemctl
-            ):
-                messages = backup.restore_caddy_random_tls_state(temp_dir)
+            commands = [
+                ("systemctl", "daemon-reload"),
+                ("systemctl", "disable", "--now", "xray-caddy-random-tls.timer"),
+                ("systemctl", "stop", "xray-caddy-random-tls.service"),
+                ("systemctl", "enable", "--now", "xray-caddy-random-tls@api.example.com.timer"),
+            ]
+            server.processes.script({command: ProcessResult() for command in commands})
+            messages = backup.restore_caddy_random_tls_state(temp_dir)
+            calls = [list(command[1:]) for command in server.processes.calls]
 
             converted_env = target_config_dir / "api.example.com.env"
             self.assertEqual(converted_env.read_text(), "TLS_RANDOM_DOMAIN=api.example.com\nTLS_RANDOM_LOCAL_PORT=10300\n")

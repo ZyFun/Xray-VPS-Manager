@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
+from xray_vps_manager.system import unit_sync
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import crud as client_crud
@@ -1695,9 +1696,7 @@ def cmd_set_timezone(value):
     for warning in warnings:
         print(f"WARN: {warning}")
     try:
-        from xray_vps_manager.activity import raw_logs as activity_raw_logs
-
-        result = activity_raw_logs.sync_raw_log_timer()
+        result = unit_sync.sync_raw_log_timer()
         print(f"Raw log rotation timer: {result['onCalendar']}")
     except Exception as exc:
         print(f"WARN: raw log rotation timer sync failed: {exc}", file=sys.stderr)

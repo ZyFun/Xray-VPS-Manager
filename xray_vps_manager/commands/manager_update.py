@@ -95,7 +95,7 @@ def fail(message: str) -> None:
     print(red(f"FAIL: {message}"))
 
 
-def run(command: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
+def run(command: list[str], timeout: int | None = 60) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         check=False,
@@ -407,11 +407,28 @@ def install_release_source(source_root: Path) -> None:
 
 
 def sync_raw_log_units() -> None:
-    xray_activity = SBIN_DIR / "xray-activity"
-    if not xray_activity.exists():
+    # Имя сохраняется для старых вызывающих мест; новый пакет доставляет все units.
+    command = system_manager_update.installed_units_sync_command(SBIN_DIR, MANAGER_PACKAGE_DIR)
+    canonical = command[1:] == ["units", "sync"]
+    if canonical:
+        try:
+            # Sync ограничивает ожидание lock и каждый systemctl сам. Общий
+            # deadline снаружи мог бы убить его посреди восстановления файлов;
+            # число активных экземпляров таймеров заранее неизвестно.
+            result = run(command, timeout=None)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise ManagerUpdateError(f"Systemd units не удалось синхронизировать: {exc}") from exc
+        if result.returncode:
+            raise ManagerUpdateError(f"Systemd units не удалось синхронизировать: {compact_output(result)}")
+        ok("Systemd units синхронизированы из установленного пакета.")
+        return
+    if not Path(command[0]).exists():
         warn("xray-activity не найден; raw-log rotation units не синхронизированы.")
         return
-    result = run([str(xray_activity), "raw-log-timer-sync"], timeout=30)
+    try:
+        result = run(command, timeout=30)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise ManagerUpdateError(f"raw-log rotation units не удалось синхронизировать: {exc}") from exc
     if result.returncode == 0:
         ok("raw-log rotation systemd units синхронизированы.")
     else:
@@ -570,7 +587,10 @@ def install_tag(tag: str, force: bool, run_xray_test: bool) -> None:
         except Exception:
             warn("Обновление менеджера не прошло; восстанавливаю предыдущую версию.")
             restore_backup(backup)
-            sync_raw_log_units()
+            try:
+                sync_raw_log_units()
+            except ManagerUpdateError as exc:
+                warn(f"Синхронизация units при откате не прошла: {exc}")
             restart_manager_services()
             raise
 
@@ -591,9 +611,16 @@ def rollback(name: str | None, run_xray_test: bool) -> None:
 def rollback_locked(name: str | None, run_xray_test: bool) -> None:
     backup = choose_backup(name)
     restore_backup(backup)
-    sync_raw_log_units()
+    sync_error = None
+    try:
+        sync_raw_log_units()
+    except ManagerUpdateError as exc:
+        sync_error = exc
+        warn(f"Синхронизация units при откате не прошла: {exc}")
     restart_manager_services()
     validate_installed_manager(run_xray_test)
+    if sync_error is not None:
+        raise sync_error
     ok(f"Xray VPS Manager восстановлен из backup: {backup.name}")
 
 

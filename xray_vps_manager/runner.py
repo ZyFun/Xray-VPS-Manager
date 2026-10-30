@@ -19,6 +19,7 @@ COMMAND_MODULES = {
     "telegram": "xray_vps_manager.commands.telegram",
     "test": "xray_vps_manager.commands.test",
     "traffic-sync": "xray_vps_manager.commands.traffic_sync",
+    "units": "xray_vps_manager.commands.units",
     "update": "xray_vps_manager.commands.update",
     "warp": "xray_vps_manager.commands.warp",
 }

@@ -396,53 +396,6 @@ def write_random_tls_config(
     return config
 
 
-def random_tls_service_unit(config_dir: Path = CADDY_RANDOM_TLS_CONFIG_DIR) -> str:
-    env_template = config_dir / "%i.env"
-    return (
-        "[Unit]\n"
-        "Description=Randomize Caddy TLS protocol profile for %i\n"
-        "After=network-online.target caddy.service\n"
-        "Wants=network-online.target\n"
-        f"ConditionPathExists={env_template}\n"
-        "\n"
-        "[Service]\n"
-        "Type=oneshot\n"
-        f"EnvironmentFile={env_template}\n"
-        "ExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --domain %i --quiet\n"
-    )
-
-
-def random_tls_timer_unit(service_name: str = "xray-caddy-random-tls@%i.service") -> str:
-    return (
-        "[Unit]\n"
-        "Description=Randomize Caddy TLS protocol profile for %i every 15-60 minutes\n"
-        "\n"
-        "[Timer]\n"
-        "OnBootSec=15min\n"
-        "OnUnitActiveSec=15min\n"
-        "RandomizedDelaySec=45min\n"
-        "AccuracySec=1min\n"
-        f"Unit={service_name}\n"
-        "\n"
-        "[Install]\n"
-        "WantedBy=timers.target\n"
-    )
-
-
-def write_random_tls_systemd_units(systemd_dir: Path = SYSTEMD_DIR) -> dict[str, Path]:
-    systemd_dir.mkdir(parents=True, exist_ok=True)
-    service_path = systemd_dir / RANDOM_TLS_SERVICE_TEMPLATE
-    timer_path = systemd_dir / RANDOM_TLS_TIMER_TEMPLATE
-    service_path.write_text(random_tls_service_unit())
-    timer_path.write_text(random_tls_timer_unit())
-    os.chmod(service_path, 0o644)
-    os.chmod(timer_path, 0o644)
-    return {
-        "service": service_path,
-        "timer": timer_path,
-    }
-
-
 @contextmanager
 def random_tls_lock(lock_path: Path = RANDOM_TLS_LOCK_PATH):
     lock_path.parent.mkdir(parents=True, exist_ok=True)

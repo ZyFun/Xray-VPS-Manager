@@ -11,6 +11,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.system import units as system_units
 from xray_vps_manager.core.errors import ManagerError, RestoreError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env, write_env as write_server_env
@@ -693,7 +694,7 @@ def restore_caddy_random_tls_state(temp_dir):
         return messages
 
     try:
-        xray_caddy.write_random_tls_systemd_units()
+        system_units.write_random_tls_systemd_units()
     except OSError as exc:
         messages.append(f"Caddy TLS randomizer unit restore failed: {exc}")
         return messages

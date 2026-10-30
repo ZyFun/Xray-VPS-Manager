@@ -1,4 +1,3 @@
-import functools
 import unittest
 import tempfile
 import gzip
@@ -10,6 +9,9 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+from support.sandbox import Sandbox, ProcessResult
+
+from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.activity import backfill
 from xray_vps_manager.activity import raw_logs
 from xray_vps_manager.activity import settings as activity_settings
@@ -21,7 +23,7 @@ class ActivityRawLogsTests(unittest.TestCase):
     def test_raw_log_timer_unit_uses_on_calendar_with_manager_timezone(self) -> None:
         env = {"XRAY_RAW_LOG_ROTATE_TIME": "03:00", "MANAGER_TIMEZONE": "Europe/Moscow"}
 
-        unit = raw_logs.raw_log_timer_unit(env)
+        unit = unit_sync.raw_log_timer_unit(env)
 
         self.assertIn("OnCalendar=*-*-* 03:00:00 Europe/Moscow", unit)
         self.assertIn("Persistent=true", unit)
@@ -30,7 +32,7 @@ class ActivityRawLogsTests(unittest.TestCase):
     def test_raw_log_timer_unit_uses_server_local_time_when_timezone_is_empty(self) -> None:
         env = {"XRAY_RAW_LOG_ROTATE_TIME": "04:30", "MANAGER_TIMEZONE": ""}
 
-        self.assertIn("OnCalendar=*-*-* 04:30:00", raw_logs.raw_log_timer_unit(env))
+        self.assertIn("OnCalendar=*-*-* 04:30:00", unit_sync.raw_log_timer_unit(env))
         self.assertEqual(raw_logs.raw_log_on_calendar(env), "*-*-* 04:30:00")
 
     def test_next_rotation_label_uses_next_calendar_day_after_rotate_time(self) -> None:
@@ -48,7 +50,7 @@ class ActivityRawLogsTests(unittest.TestCase):
             service_path = Path(tmp_dir) / "xray-raw-log-rotate.service"
             timer_path = Path(tmp_dir) / "xray-raw-log-rotate.timer"
 
-            result = raw_logs.sync_raw_log_timer(
+            result = unit_sync.sync_raw_log_timer(
                 run_systemctl=False,
                 service_path=service_path,
                 timer_path=timer_path,
@@ -273,40 +275,27 @@ class RawLogTimerSyncCommandTests(unittest.TestCase):
     """VIREI-84 (T1): `xray-activity raw-log-timer-sync [--no-systemctl]` и итоговый OnCalendar до шага 1 (`units sync`)."""
 
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        self.env_path = self.root / "server.env"
-        self.service_path = self.root / "xray-raw-log-rotate.service"
-        self.timer_path = self.root / "xray-raw-log-rotate.timer"
+        self.sandbox = Sandbox().__enter__()
+        self.addCleanup(self.sandbox.__exit__, None, None, None)
+        self.env_path = self.sandbox.paths.server_env
+        self.service_path = self.sandbox.paths.systemd_dir / "xray-raw-log-rotate.service"
+        self.timer_path = self.sandbox.paths.systemd_dir / "xray-raw-log-rotate.timer"
         self.systemctl_calls = []
         self.enable_code = 0
-        sync = functools.partial(raw_logs.sync_raw_log_timer, service_path=self.service_path, timer_path=self.timer_path)
-        for patcher in (
-            mock.patch.object(raw_logs, "sync_raw_log_timer", sync),
-            mock.patch.object(activity_settings, "SERVER_ENV_PATH", self.env_path),
-            mock.patch.object(activity_command, "LOCK_PATH", self.root / "activity.lock"),
-            mock.patch.object(raw_logs.subprocess, "run", side_effect=self.systemctl),
-            mock.patch("os.geteuid", return_value=0),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        self.sandbox.processes.script({
+            ("systemctl", "daemon-reload"): self.systemctl,
+            ("systemctl", "enable", "--now", "xray-raw-log-rotate.timer"): self.systemctl,
+            ("systemctl", "restart", "xray-raw-log-rotate.timer"): self.systemctl,
+        })
 
     def systemctl(self, command, **kwargs):
         self.systemctl_calls.append(list(command))
         code = self.enable_code if command[1] == "enable" else 0
-        return subprocess.CompletedProcess(command, code, stdout="", stderr="Failed to enable unit" if code else "")
+        return ProcessResult(returncode=code, stderr="Failed to enable unit" if code else "")
 
     def run_command(self, *args):
-        stdout = StringIO()
-        stderr = StringIO()
-        code = 0
-        with mock.patch.object(sys, "argv", ["xray-activity", *args]), redirect_stdout(stdout), redirect_stderr(stderr):
-            try:
-                activity_command.main()
-            except SystemExit as exc:
-                code = exc.code
-        return code, stdout.getvalue(), stderr.getvalue()
+        result = self.sandbox.run_cli("activity", *args)
+        return result.exit_code, result.stdout, result.stderr
 
     def test_no_systemctl_writes_units_and_prints_summary(self) -> None:
         self.env_path.write_text("MANAGER_TIMEZONE=Europe/Moscow\n")
@@ -321,7 +310,7 @@ class RawLogTimerSyncCommandTests(unittest.TestCase):
             "OnCalendar: *-*-* 03:00:00 Europe/Moscow\n"
             "systemctl: no\n",
         )
-        self.assertEqual(self.service_path.read_text(), raw_logs.raw_log_service_unit())
+        self.assertEqual(self.service_path.read_text(), unit_sync.raw_log_service_unit())
         self.assertIn("OnCalendar=*-*-* 03:00:00 Europe/Moscow\n", self.timer_path.read_text())
         self.assertEqual(self.systemctl_calls, [])
 

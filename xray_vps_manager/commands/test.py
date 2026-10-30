@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfoNotFoundError
 
+from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.core import clock
 from xray_vps_manager.core import interpreter as manager_interpreter
 from xray_vps_manager.core import process as core_process
@@ -60,17 +61,12 @@ HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-manager-update",
 ]
 MANAGER_PACKAGE_DIR = Path("/usr/local/lib/xray-vps-manager/xray_vps_manager")
-TRAFFIC_SERVICE_STEPS = [
-    "/usr/local/sbin/xray-traffic-sync --quiet",
-    "/usr/local/sbin/xray-activity sync --quiet",
-    "/usr/local/sbin/xray-telegram notify-geoip --quiet",
-    "/usr/local/sbin/xray-client enforce-limits --quiet",
-    "/usr/local/sbin/xray-client expire-due --quiet",
-    "/usr/local/sbin/xray-telegram notify-expiry --quiet",
-    "/usr/local/sbin/xray-telegram notify-daily-summary --quiet",
-]
-TRAFFIC_SERVICE_COMMANDS = [f"ExecStart=-{step}" for step in TRAFFIC_SERVICE_STEPS]
-TELEGRAM_POLLER_SERVICE_COMMAND = "ExecStart=/usr/local/sbin/xray-telegram run-poller"
+# Ожидания команд берутся из того же канона, который доставляет units sync.
+TRAFFIC_SERVICE_COMMANDS = [line for line in system_units.unit_text("xray-traffic-sync.service").splitlines()
+                            if line.startswith("ExecStart=")]
+TRAFFIC_SERVICE_STEPS = [line.removeprefix("ExecStart=").lstrip("-") for line in TRAFFIC_SERVICE_COMMANDS]
+TELEGRAM_POLLER_SERVICE_COMMAND = next(line for line in system_units.unit_text("xray-telegram-poller.service").splitlines()
+                                       if line.startswith("ExecStart="))
 TLS_EXPIRY_WARNING_DAYS = 14
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -729,6 +725,14 @@ def check_stats_config(diag):
 def check_stats_runtime():
     run_ok([str(XRAY_BIN), "api", "statsquery", f"--server={STATS_SERVER}", "-pattern", "user>>>"], timeout=10)
     return f"Stats API responds on {STATS_SERVER}"
+
+
+def check_unit_drift():
+    changed = unit_sync.sync_units(check=True)
+    if changed:
+        raise RuntimeError("systemd units differ from canonical files: " + ", ".join(changed)
+                           + "; run xray-vps-manager units sync --check")
+    return "systemd unit files match canonical texts"
 
 
 def check_timers():
@@ -1558,6 +1562,7 @@ def run_diagnostics(full_integrity=False):
     diag.check("Xray binary", lambda: check_xray_binary(diag))
     diag.check("Xray assets", check_assets)
     diag.check("Helper scripts", check_helpers)
+    diag.check("Systemd unit drift", check_unit_drift, fatal=False)
     diag.check("Helper interpreter", check_helper_interpreter, fatal=False)
     diag.check("Helper script syntax", check_helper_syntax)
     diag.check("Manager package", check_manager_package)
