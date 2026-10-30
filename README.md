@@ -75,6 +75,7 @@ xray-client link starter
 xray-menu                     # интерактивное меню
 xray-manager-update --check   # проверить обновление менеджера
 xray-manager-update --update  # обновить менеджер до latest release
+xray-vps-manager units sync --check  # проверить дрейф systemd units
 xray-update --check           # проверить обновление Xray Core
 xray-test                     # диагностика сервера
 xray-backup create            # создать резервную копию данных

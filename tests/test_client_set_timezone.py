@@ -9,7 +9,9 @@ import unittest
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from xray_vps_manager.activity import raw_logs as activity_raw_logs
+from support.sandbox import Sandbox, ProcessResult
+from xray_vps_manager.core import clock
+
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
@@ -51,16 +53,21 @@ def expired_client_entry(index: int, name: str, expires_at: str) -> dict:
 
 class SetTimezoneAccessDeadlinesTests(unittest.TestCase):
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        self.db_path = self.root / "manager.db"
-        self.env_path = self.root / "server.env"
+        self.server = Sandbox(db=None).__enter__()
+        self.addCleanup(self.server.__exit__, None, None, None)
+        self.root = self.server.root
+        self.db_path = self.server.paths.manager_db
+        self.env_path = self.server.paths.server_env
         connection = database.open_database(self.db_path)
         try:
             sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
+        self.server.processes.script({
+            ("systemctl", "daemon-reload"): ProcessResult(),
+            ("systemctl", "enable", "--now", "xray-raw-log-rotate.timer"): ProcessResult(),
+            ("systemctl", "restart", "xray-raw-log-rotate.timer"): ProcessResult(),
+        })
 
     def save_clients(self, deadlines: dict) -> None:
         clients = {
@@ -79,12 +86,8 @@ class SetTimezoneAccessDeadlinesTests(unittest.TestCase):
     @contextmanager
     def sandbox(self, timezone_name: str, now: datetime):
         self.env_path.write_text(f"MANAGER_TIMEZONE={timezone_name}\n")
-        with mock.patch.object(database, "MANAGER_DB_PATH", self.db_path), \
-            mock.patch.object(core_paths, "MANAGER_LOCK_PATH", self.root / "manager.lock"), \
-            mock.patch.object(client_command, "SERVER_ENV_PATH", self.env_path), \
-            mock.patch.object(client_settings, "configured_timezone_name", side_effect=self.configured_timezone_name), \
-            mock.patch.object(client_access, "local_now", return_value=now), \
-            mock.patch.object(activity_raw_logs, "sync_raw_log_timer", return_value={"onCalendar": "*-*-* 00:00:00"}):
+        # local_now ещё использует legacy datetime до отдельного переноса часов.
+        with clock.frozen(now), mock.patch.object(client_access, "local_now", return_value=now):
             yield
 
     def set_timezone(self, value: str) -> str:

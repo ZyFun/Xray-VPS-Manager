@@ -7,6 +7,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest import mock
 
+from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.xray import caddy
 
 
@@ -186,7 +187,7 @@ class CaddyConfigTests(unittest.TestCase):
             systemd_dir = root / "systemd"
 
             config = caddy.write_random_tls_config("api.example.com", 10300, env_path)
-            units = caddy.write_random_tls_systemd_units(systemd_dir)
+            units = system_units.write_random_tls_systemd_units(systemd_dir)
 
             self.assertEqual(config.domain, "api.example.com")
             self.assertEqual(config.local_port, 10300)

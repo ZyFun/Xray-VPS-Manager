@@ -7,6 +7,7 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from xray_vps_manager.system import unit_sync
 from xray_vps_manager.activity.constants import (
     DETAIL_MODE_ALL,
     DETAIL_MODE_OFF,
@@ -217,7 +218,7 @@ def set_raw_log_rotate_time(value):
 
 def sync_raw_log_timer(no_systemctl=False):
     try:
-        result = activity_raw_logs.sync_raw_log_timer(run_systemctl=not no_systemctl)
+        result = unit_sync.sync_raw_log_timer(run_systemctl=not no_systemctl)
     except RuntimeError as exc:
         die(f"Raw Xray log rotate timer sync failed: {exc}")
     print(f"Raw Xray log rotate service synced: {result['servicePath']}")
