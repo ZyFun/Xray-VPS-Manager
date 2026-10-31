@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
+from io import BufferedReader
 from pathlib import Path
 import os
 import struct
@@ -80,12 +81,22 @@ def normalize_timezone_name(value: str | None) -> str:
     return raw
 
 
+class _TZifReader(BufferedReader):
+    """Прерывает разбор, если zoneinfo ждёт байт правила после конца файла."""
+
+    def read(self, size: int = -1) -> bytes:
+        data = super().read(size)
+        if size > 0 and not data:
+            raise EOFError('Truncated TZif file')
+        return data
+
+
 @lru_cache(maxsize=8)
 def _timezone_from_file(path: Path, identity: tuple[int, ...]) -> tzinfo:
     """Кэш TZif ограничен; метаданные в ключе обновляют зону при смене файла."""
-    with path.open('rb') as source:
+    with path.open('rb') as source, _TZifReader(source) as reader:
         try:
-            return ZoneInfo.from_file(source)
+            return ZoneInfo.from_file(reader)
         except AssertionError as exc:
             # zoneinfo сообщает так об обрыве перед завершающим правилом TZif.
             raise ValueError('Invalid TZif footer') from exc

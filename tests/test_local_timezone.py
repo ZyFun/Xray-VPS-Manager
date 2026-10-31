@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -123,6 +125,28 @@ class ServerLocalTimezoneTests(unittest.TestCase):
         os.environ['TZ'] = 'UTC'
         time.tzset()
         self.assertEqual(clock.manager_timezone({'MANAGER_TIMEZONE': ''}).tz, ZoneInfo('UTC'))
+
+    def test_unterminated_localtime_footer_finishes_with_tz_fallback(self):
+        self.berlin_file()
+        data = self.localtime.read_bytes()
+        self.assertTrue(data.endswith(b'\n'))
+        self.localtime.write_bytes(data[:-1])
+        # Отдельный процесс ограничивает время теста при зависании парсера TZif.
+        probe = """
+import sys
+from dataclasses import replace
+from pathlib import Path
+from xray_vps_manager.core import clock
+from xray_vps_manager.core.paths import paths, use
+with use(replace(paths(), localtime=Path(sys.argv[1]))):
+    print(clock.manager_timezone({'MANAGER_TIMEZONE': ''}).tz.key)
+"""
+        result = subprocess.run(
+            [sys.executable, '-B', '-c', probe, str(self.localtime)],
+            cwd=Path(__file__).resolve().parents[1], env={**os.environ, 'TZ': 'UTC'},
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        self.assertEqual(result.stdout.strip(), 'UTC')
 
     def test_invalid_or_missing_tz_uses_last_fixed_offset(self):
         for name in ('Mars/Base', '/invalid/zone', ''):
