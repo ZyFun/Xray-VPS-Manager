@@ -5,6 +5,7 @@ from collections import Counter
 import json
 from importlib.util import resolve_name
 from pathlib import Path
+import sys
 import unittest
 
 
@@ -127,6 +128,8 @@ def find_marker_violations(sources):
     Импорты с alias учитываются. Строки кода не исполняются; динамическая
     диспетчеризация не является способом обойти архитектурные правила.
     """
+    # С 3.13 ast.dump по умолчанию опускает пустые списки; baseline хранит их.
+    dump_options = {'show_empty': True} if sys.version_info >= (3, 13) else {}
     violations = Counter()
     for path, code in sources.items():
         module = module_name(path).removeprefix(PACKAGE + '.')
@@ -153,7 +156,7 @@ def find_marker_violations(sources):
                 if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     scope.append(parent.name)
             key = (module, '.'.join(reversed(scope)) or '<module>', marker,
-                   ast.dump(node, include_attributes=False))
+                   ast.dump(node, include_attributes=False, **dump_options))
             violations[key] += 1
 
         references = [node for node in ast.walk(tree)
@@ -247,6 +250,16 @@ class MarkerCheckerTests(unittest.TestCase):
         doubled = self.check('clients.service', 'def action():\n open("x")\n open("x")')
         self.assertEqual(sum((doubled - first).values()), 1)
         self.assertNotEqual(first, self.check('clients.service', 'def other():\n open("x")'))
+
+    def test_identity_keeps_empty_fields_across_python_versions(self):
+        empty_call = "Call(func=Name(id='print', ctx=Load()), args=[], keywords=[])"
+        file_call = "Call(func=Name(id='open', ctx=Load()), args=[Constant(value='x')], keywords=[])"
+        nested_call = "Call(func=Name(id='print', ctx=Load()), args=[" + file_call + "], keywords=[])"
+        self.assertEqual(self.check('clients.service', 'def action():\n print()\n print(open("x"))'), Counter({
+            ('clients.service', 'action', 'print', empty_call): 1,
+            ('clients.service', 'action', 'print', nested_call): 1,
+            ('clients.service', 'action', 'open', file_call): 1,
+        }))
 
     def test_nested_calls_aliases_and_bare_system_exit_are_checked(self):
         self.assertEqual(self.markers('clients.service', 'from builtins import print as emit\nfrom sys import exit as stop\ndef action():\n emit("x"); stop(1)\n raise SystemExit'), Counter({'print': 1, 'sys.exit': 1, 'SystemExit': 1}))
