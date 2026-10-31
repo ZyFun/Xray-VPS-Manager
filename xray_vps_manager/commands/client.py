@@ -1672,20 +1672,18 @@ def cmd_expire_due(quiet=False):
 
 
 def cmd_timezone():
-    name = client_settings.configured_timezone_name()
+    zone = client_settings.manager_timezone_info()
     current = client_access.local_now()
-    print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
+    print(f"MANAGER_TIMEZONE: {zone.label}")
     print(f"Current time: {current.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
 
 def cmd_set_timezone(value):
     name = normalize_timezone(value)
     with client_db_lock("set-timezone"):
-        try:
-            previous_tz = client_settings.manager_timezone()
-        except ValueError:
-            # Невалидная прежняя зона: set-timezone — способ её исправить; дату «до смены» сравнить не с чем.
-            previous_tz = None
+        previous = client_settings.manager_timezone_info()
+        # При исправлении неверной настройки прежняя выбранная зона неизвестна.
+        previous_tz = previous.tz if previous.valid else None
         values = client_settings.server_env_values(SERVER_ENV_PATH)
         values["MANAGER_TIMEZONE"] = name
         save_server_env_values(values)

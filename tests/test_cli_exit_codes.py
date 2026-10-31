@@ -1,7 +1,6 @@
 """VIREI-106: согласованное изменение T1 — фатальные ошибки CLI в stderr с ERROR.
 
-XR-REV-033 по-прежнему закрывает меню при невалидной зоне; изменено только
-представление строкового SystemExit. Числовые коды рабочих ошибок сохранены.
+B1.1: XR-REV-033 больше не закрывает меню при невалидной зоне.
 """
 
 import json
@@ -82,18 +81,16 @@ class DieExitCodeTests(unittest.TestCase):
     def test_menu_root_check_prints_error_to_stderr_and_exits_1(self) -> None:
         self.assertEqual(self.run_command("menu", root=False), (1, "", "ERROR: Run this script as root.\n"))
 
-    def test_menu_header_system_exit_prints_error_and_exits_1(self) -> None:
-        """Текущее поведение, баг XR-REV-033: невалидная зона закрывает меню до первой строки шапки."""
-        env_path = self.root / "server.env"
-        env_path.write_text("MANAGER_TIMEZONE=Mars/Base\n")
-
-        self.assertEqual(
-            self.run_command(
-                "menu",
-                patches=[("xray_vps_manager.commands.menu_status", "SERVER_ENV_PATH", str(env_path))],
-            ),
-            (1, "\n", f"ERROR: {STRICT_MESSAGE}\n"),
-        )
+    def test_menu_header_invalid_timezone_keeps_menu_running(self) -> None:
+        """B1.1 / XR-REV-033: предупреждение в шапке, штатный выход пользователя."""
+        from tests.support.sandbox import Sandbox
+        with Sandbox() as box:
+            box.paths.server_env.write_text("MANAGER_TIMEZONE=Mars/Base\n")
+            box.processes.script({("/usr/local/bin/xray", "version"): box.processes.ok("Xray 26.1.1\n")})
+            result = box.run_cli("menu", stdin="0\n")
+            self.assertEqual(result.exit_code, 0, result.stderr)
+            self.assertIn("MANAGER_TIMEZONE invalid: Mars/Base (server local time)", result.stdout)
+            self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":

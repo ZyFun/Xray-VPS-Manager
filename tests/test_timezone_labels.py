@@ -1,10 +1,8 @@
-"""VIREI-84 (T1): подписи и зоны MANAGER_TIMEZONE в семи местах до шага 1 (единый `core/clock.py`).
+"""B1.1 / VIREI-107: явное изменение характеризационных ожиданий T1.
 
-Семь модулей с `ZoneInfo(` (перепроверка XR-REV-038): шапка меню (`commands/menu_status`), Telegram
-(`commands/telegram.format_event_time`), отчёты активности (`activity/client_reports`), bucket `xray-traffic-sync`,
-`xray-test`, `xray-client timezone` (`clients/settings`) и `core/time.manager_timezone` (raw-log ротация, activity sync,
-меню трафика и клиентов). Каждое место проверяется при валидной, пустой и невалидной зоне; локальная зона сервера
-задаётся через `TZ` (Asia/Tokyo — без перехода на летнее время), чтобы подписи не зависели от машины.
+Семь адаптеров используют общий fallback на локальную зону с предупреждением.
+Валидные настройки и прежние подписи пустой зоны сохранены. Sandbox задаёт
+настоящую ZoneInfo, чтобы результаты не зависели от зоны машины.
 """
 
 from contextlib import redirect_stdout
@@ -14,11 +12,10 @@ import os
 import sys
 import unittest
 from unittest import mock
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from xray_vps_manager.activity import client_reports
 from xray_vps_manager.activity import raw_logs
-from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.commands import menu_status
@@ -34,6 +31,7 @@ VALID = "Europe/Moscow"
 INVALID = "Mars/Base"
 SERVER_TZ = "Asia/Tokyo"
 SERVER_OFFSET = timedelta(hours=9)
+WARNING = "MANAGER_TIMEZONE invalid: Mars/Base (server local time)"
 STRICT_MESSAGE = "MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time."
 
 
@@ -61,7 +59,7 @@ class TimezoneLabelCase(unittest.TestCase):
 
 
 class MenuHeaderTimezoneTests(TimezoneLabelCase):
-    """Шапка `xray-menu`: `menu_status.normalize_timezone` строгий, ошибка — `die()` = SystemExit."""
+    """B1.1: шапка показывает неверную зону и продолжает работу."""
 
     def test_valid_zone_label_is_zone_name(self) -> None:
         self.write_env(VALID)
@@ -75,8 +73,8 @@ class MenuHeaderTimezoneTests(TimezoneLabelCase):
         self.assertEqual(menu_status.security_audit_header_value(), "2026-10-01 18:00 JST")
         self.assertEqual(menu_status.manager_timezone_label(), "server local time (JST)")
 
-    def test_invalid_zone_exits_from_every_header_value(self) -> None:
-        """Текущее поведение, баг XR-REV-033: невалидная зона закрывает меню при отрисовке шапки."""
+    def test_invalid_zone_preserves_every_header_value(self) -> None:
+        """B1.1 / XR-REV-033: неверная зона больше не закрывает шапку меню."""
         self.write_env(INVALID, "SECURITY_AUDIT_LAST_RUN=2026-10-01T09:00:00Z\n")
         values = {
             "Manager Updated": lambda: menu_status.manager_updated_header_value("2026-06-13 11:58 UTC"),
@@ -84,20 +82,15 @@ class MenuHeaderTimezoneTests(TimezoneLabelCase):
             "label": menu_status.manager_timezone_label,
         }
 
-        for name, value in values.items():
-            with self.subTest(name):
-                with self.assertRaises(SystemExit) as caught:
-                    value()
-                self.assertEqual(caught.exception.code, STRICT_MESSAGE)
+        self.assertEqual(values["Manager Updated"](), "2026-06-13 20:58 JST")
+        self.assertEqual(values["Security Audit"](), "2026-10-01 18:00 JST")
+        self.assertEqual(values["label"](), WARNING)
 
     def test_trailing_comment_makes_zone_invalid(self) -> None:
-        """Текущее поведение, баги XR-REV-069 и XR-REV-033: хвостовой комментарий в server.env закрывает меню."""
+        """B1.1 исправляет XR-REV-033; парсер XR-REV-069 остаётся до B1.2."""
         self.write_env(f"{VALID} # основная зона")
-
-        with self.assertRaises(SystemExit) as caught:
-            menu_status.manager_updated_header_value("2026-06-13 11:58 UTC")
-
-        self.assertEqual(caught.exception.code, STRICT_MESSAGE)
+        self.assertEqual(menu_status.manager_updated_header_value("2026-06-13 11:58 UTC"), "2026-06-13 20:58 JST")
+        self.assertEqual(menu_status.manager_timezone_label(), f"MANAGER_TIMEZONE invalid: {VALID} # основная зона (server local time)")
 
 
 class TelegramEventTimeTests(TimezoneLabelCase):
@@ -107,7 +100,7 @@ class TelegramEventTimeTests(TimezoneLabelCase):
         cases = {
             VALID: "2026-06-12 11:00:00 Europe/Moscow",
             "": "2026-06-12 17:00:00 server local time",
-            INVALID: "2026-06-12 08:00:00 UTC (invalid MANAGER_TIMEZONE: Mars/Base)",
+            INVALID: "2026-06-12 17:00:00 MANAGER_TIMEZONE invalid: Mars/Base (server local time)",
         }
 
         for zone, expected in cases.items():
@@ -115,22 +108,22 @@ class TelegramEventTimeTests(TimezoneLabelCase):
                 self.write_env(zone)
                 self.assertEqual(telegram_command.format_event_time("2026-06-12T08:00:00Z"), expected)
 
-    def test_invalid_zone_falls_back_to_utc(self) -> None:
-        """Текущее поведение, баг XR-REV-038: невалидная зона — UTC с пометкой, а не локальное время сервера."""
+    def test_invalid_zone_falls_back_to_local(self) -> None:
+        """B1.1 / XR-REV-038: вместо UTC используется локальная зона с общей пометкой."""
         self.write_env(INVALID)
 
         self.assertEqual(
             telegram_command.display_timezone(),
-            (timezone.utc, "UTC (invalid MANAGER_TIMEZONE: Mars/Base)"),
+            (ZoneInfo(SERVER_TZ), "MANAGER_TIMEZONE invalid: Mars/Base (server local time)"),
         )
 
     def test_traffic_report_day_follows_display_timezone(self) -> None:
-        """Текущее поведение, баг XR-REV-038: при невалидной зоне сутки отчёта бота — по UTC, при пустой — по зоне сервера."""
+        """B1.1 / XR-REV-038: сутки отчёта при неверной зоне следуют локальному календарю."""
         now = datetime(2026, 6, 12, 20, 0, tzinfo=timezone.utc)
         cases = {
             VALID: (date(2026, 6, 12), "Europe/Moscow"),
             "": (date(2026, 6, 13), "server local time"),
-            INVALID: (date(2026, 6, 12), "UTC (invalid MANAGER_TIMEZONE: Mars/Base)"),
+            INVALID: (date(2026, 6, 13), "MANAGER_TIMEZONE invalid: Mars/Base (server local time)"),
         }
 
         for zone, expected in cases.items():
@@ -154,15 +147,15 @@ class ActivityReportTimezoneTests(TimezoneLabelCase):
         self.write_env("")
         tzinfo, label = client_reports.activity_display_timezone()
         self.assertEqual(label, "server local time (JST)")
-        self.assertEqual(tzinfo.utcoffset(None), SERVER_OFFSET)
+        self.assertEqual(datetime(2026, 6, 12, tzinfo=tzinfo).utcoffset(), SERVER_OFFSET)
 
-    def test_invalid_zone_falls_back_to_utc(self) -> None:
-        """Текущее поведение, баг XR-REV-038: невалидная зона — UTC с пометкой, а не локальное время сервера."""
+    def test_invalid_zone_falls_back_to_local(self) -> None:
+        """B1.1 / XR-REV-038: activity использует локальную зону вместо UTC."""
         self.write_env(INVALID)
 
         self.assertEqual(
             client_reports.activity_display_timezone(),
-            (timezone.utc, "UTC (invalid MANAGER_TIMEZONE: Mars/Base)"),
+            (ZoneInfo(SERVER_TZ), "MANAGER_TIMEZONE invalid: Mars/Base (server local time)"),
         )
 
     def test_geoip_risk_details_rows_and_label_follow_display_timezone(self) -> None:
@@ -179,7 +172,7 @@ class ActivityReportTimezoneTests(TimezoneLabelCase):
         cases = {
             VALID: ("2026-06-12 11:05:00", "Europe/Moscow"),
             "": ("2026-06-12 17:05:00", "server local time (JST)"),
-            INVALID: ("2026-06-12 08:05:00", "UTC (invalid MANAGER_TIMEZONE: Mars/Base)"),
+            INVALID: ("2026-06-12 17:05:00", "MANAGER_TIMEZONE invalid: Mars/Base (server local time)"),
         }
 
         for zone, (row_time, label) in cases.items():
@@ -201,7 +194,7 @@ class ActivityReportTimezoneTests(TimezoneLabelCase):
 
 
 class TrafficSyncBucketTimezoneTests(TimezoneLabelCase):
-    """Bucket `xray-traffic-sync`: своя копия `manager_timezone` с записью в лог при невалидной зоне."""
+    """B1.1: bucket `xray-traffic-sync` и журнал используют общую политику."""
 
     def bucket_timezone(self, argv):
         output = StringIO()
@@ -219,18 +212,18 @@ class TrafficSyncBucketTimezoneTests(TimezoneLabelCase):
 
         self.write_env("")
         tzinfo, bucket, output = self.bucket_timezone(["xray-traffic-sync"])
-        self.assertEqual(tzinfo.utcoffset(None), SERVER_OFFSET)
+        self.assertEqual(datetime(2026, 6, 12, tzinfo=tzinfo).utcoffset(), SERVER_OFFSET)
         self.assertEqual(bucket.utcoffset(), SERVER_OFFSET)
         self.assertEqual(output, "")
 
     def test_invalid_zone_falls_back_to_server_local_time_with_log_line(self) -> None:
-        """Текущее поведение, баг XR-REV-038: bucket — по локальному времени сервера, Telegram и отчёты — по UTC."""
+        """B1.1 / XR-REV-038: bucket и отчёты согласованы; журнал содержит общую пометку."""
         self.write_env(INVALID)
 
         tzinfo, bucket, output = self.bucket_timezone(["xray-traffic-sync"])
-        self.assertEqual(tzinfo.utcoffset(None), SERVER_OFFSET)
+        self.assertEqual(datetime(2026, 6, 12, tzinfo=tzinfo).utcoffset(), SERVER_OFFSET)
         self.assertEqual(bucket.utcoffset(), SERVER_OFFSET)
-        self.assertEqual(output, "Invalid MANAGER_TIMEZONE='Mars/Base'. Falling back to server local time.\n" * 2)
+        self.assertEqual(output, (WARNING + "\n") * 2)
 
         _tzinfo, _bucket, quiet_output = self.bucket_timezone(["xray-traffic-sync", "--quiet"])
         self.assertEqual(quiet_output, "")
@@ -256,20 +249,36 @@ class XrayTestTimezoneTests(TimezoneLabelCase):
         output = StringIO()
         with redirect_stdout(output):
             diag.check("Manager timezone", lambda: test_command.check_manager_timezone(diag))
-        self.assertEqual(diag.failures, ["Manager timezone: invalid MANAGER_TIMEZONE: Mars/Base"])
-        self.assertEqual(output.getvalue(), "FAIL: Manager timezone: invalid MANAGER_TIMEZONE: Mars/Base\n")
+        self.assertEqual(diag.failures, ["Manager timezone: MANAGER_TIMEZONE invalid: Mars/Base (server local time)"])
+        self.assertEqual(output.getvalue(), "FAIL: Manager timezone: MANAGER_TIMEZONE invalid: Mars/Base (server local time)\n")
 
-    def test_traffic_checks_timezone_raises_for_invalid_zone(self) -> None:
-        """Текущее поведение, баг XR-REV-038: зона проверок трафика `xray-test` не имеет fallback и падает исключением."""
+    def test_raw_local_alias_still_fails_diagnostics_without_changing_timer(self) -> None:
+        """107-R03: псевдоним допустим в CLI, но сырое значение опасно для OnCalendar."""
+        for alias in ("local", "server", "system", "default", "сервер", "локально", "по умолчанию"):
+            with self.subTest(alias=alias):
+                diag = self.diagnostics(alias)
+                before = self.env_path.read_bytes()
+                output = StringIO()
+                with redirect_stdout(output):
+                    diag.check("Manager timezone", lambda: test_command.check_manager_timezone(diag))
+                message = (f"MANAGER_TIMEZONE alias {alias!r} is written into timer OnCalendar; "
+                           "use xray-client set-timezone server")
+                self.assertEqual(diag.failures, ["Manager timezone: " + message])
+                self.assertEqual(output.getvalue(), "FAIL: Manager timezone: " + message + "\n")
+                self.assertEqual(test_command.manager_timezone(diag), ZoneInfo(SERVER_TZ))
+                self.assertEqual(raw_logs.raw_log_on_calendar(), f"*-*-* 03:00:00 {alias}")
+                self.assertEqual(self.env_path.read_bytes(), before)
+
+    def test_traffic_checks_timezone_uses_local_for_invalid_zone(self) -> None:
+        """B1.1 / XR-REV-038: диагностика трафика использует локальную зону без исключения."""
         self.assertEqual(test_command.manager_timezone(self.diagnostics(VALID)), ZoneInfo(VALID))
-        self.assertEqual(test_command.manager_timezone(self.diagnostics("")).utcoffset(None), SERVER_OFFSET)
+        self.assertEqual(datetime(2026, 6, 12, tzinfo=test_command.manager_timezone(self.diagnostics(""))).utcoffset(), SERVER_OFFSET)
 
-        with self.assertRaises(ZoneInfoNotFoundError):
-            test_command.manager_timezone(self.diagnostics(INVALID))
+        self.assertEqual(test_command.manager_timezone(self.diagnostics(INVALID)), ZoneInfo(SERVER_TZ))
 
 
 class ClientTimezoneTests(TimezoneLabelCase):
-    """`xray-client timezone` и `clients/settings`: строгая зона, ошибка — ValueError."""
+    """B1.1: чтение клиентской зоны использует общий fallback."""
 
     def run_timezone_command(self) -> list:
         output = StringIO()
@@ -295,22 +304,26 @@ class ClientTimezoneTests(TimezoneLabelCase):
         self.assertEqual(client_settings.manager_timezone_label(), VALID)
 
         self.write_env("")
-        self.assertEqual(client_settings.manager_timezone().utcoffset(None), SERVER_OFFSET)
+        self.assertEqual(datetime(2026, 6, 12, tzinfo=client_settings.manager_timezone()).utcoffset(), SERVER_OFFSET)
         self.assertEqual(client_settings.manager_timezone_label(), "server local time (JST)")
 
-    def test_invalid_zone_raises_value_error_without_die(self) -> None:
-        """Текущее поведение, баг XR-REV-038: `xray-client timezone` падает необработанным ValueError (traceback)."""
+    def test_invalid_zone_shows_warning_without_exception(self) -> None:
+        """B1.1 / XR-REV-038: клиентский read-путь показывает пометку без ValueError."""
         self.write_env(INVALID)
 
-        for name, call in {
-            "manager_timezone": client_settings.manager_timezone,
-            "manager_timezone_label": client_settings.manager_timezone_label,
-            "xray-client timezone": self.run_timezone_command,
-        }.items():
-            with self.subTest(name):
-                with self.assertRaises(ValueError) as caught:
-                    call()
-                self.assertEqual(str(caught.exception), STRICT_MESSAGE)
+        self.assertEqual(client_settings.manager_timezone(), ZoneInfo(SERVER_TZ))
+        self.assertEqual(client_settings.manager_timezone_label(), WARNING)
+        self.assertEqual(self.run_timezone_command()[0], f"MANAGER_TIMEZONE: {WARNING}")
+
+    def test_existing_local_aliases_remain_valid_for_client_and_menu(self) -> None:
+        """B1.1 сохраняет локальные псевдонимы прежних строгих адаптеров."""
+        for name in ("server", "local", "default", "system", "сервер", "локально", "по умолчанию"):
+            with self.subTest(name=name):
+                self.write_env(name)
+                self.assertEqual(client_settings.configured_timezone_name(), "")
+                self.assertEqual(menu_status.configured_timezone_name(), "")
+                self.assertEqual(client_settings.manager_timezone_label(), "server local time (JST)")
+                self.assertEqual(menu_status.manager_timezone_label(), "server local time (JST)")
 
     def test_empty_file_value_falls_back_to_process_environment(self) -> None:
         """Пустой MANAGER_TIMEZONE в server.env: `clients/settings` берёт зону из окружения процесса, `core/time` — нет."""
@@ -331,24 +344,24 @@ class CoreTimeTimezoneTests(TimezoneLabelCase):
         self.write_env("")
         tzinfo, label = core_time.manager_timezone(self.env_path)
         self.assertEqual(label, "server local time")
-        self.assertEqual(tzinfo.utcoffset(None), SERVER_OFFSET)
+        self.assertEqual(datetime(2026, 6, 12, tzinfo=tzinfo).utcoffset(), SERVER_OFFSET)
 
-    def test_invalid_zone_silently_falls_back_to_server_local_time(self) -> None:
-        """Текущее поведение, баг XR-REV-038: невалидная зона молча заменяется локальным временем, без пометки."""
+    def test_invalid_zone_labels_server_local_fallback(self) -> None:
+        """B1.1 / XR-REV-038: совместимый tuple содержит предупреждение о неверной зоне."""
         self.write_env(INVALID)
 
         tzinfo, label = core_time.manager_timezone(self.env_path)
 
-        self.assertEqual(label, "server local time")
-        self.assertEqual(tzinfo.utcoffset(None), SERVER_OFFSET)
+        self.assertEqual(label, WARNING)
+        self.assertEqual(datetime(2026, 6, 12, tzinfo=tzinfo).utcoffset(), SERVER_OFFSET)
 
     def test_raw_log_next_rotation_label_and_on_calendar(self) -> None:
-        """Текущее поведение, баг XR-REV-038: при невалидной зоне подпись — «server local time», а OnCalendar — с этой зоной."""
+        """B1.1 / XR-REV-038: подпись ротации предупреждает; прежний OnCalendar сохранён."""
         now = datetime(2026, 6, 12, 4, 0, tzinfo=timezone.utc)
         cases = {
             VALID: ("2026-06-13 03:00:00 Europe/Moscow", "*-*-* 03:00:00 Europe/Moscow"),
             "": ("2026-06-13 03:00:00 server local time", "*-*-* 03:00:00"),
-            INVALID: ("2026-06-13 03:00:00 server local time", "*-*-* 03:00:00 Mars/Base"),
+            INVALID: (f"2026-06-13 03:00:00 {WARNING}", "*-*-* 03:00:00 Mars/Base"),
         }
 
         for zone, (label, on_calendar) in cases.items():
@@ -363,8 +376,8 @@ class FixedOffsetServerTimeTests(TimezoneLabelCase):
 
     server_tz = "Europe/Berlin"
 
-    def test_empty_zone_is_fixed_offset_snapshot(self) -> None:
-        """Текущее поведение, баг XR-REV-065: «server local time» — смещение момента запуска, без перехода на летнее время."""
+    def test_empty_zone_keeps_dst_transitions(self) -> None:
+        """B1.1 / XR-REV-065: локальная зона сохраняет зимние и летние смещения."""
         self.write_env("")
         winter = datetime(2026, 1, 15, 12, 0)
         summer = datetime(2026, 7, 15, 12, 0)
@@ -376,10 +389,12 @@ class FixedOffsetServerTimeTests(TimezoneLabelCase):
 
         for name, tzinfo in zones.items():
             with self.subTest(name):
-                self.assertIsInstance(tzinfo, timezone)
-                self.assertEqual(tzinfo.utcoffset(winter), tzinfo.utcoffset(summer))
-                self.assertIn(tzinfo.utcoffset(winter), (timedelta(hours=1), timedelta(hours=2)))
-                self.assertRegex(tzinfo.tzname(None), r"^CES?T$")
+                self.assertIsInstance(tzinfo, ZoneInfo)
+                self.assertEqual(tzinfo.utcoffset(winter), timedelta(hours=1))
+                self.assertEqual(tzinfo.utcoffset(summer), timedelta(hours=2))
+                self.assertEqual(tzinfo.tzname(winter), "CET")
+                self.assertEqual(tzinfo.tzname(summer), "CEST")
+
 
 
 if __name__ == "__main__":

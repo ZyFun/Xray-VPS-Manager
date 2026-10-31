@@ -20,6 +20,7 @@ from xray_vps_manager.commands import (
     menu_traffic_actions,
     menu_xray_actions,
 )
+from xray_vps_manager.core import clock
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
 from xray_vps_manager import __version__
@@ -53,6 +54,9 @@ def print_menu_header():
     for row in rows:
         print(table_row(row, [label_width, value_width]))
     print(row_border)
+    zone = clock.manager_timezone(menu_status.server_env())
+    if not zone.valid:
+        print(red(f"! {zone.label}"))
     warning = menu_status.security_audit_header_warning()
     if warning:
         print(red(f"! {warning}"))
