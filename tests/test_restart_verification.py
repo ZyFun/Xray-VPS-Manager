@@ -13,7 +13,7 @@ from unittest import mock
 from xray_vps_manager.commands import backup, menu_reality_actions, set_cascade, update, warp
 from xray_vps_manager.core import process, systemd
 from xray_vps_manager.xray import config as xray_config
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 
 def completed(args, code=0, stdout="", stderr=""):

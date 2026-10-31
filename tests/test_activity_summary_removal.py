@@ -15,7 +15,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from test_activity_sync_alert_windows import AlertWindowSyncCase
+from tests.test_activity_sync_alert_windows import AlertWindowSyncCase
 
 from xray_vps_manager.activity import cleanup as activity_cleanup
 from xray_vps_manager.activity import client_reports

@@ -9,6 +9,8 @@ from xray_vps_manager.core.paths import MANAGER_DB_PATH
 from xray_vps_manager.db import database, schema
 from xray_vps_manager.db.storage import sqlite_read_ready
 
+from xray_vps_manager.runner import command_entry
+
 
 COUNT_TABLES = {
     "connections": "reality_connections",
@@ -64,6 +66,7 @@ def usage() -> None:
     )
 
 
+@command_entry('sqlite')
 def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         usage()

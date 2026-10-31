@@ -21,6 +21,8 @@ from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.traffic import history as traffic_history
 from xray_vps_manager.traffic import repository as traffic_repository
 
+from xray_vps_manager.runner import command_entry
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 LOCK_PATH = Path("/usr/local/etc/xray/traffic.lock")
@@ -492,10 +494,12 @@ def sync():
         return sync_locked()
 
 
+def usage():
+    print("Usage: xray-traffic-sync [--quiet]")
+
+
+@command_entry('traffic-sync')
 def main():
-    if os.geteuid() != 0:
-        print("ERROR: Run this script as root.", file=sys.stderr)
-        sys.exit(1)
     sys.exit(sync())
 
 

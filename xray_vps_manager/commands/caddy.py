@@ -9,15 +9,15 @@ import sys
 
 from xray_vps_manager.xray import caddy
 
+from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
+
 
 def die(message: str) -> None:
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def require_root() -> None:
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+    _require_root()
 
 
 def usage() -> None:
@@ -41,6 +41,7 @@ def cmd_random_tls_run(quiet: bool = False, domain: str | None = None) -> None:
         print(f"Backup: {result.backup}")
 
 
+@command_entry('caddy')
 def main() -> None:
     args = list(sys.argv[1:])
     if not args or args[0] in ("-h", "--help", "help"):

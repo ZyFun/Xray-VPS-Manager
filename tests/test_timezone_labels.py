@@ -28,7 +28,7 @@ from xray_vps_manager.commands import traffic_sync
 from xray_vps_manager.core import time as core_time
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.telegram import traffic as telegram_traffic
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 VALID = "Europe/Moscow"
 INVALID = "Mars/Base"

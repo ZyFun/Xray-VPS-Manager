@@ -28,6 +28,8 @@ from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import inbound_listen_endpoints
 
+from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
+
 BACKUP_DIR = Path("/root/xray_backups")
 CONFIG_DIR = Path("/usr/local/etc/xray")
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -65,13 +67,11 @@ CADDY_CONFIG_DIRS = [
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def require_root():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+    _require_root()
 
 
 def run(command, check=True, timeout=None):
@@ -939,8 +939,8 @@ def usage():
 """)
 
 
+@command_entry('backup')
 def main():
-    require_root()
     if len(sys.argv) < 2:
         usage()
         sys.exit(1)

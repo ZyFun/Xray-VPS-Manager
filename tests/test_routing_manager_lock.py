@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-import test_client_manager_lock as client_lock_tests
+from tests import test_client_manager_lock as client_lock_tests
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.commands import client as client_command
@@ -296,8 +296,8 @@ def exec_stop_traffic_sync(argv: list) -> int:
 
 def start_worker(function: str, *args: str) -> subprocess.Popen:
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([str(REPO_ROOT), str(TESTS_DIR)])
-    code = f"import sys, test_routing_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    code = f"import sys; from tests import test_routing_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
     return subprocess.Popen(
         [sys.executable, "-c", code, *args],
         cwd=str(REPO_ROOT),
@@ -311,8 +311,8 @@ def start_worker(function: str, *args: str) -> subprocess.Popen:
 
 def start_client_add_worker(root: Path, name: str) -> subprocess.Popen:
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([str(REPO_ROOT), str(TESTS_DIR)])
-    code = "import sys, test_client_manager_lock as t; sys.exit(t.add_worker(sys.argv[1:]))"
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    code = "import sys; from tests import test_client_manager_lock as t; sys.exit(t.add_worker(sys.argv[1:]))"
     return subprocess.Popen(
         [sys.executable, "-c", code, str(root), name, "fast", client_lock_tests.SLOW_WRITER_WINDOW],
         cwd=str(REPO_ROOT),

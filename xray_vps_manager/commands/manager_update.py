@@ -30,6 +30,8 @@ from xray_vps_manager.core.paths import SERVER_ENV_PATH
 from xray_vps_manager.core.terminal import green, print_table, red, yellow
 from xray_vps_manager.system import manager_update as system_manager_update
 
+from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
+
 REPO_OWNER = "ZyFun"
 REPO_NAME = "Xray-VPS-Manager"
 REPO_SLUG = f"{REPO_OWNER}/{REPO_NAME}"
@@ -112,8 +114,7 @@ def compact_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def require_root() -> None:
-    if os.geteuid() != 0:
-        raise ManagerUpdateError("Запусти команду от root.")
+    _require_root(error_type=ManagerUpdateError)
 
 
 def current_manager_version() -> str:
@@ -663,6 +664,7 @@ def selected_actions(args: argparse.Namespace) -> int:
     )
 
 
+@command_entry('manager-update')
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -690,8 +692,7 @@ def main() -> None:
                 update_to_tag(args.update, force=args.force, run_xray_test=not args.no_test)
             return
     except ManagerUpdateError as exc:
-        fail(str(exc))
-        sys.exit(1)
+        _fail(str(exc))
 
 
 if __name__ == "__main__":

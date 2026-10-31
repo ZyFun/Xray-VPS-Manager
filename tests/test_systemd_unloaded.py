@@ -8,8 +8,8 @@ import unittest
 from unittest import mock
 
 from xray_vps_manager.core import process, systemd
-from test_restart_verification import FakeClock, FakeSocket, completed, config_with_port, show_output
-from support.sandbox import Sandbox
+from tests.test_restart_verification import FakeClock, FakeSocket, completed, config_with_port, show_output
+from tests.support.sandbox import Sandbox
 from xray_vps_manager.commands import set_cascade
 
 

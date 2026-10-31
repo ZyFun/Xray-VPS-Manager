@@ -9,7 +9,7 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from support.sandbox import Sandbox, ProcessResult
+from tests.support.sandbox import Sandbox, ProcessResult
 
 from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.activity import backfill
@@ -344,10 +344,11 @@ class RawLogTimerSyncCommandTests(unittest.TestCase):
         self.assertEqual([call[1] for call in self.systemctl_calls], ["daemon-reload", "enable"])
 
     def test_unknown_option_prints_usage_and_writes_nothing(self) -> None:
-        code, stdout, _stderr = self.run_command("raw-log-timer-sync", "--bogus")
+        code, stdout, stderr = self.run_command("raw-log-timer-sync", "--bogus")
 
-        self.assertEqual(code, 1)
-        self.assertTrue(stdout.startswith("Usage:\n"), stdout)
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("Usage:", stderr)
         self.assertFalse(self.timer_path.exists())
         self.assertEqual(self.systemctl_calls, [])
 

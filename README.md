@@ -58,6 +58,7 @@ xray-client link starter
 - [Установка](docs/installation.md)
 - [Состав проекта](docs/project-structure.md)
 - [Меню](docs/menu.md)
+- [CLI: справка, аргументы и ошибки](docs/cli.md)
 - [Подключения](docs/connections.md)
 - [Клиенты](docs/clients.md)
 - [Журнал активности](docs/activity.md)

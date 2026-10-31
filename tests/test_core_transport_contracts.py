@@ -4,7 +4,7 @@ import subprocess
 import unittest
 from urllib.error import HTTPError, URLError
 
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 from xray_vps_manager.commands import manager_update, update, warp
 from xray_vps_manager.core import process
 
