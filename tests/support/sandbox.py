@@ -31,7 +31,7 @@ from xray_vps_manager.core import paths as path_module
 from xray_vps_manager.core import clock, process, http
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.db import database
-from xray_vps_manager.runner import command_main
+from xray_vps_manager.runner import run_command
 
 TESTS = Path(__file__).resolve().parents[1]
 # Явный реестр копий, включая производные пути и коллекции. Тест сверяет
@@ -566,7 +566,7 @@ class Sandbox:
         code = 0
         with mock.patch.object(sys, 'argv', ['xray-'+command, *argv]), mock.patch.object(sys, 'stdin', io.StringIO(stdin)), redirect_stdout(stdout), redirect_stderr(stderr):
             try:
-                returned = command_main(command)()
+                returned = run_command(command)
                 if isinstance(returned, int):
                     code = returned
             except SystemExit as exc:

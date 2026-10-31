@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import test_telegram_manager_lock as lock_tests
+from tests import test_telegram_manager_lock as lock_tests
 from xray_vps_manager.commands import telegram as telegram_command
 from xray_vps_manager.telegram import settings as telegram_settings
 from xray_vps_manager.telegram import setup as telegram_setup

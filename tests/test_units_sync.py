@@ -7,7 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from support.sandbox import Sandbox, ProcessResult
+from tests.support.sandbox import Sandbox, ProcessResult
 from xray_vps_manager.commands import manager_update
 from xray_vps_manager.commands import test as diagnostics
 from xray_vps_manager.core import process
@@ -141,7 +141,7 @@ class UnitsSyncTests(unittest.TestCase):
 
     def test_unknown_argument_does_not_write(self):
         result = self.server.run_cli("units", "sync", "--bogus")
-        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(result.exit_code, 2)
         self.assertFalse(self.directory.exists())
         self.assertEqual(self.server.processes.calls, [])
 

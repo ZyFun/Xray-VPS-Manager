@@ -23,6 +23,8 @@ from xray_vps_manager.telegram import subscriptions as telegram_subscriptions
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
 
+from xray_vps_manager.runner import command_entry, error_exit, fail as _fail, require_root as _require_root
+
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 MANAGER_DB_PATH = Path("/usr/local/etc/xray/manager.db")
 XRAY_CLIENT = Path("/usr/local/sbin/xray-client")
@@ -34,8 +36,7 @@ ROUTE_DRIFT_LOCK_TIMEOUT = 5
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def run_capture(command, timeout=20, input_text=None):
@@ -51,8 +52,7 @@ def run_capture(command, timeout=20, input_text=None):
 
 
 def require_root():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+    _require_root()
 
 
 def utc_now():
@@ -469,8 +469,8 @@ def usage():
     )
 
 
+@command_entry('telegram')
 def main():
-    require_root()
     args = sys.argv[1:]
     command = args[0] if args else "status"
     try:
@@ -577,7 +577,7 @@ def main():
             usage()
             sys.exit(1)
     except ManagerError as exc:
-        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
+        error_exit(exc)
     except Exception as exc:
         die(str(exc))
 

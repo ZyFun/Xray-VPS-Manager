@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from support.sandbox import Sandbox, ProcessResult
+from tests.support.sandbox import Sandbox, ProcessResult
 from xray_vps_manager.core import clock
 
 from xray_vps_manager.clients import access as client_access

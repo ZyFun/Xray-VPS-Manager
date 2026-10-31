@@ -11,8 +11,8 @@ import unittest
 from unittest import mock
 import urllib.request
 
-from support.restore_sandbox import RestoreSandbox
-import test_restart_verification as restart_tests
+from tests.support.restore_sandbox import RestoreSandbox
+from tests import test_restart_verification as restart_tests
 from xray_vps_manager.core import clock, http, paths, process
 from xray_vps_manager.core.server_env import read_server_env
 

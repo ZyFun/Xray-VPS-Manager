@@ -273,56 +273,44 @@ class HostsLinesTests(unittest.TestCase):
 
 
 class MainArgsTests(unittest.TestCase):
-    def run_main(self, *args):
-        output = StringIO()
-        with mock.patch.object(warp, "require_root"), \
-                mock.patch.object(warp, "cmd_create") as create, \
-                mock.patch.object(warp, "cmd_enable") as enable, \
-                mock.patch.object(sys, "argv", ["xray-warp", *args]), \
-                redirect_stdout(output):
-            code = 0
-            try:
-                warp.main()
-            except SystemExit as exc:
-                code = exc.code
-        return code, create, enable, output.getvalue()
+    def test_create_and_enable_options_are_accepted_before_root(self) -> None:
+        from tests.support.sandbox import Sandbox
+        import os
+        for command, options in (
+            ('create', ()), ('create', ('--force',)), ('create', ('--pin-hosts',)),
+            ('create', ('--no-pin-hosts', '--force')),
+            ('enable', ()), ('enable', ('--pin-hosts',)), ('enable', ('--no-pin-hosts',)),
+        ):
+            with self.subTest(command=command, options=options), Sandbox() as box:
+                with mock.patch.object(os, 'geteuid', return_value=1000):
+                    result = box.run_cli('warp', command, *options)
+                self.assertEqual((result.exit_code, result.stdout, result.stderr),
+                                 (1, '', 'ERROR: Run this script as root.\n'))
+                self.assertFalse(box.processes.calls or box.http.calls)
 
-    def test_create_flags(self) -> None:
-        cases = [
-            ((), {"force": False, "pin_hosts": None}),
-            (("--force",), {"force": True, "pin_hosts": None}),
-            (("--pin-hosts",), {"force": False, "pin_hosts": True}),
-            (("--no-pin-hosts", "--force"), {"force": True, "pin_hosts": False}),
-        ]
-        for args, expected in cases:
+    def test_pin_choice_preserves_three_states(self) -> None:
+        for args, expected in (((), None), (('--pin-hosts',), True), (('--no-pin-hosts',), False)):
             with self.subTest(args=args):
-                code, create, _, _ = self.run_main("create", *args)
-                self.assertEqual(code, 0)
-                create.assert_called_once_with(**expected)
+                self.assertIs(warp.pin_hosts_choice(warp.parse_flags(args, warp.PIN_HOSTS_FLAGS)), expected)
 
-    def test_enable_flags(self) -> None:
-        for args, expected in (((), None), (("--pin-hosts",), True), (("--no-pin-hosts",), False)):
-            with self.subTest(args=args):
-                code, _, enable, _ = self.run_main("enable", *args)
-                self.assertEqual(code, 0)
-                enable.assert_called_once_with(pin_hosts=expected)
-
-    def test_bad_flags_print_usage_and_exit_1(self) -> None:
+    def test_bad_flags_print_usage_to_stderr_and_exit_2(self) -> None:
+        from tests.support.sandbox import Sandbox
         cases = [
-            ("create", "--unknown"),
-            ("create", "--pin-hosts", "--no-pin-hosts"),
-            ("create", "--force", "--force"),
-            ("enable", "--force"),
-            ("enable", "--unknown"),
-            ("remove", "--pin-hosts"),
+            ('create', '--unknown'),
+            ('create', '--pin-hosts', '--no-pin-hosts'),
+            ('create', '--force', '--force'),
+            ('enable', '--force'),
+            ('enable', '--unknown'),
+            ('remove', '--pin-hosts'),
         ]
         for args in cases:
-            with self.subTest(args=args):
-                code, create, enable, output = self.run_main(*args)
-                self.assertEqual(code, 1)
-                create.assert_not_called()
-                enable.assert_not_called()
-                self.assertIn("xray-warp create [--force] [--pin-hosts|--no-pin-hosts]", output)
+            with self.subTest(args=args), Sandbox() as box:
+                before = box.config()
+                result = box.run_cli('warp', *args)
+                self.assertEqual((result.exit_code, result.stdout), (2, ''))
+                self.assertIn('Usage:', result.stderr)
+                self.assertFalse(box.processes.calls or box.http.calls)
+                self.assertEqual(box.config(), before)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,8 @@ from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import caddy as caddy_config
 
+from xray_vps_manager.runner import command_entry, require_root as _require_root
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 MANAGER_DB_PATH = Path("/usr/local/etc/xray/manager.db")
@@ -225,8 +227,7 @@ class Diagnostics:
 
 
 def check_root():
-    if os.geteuid() != 0:
-        raise RuntimeError("run xray-test as root")
+    _require_root(error_type=RuntimeError, message="run xray-test as root")
     return "root privileges"
 
 
@@ -1617,6 +1618,7 @@ Use --all when you need a deep SQLite physical integrity check plus Trojan/TLS/C
 """)
 
 
+@command_entry('test')
 def main():
     args = sys.argv[1:]
     if len(args) > 1 or any(arg not in ("--all", "all") for arg in args):

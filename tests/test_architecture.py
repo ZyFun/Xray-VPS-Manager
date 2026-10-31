@@ -1,8 +1,11 @@
-"""R1.0 / VIREI-101: статические импорты между областями, без проверок ввода-вывода R1.5."""
+"""Архитектурные ограничения: импорты R1.0 и отдельный baseline маркеров R1.5."""
 
 import ast
+from collections import Counter
+import json
 from importlib.util import resolve_name
 from pathlib import Path
+import sys
 import unittest
 
 
@@ -96,6 +99,170 @@ def find_import_violations(sources: dict[Path, str]) -> set[tuple[str, str]]:
                 if to_the_right or forbidden_db or forbidden_root:
                     violations.add((module.removeprefix(PACKAGE + "."), target.removeprefix(PACKAGE + ".")))
     return violations
+
+
+
+# Согласованный R1.5: исключения относятся к роли, а не ко всему пакету области.
+INTERFACE_MODULES = frozenset({'cli', 'runner', 'telegram.admin', 'telegram.poller'})
+INFRASTRUCTURE_MODULES = frozenset({'xray.apply', 'xray.crypto', 'xray.caddy',
+    'telegram.api', 'system.units', 'traffic.stats', 'activity.raw_logs'})
+SAFE_SUBPROCESS_NAMES = frozenset({'subprocess.CalledProcessError',
+    'subprocess.TimeoutExpired', 'subprocess.CompletedProcess'})
+MARKER_BASELINE = Path(__file__).parent / 'fixtures' / 'architecture-markers.json'
+
+
+def is_interface(module):
+    return (module in INTERFACE_MODULES or module in {'commands', 'telegram.bot'}
+            or module.startswith(('commands.', 'telegram.bot.')))
+
+
+def is_infrastructure(module):
+    return (module in INFRASTRUCTURE_MODULES or module in {'core', 'db'}
+            or module.startswith(('core.', 'db.'))
+            or module.startswith('caddy.') and module != 'caddy.model')
+
+
+def find_marker_violations(sources):
+    """Точные AST-вхождения; номера строк не входят в идентичность исключения.
+
+    Импорты с alias учитываются. Строки кода не исполняются; динамическая
+    диспетчеризация не является способом обойти архитектурные правила.
+    """
+    # С 3.13 ast.dump по умолчанию опускает пустые списки; baseline хранит их.
+    dump_options = {'show_empty': True} if sys.version_info >= (3, 13) else {}
+    violations = Counter()
+    for path, code in sources.items():
+        module = module_name(path).removeprefix(PACKAGE + '.')
+        tree = ast.parse(code, filename=str(path))
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        aliases = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                aliases.update((a.asname or a.name.split('.')[0], a.name) for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                aliases.update((a.asname or a.name, node.module + '.' + a.name) for a in node.names)
+
+        def resolved(node):
+            if isinstance(node, ast.Name):
+                return aliases.get(node.id, node.id)
+            if isinstance(node, ast.Attribute):
+                return resolved(node.value) + '.' + node.attr
+            return ''
+
+        def add(node, marker):
+            scope, parent = [], node
+            while parent in parents:
+                parent = parents[parent]
+                if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    scope.append(parent.name)
+            key = (module, '.'.join(reversed(scope)) or '<module>', marker,
+                   ast.dump(node, include_attributes=False, **dump_options))
+            violations[key] += 1
+
+        references = [node for node in ast.walk(tree)
+                      if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load)
+                      and not (isinstance(parents.get(node), ast.Attribute) and parents[node].value is node)]
+        reference_set = set(references)
+        subprocess_refs = [resolved(node) for node in references if resolved(node).split('.')[0] == 'subprocess']
+        safe_subprocess_import = bool(subprocess_refs) and all(name in SAFE_SUBPROCESS_NAMES for name in subprocess_refs)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                called = resolved(node.func)
+                if not is_interface(module):
+                    for marker in ('print', 'input', 'sys.exit', 'SystemExit'):
+                        if module == 'core.terminal' and marker == 'print':
+                            continue
+                        if called in (marker, 'builtins.' + marker):
+                            add(node, marker)
+                if not is_infrastructure(module) and (called in {'open', 'builtins.open', 'io.open'}
+                        or isinstance(node.func, ast.Attribute) and node.func.attr == 'open'):
+                    add(node, 'open')
+            elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Name):
+                if resolved(node.exc) in {'SystemExit', 'builtins.SystemExit'} and not is_interface(module):
+                    add(node, 'SystemExit')
+            if not is_infrastructure(module):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or '']
+                    for marker in {name.split('.')[0] for name in names} & {'subprocess', 'sqlite3'}:
+                        if (marker == 'subprocess' and safe_subprocess_import
+                                and (isinstance(node, ast.Import) or all(
+                                    'subprocess.' + a.name in SAFE_SUBPROCESS_NAMES for a in node.names))):
+                            continue
+                        add(node, marker)
+                elif node in reference_set:
+                    name = resolved(node)
+                    marker = name.split('.')[0]
+                    if marker in {'subprocess', 'sqlite3'} and name not in SAFE_SUBPROCESS_NAMES:
+                        add(node, marker)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and '/usr/local/' in node.value and module != 'core.paths':
+                parent = parents.get(node)
+                owner = parents.get(parent)
+                # Только настоящий docstring; прочие строковые выражения остаются в проверке.
+                if (isinstance(parent, ast.Expr) and isinstance(owner, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                        and owner.body and owner.body[0] is parent):
+                    continue
+                add(node, '/usr/local/')
+    return violations
+
+
+class MarkerCheckerTests(unittest.TestCase):
+    def check(self, module, code):
+        return find_marker_violations({Path(module.replace('.', '/') + '.py'): code})
+
+    def markers(self, module, code):
+        return Counter({marker: sum(n for key, n in self.check(module, code).items() if key[2] == marker)
+                        for marker in {key[2] for key in self.check(module, code)}})
+
+    def test_interface_and_terminal_exceptions_do_not_hide_file_io(self):
+        code = 'print("x"); input(); sys.exit(1); raise SystemExit(2)'
+        for module in ('commands.example', 'runner', 'cli', 'telegram.admin', 'telegram.poller', 'telegram.bot.handler'):
+            self.assertFalse(self.check(module, code), module)
+        self.assertEqual(self.markers('core.terminal', code), Counter({'input': 1, 'sys.exit': 1, 'SystemExit': 1}))
+        self.assertEqual(self.markers('clients.service', code), Counter({'print': 1, 'input': 1, 'sys.exit': 1, 'SystemExit': 1}))
+        self.assertEqual(self.markers('commands.example', 'open("x"); path.open("r")'), Counter({'open': 2}))
+
+    def test_infrastructure_roles_are_explicit(self):
+        code = 'import subprocess, sqlite3\nsubprocess.run([]); sqlite3.connect("x"); open("x")'
+        for module in ('core.process', 'db.database', 'xray.apply', 'xray.crypto', 'xray.caddy', 'caddy.service', 'telegram.api', 'system.units', 'traffic.stats', 'activity.raw_logs'):
+            self.assertFalse(self.check(module, code), module)
+        for module in ('clients.service', 'xray.config', 'caddy.model', 'system.unit_sync', 'commands.client'):
+            self.assertEqual(self.markers(module, code), Counter({'subprocess': 2, 'sqlite3': 2, 'open': 1}), module)
+
+    def test_exception_and_result_references_are_allowed_but_operations_are_not(self):
+        code = 'import subprocess as sp\ndef run(result: sp.CompletedProcess):\n try: return result\n except (sp.CalledProcessError, sp.TimeoutExpired): pass'
+        self.assertFalse(self.check('system.unit_sync', code))
+        self.assertFalse(self.check('commands.example', 'from subprocess import CompletedProcess as Result\nresult = Result([], 0)'))
+        found = self.check('commands.example', code + '\nsp.run([])')
+        self.assertEqual(sum(found.values()), 2)
+        self.assertEqual(sum(self.check('commands.example', 'from subprocess import run as execute\nexecute([])').values()), 2)
+        self.assertEqual(sum(self.check('commands.example', 'from subprocess import run, CompletedProcess\nresult: CompletedProcess').values()), 1)
+
+    def test_paths_ignore_only_canonical_module_and_docstrings(self):
+        code = '"""Описание /usr/local/bin/tool"""\np = "/usr/local/bin/tool"'
+        self.assertFalse(self.check('core.paths', code))
+        self.assertEqual(self.markers('core.fs', code), Counter({'/usr/local/': 1}))
+        self.assertEqual(self.markers('system.units', 'units = {"service": "ExecStart=/usr/local/bin/tool"}'), Counter({'/usr/local/': 1}))
+
+    def test_identity_is_stable_but_new_occurrences_are_detected(self):
+        first = self.check('clients.service', 'def action():\n open("x")')
+        moved = self.check('clients.service', '\n# Комментарий\ndef action():\n open("x")')
+        self.assertEqual(first, moved)
+        doubled = self.check('clients.service', 'def action():\n open("x")\n open("x")')
+        self.assertEqual(sum((doubled - first).values()), 1)
+        self.assertNotEqual(first, self.check('clients.service', 'def other():\n open("x")'))
+
+    def test_identity_keeps_empty_fields_across_python_versions(self):
+        empty_call = "Call(func=Name(id='print', ctx=Load()), args=[], keywords=[])"
+        file_call = "Call(func=Name(id='open', ctx=Load()), args=[Constant(value='x')], keywords=[])"
+        nested_call = "Call(func=Name(id='print', ctx=Load()), args=[" + file_call + "], keywords=[])"
+        self.assertEqual(self.check('clients.service', 'def action():\n print()\n print(open("x"))'), Counter({
+            ('clients.service', 'action', 'print', empty_call): 1,
+            ('clients.service', 'action', 'print', nested_call): 1,
+            ('clients.service', 'action', 'open', file_call): 1,
+        }))
+
+    def test_nested_calls_aliases_and_bare_system_exit_are_checked(self):
+        self.assertEqual(self.markers('clients.service', 'from builtins import print as emit\nfrom sys import exit as stop\ndef action():\n emit("x"); stop(1)\n raise SystemExit'), Counter({'print': 1, 'sys.exit': 1, 'SystemExit': 1}))
 
 
 class ImportCheckerTests(unittest.TestCase):
@@ -289,6 +456,15 @@ from ...clients import credentials, models
 
 
 class PackageArchitectureTests(unittest.TestCase):
+    def test_package_matches_separate_marker_baseline(self):
+        sources = {path.relative_to(PACKAGE_ROOT): path.read_text(encoding='utf-8')
+                   for path in sorted(PACKAGE_ROOT.rglob('*.py'))}
+        expected = Counter({(row['module'], row['scope'], row['category'], row['ast']): row['count']
+                            for row in json.loads(MARKER_BASELINE.read_text())})
+        actual = find_marker_violations(sources)
+        new, obsolete = actual - expected, expected - actual
+        self.assertFalse(new or obsolete, 'Новые маркеры: ' + repr(new) + '\nУдалите устранённые: ' + repr(obsolete))
+
     def test_current_package_matches_the_explicit_allow_list(self):
         sources = {path.relative_to(PACKAGE_ROOT): path.read_text(encoding="utf-8")
                    for path in sorted(PACKAGE_ROOT.rglob("*.py"))}

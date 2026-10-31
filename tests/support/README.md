@@ -5,7 +5,7 @@
 модульные зависимости и возвращает их при выходе, в том числе после ошибки.
 
 ```python
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 with Sandbox() as box:
     result = box.run_cli("sqlite", "status")
@@ -115,10 +115,12 @@ Trojan-пароли воспроизводимы, UUID/shortId/ключи зад
 
 `assert_golden("область/сценарий", {"stdout.txt": result.stdout, ...})`
 сравнивает файлы в `tests/golden`, заменяя временный корень на `<ROOT>`.
-По умолчанию отсутствующий файл или отличие — ошибка. Для создания/обновления:
+По умолчанию отсутствующий файл или отличие — ошибка. Тесты запускаются из корня
+репозитория с `-t .`: пакет `tests` импортируется без добавления его каталога в
+`PYTHONPATH`. Для создания/обновления:
 
 ```sh
-UPDATE_GOLDEN=1 python3.12 -m unittest discover -s tests -p 'test_sandbox.py'
+UPDATE_GOLDEN=1 python3.12 -m unittest discover -s tests -t . -p 'test_sandbox.py'
 ```
 
 После обновления проверьте diff всех golden-файлов и повторите тест без флага.
@@ -202,6 +204,6 @@ manager-update. JSON-клиент сохраняет исключения urllib
 Эти контракты нельзя взаимозаменять без отдельного изменения поведения.
 Ошибки stop/start нового `writers_paused` являются `ExternalCommandError`
 с командой, кодом завершения и выводом. Legacy-helper'ы сохраняют `RuntimeError`.
-`support.restore_sandbox.RestoreSandbox` подключает общий Sandbox и канонический
+`tests.support.restore_sandbox.RestoreSandbox` подключает общий Sandbox и канонический
 фейк процессов, а старые подмены шагов restore держит внутри переходного фасада
 до переноса самого сценария backup. Ожидания XR-REV-012 и ExecStop сохранены.

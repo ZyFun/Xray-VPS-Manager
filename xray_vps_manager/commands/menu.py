@@ -22,13 +22,15 @@ from xray_vps_manager.commands import (
 )
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
-MENU_VERSION = "v2.2.1"
+from xray_vps_manager import __version__
+from xray_vps_manager.runner import command_entry, fail as _fail
+
+MENU_VERSION = f"v{__version__}"
 MENU_UPDATED = "2026-10-27 20:40 UTC"
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def print_menu_header():
@@ -1286,10 +1288,12 @@ def main_menu_handlers():
     }
 
 
-def menu():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+def usage():
+    print("Usage: xray-menu")
 
+
+@command_entry('menu')
+def menu():
     handlers = main_menu_handlers()
     try:
         while True:

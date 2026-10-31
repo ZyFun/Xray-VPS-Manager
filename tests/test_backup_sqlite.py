@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from support.sandbox import Sandbox, ProcessResult
+from tests.support.sandbox import Sandbox, ProcessResult
 from xray_vps_manager.system import units as system_units
 from xray_vps_manager.commands import backup
 from xray_vps_manager.db import database

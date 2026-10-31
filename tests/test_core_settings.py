@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from xray_vps_manager.core import settings, paths, server_env
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 
 class SettingsTests(unittest.TestCase):

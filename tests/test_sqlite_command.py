@@ -54,13 +54,14 @@ class SQLiteCommandTests(unittest.TestCase):
             self.assertIn("clients: 0", output)
 
     def test_main_rejects_removed_cutover_command(self) -> None:
-        stdout = StringIO()
-        with mock.patch.object(sqlite_command.sys, "argv", ["sqlite", "validate-cutover"]), redirect_stdout(stdout):
-            with self.assertRaises(SystemExit) as caught:
-                sqlite_command.main()
-
-        self.assertEqual(caught.exception.code, 1)
-        self.assertIn("xray-vps-manager sqlite status", stdout.getvalue())
+        from tests.support.sandbox import Sandbox
+        with Sandbox() as box:
+            before = box.paths.manager_db.read_bytes()
+            result = box.run_cli('sqlite', 'validate-cutover')
+            self.assertEqual(result.exit_code, 2)
+            self.assertEqual(result.stdout, '')
+            self.assertIn('Usage: xray-vps-manager sqlite', result.stderr)
+            self.assertEqual(box.paths.manager_db.read_bytes(), before)
 
 
 if __name__ == "__main__":

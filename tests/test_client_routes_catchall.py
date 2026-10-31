@@ -16,8 +16,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-import test_client_manager_lock as client_lock_tests
-import test_routing_manager_lock as routing_lock_tests
+from tests import test_client_manager_lock as client_lock_tests
+from tests import test_routing_manager_lock as routing_lock_tests
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.commands import set_cascade

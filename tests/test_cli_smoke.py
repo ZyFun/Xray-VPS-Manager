@@ -54,8 +54,9 @@ class CliSmokeTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 cli.main()
 
-        self.assertEqual(caught.exception.code, 1)
-        self.assertIn("Unknown command: missing", stderr.getvalue())
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertTrue(stderr.getvalue().startswith("ERROR: Unknown command: missing\nUsage:"))
 
     def test_alias_is_translated_before_dispatch(self) -> None:
         calls = []

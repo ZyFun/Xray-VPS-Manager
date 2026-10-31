@@ -34,6 +34,8 @@ from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
 
+from xray_vps_manager.runner import command_entry, error_exit, fail as _fail
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 STATS_SERVER = "127.0.0.1:10085"
@@ -62,8 +64,7 @@ RESET = "\033[0m"
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 @contextmanager
@@ -77,7 +78,7 @@ def client_db_lock(purpose, timeout=None, skip_on_timeout=False):
             # Timer step: skip this run so the rest of the minute chain continues; the next run retries.
             print(f"WARN: {exc.message}. Шаг {purpose} пропущен, следующий запуск таймера повторит его.", file=sys.stderr)
             sys.exit(0)
-        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
+        error_exit(exc)
 
 
 def run(command):
@@ -2230,9 +2231,8 @@ def cmd_key(name):
     print(access_key_for_client_id(client_id))
 
 
+@command_entry('client')
 def main():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
     if len(sys.argv) < 2:
         usage()
         sys.exit(1)

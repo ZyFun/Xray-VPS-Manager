@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from xray_vps_manager.core import clock
 from xray_vps_manager.core import time as legacy_time
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 
 class ClockTests(unittest.TestCase):

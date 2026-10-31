@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from support.sandbox import Sandbox, ProcessResult
+from tests.support.sandbox import Sandbox, ProcessResult
 
 import xray_vps_manager
 from xray_vps_manager import runner
@@ -215,9 +215,8 @@ class ManagerUpdateUnitsRollbackTests(unittest.TestCase):
         self.assertEqual((self.package / "runner.py").read_text(), "old")
         self.assertIn("WARN:", result.stdout)
         self.assertIn("rollback sync failed", result.stdout)
-        self.assertIn("FAIL: xray-test", result.stdout)
-        self.assertIn("original xray-test failure", result.stdout)
-        self.assertEqual(result.stderr, "")
+        self.assertIn("ERROR: xray-test", result.stderr)
+        self.assertIn("original xray-test failure", result.stderr)
 
     def test_failed_initial_and_rollback_sync_preserve_initial_reason_and_restart_old_package(self):
         self.server.processes.script({self.sync: [
@@ -227,7 +226,7 @@ class ManagerUpdateUnitsRollbackTests(unittest.TestCase):
         result = self.run_update()
         self.assertEqual(result.exit_code, 1)
         self.assertEqual(self.restarted_versions, ["old"])
-        failure = result.stdout[result.stdout.rfind("FAIL:"):]
+        failure = result.stderr
         self.assertIn("initial sync failed", failure)
         self.assertNotIn("rollback sync failed", failure)
 
@@ -242,7 +241,7 @@ class ManagerUpdateUnitsRollbackTests(unittest.TestCase):
         calls = self.server.processes.calls
         self.assertLess(calls.index(self.sync), calls.index(self.poller))
         self.assertLess(calls.index(self.poller), calls.index(self.check))
-        self.assertIn("FAIL: Systemd units", result.stdout)
+        self.assertIn("ERROR: Systemd units", result.stderr)
         self.assertIn("rollback sync failed", result.stdout)
         self.assertNotIn("восстановлен из backup", result.stdout)
 
@@ -256,8 +255,8 @@ class ManagerUpdateUnitsRollbackTests(unittest.TestCase):
                 result = self.server.run_cli("manager-update", "--rollback", backup.name)
                 self.assertEqual(result.exit_code, 1)
                 self.assertEqual(self.restarted_versions, ["old"])
-                self.assertIn("FAIL:", result.stdout)
-                self.assertEqual(result.stderr, "")
+                self.assertIn("ERROR:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_full_sync_has_no_outer_deadline_that_can_kill_unit_file_rollback(self):
         with redirect_stdout(io.StringIO()):
@@ -275,8 +274,8 @@ class ManagerUpdateUnitsRollbackTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 1)
         self.assertEqual(self.restarted_versions, ["old"])
         self.assertIn(self.check, self.server.processes.calls)
-        self.assertIn("FAIL: raw-log rotation units", result.stdout)
-        self.assertEqual(result.stderr, "")
+        self.assertIn("ERROR: raw-log rotation units", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 WRAPPER_BODY = "import sys\nfrom xray_vps_manager.runner import run_command\n"
@@ -895,8 +894,8 @@ class ManagerUpdateCheckTests(unittest.TestCase):
     CURRENT = f"v{xray_vps_manager.__version__}"
     RELEASE_PAGE = "https://github.com/ZyFun/Xray-VPS-Manager/releases/tag/"
 
-    def run_check(self, response) -> tuple:
-        from support.sandbox import Sandbox
+    def run_check(self, response, *, error=False) -> tuple:
+        from tests.support.sandbox import Sandbox
         with Sandbox() as box:
             box.http.script({manager_update.GITHUB_API_LATEST:
                              response if isinstance(response, Exception) else box.http.json(response)})
@@ -904,8 +903,8 @@ class ManagerUpdateCheckTests(unittest.TestCase):
                 result = box.run_cli('manager-update', '--check')
             self.assertEqual(box.http.calls, [(manager_update.GITHUB_API_LATEST,
                                                {'User-agent': 'xray-manager-update'}, 20)])
-        self.assertEqual(result.stderr, "")
-        return result.exit_code, result.stdout
+        self.assertEqual(result.stdout if error else result.stderr, "")
+        return result.exit_code, result.stderr if error else result.stdout
 
     def release(self, tag: str) -> dict:
         return {"tag_name": tag, "html_url": self.RELEASE_PAGE + tag}
@@ -944,7 +943,7 @@ class ManagerUpdateCheckTests(unittest.TestCase):
             ),
         )
 
-    def test_check_errors_print_fail_and_exit_1(self) -> None:
+    def test_check_errors_print_error_to_stderr_and_exit_1(self) -> None:
         url = manager_update.GITHUB_API_LATEST
         cases = {
             "404": (
@@ -961,7 +960,7 @@ class ManagerUpdateCheckTests(unittest.TestCase):
 
         for name, (response, message) in cases.items():
             with self.subTest(name):
-                self.assertEqual(self.run_check(response), (1, f"\033[31mFAIL: {message}\033[0m\n"))
+                self.assertEqual(self.run_check(response, error=True), (1, f"ERROR: {message}\n"))
 
 
 if __name__ == "__main__":
