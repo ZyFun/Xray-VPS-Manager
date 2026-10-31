@@ -8,7 +8,6 @@ import sys
 from calendar import monthrange
 from datetime import date
 from pathlib import Path
-from zoneinfo import ZoneInfoNotFoundError
 
 from xray_vps_manager.core import clock
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
@@ -47,14 +46,10 @@ def server_env_values():
 
 
 def manager_timezone():
-    value = (server_env_values().get("MANAGER_TIMEZONE") or "").strip()
-    if not value:
-        return clock.server_local_timezone()
-    try:
-        return clock.timezone_named(value)
-    except ZoneInfoNotFoundError:
-        log(f"Invalid MANAGER_TIMEZONE={value!r}. Falling back to server local time.")
-        return clock.server_local_timezone()
+    result = clock.manager_timezone(server_env_values())
+    if not result.valid:
+        log(result.label)
+    return result.tz
 
 
 def local_bucket_time():

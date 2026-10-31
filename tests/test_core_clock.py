@@ -1,7 +1,7 @@
-"""Новые швы R1.2 и совместимые политики времени."""
+"""B1.1: единая политика времени и настоящая локальная зона."""
 from datetime import date, datetime, timedelta, timezone
 import unittest
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from xray_vps_manager.core import clock
 from xray_vps_manager.core import time as legacy_time
@@ -33,33 +33,30 @@ class ClockTests(unittest.TestCase):
         self.assertEqual(clock.local_midnight(date(2026, 3, 29), berlin).utcoffset(), timedelta(hours=1))
         self.assertEqual(clock.local_midnight(date(2026, 3, 30), berlin).utcoffset(), timedelta(hours=2))
 
-    def test_timezone_result_and_legacy_policies(self):
+    def test_timezone_result_and_invalid_local_policy(self):
         with Sandbox(tz='Asia/Tokyo'):
             valid = clock.manager_timezone({'MANAGER_TIMEZONE': ' Europe/Moscow '})
             self.assertEqual((valid.name, valid.label, valid.valid), ('Europe/Moscow', 'Europe/Moscow', True))
             self.assertEqual(valid.tz, ZoneInfo('Europe/Moscow'))
             local = clock.manager_timezone({'MANAGER_TIMEZONE': ''})
             self.assertEqual((local.name, local.label, local.valid), ('', 'server local time', True))
-            self.assertEqual(local.tz.utcoffset(None), timedelta(hours=9))
+            self.assertEqual(clock.now().astimezone(local.tz).utcoffset(), timedelta(hours=9))
             invalid = clock.manager_timezone({'MANAGER_TIMEZONE': 'Mars/Base'})
             self.assertFalse(invalid.valid)
-            self.assertEqual(invalid.label, 'server local time')
-            utc = clock.manager_timezone({'MANAGER_TIMEZONE': 'Mars/Base'}, invalid='utc')
-            self.assertEqual((utc.tz, utc.label), (timezone.utc, 'UTC (invalid MANAGER_TIMEZONE: Mars/Base)'))
-            with self.assertRaises(ZoneInfoNotFoundError):
-                clock.manager_timezone({'MANAGER_TIMEZONE': 'Mars/Base'}, invalid='raise')
+            self.assertEqual(invalid.label, 'MANAGER_TIMEZONE invalid: Mars/Base (server local time)')
+            self.assertEqual(invalid.tz, ZoneInfo('Asia/Tokyo'))
 
-    def test_sandbox_nested_clock_sqlite_and_local_snapshot(self):
+    def test_sandbox_nested_clock_sqlite_and_local_zone(self):
         import sqlite3
         from contextlib import closing
         with Sandbox(now='2026-01-15T12:00:00Z', tz='Europe/Berlin') as box:
             outer = clock.now()
-            self.assertEqual(clock.server_local_timezone().utcoffset(None), timedelta(hours=1))
+            self.assertEqual(clock.now().astimezone(clock.server_local_timezone()).utcoffset(), timedelta(hours=1))
             with Sandbox(now='2026-07-15T12:00:00Z', tz='Asia/Tokyo'):
                 self.assertEqual(clock.now().month, 7)
-                self.assertEqual(clock.server_local_timezone().utcoffset(None), timedelta(hours=9))
+                self.assertEqual(clock.now().astimezone(clock.server_local_timezone()).utcoffset(), timedelta(hours=9))
             self.assertEqual(clock.now(), outer)
             self.assertEqual(legacy_time.utc_now(), outer)
             with closing(sqlite3.connect(box.paths.manager_db)) as conn:
                 self.assertEqual(conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')").fetchone()[0], clock.utc_stamp())
-            self.assertIsInstance(clock.server_local_timezone(), timezone)
+            self.assertEqual(clock.server_local_timezone(), ZoneInfo('Europe/Berlin'))

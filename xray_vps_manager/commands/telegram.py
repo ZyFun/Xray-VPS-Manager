@@ -101,7 +101,7 @@ def server_name_fragment():
 
 
 def display_timezone():
-    result = clock.manager_timezone(server_env_values(), invalid="utc")
+    result = clock.manager_timezone(server_env_values())
     label = result.label
     return result.tz, label
 

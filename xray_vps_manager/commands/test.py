@@ -10,7 +10,6 @@ import sys
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfoNotFoundError
 
 from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.core import clock
@@ -589,14 +588,19 @@ def check_server_env(diag):
 
 
 def check_manager_timezone(diag):
-    value = (diag.context.get("server_env", {}).get("MANAGER_TIMEZONE") or "").strip()
-    if not value:
+    env = diag.context.get("server_env", {})
+    result = clock.manager_timezone(env)
+    if not result.valid:
+        raise RuntimeError(result.label)
+    if not result.name:
+        raw_name = (env.get("MANAGER_TIMEZONE") or "").strip()
+        if raw_name:
+            raise RuntimeError(
+                f"MANAGER_TIMEZONE alias {raw_name!r} is written into timer OnCalendar; "
+                "use xray-client set-timezone server"
+            )
         return "MANAGER_TIMEZONE uses server local time"
-    try:
-        clock.timezone_named(value)
-    except ZoneInfoNotFoundError:
-        raise RuntimeError(f"invalid MANAGER_TIMEZONE: {value}")
-    return f"MANAGER_TIMEZONE={value}"
+    return f"MANAGER_TIMEZONE={result.name}"
 
 
 def check_reality_inbounds(diag):
@@ -847,10 +851,7 @@ def check_traffic_db_alignment(diag):
 
 
 def manager_timezone(diag):
-    value = (diag.context.get("server_env", {}).get("MANAGER_TIMEZONE") or "").strip()
-    if not value:
-        return clock.server_local_timezone()
-    return clock.timezone_named(value)
+    return clock.manager_timezone(diag.context.get("server_env", {})).tz
 
 
 def parse_datetime(value):

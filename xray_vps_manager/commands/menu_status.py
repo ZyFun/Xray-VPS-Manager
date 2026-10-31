@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfoNotFoundError
 
 from xray_vps_manager.core import clock
 from xray_vps_manager.core.paths import SERVER_ENV_PATH, XRAY_ASSET_DIR
@@ -51,32 +50,23 @@ def server_env() -> dict[str, str]:
 
 
 def normalize_timezone(value: str | None) -> str:
-    try:
-        return clock.normalize_timezone_name(value)
-    except ValueError as exc:
-        if isinstance(exc.__cause__, ZoneInfoNotFoundError):
-            die(str(exc))
-        raise
+    return clock.normalize_timezone_name(value)
 
 
 def configured_timezone_name() -> str:
-    return normalize_timezone(server_env().get("MANAGER_TIMEZONE", ""))
+    return clock.manager_timezone(server_env()).name
 
 
 def manager_timezone():
-    name = configured_timezone_name()
-    if name:
-        return clock.timezone_named(name)
-    return clock.server_local_timezone()
+    return clock.manager_timezone(server_env()).tz
 
 
 def manager_timezone_label() -> str:
-    name = configured_timezone_name()
-    if name:
-        return name
-    current = clock.now().astimezone(clock.server_local_timezone())
-    suffix = current.tzname() or "server local time"
-    return f"server local time ({suffix})"
+    result = clock.manager_timezone(server_env())
+    if result.name:
+        return result.label
+    suffix = clock.now().astimezone(result.tz).tzname() or "server local time"
+    return f"{result.label} ({suffix})"
 
 
 def parse_utc_timestamp(value: str | None) -> datetime | None:
