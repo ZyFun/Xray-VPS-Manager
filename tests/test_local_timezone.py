@@ -114,6 +114,16 @@ class ServerLocalTimezoneTests(unittest.TestCase):
                 self.localtime.write_bytes(data)
                 self.assert_berlin(clock.server_local_timezone())
 
+    def test_truncated_localtime_without_posix_footer_uses_tz(self):
+        self.berlin_file()
+        data, rule, end = self.localtime.read_bytes().rsplit(b'\n', 2)
+        self.assertTrue(rule)
+        self.assertEqual(end, b'')
+        self.localtime.write_bytes(data)
+        os.environ['TZ'] = 'UTC'
+        time.tzset()
+        self.assertEqual(clock.manager_timezone({'MANAGER_TIMEZONE': ''}).tz, ZoneInfo('UTC'))
+
     def test_invalid_or_missing_tz_uses_last_fixed_offset(self):
         for name in ('Mars/Base', '/invalid/zone', ''):
             with self.subTest(name=name), clock.frozen(datetime(2026, 7, 15, tzinfo=timezone.utc)):

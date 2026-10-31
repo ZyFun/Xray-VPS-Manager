@@ -84,7 +84,11 @@ def normalize_timezone_name(value: str | None) -> str:
 def _timezone_from_file(path: Path, identity: tuple[int, ...]) -> tzinfo:
     """Кэш TZif ограничен; метаданные в ключе обновляют зону при смене файла."""
     with path.open('rb') as source:
-        return ZoneInfo.from_file(source)
+        try:
+            return ZoneInfo.from_file(source)
+        except AssertionError as exc:
+            # zoneinfo сообщает так об обрыве перед завершающим правилом TZif.
+            raise ValueError('Invalid TZif footer') from exc
 
 
 def server_local_timezone() -> tzinfo:
