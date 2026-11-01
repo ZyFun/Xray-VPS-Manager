@@ -142,7 +142,7 @@ ExecStart=/usr/local/sbin/xray-client expire-due --quiet
 Description=Disable expired Xray clients every day at midnight
 
 [Timer]
-OnCalendar=*-*-* 00:00:00
+OnCalendar={expire_on_calendar}
 Persistent=true
 AccuracySec=1min
 Unit=xray-client-expire.service
@@ -154,9 +154,9 @@ WantedBy=timers.target
 
 
 def unit_text(name: str, *, on_calendar: str = "*-*-* 03:00:00",
-              config_dir: Path | None = None,
+              expire_on_calendar: str = "*-*-* 00:00:00", config_dir: Path | None = None,
               service_name: str = "xray-caddy-random-tls@%i.service") -> str:
-    """Текст unit; для raw-log сценарий передаёт актуальный OnCalendar.
+    """Текст unit. Сценарий передаёт отдельные расписания ротации и истечения доступа.
 
     Без параметров — штатные пути и расписание новой установки. Параметры
     random-TLS сохраняют прежний контракт генераторов.
@@ -166,6 +166,8 @@ def unit_text(name: str, *, on_calendar: str = "*-*-* 03:00:00",
     template = _TEXTS[name]
     if name == "xray-raw-log-rotate.timer":
         return template.format(on_calendar=on_calendar)
+    if name == "xray-client-expire.timer":
+        return template.format(expire_on_calendar=expire_on_calendar)
     if name == "xray-caddy-random-tls@.service":
         directory = config_dir if config_dir is not None else Paths.default().caddy_random_tls_dir
         return template.format(env_template=directory / "%i.env")
@@ -199,10 +201,15 @@ def unit_differs(path: Path, text: str) -> bool:
         raise StateError(f"Не удалось прочитать unit {path}", detail=str(exc)) from exc
 
 
-def check_units(*, on_calendar: str = "*-*-* 03:00:00") -> list[str]:
+def check_units(*, on_calendar: str = "*-*-* 03:00:00",
+                expire_on_calendar: str = "*-*-* 00:00:00") -> list[str]:
     """Имена отсутствующих/отличающихся unit-файлов, в порядке установки."""
-    return [name for name in UNIT_NAMES
-            if unit_differs(paths().systemd_dir / name, unit_text(name, on_calendar=on_calendar))]
+    changed = []
+    for name in UNIT_NAMES:
+        text = unit_text(name, on_calendar=on_calendar, expire_on_calendar=expire_on_calendar)
+        if unit_differs(paths().systemd_dir / name, text):
+            changed.append(name)
+    return changed
 
 
 def _restart_changed(name: str) -> None:
@@ -229,14 +236,15 @@ def _restart_changed(name: str) -> None:
             systemd.try_restart(instance)
 
 
-def install_units(*, systemctl: bool, on_calendar: str = "*-*-* 03:00:00") -> list[str]:
+def install_units(*, systemctl: bool, on_calendar: str = "*-*-* 03:00:00",
+                  expire_on_calendar: str = "*-*-* 00:00:00") -> list[str]:
     """Записать изменения; reload и try-restart изменённых units, кроме oneshot.
 
     Oneshot продолжает текущий запуск; новое определение — со следующего.
     Для шаблонов таймеров перезапускаются только уже активные экземпляры.
     Неактивные службы/таймеры остаются неактивными, enable не вызывается.
     """
-    changed = check_units(on_calendar=on_calendar)
+    changed = check_units(on_calendar=on_calendar, expire_on_calendar=expire_on_calendar)
     previous = {}
     try:
         for name in changed:
@@ -248,7 +256,8 @@ def install_units(*, systemctl: bool, on_calendar: str = "*-*-* 03:00:00") -> li
     reloaded = False
     try:
         for name in changed:
-            write_unit(paths().systemd_dir / name, unit_text(name, on_calendar=on_calendar))
+            text = unit_text(name, on_calendar=on_calendar, expire_on_calendar=expire_on_calendar)
+            write_unit(paths().systemd_dir / name, text)
             written.append(name)
         if systemctl and changed:
             systemd.daemon_reload()
