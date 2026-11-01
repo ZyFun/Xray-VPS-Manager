@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from xray_vps_manager.core import settings, paths, server_env
+from xray_vps_manager.core.errors import ValidationError
 from tests.support.sandbox import Sandbox
 
 
@@ -59,11 +60,12 @@ class SettingsTests(unittest.TestCase):
             box.paths.server_env.write_text('CUSTOM=file\n')
             self.assertEqual(settings.env_value('CUSTOM', 'default'), 'file')
 
-    def test_read_and_full_write_keep_legacy_contract(self):
+    def test_read_normalizes_but_write_remains_full_replacement(self):
+        """B1.2 / XR-REV-069: нормализация и ValidationError согласованы; запись остаётся полной."""
         with Sandbox() as box:
             box.paths.server_env.write_text('export KEY="value" # comment\nBROKEN\n')
-            self.assertEqual(settings.read_env(), {'export KEY': 'value" # comment'})
-            with self.assertRaises(RuntimeError):
+            self.assertEqual(settings.read_env(), {'KEY': 'value'})
+            with self.assertRaises(ValidationError):
                 settings.read_env(strict=True)
             settings.write_env({'SERVER_NAME': 'new'})
             self.assertEqual(box.paths.server_env.read_text(), 'SERVER_NAME=new\n')

@@ -352,13 +352,13 @@ class RawLogTimerSyncCommandTests(unittest.TestCase):
         self.assertFalse(self.timer_path.exists())
         self.assertEqual(self.systemctl_calls, [])
 
-    def test_on_calendar_copies_manager_timezone_value_as_is(self) -> None:
-        """Текущее поведение, баги XR-REV-038 и XR-REV-069: невалидная зона и хвостовой комментарий попадают в OnCalendar."""
+    def test_on_calendar_uses_parsed_timezone_but_keeps_invalid_name(self) -> None:
+        """B1.2 / XR-REV-069 убирает комментарий; невалидное имя остаётся как прежде до B1.3."""
         cases = {
             "MANAGER_TIMEZONE=Europe/Moscow\n": "*-*-* 03:00:00 Europe/Moscow",
             "MANAGER_TIMEZONE=\n": "*-*-* 03:00:00",
             "MANAGER_TIMEZONE=Mars/Base\n": "*-*-* 03:00:00 Mars/Base",
-            "MANAGER_TIMEZONE=Europe/Moscow # основная зона\n": "*-*-* 03:00:00 Europe/Moscow # основная зона",
+            "MANAGER_TIMEZONE=Europe/Moscow # основная зона\n": "*-*-* 03:00:00 Europe/Moscow",
             "MANAGER_TIMEZONE=Europe/Moscow\nXRAY_RAW_LOG_ROTATE_TIME=25:00\n": "*-*-* 03:00:00 Europe/Moscow",
         }
 
