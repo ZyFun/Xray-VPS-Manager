@@ -203,7 +203,7 @@ def safe_extract_archive(archive: Path, destination: Path) -> Path:
                 member_target.relative_to(destination_root)
             except ValueError as exc:
                 raise ManagerUpdateError(f"Небезопасный путь в архиве: {member.name}") from exc
-        tar.extractall(destination)
+        tar.extractall(destination, filter="data")
 
     roots = [path for path in destination.iterdir() if path.is_dir()]
     if len(roots) != 1:
@@ -626,7 +626,7 @@ def rollback_locked(name: str | None, run_xray_test: bool) -> None:
 
 
 def usage() -> str:
-    return """Usage:
+    return f"""Usage:
   xray-manager-update --check
   xray-manager-update --update [TAG] [--force] [--no-test]
   xray-manager-update --backups
@@ -635,7 +635,7 @@ def usage() -> str:
 Examples:
   xray-manager-update --check
   xray-manager-update --update
-  xray-manager-update --update v1.0.1
+  xray-manager-update --update {current_manager_version()}
   xray-manager-update --rollback
 """
 

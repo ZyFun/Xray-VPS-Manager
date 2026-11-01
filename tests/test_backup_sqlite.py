@@ -7,6 +7,7 @@ import sqlite3
 import tarfile
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 from tests.support.sandbox import Sandbox, ProcessResult
@@ -424,7 +425,7 @@ class BackupSQLiteTests(unittest.TestCase):
             self.assertIn(str(manager_db_target), restored)
 
     def test_backup_then_restore_with_pending_wal_replaces_stale_wal_files(self) -> None:
-        """VIREI-245: архив забирает данные из `-wal`, restore не оставляет `-wal`/`-shm` прежней базы."""
+        """XR-REV-047: бэкап с данными из WAL распаковывается без предупреждения и заменяет прежнюю базу (VIREI-245)."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             config_dir = root / "etc" / "xray"
@@ -468,7 +469,8 @@ class BackupSQLiteTests(unittest.TestCase):
             finally:
                 holder.close()
 
-            temp_dir = backup.extract_archive(archive)
+            with warnings.catch_warnings(action="error", category=DeprecationWarning):
+                temp_dir = backup.extract_archive(archive)
             try:
                 restore_files = [
                     ("usr/local/etc/xray/config.json", target_dir / "config.json", True),
@@ -486,6 +488,7 @@ class BackupSQLiteTests(unittest.TestCase):
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
             self.assertEqual(sorted(path.name for path in target_dir.iterdir()), ["config.json", "manager.db"])
+            self.assertEqual((target_dir / "manager.db").stat().st_mode & 0o777, 0o640)
             self.assertEqual(metadata_value(target_dir / "manager.db", "sample"), "from-wal")
 
     def test_pre_restore_fallback_copy_keeps_pending_wal(self) -> None:

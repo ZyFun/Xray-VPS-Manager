@@ -73,7 +73,7 @@ xray-update --rollback ИМЯ_БЭКАПА
 
 ## Обновление Менеджера
 
-Код меню, клиентских команд, Telegram-бота и Python-пакета менеджера обновляется отдельно от Xray Core. Для этого используется `xray-manager-update`, который скачивает архив конкретного GitHub Release из репозитория `ZyFun/Xray-VPS-Manager`.
+Код меню, клиентских команд, Telegram-бота и Python-пакета менеджера обновляется отдельно от Xray Core. Для этого используется `xray-manager-update`, который скачивает архив конкретного GitHub Release из репозитория `ZyFun/Xray-VPS-Manager`. Менеджер проверяет пути и типы записей релиза, затем распаковывает TAR с `filter="data"`.
 
 Проверить latest release:
 
@@ -87,10 +87,10 @@ xray-manager-update --check
 xray-manager-update --update
 ```
 
-Обновиться до конкретного тега:
+Обновиться до конкретного тега. В справке `xray-manager-update --help` пример использует версию установленного менеджера.
 
 ```bash
-xray-manager-update --update v1.0.1
+xray-manager-update --update v2.2.1
 ```
 
 Показать бэкапы менеджера:

@@ -470,17 +470,21 @@ def validate_member(member):
     name = member.name
     if name.startswith("/") or ".." in Path(name).parts:
         die(f"Unsafe archive member: {name}")
-    if member.issym() or member.islnk() or member.isdev():
+    if not (member.isfile() or member.isdir()):
         die(f"Unsupported archive member type: {name}")
 
 
 def extract_archive(archive):
     temp_dir = Path(tempfile.mkdtemp(prefix="xray-restore-"))
-    with tarfile.open(archive, "r:gz") as tar:
-        members = tar.getmembers()
-        for member in members:
-            validate_member(member)
-        tar.extractall(temp_dir)
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = tar.getmembers()
+            for member in members:
+                validate_member(member)
+            tar.extractall(temp_dir, filter="data")
+    except BaseException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     return temp_dir
 
 

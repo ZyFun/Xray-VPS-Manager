@@ -591,7 +591,7 @@ def validate_archive_member(member: tarfile.TarInfo) -> None:
     name = member.name
     if name.startswith("/") or ".." in Path(name).parts:
         raise ValueError(f"Unsafe archive member: {name}")
-    if member.issym() or member.islnk() or member.isdev():
+    if not (member.isfile() or member.isdir()):
         raise ValueError(f"Unsupported archive member type: {name}")
     allowed = (
         name == "manifest.json"
@@ -605,11 +605,15 @@ def validate_archive_member(member: tarfile.TarInfo) -> None:
 
 def extract_config_backup(archive: Path) -> Path:
     temp_dir = Path(tempfile.mkdtemp(prefix="caddy-restore-"))
-    with tarfile.open(archive, "r:gz") as tar:
-        members = tar.getmembers()
-        for member in members:
-            validate_archive_member(member)
-        tar.extractall(temp_dir)
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = tar.getmembers()
+            for member in members:
+                validate_archive_member(member)
+            tar.extractall(temp_dir, filter="data")
+    except BaseException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     return temp_dir
 
 
@@ -829,7 +833,7 @@ def validate_site_archive_member(member: tarfile.TarInfo) -> None:
     name = member.name
     if name.startswith("/") or ".." in Path(name).parts:
         raise ValueError(f"Unsafe archive member: {name}")
-    if member.issym() or member.islnk() or member.isdev():
+    if not (member.isfile() or member.isdir()):
         raise ValueError(f"Unsupported archive member type: {name}")
     allowed = name == "manifest.json" or name == CADDY_SITE_ARCNAME or name.startswith(CADDY_SITE_ARCNAME + "/")
     if not allowed:
@@ -838,11 +842,15 @@ def validate_site_archive_member(member: tarfile.TarInfo) -> None:
 
 def extract_site_backup(archive: Path) -> Path:
     temp_dir = Path(tempfile.mkdtemp(prefix="caddy-site-restore-"))
-    with tarfile.open(archive, "r:gz") as tar:
-        members = tar.getmembers()
-        for member in members:
-            validate_site_archive_member(member)
-        tar.extractall(temp_dir)
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = tar.getmembers()
+            for member in members:
+                validate_site_archive_member(member)
+            tar.extractall(temp_dir, filter="data")
+    except BaseException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     return temp_dir
 
 

@@ -10,6 +10,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import warnings
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,29 @@ from xray_vps_manager.core import paths as core_paths
 
 
 class ManagerUpdateTests(unittest.TestCase):
+    def test_usage_shows_current_release_tag(self) -> None:
+        """XR-REV-026: пример обновления использует версию установленного пакета."""
+        example = f"  xray-manager-update --update v{xray_vps_manager.__version__}"
+        self.assertIn(example, manager_update.usage().splitlines())
+
+    def test_safe_extract_archive_keeps_release_wrapper_executable(self) -> None:
+        """XR-REV-047: распаковка релиза сохраняет исполняемый скрипт и убирает запись для группы и остальных."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            wrapper = root / "xray-menu"
+            wrapper.write_bytes(b"#!/bin/sh\nexit 0\n")
+            wrapper.chmod(0o777)
+            archive = root / "release.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(wrapper, arcname="release/xray-menu")
+            with warnings.catch_warnings(action="error", category=DeprecationWarning):
+                release = manager_update.safe_extract_archive(archive, root / "extract")
+
+            self.assertEqual(release, root / "extract/release")
+            extracted = release / "xray-menu"
+            self.assertEqual(extracted.read_bytes(), wrapper.read_bytes())
+            self.assertEqual(extracted.stat().st_mode & 0o777, 0o755)
+
     def test_normalize_tag_adds_v_for_plain_version(self) -> None:
         self.assertEqual(manager_update.normalize_tag("1.0.1"), "v1.0.1")
         self.assertEqual(manager_update.normalize_tag("v1.0.1"), "v1.0.1")

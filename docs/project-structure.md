@@ -47,12 +47,12 @@ README.md
 Текущий код требует Python 3.12+. Полный набор из корня репозитория:
 
 ```bash
-python3.12 -m unittest discover -s tests -t .
+python3.12 -W error::DeprecationWarning -m unittest discover -s tests -t .
 ```
 
-`tests` — импортируемый пакет; работают также обычный discovery с `-s tests` и изолированный запуск `python3.12 -I -S -B -m unittest discover -s tests -t .`. Добавлять каталог `tests` в `PYTHONPATH` не требуется. Тесты используют временные файлы, подмены процессов и HTTP; отдельные регрессии создают локальные процессы и привязывают loopback-порты.
+`tests` — импортируемый пакет; работают также обычный discovery с `-s tests` и изолированный запуск `python3.12 -I -S -B -W error::DeprecationWarning -m unittest discover -s tests -t .`. Добавлять каталог `tests` в `PYTHONPATH` не требуется. Тесты используют временные файлы, подмены процессов и HTTP; отдельные регрессии создают локальные процессы и привязывают loopback-порты.
 
-GitHub Actions (`.github/workflows/tests.yml`) запускает unittest на Python 3.12 и 3.13 для pull request и push в `dev`/`main`. Новых Python-зависимостей нет. Превращение DeprecationWarning в ошибки пока не включено.
+GitHub Actions (`.github/workflows/tests.yml`) запускает unittest на Python 3.12 и 3.13 для pull request и push в `dev`/`main`. Новых Python-зависимостей нет. Ключ `-W error::DeprecationWarning` превращает предупреждения этого типа в ошибки в основном процессе `unittest`. Дочерние интерпретаторы Python используют собственные настройки предупреждений.
 
 ## Архитектурные проверки
 
