@@ -132,12 +132,62 @@ class UnitsSyncTests(unittest.TestCase):
                                                       tuple(query), ("systemctl", "try-restart", instance)])
 
     def test_custom_raw_schedule_is_shared_with_compatible_cli(self):
-        self.server.paths.server_env.write_text("MANAGER_TIMEZONE=Asia/Tokyo\nXRAY_RAW_LOG_ROTATE_TIME=04:30\n")
+        self.server.paths.server_env.write_text("export manager_timezone = Europe/Berlin # зона с DST\nXRAY_RAW_LOG_ROTATE_TIME=04:30\n")
         self.install()
         timer = self.directory / "xray-raw-log-rotate.timer"
         self.assertEqual(timer.read_text(), unit_sync.raw_log_timer_unit())
-        self.assertIn("04:30:00 Asia/Tokyo", timer.read_text())
-        self.assertIn("OnCalendar=*-*-* 00:00:00\n", (self.directory / "xray-client-expire.timer").read_text())
+        self.assertIn("04:30:00 Europe/Berlin", timer.read_text())
+        self.assertIn("OnCalendar=*-*-* 00:00:00 Europe/Berlin\n", (self.directory / "xray-client-expire.timer").read_text())
+
+    def test_sync_upgrades_existing_server_midnight_timer_only(self):
+        self.install()
+        name = "xray-client-expire.timer"
+        timer = self.directory / name
+        current = timer.read_text()
+        old = current.replace("00:00:00 Europe/Moscow", "00:00:00")
+        self.assertNotEqual(current, old)
+        timer.write_text(old)
+        before = self.snapshot()
+        check = self.server.run_cli("units", "sync", "--check")
+        self.assertEqual(check.stdout.strip(), "Отличающиеся systemd units: " + name)
+        self.assertEqual(check.exit_code, 1)
+        self.assertEqual(self.snapshot(), before)
+        commands = [("systemctl", "daemon-reload"), ("systemctl", "try-restart", name)]
+        self.server.processes.script({command: ProcessResult() for command in commands})
+        self.assertEqual(self.server.run_cli("units", "sync").exit_code, 0)
+        self.assertEqual(timer.read_text(), current)
+        self.assertEqual(self.server.run_cli("units", "sync", "--check").exit_code, 0)
+        self.assertEqual(self.server.processes.calls, commands)
+
+    def test_expire_calendar_falls_back_to_local_and_only_warns_for_invalid_zone(self):
+        timer = self.directory / "xray-client-expire.timer"
+        for zone in ("", "local", "Missing/Zone", "../UTC"):
+            with self.subTest(zone=zone):
+                self.server.paths.server_env.write_text("MANAGER_TIMEZONE=Europe/Moscow\n")
+                self.install()
+                self.assertIn("OnCalendar=*-*-* 00:00:00 Europe/Moscow\n", timer.read_text())
+                self.server.paths.server_env.write_text(f"MANAGER_TIMEZONE={zone}\n")
+                before = self.snapshot()
+                drift = self.server.run_cli("units", "sync", "--check")
+                self.assertEqual(drift.exit_code, 1)
+                self.assertIn(timer.name, drift.stdout)
+                self.assertEqual(self.snapshot(), before)
+                installed = self.server.run_cli("units", "sync", "--no-systemctl")
+                self.assertEqual(installed.exit_code, 0)
+                self.assertIn("OnCalendar=*-*-* 00:00:00\n", timer.read_text())
+                before = self.snapshot()
+                clean = self.server.run_cli("units", "sync", "--check")
+                self.assertEqual(clean.exit_code, 0)
+                self.assertEqual(self.snapshot(), before)
+                for result in (drift, installed, clean):
+                    warnings = result.stderr.splitlines()
+                    if zone in ("", "local"):
+                        self.assertEqual(warnings, [])
+                    else:
+                        self.assertEqual(len(warnings), 1)
+                        self.assertIn(f"MANAGER_TIMEZONE invalid: {zone} (server local time)", warnings[0])
+                        self.assertNotIn("invalid", result.stdout)
+                self.assertEqual(self.server.processes.calls, [])
 
     def test_unknown_argument_does_not_write(self):
         result = self.server.run_cli("units", "sync", "--bogus")

@@ -22,7 +22,8 @@ def main():
         raise SystemExit(1)
     check = "--check" in args
     try:
-        changed = sync_units(systemctl="--no-systemctl" not in args, check=check)
+        changed = sync_units(systemctl="--no-systemctl" not in args, check=check,
+                             on_warning=lambda message: print(message, file=sys.stderr))
     except ManagerError as exc:
         error_exit(exc)
     if check:

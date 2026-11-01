@@ -2,22 +2,35 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 
 from xray_vps_manager.activity.raw_logs import raw_log_on_calendar
-from xray_vps_manager.core import process, systemd
+from xray_vps_manager.core import clock, process, systemd
 from xray_vps_manager.core.errors import ExternalCommandError, StateError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import paths
+from xray_vps_manager.core.settings import read_env
 from xray_vps_manager.system import units
 
 
-def sync_units(*, systemctl: bool = True, check: bool = False) -> list[str]:
-    if check:
-        return units.check_units(on_calendar=raw_log_on_calendar())
+def sync_units(*, systemctl: bool = True, check: bool = False,
+               on_warning: Callable[[str], None] | None = None) -> list[str]:
     try:
-        with manager_lock(purpose="units sync"):
-            return units.install_units(systemctl=systemctl, on_calendar=raw_log_on_calendar())
+        lock = nullcontext() if check else manager_lock(purpose="units sync")
+        with lock:
+            env = read_env()
+            zone = clock.manager_timezone(env)
+            if not zone.valid and on_warning is not None:
+                on_warning(zone.label)
+            expire = "*-*-* 00:00:00"
+            if zone.valid and zone.name:
+                expire += f" {zone.name}"
+            rotation = raw_log_on_calendar(env)
+            if check:
+                return units.check_units(on_calendar=rotation, expire_on_calendar=expire)
+            return units.install_units(systemctl=systemctl, on_calendar=rotation, expire_on_calendar=expire)
     except subprocess.TimeoutExpired as exc:
         raise ExternalCommandError("Истекло время синхронизации units", command=exc.cmd) from exc
     except OSError as exc:

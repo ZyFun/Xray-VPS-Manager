@@ -11,6 +11,9 @@ import subprocess
 import unittest
 from unittest import mock
 
+from tests.support.sandbox import Sandbox
+from xray_vps_manager.core.systemd import MANAGER_UNITS
+from xray_vps_manager.xray import caddy
 from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.commands import manager_update
 from xray_vps_manager.commands import menu_xray_actions
@@ -40,7 +43,7 @@ RAW_LOG_ENV = {"MANAGER_TIMEZONE": "Europe/Moscow"}
 
 def install_sh_units() -> list:
     """Канон восьми прежних heredoc units; raw-log проверяется отдельно."""
-    return [(name, "'", system_units.unit_text(name)) for name in system_units.UNIT_NAMES
+    return [(name, "'", system_units.unit_text(name, expire_on_calendar="*-*-* 00:00:00 Europe/Moscow")) for name in system_units.UNIT_NAMES
             if not name.startswith("xray-raw-log-rotate.")]
 
 
@@ -79,30 +82,34 @@ class InstallShUnitGoldenTests(GoldenUnitCase):
         self.assert_golden("xray-raw-log-rotate.service", unit_sync.raw_log_service_unit())
         self.assert_golden("xray-raw-log-rotate.timer", unit_sync.raw_log_timer_unit(dict(RAW_LOG_ENV)))
 
-    def test_client_expire_timer_on_calendar_ignores_manager_timezone(self) -> None:
-        """Текущее поведение, баг XR-REV-050: резервный таймер истечения сроков — 00:00 по зоне сервера, без MANAGER_TIMEZONE."""
-        units = {name: text for name, _quote, text in install_sh_units()}
-
-        self.assertEqual(
-            [line for line in units["xray-client-expire.timer"].splitlines() if line.startswith("OnCalendar=")],
-            ["OnCalendar=*-*-* 00:00:00"],
-        )
-        self.assertIn("OnCalendar=*-*-* 03:00:00 Europe/Moscow\n", unit_sync.raw_log_timer_unit(dict(RAW_LOG_ENV)))
+    def test_client_expire_timer_uses_supplied_calendar(self) -> None:
+        """XR-REV-050: явная зона сохраняет местную полночь при переходах DST."""
+        calendar = "*-*-* 00:00:00 Europe/Berlin"
+        timer = system_units.unit_text("xray-client-expire.timer", expire_on_calendar=calendar)
+        self.assertIn(f"OnCalendar={calendar}\n", timer)
+        self.assertIn("OnCalendar=*-*-* 00:00:00\n", system_units.unit_text("xray-client-expire.timer"))
 
 
 class ManagerUnitListsTests(unittest.TestCase):
     """Какие units разные места менеджера считают своими (XR-REV-043)."""
 
-    def test_menu_check_timers_shows_three_units(self) -> None:
-        """Текущее поведение, баг XR-REV-043: «Проверить timers» не показывает raw-log и random-TLS таймеры."""
-        calls = []
+    def test_menu_check_timers_shows_manager_units_and_configured_instances(self) -> None:
+        """XR-REV-043: один status для всего списка, включая выключенные инстансы."""
+        with Sandbox() as server:
+            directory = server.paths.caddy_random_tls_dir
+            def check(*domains):
+                calls = []
+                menu_xray_actions.check_timers(calls.append)
+                instances = [f"xray-caddy-random-tls@{domain}.timer" for domain in domains]
+                self.assertEqual(calls, [["systemctl", "status", *MANAGER_UNITS, *instances, "--no-pager"]])
+                self.assertEqual(server.processes.calls, [])
 
-        menu_xray_actions.check_timers(calls.append)
-
-        self.assertEqual(
-            calls,
-            [["systemctl", "status", "xray-traffic-sync.timer", "xray-client-expire.timer", "xray-telegram-poller.service", "--no-pager"]],
-        )
+            check()
+            caddy.write_random_tls_config("alpha.example", 8080, directory / "20.env")
+            check("alpha.example")
+            caddy.write_random_tls_config("zeta.example", 8081, directory / "10.env")
+            caddy.write_random_tls_config("zeta.example", 8081, directory / "30.env")
+            check("zeta.example", "alpha.example")
 
     def test_xray_test_checks_three_timers_without_random_tls(self) -> None:
         """Текущее поведение, баг XR-REV-043: `xray-test` проверяет raw-log таймер, но не таймеры random-TLS."""
