@@ -134,6 +134,8 @@ scp BACKUP_ARCHIVE_PATH root@SERVER_HOST:/root/xray_backups/
 xray-backup restore /root/xray_backups/ИМЯ_АРХИВА.tar.gz
 ```
 
+При восстановлении данных менеджера, конфигурации Caddy и файлов сайта менеджер сначала проверяет пути и типы всех записей TAR. Затем Python распаковывает архив с `filter="data"`. Права на восстановленные файлы назначает менеджер, например `0640` для `manager.db` и `0644` для файлов сайта.
+
 Restore выполняется в таком порядке:
 
 1. Менеджер проверяет состав архива до любых изменений: если в нём нет `config.json`, `server.env` или `manager.db`, restore завершается ошибкой `Backup does not contain required file: …`, ничего не останавливая и не перезаписывая.
