@@ -159,35 +159,60 @@ class UnitsSyncTests(unittest.TestCase):
         self.assertEqual(self.server.run_cli("units", "sync", "--check").exit_code, 0)
         self.assertEqual(self.server.processes.calls, commands)
 
-    def test_expire_calendar_falls_back_to_local_and_only_warns_for_invalid_zone(self):
+    def test_both_calendars_fall_back_to_local_and_only_warns_for_invalid_zone(self):
         timer = self.directory / "xray-client-expire.timer"
-        for zone in ("", "local", "Missing/Zone", "../UTC"):
+        rotation = self.directory / "xray-raw-log-rotate.timer"
+        invalid = ("Missing/Zone", "../UTC")
+        for zone in ("", "local", "server", "system", "default", "сервер", "локально", "по умолчанию", *invalid):
             with self.subTest(zone=zone):
                 self.server.paths.server_env.write_text("MANAGER_TIMEZONE=Europe/Moscow\n")
                 self.install()
                 self.assertIn("OnCalendar=*-*-* 00:00:00 Europe/Moscow\n", timer.read_text())
-                self.server.paths.server_env.write_text(f"MANAGER_TIMEZONE={zone}\n")
+                env_text = f"MANAGER_TIMEZONE={zone}\nXRAY_RAW_LOG_ROTATE_TIME=04:30\n"
+                self.server.paths.server_env.write_text(env_text)
                 before = self.snapshot()
                 drift = self.server.run_cli("units", "sync", "--check")
                 self.assertEqual(drift.exit_code, 1)
                 self.assertIn(timer.name, drift.stdout)
+                self.assertIn(rotation.name, drift.stdout)
                 self.assertEqual(self.snapshot(), before)
                 installed = self.server.run_cli("units", "sync", "--no-systemctl")
                 self.assertEqual(installed.exit_code, 0)
                 self.assertIn("OnCalendar=*-*-* 00:00:00\n", timer.read_text())
+                self.assertIn("OnCalendar=*-*-* 04:30:00\n", rotation.read_text())
                 before = self.snapshot()
                 clean = self.server.run_cli("units", "sync", "--check")
                 self.assertEqual(clean.exit_code, 0)
                 self.assertEqual(self.snapshot(), before)
                 for result in (drift, installed, clean):
                     warnings = result.stderr.splitlines()
-                    if zone in ("", "local"):
+                    if zone not in invalid:
                         self.assertEqual(warnings, [])
                     else:
                         self.assertEqual(len(warnings), 1)
                         self.assertIn(f"MANAGER_TIMEZONE invalid: {zone} (server local time)", warnings[0])
                         self.assertNotIn("invalid", result.stdout)
+                self.assertEqual(self.server.paths.server_env.read_text(), env_text)
                 self.assertEqual(self.server.processes.calls, [])
+
+    def test_sync_repairs_invalid_raw_log_timer_and_repeated_check_is_clean(self):
+        self.server.paths.server_env.write_text("MANAGER_TIMEZONE=Bad/Fixture\n")
+        self.assertEqual(self.server.run_cli("units", "sync", "--no-systemctl").exit_code, 0)
+        timer = self.directory / "xray-raw-log-rotate.timer"
+        expected = timer.read_text()
+        self.assertIn("OnCalendar=*-*-* 03:00:00\n", expected)
+        timer.write_text(expected.replace("03:00:00\n", "03:00:00 Bad/Fixture\n"))
+        commands = [("systemctl", "daemon-reload"), ("systemctl", "try-restart", timer.name)]
+        self.server.processes.script({cmd: ProcessResult() for cmd in commands})
+        repaired = self.server.run_cli("units", "sync")
+        before = self.snapshot()
+        clean = self.server.run_cli("units", "sync", "--check")
+        for result in (repaired, clean):
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.stderr, "MANAGER_TIMEZONE invalid: Bad/Fixture (server local time)\n")
+        self.assertEqual(timer.read_text(), expected)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.server.processes.calls, commands)
 
     def test_unknown_argument_does_not_write(self):
         result = self.server.run_cli("units", "sync", "--bogus")

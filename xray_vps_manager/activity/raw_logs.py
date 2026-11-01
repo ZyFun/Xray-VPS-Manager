@@ -14,6 +14,7 @@ from xray_vps_manager.activity import repository
 from xray_vps_manager.activity import settings
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.activity.constants import ACCESS_LOG_PATH, ERROR_LOG_PATH
+from xray_vps_manager.core import systemd
 from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
@@ -32,12 +33,15 @@ def _rotate_time_parts(value: str) -> tuple[int, int]:
     return int(hour), int(minute)
 
 
-def raw_log_on_calendar(env: dict[str, str] | None = None) -> str:
-    env = settings.with_activity_defaults(dict(env or settings.server_env_values()))
-    rotate_time = settings.raw_log_rotate_time(env)
-    timezone_name = (env.get("MANAGER_TIMEZONE") or "").strip()
-    suffix = f" {timezone_name}" if timezone_name else ""
-    return f"*-*-* {rotate_time}:00{suffix}"
+def raw_log_on_calendar(env: dict[str, str] | None = None, *,
+                        on_warning: Callable[[str], None] | None = None) -> str:
+    values = env or settings.server_env_values()
+    suffix = systemd.calendar_timezone_suffix(values, on_warning)
+    return rotation_calendar(values, suffix)
+
+
+def rotation_calendar(env: dict[str, str], timezone_suffix: str) -> str:
+    return f"*-*-* {settings.raw_log_rotate_time(env)}:00{timezone_suffix}"
 
 
 def next_rotation_label(now: datetime | None = None) -> str:

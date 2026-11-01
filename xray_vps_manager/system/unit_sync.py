@@ -6,8 +6,8 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 
-from xray_vps_manager.activity.raw_logs import raw_log_on_calendar
-from xray_vps_manager.core import clock, process, systemd
+from xray_vps_manager.activity.raw_logs import raw_log_on_calendar, rotation_calendar
+from xray_vps_manager.core import process, systemd
 from xray_vps_manager.core.errors import ExternalCommandError, StateError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import paths
@@ -21,13 +21,9 @@ def sync_units(*, systemctl: bool = True, check: bool = False,
         lock = nullcontext() if check else manager_lock(purpose="units sync")
         with lock:
             env = read_env()
-            zone = clock.manager_timezone(env)
-            if not zone.valid and on_warning is not None:
-                on_warning(zone.label)
-            expire = "*-*-* 00:00:00"
-            if zone.valid and zone.name:
-                expire += f" {zone.name}"
-            rotation = raw_log_on_calendar(env)
+            suffix = systemd.calendar_timezone_suffix(env, on_warning)
+            expire = f"*-*-* 00:00:00{suffix}"
+            rotation = rotation_calendar(env, suffix)
             if check:
                 return units.check_units(on_calendar=rotation, expire_on_calendar=expire)
             return units.install_units(systemctl=systemctl, on_calendar=rotation, expire_on_calendar=expire)
@@ -47,11 +43,12 @@ def raw_log_timer_unit(env: dict[str, str] | None = None) -> str:
 
 def sync_raw_log_timer(*, run_systemctl: bool = True, service_path: Path | None = None,
                        timer_path: Path | None = None,
-                       env: dict[str, str] | None = None) -> dict[str, str]:
+                       env: dict[str, str] | None = None,
+                       on_warning: Callable[[str], None] | None = None) -> dict[str, str]:
     """Прежние результат, enable/restart и ошибка raw-log-timer-sync сохранены."""
     service_path = service_path if service_path is not None else paths().systemd_dir / "xray-raw-log-rotate.service"
     timer_path = timer_path if timer_path is not None else paths().systemd_dir / "xray-raw-log-rotate.timer"
-    calendar = raw_log_on_calendar(env)
+    calendar = raw_log_on_calendar(env, on_warning=on_warning)
     try:
         units.write_unit(service_path, raw_log_service_unit())
         units.write_unit(timer_path, units.unit_text("xray-raw-log-rotate.timer", on_calendar=calendar))

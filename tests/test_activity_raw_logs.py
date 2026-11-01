@@ -352,21 +352,30 @@ class RawLogTimerSyncCommandTests(unittest.TestCase):
         self.assertFalse(self.timer_path.exists())
         self.assertEqual(self.systemctl_calls, [])
 
-    def test_on_calendar_uses_parsed_timezone_but_keeps_invalid_name(self) -> None:
-        """B1.2 / XR-REV-069 убирает комментарий; невалидное имя остаётся как прежде до B1.3."""
-        cases = {
-            "MANAGER_TIMEZONE=Europe/Moscow\n": "*-*-* 03:00:00 Europe/Moscow",
-            "MANAGER_TIMEZONE=\n": "*-*-* 03:00:00",
-            "MANAGER_TIMEZONE=Mars/Base\n": "*-*-* 03:00:00 Mars/Base",
-            "MANAGER_TIMEZONE=Europe/Moscow # основная зона\n": "*-*-* 03:00:00 Europe/Moscow",
-            "MANAGER_TIMEZONE=Europe/Moscow\nXRAY_RAW_LOG_ROTATE_TIME=25:00\n": "*-*-* 03:00:00 Europe/Moscow",
-        }
+    def test_on_calendar_uses_valid_timezone_or_server_local_time(self) -> None:
+        """VIREI-252: неверное имя даёт локальное расписание и одно предупреждение CLI."""
+        local = "*-*-* 03:00:00"
+        moscow = "*-*-* 03:00:00 Europe/Moscow"
+        cases = (
+            ("MANAGER_TIMEZONE=Europe/Moscow", moscow, ""),
+            ("MANAGER_TIMEZONE=", local, ""),
+            ("export manager_timezone = Europe/Berlin # DST\nXRAY_RAW_LOG_ROTATE_TIME=04:30",
+             "*-*-* 04:30:00 Europe/Berlin", ""),
+            ("MANAGER_TIMEZONE=../UTC", local, "MANAGER_TIMEZONE invalid: ../UTC (server local time)\n"),
+            ("MANAGER_TIMEZONE=local", local, ""),
+            ("MANAGER_TIMEZONE=Mars/Base", local, "MANAGER_TIMEZONE invalid: Mars/Base (server local time)\n"),
+            ("MANAGER_TIMEZONE=Europe/Moscow # основная зона", moscow, ""),
+            ("MANAGER_TIMEZONE=Europe/Moscow\nXRAY_RAW_LOG_ROTATE_TIME=25:00", moscow, ""),
+        )
 
-        for env_text, on_calendar in cases.items():
+        for env_text, on_calendar, warning in cases:
             with self.subTest(env=env_text):
                 self.env_path.write_text(env_text)
-                code, stdout, _stderr = self.run_command("raw-log-timer-sync", "--no-systemctl")
+                code, stdout, stderr = self.run_command("raw-log-timer-sync", "--no-systemctl")
 
+                self.assertEqual(self.env_path.read_text(), env_text)
+                self.assertEqual(self.systemctl_calls, [])
+                self.assertEqual(stderr, warning)
                 self.assertEqual(code, 0)
                 self.assertIn(f"OnCalendar: {on_calendar}\n", stdout)
                 self.assertIn(f"OnCalendar={on_calendar}\n", self.timer_path.read_text())
