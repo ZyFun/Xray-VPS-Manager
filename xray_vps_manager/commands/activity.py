@@ -218,7 +218,9 @@ def set_raw_log_rotate_time(value):
 
 def sync_raw_log_timer(no_systemctl=False):
     try:
-        result = unit_sync.sync_raw_log_timer(run_systemctl=not no_systemctl)
+        result = unit_sync.sync_raw_log_timer(
+            run_systemctl=not no_systemctl, on_warning=lambda message: print(message, file=sys.stderr)
+        )
     except RuntimeError as exc:
         die(f"Raw Xray log rotate timer sync failed: {exc}")
     print(f"Raw Xray log rotate service synced: {result['servicePath']}")

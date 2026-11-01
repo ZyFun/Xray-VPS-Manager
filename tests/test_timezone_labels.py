@@ -252,8 +252,8 @@ class XrayTestTimezoneTests(TimezoneLabelCase):
         self.assertEqual(diag.failures, ["Manager timezone: MANAGER_TIMEZONE invalid: Mars/Base (server local time)"])
         self.assertEqual(output.getvalue(), "FAIL: Manager timezone: MANAGER_TIMEZONE invalid: Mars/Base (server local time)\n")
 
-    def test_raw_local_alias_still_fails_diagnostics_without_changing_timer(self) -> None:
-        """107-R03: псевдоним допустим в CLI, но сырое значение опасно для OnCalendar."""
+    def test_raw_local_alias_still_fails_diagnostics_but_uses_local_calendar(self) -> None:
+        """VIREI-252: таймер использует локальное время; проверка настройки в xray-test прежняя."""
         for alias in ("local", "server", "system", "default", "сервер", "локально", "по умолчанию"):
             with self.subTest(alias=alias):
                 diag = self.diagnostics(alias)
@@ -266,7 +266,7 @@ class XrayTestTimezoneTests(TimezoneLabelCase):
                 self.assertEqual(diag.failures, ["Manager timezone: " + message])
                 self.assertEqual(output.getvalue(), "FAIL: Manager timezone: " + message + "\n")
                 self.assertEqual(test_command.manager_timezone(diag), ZoneInfo(SERVER_TZ))
-                self.assertEqual(raw_logs.raw_log_on_calendar(), f"*-*-* 03:00:00 {alias}")
+                self.assertEqual(raw_logs.raw_log_on_calendar(), "*-*-* 03:00:00")
                 self.assertEqual(self.env_path.read_bytes(), before)
 
     def test_traffic_checks_timezone_uses_local_for_invalid_zone(self) -> None:
@@ -356,12 +356,12 @@ class CoreTimeTimezoneTests(TimezoneLabelCase):
         self.assertEqual(datetime(2026, 6, 12, tzinfo=tzinfo).utcoffset(), SERVER_OFFSET)
 
     def test_raw_log_next_rotation_label_and_on_calendar(self) -> None:
-        """B1.1 / XR-REV-038: подпись ротации предупреждает; прежний OnCalendar сохранён."""
+        """VIREI-252: подпись предупреждает о неверной зоне, расписание использует время сервера."""
         now = datetime(2026, 6, 12, 4, 0, tzinfo=timezone.utc)
         cases = {
             VALID: ("2026-06-13 03:00:00 Europe/Moscow", "*-*-* 03:00:00 Europe/Moscow"),
             "": ("2026-06-13 03:00:00 server local time", "*-*-* 03:00:00"),
-            INVALID: (f"2026-06-13 03:00:00 {WARNING}", "*-*-* 03:00:00 Mars/Base"),
+            INVALID: (f"2026-06-13 03:00:00 {WARNING}", "*-*-* 03:00:00"),
         }
 
         for zone, (label, on_calendar) in cases.items():

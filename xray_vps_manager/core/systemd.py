@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from typing import Callable
 
 from xray_vps_manager.core.errors import ExternalCommandError
-from xray_vps_manager.core import process
+from xray_vps_manager.core import clock, process
 
 DEFAULT_VERIFY_TIMEOUT = 3.0
 DEFAULT_POLL_INTERVAL = 0.5
@@ -34,6 +34,16 @@ WRITER_RESTART_UNITS = tuple(unit for unit in MANAGER_UNITS
                              if unit.endswith('.timer') or unit == 'xray-telegram-poller.service')
 
 Runner = Callable[..., subprocess.CompletedProcess]
+
+
+def calendar_timezone_suffix(env: dict[str, str], on_warning: Callable[[str], None] | None = None) -> str:
+    """Суффикс OnCalendar для зоны менеджера. Пустой суффикс означает время сервера."""
+    zone = clock.manager_timezone(env)
+    if not zone.valid:
+        if on_warning is not None:
+            on_warning(zone.label)
+        return ""
+    return f" {zone.name}" if zone.name else ""
 
 
 class SystemdUnitStartError(subprocess.CalledProcessError):
