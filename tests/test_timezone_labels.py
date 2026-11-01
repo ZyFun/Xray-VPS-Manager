@@ -86,11 +86,11 @@ class MenuHeaderTimezoneTests(TimezoneLabelCase):
         self.assertEqual(values["Security Audit"](), "2026-10-01 18:00 JST")
         self.assertEqual(values["label"](), WARNING)
 
-    def test_trailing_comment_makes_zone_invalid(self) -> None:
-        """B1.1 исправляет XR-REV-033; парсер XR-REV-069 остаётся до B1.2."""
+    def test_trailing_comment_keeps_zone_valid(self) -> None:
+        """B1.2 / XR-REV-069: комментарий удаляет общий парсер; clock получает валидную зону."""
         self.write_env(f"{VALID} # основная зона")
-        self.assertEqual(menu_status.manager_updated_header_value("2026-06-13 11:58 UTC"), "2026-06-13 20:58 JST")
-        self.assertEqual(menu_status.manager_timezone_label(), f"MANAGER_TIMEZONE invalid: {VALID} # основная зона (server local time)")
+        self.assertEqual(menu_status.manager_updated_header_value("2026-06-13 11:58 UTC"), "2026-06-13 14:58 MSK")
+        self.assertEqual(menu_status.manager_timezone_label(), VALID)
 
 
 class TelegramEventTimeTests(TimezoneLabelCase):

@@ -178,14 +178,27 @@ class SetTimezoneAccessDeadlinesTests(unittest.TestCase):
         )
 
     def test_set_timezone_repairs_invalid_previous_timezone(self) -> None:
+        """B1.2: невалидная зона проверяется отдельно от ставшего корректным комментария."""
         self.save_clients({"alice": "2026-10-05T00:00:00+10:00"})
 
-        with self.sandbox("Europe/Moscow # основная зона", datetime(2026, 10, 4, 12, 0, tzinfo=MOSCOW)):
+        with self.sandbox("Mars/Base", datetime(2026, 10, 4, 12, 0, tzinfo=MOSCOW)):
             output = self.set_timezone("Europe/Moscow")
 
         self.assertEqual(read_server_env(self.env_path)["MANAGER_TIMEZONE"], "Europe/Moscow")
         self.assertEqual(self.deadlines(), {"alice": "2026-10-05T00:00+03:00"})
         self.assertNotIn("WARN:", output)
+
+    def test_set_timezone_uses_valid_previous_zone_with_trailing_comment(self) -> None:
+        """B1.2 / XR-REV-069: прежняя зона валидна, поэтому сравнение дат не пропускается."""
+        self.save_clients({"alice": "2026-10-05T00:00:00+10:00"})
+        with self.sandbox("Europe/Moscow # основная зона", datetime(2026, 10, 4, 12, 0, tzinfo=MOSCOW)):
+            output = self.set_timezone("Europe/Moscow")
+        self.assertEqual(read_server_env(self.env_path)["MANAGER_TIMEZONE"], "Europe/Moscow")
+        self.assertEqual(self.deadlines(), {"alice": "2026-10-05T00:00+03:00"})
+        self.assertEqual(
+            [line for line in output.splitlines() if line.startswith("WARN:")],
+            ["WARN: client alice: access date changed 2026-10-04 -> 2026-10-05"],
+        )
 
     def test_set_timezone_east_warns_when_deadline_has_already_passed(self) -> None:
         self.save_clients(
