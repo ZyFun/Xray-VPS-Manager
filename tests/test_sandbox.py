@@ -250,6 +250,7 @@ class SandboxTests(unittest.TestCase):
                 raise RuntimeError('original error')
 
     def test_cli_reads_real_schema_fixture_and_reports_missing_database(self):
+        """Текущее поведение, баг XR-REV-046: в golden отсутствует счётчик непустой client_credentials."""
         with Sandbox() as box:
             before = box.db_rows('clients', 'client_credentials')
             config_before = box.paths.config.read_bytes()

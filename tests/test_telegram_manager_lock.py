@@ -217,6 +217,7 @@ class TelegramPollerLockTests(unittest.TestCase):
         self.assertTrue(client_lock_tests.lock_is_free(self.lock_path))
 
     def test_load_client_db_saves_drift_once_and_then_reads_without_lock(self) -> None:
+        """Текущее поведение, баг XR-REV-014: чтение сохраняет расхождение маршрутов под блокировкой."""
         stderr = StringIO()
         with telegram_patches(self.root):
             first = telegram_command.load_client_db()

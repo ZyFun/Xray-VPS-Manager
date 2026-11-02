@@ -314,7 +314,7 @@ def start_client_add_worker(root: Path, name: str) -> subprocess.Popen:
     env["PYTHONPATH"] = str(REPO_ROOT)
     code = "import sys; from tests import test_client_manager_lock as t; sys.exit(t.add_worker(sys.argv[1:]))"
     return subprocess.Popen(
-        [sys.executable, "-c", code, str(root), name, "fast", client_lock_tests.SLOW_WRITER_WINDOW],
+        [sys.executable, "-c", code, str(root), name, "fast"],
         cwd=str(REPO_ROOT),
         env=env,
         stdin=subprocess.DEVNULL,
