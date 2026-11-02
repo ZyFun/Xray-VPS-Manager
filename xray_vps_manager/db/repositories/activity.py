@@ -1194,6 +1194,10 @@ def upsert_exception(connection: sqlite3.Connection, item: dict[str, Any]) -> No
         )
 
 
+def exception_exists(connection: sqlite3.Connection, value: str) -> bool:
+    return connection.execute("SELECT 1 FROM activity_exceptions WHERE value = ?", (value,)).fetchone() is not None
+
+
 def list_exceptions(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = connection.execute(
         "SELECT value, kind, source, created_at FROM activity_exceptions ORDER BY value"

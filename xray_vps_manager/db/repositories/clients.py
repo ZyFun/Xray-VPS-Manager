@@ -161,6 +161,10 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
             upsert_client_credential(connection, name, tag, credential)
 
 
+def client_exists(connection: sqlite3.Connection, name: str) -> bool:
+    return connection.execute("SELECT 1 FROM clients WHERE name = ?", (name,)).fetchone() is not None
+
+
 def get_client(connection: sqlite3.Connection, name: str) -> dict[str, Any] | None:
     row = connection.execute("SELECT * FROM clients WHERE name = ?", (name,)).fetchone()
     return _entry_from_row(connection, row)
