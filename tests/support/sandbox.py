@@ -105,7 +105,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.commands.set_bypass', 'CONFIG_PATH'),
     ('xray_vps_manager.commands.set_bypass', 'XRAY_BIN'),
     ('xray_vps_manager.commands.set_cascade', 'CONFIG_PATH'),
-    ('xray_vps_manager.commands.sqlite', 'MANAGER_DB_PATH'),
     ('xray_vps_manager.commands.telegram', 'SERVER_ENV_PATH'),
     ('xray_vps_manager.commands.telegram', 'MANAGER_DB_PATH'),
     ('xray_vps_manager.commands.telegram', 'XRAY_CLIENT'),

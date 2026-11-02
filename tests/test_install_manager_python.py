@@ -268,7 +268,13 @@ class InstallScriptManagerPythonTests(unittest.TestCase):
     def test_install_script_runs_embedded_python_with_selected_interpreter(self) -> None:
         content = INSTALL_SH.read_text(encoding="utf-8")
 
-        self.assertEqual(content.count("\"$XRAY_PYTHON\" <<'PY'\n"), 2)
+        python_block = "\"$XRAY_PYTHON\" <<'PY'\n"
+        self.assertEqual(content.count(python_block), 1)
+        caddy_block = content.split(python_block, 1)[1].split("\nPY\n", 1)[0]
+        self.assertIn("caddy.setup_caddy_for_trojan_ws(", caddy_block)
+        wrapper = content.index("\ninstall_manager_wrapper xray-vps-manager\n")
+        init = content.index("\n/usr/local/sbin/xray-vps-manager sqlite init --from-install\n")
+        self.assertLess(wrapper, init)
         self.assertIsNone(re.search(r"^\s*python3 <<'PY'", content, re.MULTILINE))
 
     def test_install_script_records_manager_python_in_server_env(self) -> None:
