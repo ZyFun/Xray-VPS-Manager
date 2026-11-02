@@ -320,7 +320,7 @@ class WarpProbeOrderTests(unittest.TestCase):
     """64-R02: временный конфиг проб WARP не меняет маршрут остальных клиентов."""
 
     def test_probes_keep_live_outbound_order(self) -> None:
-        import test_routing_manager_lock as routing_lock_tests
+        from tests import test_routing_manager_lock as routing_lock_tests
 
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

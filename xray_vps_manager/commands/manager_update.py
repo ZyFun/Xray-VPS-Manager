@@ -30,6 +30,8 @@ from xray_vps_manager.core.paths import SERVER_ENV_PATH
 from xray_vps_manager.core.terminal import green, print_table, red, yellow
 from xray_vps_manager.system import manager_update as system_manager_update
 
+from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
+
 REPO_OWNER = "ZyFun"
 REPO_NAME = "Xray-VPS-Manager"
 REPO_SLUG = f"{REPO_OWNER}/{REPO_NAME}"
@@ -95,7 +97,7 @@ def fail(message: str) -> None:
     print(red(f"FAIL: {message}"))
 
 
-def run(command: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
+def run(command: list[str], timeout: int | None = 60) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         check=False,
@@ -112,8 +114,7 @@ def compact_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def require_root() -> None:
-    if os.geteuid() != 0:
-        raise ManagerUpdateError("Запусти команду от root.")
+    _require_root(error_type=ManagerUpdateError)
 
 
 def current_manager_version() -> str:
@@ -202,7 +203,7 @@ def safe_extract_archive(archive: Path, destination: Path) -> Path:
                 member_target.relative_to(destination_root)
             except ValueError as exc:
                 raise ManagerUpdateError(f"Небезопасный путь в архиве: {member.name}") from exc
-        tar.extractall(destination)
+        tar.extractall(destination, filter="data")
 
     roots = [path for path in destination.iterdir() if path.is_dir()]
     if len(roots) != 1:
@@ -407,11 +408,28 @@ def install_release_source(source_root: Path) -> None:
 
 
 def sync_raw_log_units() -> None:
-    xray_activity = SBIN_DIR / "xray-activity"
-    if not xray_activity.exists():
+    # Имя сохраняется для старых вызывающих мест; новый пакет доставляет все units.
+    command = system_manager_update.installed_units_sync_command(SBIN_DIR, MANAGER_PACKAGE_DIR)
+    canonical = command[1:] == ["units", "sync"]
+    if canonical:
+        try:
+            # Sync ограничивает ожидание lock и каждый systemctl сам. Общий
+            # deadline снаружи мог бы убить его посреди восстановления файлов;
+            # число активных экземпляров таймеров заранее неизвестно.
+            result = run(command, timeout=None)
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            raise ManagerUpdateError(f"Systemd units не удалось синхронизировать: {exc}") from exc
+        if result.returncode:
+            raise ManagerUpdateError(f"Systemd units не удалось синхронизировать: {compact_output(result)}")
+        ok("Systemd units синхронизированы из установленного пакета.")
+        return
+    if not Path(command[0]).exists():
         warn("xray-activity не найден; raw-log rotation units не синхронизированы.")
         return
-    result = run([str(xray_activity), "raw-log-timer-sync"], timeout=30)
+    try:
+        result = run(command, timeout=30)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise ManagerUpdateError(f"raw-log rotation units не удалось синхронизировать: {exc}") from exc
     if result.returncode == 0:
         ok("raw-log rotation systemd units синхронизированы.")
     else:
@@ -570,7 +588,10 @@ def install_tag(tag: str, force: bool, run_xray_test: bool) -> None:
         except Exception:
             warn("Обновление менеджера не прошло; восстанавливаю предыдущую версию.")
             restore_backup(backup)
-            sync_raw_log_units()
+            try:
+                sync_raw_log_units()
+            except ManagerUpdateError as exc:
+                warn(f"Синхронизация units при откате не прошла: {exc}")
             restart_manager_services()
             raise
 
@@ -591,14 +612,21 @@ def rollback(name: str | None, run_xray_test: bool) -> None:
 def rollback_locked(name: str | None, run_xray_test: bool) -> None:
     backup = choose_backup(name)
     restore_backup(backup)
-    sync_raw_log_units()
+    sync_error = None
+    try:
+        sync_raw_log_units()
+    except ManagerUpdateError as exc:
+        sync_error = exc
+        warn(f"Синхронизация units при откате не прошла: {exc}")
     restart_manager_services()
     validate_installed_manager(run_xray_test)
+    if sync_error is not None:
+        raise sync_error
     ok(f"Xray VPS Manager восстановлен из backup: {backup.name}")
 
 
 def usage() -> str:
-    return """Usage:
+    return f"""Usage:
   xray-manager-update --check
   xray-manager-update --update [TAG] [--force] [--no-test]
   xray-manager-update --backups
@@ -607,7 +635,7 @@ def usage() -> str:
 Examples:
   xray-manager-update --check
   xray-manager-update --update
-  xray-manager-update --update v1.0.1
+  xray-manager-update --update {current_manager_version()}
   xray-manager-update --rollback
 """
 
@@ -636,6 +664,7 @@ def selected_actions(args: argparse.Namespace) -> int:
     )
 
 
+@command_entry('manager-update')
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -663,8 +692,7 @@ def main() -> None:
                 update_to_tag(args.update, force=args.force, run_xray_test=not args.no_test)
             return
     except ManagerUpdateError as exc:
-        fail(str(exc))
-        sys.exit(1)
+        _fail(str(exc))
 
 
 if __name__ == "__main__":

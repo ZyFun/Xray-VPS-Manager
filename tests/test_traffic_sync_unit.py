@@ -25,12 +25,10 @@ STEP_COMMANDS = [
 ]
 
 
-def unit_block(unit_name: str) -> str:
-    content = INSTALL_SH.read_text()
-    start_marker = f"cat >/etc/systemd/system/{unit_name} <<'EOF'\n"
-    start = content.index(start_marker) + len(start_marker)
-    end = content.index("\nEOF\n", start)
-    return content[start:end]
+def unit_block(name):
+    # Установщик теперь вызывает тот же канон вместо heredoc.
+    from xray_vps_manager.system.units import unit_text
+    return unit_text(name)
 
 
 def directive_lines(block: str, directive: str) -> list:

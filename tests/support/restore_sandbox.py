@@ -12,7 +12,7 @@ import subprocess
 import tarfile
 from unittest import mock
 
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 from xray_vps_manager.commands import backup
 from xray_vps_manager.core import process, systemd
 from xray_vps_manager.core.errors import LockTimeout, RestoreError

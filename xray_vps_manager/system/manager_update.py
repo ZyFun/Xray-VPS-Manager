@@ -102,3 +102,14 @@ def record_python(
     except (OSError, UnicodeError, LockTimeout) as exc:
         return False, str(exc)
     return True, ""
+
+
+def installed_units_sync_command(sbin_dir: Path, package_dir: Path) -> list[str]:
+    """Выбрать CLI установленного пакета, а не канон загруженного обновлятора.
+
+    При откате к версии до units sync остаётся её прежний raw-log CLI.
+    Сам wrapper запускается напрямую и использует выбранный абсолютный shebang.
+    """
+    if (package_dir / "system" / "units.py").is_file():
+        return [str(sbin_dir / "xray-vps-manager"), "units", "sync"]
+    return [str(sbin_dir / "xray-activity"), "raw-log-timer-sync"]

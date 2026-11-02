@@ -134,38 +134,29 @@ class MenuLoopErrorTests(unittest.TestCase):
 
 
 class MenuEntryInterruptTests(unittest.TestCase):
-    def setUp(self) -> None:
-        for patcher in (
-            mock.patch.object(menu, "print_menu_header"),
-            mock.patch("os.geteuid", return_value=0),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
     def run_menu(self, answers):
-        with mock.patch("builtins.input", side_effect=answers):
-            return run_captured(menu.menu)
+        from tests.support.sandbox import Sandbox
+        with Sandbox() as box, mock.patch("builtins.input", side_effect=answers):
+            box.processes.script({('/usr/local/bin/xray', 'version'): box.processes.ok('Xray 26.1.1\n')})
+            return box.run_cli('menu')
 
     def test_eof_on_main_menu_prompt_exits_cleanly(self) -> None:
-        result, _stdout, stderr = self.run_menu(EOFError())
-
-        self.assertIsNone(result)
-        self.assertNotIn("Traceback", stderr)
+        result = self.run_menu(EOFError())
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('Xray VPS Manager', result.stdout)
+        self.assertNotIn('Traceback', result.stderr)
 
     def test_eof_inside_nested_submenu_exits_cleanly(self) -> None:
-        # «Подключения и TLS» -> EOF на «Выбор:» вложенного подменю.
-        result, _stdout, stderr = self.run_menu(["2", EOFError()])
-
-        self.assertIsNone(result)
-        self.assertNotIn("Traceback", stderr)
+        result = self.run_menu(['2', EOFError()])
+        self.assertEqual(result.exit_code, 0)
+        self.assertNotIn('Traceback', result.stderr)
 
     def test_keyboard_interrupt_exits_with_code_130(self) -> None:
-        for answers in (KeyboardInterrupt(), ["2", KeyboardInterrupt()]):
+        for answers in (KeyboardInterrupt(), ['2', KeyboardInterrupt()]):
             with self.subTest(answers=answers):
-                with self.assertRaises(SystemExit) as raised:
-                    self.run_menu(answers)
-
-                self.assertEqual(raised.exception.code, 130)
+                result = self.run_menu(answers)
+                self.assertEqual(result.exit_code, 130)
+                self.assertNotIn('Traceback', result.stderr)
 
 
 if __name__ == "__main__":

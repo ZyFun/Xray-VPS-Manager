@@ -10,8 +10,10 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from xray_vps_manager.core.paths import CONFIG_PATH
+from xray_vps_manager.core.paths import CONFIG_PATH, paths
+from xray_vps_manager.core.systemd import MANAGER_UNITS
 from xray_vps_manager.core.terminal import green, red
+from xray_vps_manager.xray import caddy
 
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 
@@ -155,7 +157,9 @@ def check_config(call: CommandRunner) -> None:
 
 
 def check_timers(call: CommandRunner) -> None:
-    call(["systemctl", "status", "xray-traffic-sync.timer", "xray-client-expire.timer", "xray-telegram-poller.service", "--no-pager"])
+    configs = caddy.list_random_tls_configs(paths().caddy_random_tls_dir)
+    instances = dict.fromkeys(caddy.random_tls_timer_instance(config.domain) for config in configs)
+    call(["systemctl", "status", *MANAGER_UNITS, *instances, "--no-pager"])
 
 
 def run_all_tests(call: CommandRunner) -> None:

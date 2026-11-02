@@ -23,6 +23,8 @@ from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import inbound_listen_endpoints
 from xray_vps_manager.xray import outbound_links
 
+from xray_vps_manager.runner import command_entry, error_exit, fail as _fail
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 GEOIP_WARNING_OUTBOUND_PREFIX = "geoip-warning-"
 TEST_INBOUND_TAG = "cascade-test-socks"
@@ -34,8 +36,7 @@ ROUTE_DRIFT_LOCK_TIMEOUT = 5
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def parse_vless(uri, tag=None):
@@ -712,9 +713,8 @@ def print_usage():
     )
 
 
+@command_entry('cascade')
 def main():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
     if not CONFIG_PATH.exists():
         die(f"Config not found: {CONFIG_PATH}")
 
@@ -747,7 +747,7 @@ def main():
         else:
             cmd_add(args)
     except ManagerError as exc:
-        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
+        error_exit(exc)
 
 
 if __name__ == "__main__":

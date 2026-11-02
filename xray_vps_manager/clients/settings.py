@@ -58,24 +58,26 @@ def normalize_timezone(value: str | None) -> str:
     return clock.normalize_timezone_name(value)
 
 
+def manager_timezone_info() -> clock.ManagerTimezone:
+    # Сохраняем прежний приоритет env_value для клиентских настроек.
+    value = server_env_value("MANAGER_TIMEZONE", "")
+    return clock.manager_timezone({"MANAGER_TIMEZONE": value})
+
+
 def configured_timezone_name() -> str:
-    return normalize_timezone(server_env_value("MANAGER_TIMEZONE", ""))
+    return manager_timezone_info().name
 
 
 def manager_timezone():
-    name = configured_timezone_name()
-    if name:
-        return clock.timezone_named(name)
-    return clock.server_local_timezone()
+    return manager_timezone_info().tz
 
 
 def manager_timezone_label() -> str:
-    name = configured_timezone_name()
-    if name:
-        return name
-    current = clock.now().astimezone(clock.server_local_timezone())
-    suffix = current.tzname() or "server local time"
-    return f"server local time ({suffix})"
+    result = manager_timezone_info()
+    if result.name:
+        return result.label
+    suffix = clock.now().astimezone(result.tz).tzname() or "server local time"
+    return f"{result.label} ({suffix})"
 
 
 def server_addr() -> str:

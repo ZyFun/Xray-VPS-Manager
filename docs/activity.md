@@ -174,7 +174,7 @@ xray-activity error-retention
 xray-activity error-retention 180
 ```
 
-Raw-файлы `/var/log/xray/access.log` и `/var/log/xray/error.log` хранятся 180 дней по умолчанию. Ротация выполняется manager-owned systemd timer с точным `OnCalendar`, который генерируется из `XRAY_RAW_LOG_ROTATE_TIME` и `MANAGER_TIMEZONE`. По умолчанию timer получает расписание вроде `OnCalendar=*-*-* 03:00:00 Europe/Moscow`; если `MANAGER_TIMEZONE` пустой, используется server local time. В timer включён `Persistent=true`, поэтому пропущенный запуск после перезагрузки будет догнан systemd.
+Raw-файлы `/var/log/xray/access.log` и `/var/log/xray/error.log` хранятся 180 дней по умолчанию. Ротация выполняется manager-owned systemd timer с точным `OnCalendar`, который генерируется из `XRAY_RAW_LOG_ROTATE_TIME` и `MANAGER_TIMEZONE`. По умолчанию timer получает расписание вроде `OnCalendar=*-*-* 03:00:00 Europe/Moscow`; при пустой зоне или локальном псевдониме время берётся по часам сервера. При неизвестном имени зоны таймер также использует время сервера, а команда синхронизации выводит одно предупреждение в stderr. В timer включён `Persistent=true`, поэтому пропущенный запуск после перезагрузки будет догнан systemd.
 
 Показать настройки raw logs:
 

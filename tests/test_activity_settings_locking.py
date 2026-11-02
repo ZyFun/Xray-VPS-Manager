@@ -6,7 +6,7 @@ from unittest import mock
 
 from xray_vps_manager.activity import cleanup
 from xray_vps_manager.core import locks
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 
 @contextmanager

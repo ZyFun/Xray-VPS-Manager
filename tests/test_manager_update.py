@@ -10,10 +10,13 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import warnings
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+from tests.support.sandbox import Sandbox, ProcessResult
 
 import xray_vps_manager
 from xray_vps_manager import runner
@@ -24,6 +27,29 @@ from xray_vps_manager.core import paths as core_paths
 
 
 class ManagerUpdateTests(unittest.TestCase):
+    def test_usage_shows_current_release_tag(self) -> None:
+        """XR-REV-026: пример обновления использует версию установленного пакета."""
+        example = f"  xray-manager-update --update v{xray_vps_manager.__version__}"
+        self.assertIn(example, manager_update.usage().splitlines())
+
+    def test_safe_extract_archive_keeps_release_wrapper_executable(self) -> None:
+        """XR-REV-047: распаковка релиза сохраняет исполняемый скрипт и убирает запись для группы и остальных."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            wrapper = root / "xray-menu"
+            wrapper.write_bytes(b"#!/bin/sh\nexit 0\n")
+            wrapper.chmod(0o777)
+            archive = root / "release.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(wrapper, arcname="release/xray-menu")
+            with warnings.catch_warnings(action="error", category=DeprecationWarning):
+                release = manager_update.safe_extract_archive(archive, root / "extract")
+
+            self.assertEqual(release, root / "extract/release")
+            extracted = release / "xray-menu"
+            self.assertEqual(extracted.read_bytes(), wrapper.read_bytes())
+            self.assertEqual(extracted.stat().st_mode & 0o777, 0o755)
+
     def test_normalize_tag_adds_v_for_plain_version(self) -> None:
         self.assertEqual(manager_update.normalize_tag("1.0.1"), "v1.0.1")
         self.assertEqual(manager_update.normalize_tag("v1.0.1"), "v1.0.1")
@@ -116,21 +142,16 @@ class ManagerUpdateTests(unittest.TestCase):
         self.assertEqual(calls[-1], ["/bin/systemctl", "reset-failed", *manager_update.MANAGER_SYSTEMD_UNITS])
 
     def test_sync_raw_log_units_calls_installed_activity_wrapper_with_systemctl(self) -> None:
-        calls = []
-
-        def fake_run(command: list[str], timeout: int = 60):
-            calls.append(command)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            sbin_dir = Path(tmp_dir)
-            (sbin_dir / "xray-activity").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-            with mock.patch.object(manager_update, "SBIN_DIR", sbin_dir), \
-                mock.patch.object(manager_update, "run", side_effect=fake_run), \
-                redirect_stdout(io.StringIO()):
+        # Откат к пакету до units sync сохраняет прежний CLI.
+        with Sandbox() as server:
+            sbin_dir = server.paths.sbin_dir
+            sbin_dir.mkdir(parents=True)
+            (sbin_dir / "xray-activity").write_text("#!/usr/bin/env python3\n")
+            command = (str(sbin_dir / "xray-activity"), "raw-log-timer-sync")
+            server.processes.script({command: ProcessResult()})
+            with redirect_stdout(io.StringIO()):
                 manager_update.sync_raw_log_units()
-
-        self.assertEqual(calls, [[str(sbin_dir / "xray-activity"), "raw-log-timer-sync"]])
+            self.assertEqual(server.processes.calls, [command])
 
     def test_restore_wrappers_does_not_rewrite_unrelated_sbin_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -155,6 +176,130 @@ class ManagerUpdateTests(unittest.TestCase):
             self.assertTrue((target_sbin / "xray-menu").exists())
             self.assertTrue(os.access(target_sbin / "xray-menu", os.X_OK))
             self.assertEqual(unrelated.stat().st_mode & 0o777, 0o700)
+
+
+class ManagerUpdateUnitsRollbackTests(unittest.TestCase):
+    """105-R02: реальный локальный update/restore с подменой только HTTP и процессов."""
+
+    def setUp(self):
+        self.server = Sandbox().__enter__()
+        self.addCleanup(self.server.__exit__, None, None, None)
+        self.package = self.server.paths.lib_dir / "xray_vps_manager"
+        self.sync = (str(self.server.paths.sbin_dir / "xray-vps-manager"), "units", "sync")
+        self.check = (str(self.server.paths.sbin_dir / "xray-test"),)
+        self.poller = ("/bin/systemctl", "try-restart", "xray-telegram-poller.service")
+        self.restarted_versions = []
+        old = self.make_release("old")
+        with redirect_stdout(io.StringIO()):
+            manager_update.install_release_source(old)
+        self.server.processes.executables["systemctl"] = "/bin/systemctl"
+        responses = {
+            ("/bin/systemctl", "daemon-reload"): ProcessResult(),
+            ("/bin/systemctl", "reset-failed", *manager_update.MANAGER_SYSTEMD_UNITS): ProcessResult(),
+            (str(self.server.paths.sbin_dir / "xray-vps-manager"), "--help"): ProcessResult(),
+            (str(self.server.paths.sbin_dir / "xray-manager-update"), "--help"): ProcessResult(),
+            self.sync: ProcessResult(), self.check: ProcessResult(),
+        }
+        for name in manager_update.MANAGER_SYSTEMD_UNITS:
+            responses[("/bin/systemctl", "try-restart", name)] = ProcessResult()
+        def restarted(command, **kwargs):
+            self.restarted_versions.append((self.package / "runner.py").read_text())
+            return ProcessResult()
+        responses[self.poller] = restarted
+        self.server.processes.script(responses)
+
+    def make_release(self, version):
+        root = self.server.root / ("release-" + version)
+        root.mkdir()
+        for name in manager_update.REQUIRED_RELEASE_ITEMS:
+            if name != "xray_vps_manager":
+                (root / name).write_text("#!/usr/bin/env python3\n")
+        package = root / "xray_vps_manager"
+        (package / "system").mkdir(parents=True)
+        (package / "system" / "units.py").write_text("# generator\n")
+        (package / "runner.py").write_text(version)
+        return root
+
+    def run_update(self):
+        release = self.make_release("new")
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w:gz") as archive:
+            archive.add(release, arcname="release")
+        self.server.http.script({manager_update.release_archive_url("v99.0.0"): data.getvalue()})
+        return self.server.run_cli("manager-update", "--update", "v99.0.0")
+
+    def test_failed_rollback_sync_still_restarts_restored_package_and_keeps_original_failure(self):
+        self.server.processes.script({
+            self.sync: [ProcessResult(), ProcessResult(returncode=1, stderr="rollback sync failed")],
+            self.check: ProcessResult(returncode=1, stderr="original xray-test failure"),
+        })
+        result = self.run_update()
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.restarted_versions, ["new", "old"])
+        self.assertEqual((self.package / "runner.py").read_text(), "old")
+        self.assertIn("WARN:", result.stdout)
+        self.assertIn("rollback sync failed", result.stdout)
+        self.assertIn("ERROR: xray-test", result.stderr)
+        self.assertIn("original xray-test failure", result.stderr)
+
+    def test_failed_initial_and_rollback_sync_preserve_initial_reason_and_restart_old_package(self):
+        self.server.processes.script({self.sync: [
+            ProcessResult(returncode=1, stderr="initial sync failed"),
+            ProcessResult(returncode=1, stderr="rollback sync failed"),
+        ]})
+        result = self.run_update()
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.restarted_versions, ["old"])
+        failure = result.stderr
+        self.assertIn("initial sync failed", failure)
+        self.assertNotIn("rollback sync failed", failure)
+
+    def test_explicit_rollback_sync_failure_still_restarts_and_checks_but_exits_one(self):
+        with redirect_stdout(io.StringIO()):
+            backup = manager_update.create_backup("v99.0.0")
+        (self.package / "runner.py").write_text("new")
+        self.server.processes.script({self.sync: ProcessResult(returncode=1, stderr="rollback sync failed")})
+        result = self.server.run_cli("manager-update", "--rollback", backup.name)
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.restarted_versions, ["old"])
+        calls = self.server.processes.calls
+        self.assertLess(calls.index(self.sync), calls.index(self.poller))
+        self.assertLess(calls.index(self.poller), calls.index(self.check))
+        self.assertIn("ERROR: Systemd units", result.stderr)
+        self.assertIn("rollback sync failed", result.stdout)
+        self.assertNotIn("восстановлен из backup", result.stdout)
+
+    def test_sync_process_errors_are_reported_without_traceback_and_rollback_continues(self):
+        with redirect_stdout(io.StringIO()):
+            backup = manager_update.create_backup("v99.0.0")
+        for error in (FileNotFoundError("wrapper missing"), subprocess.TimeoutExpired(self.sync, 60)):
+            with self.subTest(error=type(error).__name__):
+                self.restarted_versions.clear()
+                self.server.processes.script({self.sync: error})
+                result = self.server.run_cli("manager-update", "--rollback", backup.name)
+                self.assertEqual(result.exit_code, 1)
+                self.assertEqual(self.restarted_versions, ["old"])
+                self.assertIn("ERROR:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_full_sync_has_no_outer_deadline_that_can_kill_unit_file_rollback(self):
+        with redirect_stdout(io.StringIO()):
+            manager_update.sync_raw_log_units()
+        request = next(kwargs for command, kwargs in self.server.processes.requests if command == self.sync)
+        self.assertIsNone(request["timeout"])
+
+    def test_legacy_rollback_sync_process_errors_also_allow_restart_and_checks(self):
+        with redirect_stdout(io.StringIO()):
+            backup = manager_update.create_backup("v99.0.0")
+        (backup / "package" / "xray_vps_manager" / "system" / "units.py").unlink()
+        legacy = (str(self.server.paths.sbin_dir / "xray-activity"), "raw-log-timer-sync")
+        self.server.processes.script({legacy: subprocess.TimeoutExpired(legacy, 30)})
+        result = self.server.run_cli("manager-update", "--rollback", backup.name)
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.restarted_versions, ["old"])
+        self.assertIn(self.check, self.server.processes.calls)
+        self.assertIn("ERROR: raw-log rotation units", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 WRAPPER_BODY = "import sys\nfrom xray_vps_manager.runner import run_command\n"
@@ -773,8 +918,8 @@ class ManagerUpdateCheckTests(unittest.TestCase):
     CURRENT = f"v{xray_vps_manager.__version__}"
     RELEASE_PAGE = "https://github.com/ZyFun/Xray-VPS-Manager/releases/tag/"
 
-    def run_check(self, response) -> tuple:
-        from support.sandbox import Sandbox
+    def run_check(self, response, *, error=False) -> tuple:
+        from tests.support.sandbox import Sandbox
         with Sandbox() as box:
             box.http.script({manager_update.GITHUB_API_LATEST:
                              response if isinstance(response, Exception) else box.http.json(response)})
@@ -782,8 +927,8 @@ class ManagerUpdateCheckTests(unittest.TestCase):
                 result = box.run_cli('manager-update', '--check')
             self.assertEqual(box.http.calls, [(manager_update.GITHUB_API_LATEST,
                                                {'User-agent': 'xray-manager-update'}, 20)])
-        self.assertEqual(result.stderr, "")
-        return result.exit_code, result.stdout
+        self.assertEqual(result.stdout if error else result.stderr, "")
+        return result.exit_code, result.stderr if error else result.stdout
 
     def release(self, tag: str) -> dict:
         return {"tag_name": tag, "html_url": self.RELEASE_PAGE + tag}
@@ -822,7 +967,7 @@ class ManagerUpdateCheckTests(unittest.TestCase):
             ),
         )
 
-    def test_check_errors_print_fail_and_exit_1(self) -> None:
+    def test_check_errors_print_error_to_stderr_and_exit_1(self) -> None:
         url = manager_update.GITHUB_API_LATEST
         cases = {
             "404": (
@@ -839,7 +984,7 @@ class ManagerUpdateCheckTests(unittest.TestCase):
 
         for name, (response, message) in cases.items():
             with self.subTest(name):
-                self.assertEqual(self.run_check(response), (1, f"\033[31mFAIL: {message}\033[0m\n"))
+                self.assertEqual(self.run_check(response, error=True), (1, f"ERROR: {message}\n"))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from support.sandbox import Sandbox, UnexpectedCommand
+from tests.support.sandbox import Sandbox, UnexpectedCommand
 from xray_vps_manager.commands import manager_update, update, warp
 from xray_vps_manager.core import process, systemd, http
 from xray_vps_manager.core.errors import ExternalCommandError

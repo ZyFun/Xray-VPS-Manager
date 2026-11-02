@@ -6,7 +6,7 @@ from xray_vps_manager.core import time as core_time
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.commands import telegram
 from xray_vps_manager.clients import runtime
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 
 class TimeContractTests(unittest.TestCase):

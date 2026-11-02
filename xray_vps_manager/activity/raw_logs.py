@@ -14,6 +14,7 @@ from xray_vps_manager.activity import repository
 from xray_vps_manager.activity import settings
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.activity.constants import ACCESS_LOG_PATH, ERROR_LOG_PATH
+from xray_vps_manager.core import systemd
 from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
@@ -21,11 +22,6 @@ from xray_vps_manager.db.storage import sqlite_read_ready
 
 RAW_LOG_ROTATION_STATE_KEY = "xrayRawLogRotation.state"
 ERROR_LOG_OFFSET_NAME = "xray-error-log"
-RAW_LOG_ROTATE_SERVICE_NAME = "xray-raw-log-rotate.service"
-RAW_LOG_ROTATE_TIMER_NAME = "xray-raw-log-rotate.timer"
-SYSTEMD_UNIT_DIR = Path("/etc/systemd/system")
-RAW_LOG_ROTATE_SERVICE_PATH = SYSTEMD_UNIT_DIR / RAW_LOG_ROTATE_SERVICE_NAME
-RAW_LOG_ROTATE_TIMER_PATH = SYSTEMD_UNIT_DIR / RAW_LOG_ROTATE_TIMER_NAME
 XRAY_ERROR_RE = re.compile(
     r"^(?P<time>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?(?:\s+\[(?P<level>[^\]]+)\])?\s*(?P<body>.*)$"
 )
@@ -37,40 +33,15 @@ def _rotate_time_parts(value: str) -> tuple[int, int]:
     return int(hour), int(minute)
 
 
-def raw_log_on_calendar(env: dict[str, str] | None = None) -> str:
-    env = settings.with_activity_defaults(dict(env or settings.server_env_values()))
-    rotate_time = settings.raw_log_rotate_time(env)
-    timezone_name = (env.get("MANAGER_TIMEZONE") or "").strip()
-    suffix = f" {timezone_name}" if timezone_name else ""
-    return f"*-*-* {rotate_time}:00{suffix}"
+def raw_log_on_calendar(env: dict[str, str] | None = None, *,
+                        on_warning: Callable[[str], None] | None = None) -> str:
+    values = env or settings.server_env_values()
+    suffix = systemd.calendar_timezone_suffix(values, on_warning)
+    return rotation_calendar(values, suffix)
 
 
-def raw_log_timer_unit(env: dict[str, str] | None = None) -> str:
-    on_calendar = raw_log_on_calendar(env)
-    return f"""[Unit]
-Description=Rotate raw Xray access/error logs
-
-[Timer]
-OnCalendar={on_calendar}
-Persistent=true
-AccuracySec=1min
-Unit={RAW_LOG_ROTATE_SERVICE_NAME}
-
-[Install]
-WantedBy=timers.target
-"""
-
-
-def raw_log_service_unit() -> str:
-    return """[Unit]
-Description=Rotate raw Xray access/error logs
-After=xray.service
-ConditionPathExists=/usr/local/etc/xray/config.json
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/xray-activity rotate-raw-logs --due
-"""
+def rotation_calendar(env: dict[str, str], timezone_suffix: str) -> str:
+    return f"*-*-* {settings.raw_log_rotate_time(env)}:00{timezone_suffix}"
 
 
 def next_rotation_label(now: datetime | None = None) -> str:
@@ -84,49 +55,6 @@ def next_rotation_label(now: datetime | None = None) -> str:
     if local >= next_run:
         next_run = next_run + timedelta(days=1)
     return f"{next_run.strftime('%Y-%m-%d %H:%M:%S')} {timezone_label}"
-
-
-def _run_systemctl(args: list[str]) -> None:
-    result = subprocess.run(
-        ["systemctl", *args],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        output = (result.stdout or "") + (result.stderr or "")
-        raise RuntimeError(output.strip() or f"systemctl {' '.join(args)} failed")
-
-
-def sync_raw_log_timer(
-    *,
-    run_systemctl: bool = True,
-    service_path: Path = RAW_LOG_ROTATE_SERVICE_PATH,
-    timer_path: Path = RAW_LOG_ROTATE_TIMER_PATH,
-    env: dict[str, str] | None = None,
-) -> dict[str, str]:
-    env_values = settings.with_activity_defaults(dict(env or settings.server_env_values()))
-    on_calendar = raw_log_on_calendar(env_values)
-    service = raw_log_service_unit()
-    unit = raw_log_timer_unit(env_values)
-    service_path.parent.mkdir(parents=True, exist_ok=True)
-    service_path.write_text(service)
-    service_path.chmod(0o644)
-    timer_path.parent.mkdir(parents=True, exist_ok=True)
-    timer_path.write_text(unit)
-    timer_path.chmod(0o644)
-    if run_systemctl:
-        _run_systemctl(["daemon-reload"])
-        _run_systemctl(["enable", "--now", RAW_LOG_ROTATE_TIMER_NAME])
-        _run_systemctl(["restart", RAW_LOG_ROTATE_TIMER_NAME])
-    return {
-        "path": str(timer_path),
-        "servicePath": str(service_path),
-        "timerPath": str(timer_path),
-        "onCalendar": on_calendar,
-        "systemctl": "yes" if run_systemctl else "no",
-    }
 
 
 def _load_state() -> dict:

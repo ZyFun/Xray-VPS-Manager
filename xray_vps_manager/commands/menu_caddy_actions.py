@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+from xray_vps_manager.system import units as system_units
 from xray_vps_manager.clients import connections as connection_store
 from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql
 from xray_vps_manager.core.terminal import print_table
@@ -862,7 +863,7 @@ def enable_random_tls(confirm: ConfirmCallback) -> None:
         return
     try:
         config = caddy.write_random_tls_config(site.domain, site.local_port)
-        units = caddy.write_random_tls_systemd_units()
+        units = system_units.write_random_tls_systemd_units()
         run(["systemctl", "daemon-reload"])
         run_no_check(["systemctl", "disable", "--now", caddy.LEGACY_RANDOM_TLS_TIMER], timeout=20)
         run_no_check(["systemctl", "stop", caddy.LEGACY_RANDOM_TLS_SERVICE], timeout=10)

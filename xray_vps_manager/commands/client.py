@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
+from xray_vps_manager.system import unit_sync
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import crud as client_crud
@@ -32,6 +33,8 @@ from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
+
+from xray_vps_manager.runner import command_entry, error_exit, fail as _fail
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -61,8 +64,7 @@ RESET = "\033[0m"
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 @contextmanager
@@ -76,7 +78,7 @@ def client_db_lock(purpose, timeout=None, skip_on_timeout=False):
             # Timer step: skip this run so the rest of the minute chain continues; the next run retries.
             print(f"WARN: {exc.message}. Шаг {purpose} пропущен, следующий запуск таймера повторит его.", file=sys.stderr)
             sys.exit(0)
-        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
+        error_exit(exc)
 
 
 def run(command):
@@ -1670,20 +1672,18 @@ def cmd_expire_due(quiet=False):
 
 
 def cmd_timezone():
-    name = client_settings.configured_timezone_name()
+    zone = client_settings.manager_timezone_info()
     current = client_access.local_now()
-    print(f"MANAGER_TIMEZONE: {name or 'server local time'}")
+    print(f"MANAGER_TIMEZONE: {zone.label}")
     print(f"Current time: {current.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
 
 def cmd_set_timezone(value):
     name = normalize_timezone(value)
     with client_db_lock("set-timezone"):
-        try:
-            previous_tz = client_settings.manager_timezone()
-        except ValueError:
-            # Невалидная прежняя зона: set-timezone — способ её исправить; дату «до смены» сравнить не с чем.
-            previous_tz = None
+        previous = client_settings.manager_timezone_info()
+        # При исправлении неверной настройки прежняя выбранная зона неизвестна.
+        previous_tz = previous.tz if previous.valid else None
         values = client_settings.server_env_values(SERVER_ENV_PATH)
         values["MANAGER_TIMEZONE"] = name
         save_server_env_values(values)
@@ -1695,9 +1695,7 @@ def cmd_set_timezone(value):
     for warning in warnings:
         print(f"WARN: {warning}")
     try:
-        from xray_vps_manager.activity import raw_logs as activity_raw_logs
-
-        result = activity_raw_logs.sync_raw_log_timer()
+        result = unit_sync.sync_raw_log_timer()
         print(f"Raw log rotation timer: {result['onCalendar']}")
     except Exception as exc:
         print(f"WARN: raw log rotation timer sync failed: {exc}", file=sys.stderr)
@@ -2231,9 +2229,8 @@ def cmd_key(name):
     print(access_key_for_client_id(client_id))
 
 
+@command_entry('client')
 def main():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
     if len(sys.argv) < 2:
         usage()
         sys.exit(1)

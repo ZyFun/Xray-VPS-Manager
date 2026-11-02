@@ -2,11 +2,13 @@ import contextlib
 import functools
 import subprocess
 import unittest
+import warnings
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 from unittest import mock
 
+from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.xray import caddy
 
 
@@ -186,7 +188,7 @@ class CaddyConfigTests(unittest.TestCase):
             systemd_dir = root / "systemd"
 
             config = caddy.write_random_tls_config("api.example.com", 10300, env_path)
-            units = caddy.write_random_tls_systemd_units(systemd_dir)
+            units = system_units.write_random_tls_systemd_units(systemd_dir)
 
             self.assertEqual(config.domain, "api.example.com")
             self.assertEqual(config.local_port, 10300)
@@ -352,6 +354,8 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertIn("import /etc/caddy/conf.d/*.caddy", content)
 
     def test_config_backup_and_restore_caddy_settings(self) -> None:
+        """XR-REV-047: конфигурация из TAR восстанавливается без предупреждения, с правами Caddy."""
+        self.enterContext(warnings.catch_warnings(action="error", category=DeprecationWarning))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             backup_dir = root / "backups"
@@ -385,6 +389,9 @@ class CaddyConfigTests(unittest.TestCase):
             self.assertEqual(caddyfile.read_text(), "import /etc/caddy/conf.d/*.caddy\n")
             self.assertIn("reverse_proxy h2c://127.0.0.1:10300", site.read_text())
             self.assertEqual(restored, [caddyfile, conf_dir])
+            self.assertEqual(caddyfile.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(site.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(conf_dir.stat().st_mode & 0o777, 0o755)
 
     def test_delete_config_backup_refuses_outside_backup_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -419,6 +426,8 @@ class CaddyConfigTests(unittest.TestCase):
         self.assertEqual(candidates[0], static_root)
 
     def test_site_backup_and_restore_site_files(self) -> None:
+        """XR-REV-047: сайт из TAR восстанавливается без предупреждения, с правами для раздачи файлов."""
+        self.enterContext(warnings.catch_warnings(action="error", category=DeprecationWarning))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             backup_dir = root / "backups"
@@ -443,6 +452,8 @@ class CaddyConfigTests(unittest.TestCase):
             self.assertEqual(restored_root, site_root.resolve())
             self.assertEqual((site_root / "index.html").read_text(), "before")
             self.assertEqual((nested / "app.css").read_text(), "body{}")
+            self.assertEqual((nested / "app.css").stat().st_mode & 0o777, 0o644)
+            self.assertEqual(nested.stat().st_mode & 0o777, 0o755)
 
     def test_delete_site_backup_refuses_outside_backup_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

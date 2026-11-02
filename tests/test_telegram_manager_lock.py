@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-import test_client_manager_lock as client_lock_tests
+from tests import test_client_manager_lock as client_lock_tests
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.commands import telegram as telegram_command
@@ -139,8 +139,8 @@ def writer_worker(argv: list) -> int:
 
 def start_worker(function: str, *args: str) -> subprocess.Popen:
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([str(REPO_ROOT), str(TESTS_DIR)])
-    code = f"import sys, test_telegram_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    code = f"import sys; from tests import test_telegram_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
     return subprocess.Popen(
         [sys.executable, "-c", code, *args],
         cwd=str(REPO_ROOT),
@@ -337,7 +337,7 @@ class TelegramSetupLockTests(unittest.TestCase):
         with telegram_patches(self.root, updates=[message_update("555", 41, "/start")]), \
             mock.patch.object(telegram_setup, "choose_private_chat", side_effect=choose_chat), \
             mock.patch.object(telegram_setup, "configure_bot_commands") as configure_bot_commands, \
-            mock.patch.object(telegram_command, "require_root"), \
+            mock.patch("os.geteuid", return_value=0), \
             mock.patch.object(telegram_command.sys, "argv", ["xray-telegram", "owner"]), \
             redirect_stdout(StringIO()), \
             redirect_stderr(stderr):
@@ -463,7 +463,7 @@ class TelegramSetupLockTests(unittest.TestCase):
                 with telegram_patches(self.root), \
                     mock.patch.object(telegram_command, "MANAGER_LOCK_TIMEOUT", 0.2), \
                     mock.patch.object(telegram_setup, "MANAGER_LOCK_TIMEOUT", 0.2), \
-                    mock.patch.object(telegram_command, "require_root"), \
+                    mock.patch("os.geteuid", return_value=0), \
                     mock.patch.object(telegram_command.sys, "argv", ["xray-telegram", *args]), \
                     client_lock_tests.foreign_lock_holder(self.lock_path, HOLDER), \
                     redirect_stdout(StringIO()), \

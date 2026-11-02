@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from xray_vps_manager.commands import traffic_sync
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import repository as traffic_repository
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 
 @contextmanager

@@ -27,6 +27,8 @@ from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import inbound_listen_endpoints
 from xray_vps_manager.xray import cascade as cascade_config
 
+from xray_vps_manager.runner import command_entry, error_exit, fail as _fail, require_root as _require_root
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 WARP_DIR = Path("/usr/local/etc/xray/warp")
 WGCF_BIN = Path("/usr/local/bin/wgcf")
@@ -51,8 +53,7 @@ RESET = "\033[0m"
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def color(text, code):
@@ -87,8 +88,7 @@ def restart_xray():
 
 
 def require_root():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+    _require_root()
 
 
 def load_config():
@@ -1029,8 +1029,8 @@ def pin_hosts_choice(flags):
     return None
 
 
+@command_entry('warp')
 def main():
-    require_root()
     command = sys.argv[1] if len(sys.argv) > 1 else "status"
     try:
         if command == "status":
@@ -1065,7 +1065,7 @@ def main():
             print(stderr, file=sys.stderr)
         die(f"Command failed: {' '.join(str(item) for item in exc.cmd)}")
     except ManagerError as exc:
-        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
+        error_exit(exc)
 
 
 if __name__ == "__main__":

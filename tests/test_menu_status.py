@@ -1,5 +1,5 @@
 import unittest
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 from xray_vps_manager.commands import menu_status
 

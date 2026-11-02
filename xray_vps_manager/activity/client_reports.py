@@ -254,7 +254,7 @@ def counter_growth_rows(counter_rows: list[dict], limit: int = 50) -> list[dict]
 
 
 def activity_display_timezone():
-    result = clock.manager_timezone(activity_settings.server_env_values(), invalid="utc")
+    result = clock.manager_timezone(activity_settings.server_env_values())
     label = result.label
     if not result.name:
         local_name = clock.now().astimezone(result.tz).tzname()

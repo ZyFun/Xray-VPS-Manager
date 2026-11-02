@@ -3,7 +3,7 @@ import unittest
 from xray_vps_manager.activity import controls as activity
 from xray_vps_manager.traffic import controls as traffic
 from xray_vps_manager.commands import menu_status
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 
 
 class SettingsWriterTests(unittest.TestCase):

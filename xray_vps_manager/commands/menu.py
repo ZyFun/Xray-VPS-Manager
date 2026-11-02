@@ -20,15 +20,18 @@ from xray_vps_manager.commands import (
     menu_traffic_actions,
     menu_xray_actions,
 )
+from xray_vps_manager.core import clock
 from xray_vps_manager.core.terminal import red, table_border, table_row
 
-MENU_VERSION = "v2.2.1"
-MENU_UPDATED = "2026-10-27 20:40 UTC"
+from xray_vps_manager import __version__
+from xray_vps_manager.runner import command_entry, fail as _fail
+
+MENU_VERSION = f"v{__version__}"
+MENU_UPDATED = "2026-11-02 16:13 UTC"
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def print_menu_header():
@@ -51,6 +54,9 @@ def print_menu_header():
     for row in rows:
         print(table_row(row, [label_width, value_width]))
     print(row_border)
+    zone = clock.manager_timezone(menu_status.server_env())
+    if not zone.valid:
+        print(red(f"! {zone.label}"))
     warning = menu_status.security_audit_header_warning()
     if warning:
         print(red(f"! {warning}"))
@@ -1286,10 +1292,12 @@ def main_menu_handlers():
     }
 
 
-def menu():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+def usage():
+    print("Usage: xray-menu")
 
+
+@command_entry('menu')
+def menu():
     handlers = main_menu_handlers()
     try:
         while True:

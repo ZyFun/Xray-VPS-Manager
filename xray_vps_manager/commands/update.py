@@ -17,6 +17,8 @@ from xray_vps_manager.core.http import http_json as _http_json
 from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.xray.config import inbound_listen_endpoints
 
+from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 XRAY_BIN = Path("/usr/local/bin/xray")
 XRAY_ASSET_DIR = Path("/usr/local/share/xray")
@@ -58,8 +60,7 @@ def fail(message):
 
 
 def die(message, code=1):
-    fail(message)
-    sys.exit(code)
+    _fail(message, code)
 
 
 def run(command, timeout=60, check=False, env=None):
@@ -79,8 +80,7 @@ def run(command, timeout=60, check=False, env=None):
 
 
 def require_root():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+    _require_root()
 
 
 def parse_version(value):
@@ -698,8 +698,8 @@ def usage():
 """)
 
 
+@command_entry('update')
 def main():
-    require_root()
     if len(sys.argv) < 2:
         usage()
         sys.exit(1)

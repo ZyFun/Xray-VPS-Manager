@@ -20,7 +20,7 @@ from xray_vps_manager.commands import backup
 from xray_vps_manager.core import process
 from xray_vps_manager.core.errors import LockTimeout, RestoreError
 
-from support.restore_sandbox import (
+from tests.support.restore_sandbox import (
     ARCHIVED, CURRENT, CONFIG_ARCNAME, SERVER_ENV_ARCNAME, MANAGER_DB_ARCNAME,
     RestoreSandbox,
 )

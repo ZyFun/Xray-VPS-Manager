@@ -8,7 +8,6 @@ import sys
 from calendar import monthrange
 from datetime import date
 from pathlib import Path
-from zoneinfo import ZoneInfoNotFoundError
 
 from xray_vps_manager.core import clock
 from xray_vps_manager.core.paths import MANAGER_DB_PATH
@@ -20,6 +19,8 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.traffic import history as traffic_history
 from xray_vps_manager.traffic import repository as traffic_repository
+
+from xray_vps_manager.runner import command_entry
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -45,14 +46,10 @@ def server_env_values():
 
 
 def manager_timezone():
-    value = (server_env_values().get("MANAGER_TIMEZONE") or "").strip()
-    if not value:
-        return clock.server_local_timezone()
-    try:
-        return clock.timezone_named(value)
-    except ZoneInfoNotFoundError:
-        log(f"Invalid MANAGER_TIMEZONE={value!r}. Falling back to server local time.")
-        return clock.server_local_timezone()
+    result = clock.manager_timezone(server_env_values())
+    if not result.valid:
+        log(result.label)
+    return result.tz
 
 
 def local_bucket_time():
@@ -492,10 +489,12 @@ def sync():
         return sync_locked()
 
 
+def usage():
+    print("Usage: xray-traffic-sync [--quiet]")
+
+
+@command_entry('traffic-sync')
 def main():
-    if os.geteuid() != 0:
-        print("ERROR: Run this script as root.", file=sys.stderr)
-        sys.exit(1)
     sys.exit(sync())
 
 

@@ -1,0 +1,2060 @@
+[
+  {
+    "module": "activity.backfill",
+    "scope": "_open_text",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='gzip', ctx=Load()), attr='open', ctx=Load()), args=[Name(id='path', ctx=Load()), Constant(value='rt')], keywords=[keyword(arg='encoding', value=Constant(value='utf-8')), keyword(arg='errors', value=Constant(value='replace'))])",
+    "count": 1
+  },
+  {
+    "module": "activity.backfill",
+    "scope": "_open_text",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='path', ctx=Load()), attr='open', ctx=Load()), args=[Constant(value='rt')], keywords=[keyword(arg='encoding', value=Constant(value='utf-8')), keyword(arg='errors', value=Constant(value='replace'))])",
+    "count": 1
+  },
+  {
+    "module": "activity.blocklist",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "activity.blocklist",
+    "scope": "apply_config",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 3
+  },
+  {
+    "module": "activity.cleanup",
+    "scope": "<module>",
+    "category": "sqlite3",
+    "ast": "Import(names=[alias(name='sqlite3')])",
+    "count": 1
+  },
+  {
+    "module": "activity.cleanup",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "activity.cleanup",
+    "scope": "cleanup_activity_data",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "activity.cleanup",
+    "scope": "database_stats",
+    "category": "sqlite3",
+    "ast": "Attribute(value=Name(id='sqlite3', ctx=Load()), attr='connect', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "activity.cleanup",
+    "scope": "quick_check",
+    "category": "sqlite3",
+    "ast": "Attribute(value=Name(id='sqlite3', ctx=Load()), attr='connect', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "activity.cleanup",
+    "scope": "vacuum_database",
+    "category": "sqlite3",
+    "ast": "Attribute(value=Name(id='sqlite3', ctx=Load()), attr='connect', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "activity.constants",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "activity.constants",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/activity.lock')",
+    "count": 1
+  },
+  {
+    "module": "activity.constants",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/config.json')",
+    "count": 1
+  },
+  {
+    "module": "activity.constants",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/server.env')",
+    "count": 1
+  },
+  {
+    "module": "activity.constants",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/share/v2ray/geoip.dat')",
+    "count": 1
+  },
+  {
+    "module": "activity.constants",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/share/xray/geoip.dat')",
+    "count": 1
+  },
+  {
+    "module": "activity.exports",
+    "scope": "create_client_export",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='tarfile', ctx=Load()), attr='open', ctx=Load()), args=[Name(id='archive', ctx=Load()), Constant(value='w:gz')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "activity.exports",
+    "scope": "export_archive_rows",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='tarfile', ctx=Load()), attr='open', ctx=Load()), args=[Name(id='path', ctx=Load()), Constant(value='r:gz')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "activity.sync",
+    "scope": "sync_activity",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='ACCESS_LOG_PATH', ctx=Load()), attr='open', ctx=Load()), args=[Constant(value='rb')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.activity",
+    "scope": "main",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='LOCK_PATH', ctx=Load()), attr='open', ctx=Load()), args=[Constant(value='w')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "create_backup",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='tarfile', ctx=Load()), attr='open', ctx=Load()), args=[Name(id='archive', ctx=Load()), Constant(value='w:gz')], keywords=[keyword(arg='dereference', value=Constant(value=True))])",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "extract_archive",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='tarfile', ctx=Load()), attr='open', ctx=Load()), args=[Name(id='archive', ctx=Load()), Constant(value='r:gz')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "restore_caddy_config_if_present",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.backup",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "sync_traffic",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-activity')",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "sync_traffic",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-traffic-sync')",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "test_and_restart",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.backup",
+    "scope": "xray_version",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/config.json')",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/server.env')",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-telegram')",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-traffic-sync')",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "cmd_route",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "query_user_stats",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "restart_xray_with_config_test",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.client",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.client",
+    "scope": "update_trojan_caddy_site",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.manager_update",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/lib/xray-vps-manager')",
+    "count": 1
+  },
+  {
+    "module": "commands.manager_update",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/lib/xray-vps-manager-backups')",
+    "count": 1
+  },
+  {
+    "module": "commands.manager_update",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin')",
+    "count": 1
+  },
+  {
+    "module": "commands.manager_update",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.manager_update",
+    "scope": "download_release_archive",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='archive', ctx=Load()), attr='open', ctx=Load()), args=[Constant(value='wb')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.manager_update",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.manager_update",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.manager_update",
+    "scope": "safe_extract_archive",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='tarfile', ctx=Load()), attr='open', ctx=Load()), args=[Name(id='archive', ctx=Load()), Constant(value='r:gz')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu",
+    "scope": "call",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_actions",
+    "scope": "activity_retention_value",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_actions",
+    "scope": "activity_retention_value",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_actions",
+    "scope": "activity_risk_limit_values",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_actions",
+    "scope": "activity_risk_limit_values",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_actions",
+    "scope": "geoip_codes",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_actions",
+    "scope": "geoip_codes",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_actions",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_blocklist_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_blocklist_actions",
+    "scope": "blocklist_rows",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_blocklist_actions",
+    "scope": "blocklist_rows",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_blocklist_actions",
+    "scope": "candidate_rows",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_blocklist_actions",
+    "scope": "candidate_rows",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_exception_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_exception_actions",
+    "scope": "activity_exception_candidate_rows",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_exception_actions",
+    "scope": "activity_exception_candidate_rows",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_exception_actions",
+    "scope": "activity_exception_rows",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_exception_actions",
+    "scope": "activity_exception_rows",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_export_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_export_actions",
+    "scope": "activity_export_report",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_export_actions",
+    "scope": "activity_export_report",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_activity_export_actions",
+    "scope": "activity_export_rows_for_selection",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_activity_export_actions",
+    "scope": "activity_export_rows_for_selection",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_backup_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_backup_actions",
+    "scope": "backup_rows_for_selection",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_backup_actions",
+    "scope": "backup_rows_for_selection",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_backup_actions",
+    "scope": "create_backup_download_command",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_backup_actions",
+    "scope": "create_backup_download_command",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "delete_site",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "install_caddy",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "reload_caddy",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "remove_default_http_site",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "run_no_check",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "run_no_check",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_caddy_actions",
+    "scope": "update_site_domain",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_reality_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_reality_actions",
+    "scope": "refresh_initial_link",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_reality_actions",
+    "scope": "refresh_initial_link",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_reality_actions",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_security_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_security_actions",
+    "scope": "reload_sshd_service",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_security_actions",
+    "scope": "reload_sshd_service",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_security_actions",
+    "scope": "sshd_binary",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/sshd')",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_security_actions",
+    "scope": "sshd_effective_config",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_security_actions",
+    "scope": "sshd_effective_config",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_security_actions",
+    "scope": "validate_sshd_config",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_security_actions",
+    "scope": "validate_sshd_config",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_status",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_status",
+    "scope": "current_xray_version",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_status",
+    "scope": "current_xray_version",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.menu_status",
+    "scope": "current_xray_version",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_traffic_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_traffic_actions",
+    "scope": "sync_traffic_quiet",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_xray_actions",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_xray_actions",
+    "scope": "apply_config",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_xray_actions",
+    "scope": "check_config",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.menu_xray_actions",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.set_bypass",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.set_bypass",
+    "scope": "access_log_lines_since",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='ACCESS_LOG_PATH', ctx=Load()), attr='open', ctx=Load()), args=[Constant(value='rb')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.set_bypass",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.set_bypass",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.set_bypass",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.set_cascade",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/config.json')",
+    "count": 1
+  },
+  {
+    "module": "commands.set_cascade",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.set_cascade",
+    "scope": "apply_config",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.set_cascade",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.set_cascade",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.set_cascade",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.set_cascade",
+    "scope": "test_cascade",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 2
+  },
+  {
+    "module": "commands.telegram",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/manager.db')",
+    "count": 1
+  },
+  {
+    "module": "commands.telegram",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/server.env')",
+    "count": 1
+  },
+  {
+    "module": "commands.telegram",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-client')",
+    "count": 1
+  },
+  {
+    "module": "commands.telegram",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.telegram",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.telegram",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/config.json')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/manager.db')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/server.env')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/lib/xray-vps-manager/xray_vps_manager')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-activity')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-backup')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-client')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-manager-update')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-menu')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-set-bypass')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-set-cascade')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-telegram')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-test')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-traffic-sync')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-update')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-vps-manager')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-warp')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/share/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "check_activity_runtime",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-activity')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "check_client_list_runtime",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-client')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "check_telegram_runtime",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-telegram')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "check_traffic_sync_runtime",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-traffic-sync')",
+    "count": 1
+  },
+  {
+    "module": "commands.test",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.test",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/config.json')",
+    "count": 1
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/server.env')",
+    "count": 1
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/traffic.lock')",
+    "count": 1
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "query_runtime_stats",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "sync",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='LOCK_PATH', ctx=Load()), attr='open', ctx=Load()), args=[Constant(value='w')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.traffic_sync",
+    "scope": "sync_access_log",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='ACCESS_LOG_PATH', ctx=Load()), attr='open', ctx=Load()), args=[Constant(value='rb')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/config.json')",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/lib/xray-backups')",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/share/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.update",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "run_diagnostics",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-test')",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "run_passthrough",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.update",
+    "scope": "sha256",
+    "category": "open",
+    "ast": "Call(func=Attribute(value=Name(id='path', ctx=Load()), attr='open', ctx=Load()), args=[Constant(value='rb')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/wgcf')",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/config.json')",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/warp')",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "apply_config",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "probe_warp_disabled",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 2
+  },
+  {
+    "module": "commands.warp",
+    "scope": "probe_warp_endpoint",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 2
+  },
+  {
+    "module": "commands.warp",
+    "scope": "run",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.warp",
+    "scope": "run_capture",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "run_wgcf",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "commands.warp",
+    "scope": "run_wgcf",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "commands.warp",
+    "scope": "test_warp",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 2
+  },
+  {
+    "module": "system.units",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='[Unit]\\nDescription=Disable expired Xray clients\\nAfter=xray.service\\nConditionPathExists=/usr/local/etc/xray/config.json\\n\\n[Service]\\nType=oneshot\\nExecStart=/usr/local/sbin/xray-client expire-due --quiet\\n')",
+    "count": 1
+  },
+  {
+    "module": "system.units",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='[Unit]\\nDescription=Persist Xray user traffic counters\\nAfter=xray.service\\nConditionPathExists=/usr/local/etc/xray/config.json\\n\\n[Service]\\nType=oneshot\\nExecStart=-/usr/local/sbin/xray-traffic-sync --quiet\\nExecStart=-/usr/local/sbin/xray-activity sync --quiet\\nExecStart=-/usr/local/sbin/xray-telegram notify-geoip --quiet\\nExecStart=-/usr/local/sbin/xray-client enforce-limits --quiet\\nExecStart=-/usr/local/sbin/xray-client expire-due --quiet\\nExecStart=-/usr/local/sbin/xray-telegram notify-expiry --quiet\\nExecStart=-/usr/local/sbin/xray-telegram notify-daily-summary --quiet\\n')",
+    "count": 1
+  },
+  {
+    "module": "system.units",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='[Unit]\\nDescription=Poll Telegram user messages for Xray VPS Manager\\nAfter=network-online.target xray.service\\nWants=network-online.target\\n\\n[Service]\\nType=simple\\nExecStart=/usr/local/sbin/xray-telegram run-poller\\nRestart=always\\nRestartSec=5s\\n\\n[Install]\\nWantedBy=multi-user.target\\n')",
+    "count": 1
+  },
+  {
+    "module": "system.units",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='[Unit]\\nDescription=Randomize Caddy TLS protocol profile for %i\\nAfter=network-online.target caddy.service\\nWants=network-online.target\\nConditionPathExists={env_template}\\n\\n[Service]\\nType=oneshot\\nEnvironmentFile={env_template}\\nExecStart=/usr/local/sbin/xray-vps-manager caddy random-tls-run --domain %i --quiet\\n')",
+    "count": 1
+  },
+  {
+    "module": "system.units",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='[Unit]\\nDescription=Rotate raw Xray access/error logs\\nAfter=xray.service\\nConditionPathExists=/usr/local/etc/xray/config.json\\n\\n[Service]\\nType=oneshot\\nExecStart=/usr/local/sbin/xray-activity rotate-raw-logs --due\\n')",
+    "count": 1
+  },
+  {
+    "module": "system.units",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='[Unit]\\nDescription=Xray Service\\nDocumentation=https://github.com/XTLS/Xray-core\\nAfter=network.target nss-lookup.target\\nWants=network-online.target\\n\\n[Service]\\nUser=xray\\nGroup=xray\\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\\nAmbientCapabilities=CAP_NET_BIND_SERVICE\\nNoNewPrivileges=true\\nExecStart=/usr/local/bin/xray run -config /usr/local/etc/xray/config.json\\nExecStop=-+/usr/local/sbin/xray-traffic-sync --quiet\\nRestart=on-failure\\nRestartPreventExitStatus=23\\nLimitNPROC=10000\\nLimitNOFILE=1000000\\n\\n[Install]\\nWantedBy=multi-user.target\\n')",
+    "count": 1
+  },
+  {
+    "module": "telegram.admin",
+    "scope": "AdminContext",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-client')",
+    "count": 1
+  },
+  {
+    "module": "telegram.admin",
+    "scope": "create_backup_text",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-backup')",
+    "count": 1
+  },
+  {
+    "module": "telegram.admin",
+    "scope": "run_server_test_text",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/sbin/xray-test')",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_access_updated",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Telegram bot notifications are not configured or disabled.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_access_updated",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Access update notifications sent: '), FormattedValue(value=Name(id='sent_count', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_access_updated",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Client is free, access payment notification skipped: '), FormattedValue(value=Name(id='name', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_access_updated",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Client not found: '), FormattedValue(value=Name(id='name', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_access_updated",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='ERROR: access update notification failed for '), FormattedValue(value=Name(id='name', ctx=Load()), conversion=-1), Constant(value='/'), FormattedValue(value=Name(id='chat_id', ctx=Load()), conversion=-1), Constant(value=': '), FormattedValue(value=Name(id='exc', ctx=Load()), conversion=-1)])], keywords=[keyword(arg='file', value=Attribute(value=Name(id='sys', ctx=Load()), attr='stderr', ctx=Load()))])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_daily_summary",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Call(func=Name(id='build_daily_summary_message', ctx=Load()), args=[Name(id='ctx', ctx=Load()), Name(id='target_day', ctx=Load())], keywords=[])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_daily_summary",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Telegram bot notifications are not configured or disabled.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_daily_summary",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Daily summary already sent for '), FormattedValue(value=Name(id='target_key', ctx=Load()), conversion=-1), Constant(value='.')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_daily_summary",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Daily summary is not due yet: local time '), FormattedValue(value=Call(func=Attribute(value=Name(id='now_local', ctx=Load()), attr='strftime', ctx=Load()), args=[Constant(value='%H:%M')], keywords=[]), conversion=-1), Constant(value='.')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_daily_summary",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Daily summary sent for '), FormattedValue(value=Name(id='target_key', ctx=Load()), conversion=-1), Constant(value='.')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_daily_summary",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='ERROR: daily summary notification failed: '), FormattedValue(value=Name(id='exc', ctx=Load()), conversion=-1)])], keywords=[keyword(arg='file', value=Attribute(value=Name(id='sys', ctx=Load()), attr='stderr', ctx=Load()))])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_expiry",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Telegram bot notifications are not configured or disabled.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_expiry",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='ERROR: expiry reminder failed for '), FormattedValue(value=Name(id='name', ctx=Load()), conversion=-1), Constant(value='/'), FormattedValue(value=Name(id='chat_id', ctx=Load()), conversion=-1), Constant(value=': '), FormattedValue(value=Name(id='exc', ctx=Load()), conversion=-1)])], keywords=[keyword(arg='file', value=Attribute(value=Name(id='sys', ctx=Load()), attr='stderr', ctx=Load()))])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_expiry",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Expiry reminders sent: '), FormattedValue(value=Name(id='sent_count', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_geoip",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='No new GeoIP events for Telegram notification.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_geoip",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Telegram bot notifications are not configured or disabled.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_geoip",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='ERROR: Telegram notification failed: '), FormattedValue(value=Name(id='exc', ctx=Load()), conversion=-1)])], keywords=[keyword(arg='file', value=Attribute(value=Name(id='sys', ctx=Load()), attr='stderr', ctx=Load()))])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_geoip",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='ERROR: client GeoIP notification failed for '), FormattedValue(value=Name(id='chat_id', ctx=Load()), conversion=-1), Constant(value=': '), FormattedValue(value=Name(id='exc', ctx=Load()), conversion=-1)])], keywords=[keyword(arg='file', value=Attribute(value=Name(id='sys', ctx=Load()), attr='stderr', ctx=Load()))])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_geoip",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Telegram GeoIP client notification failures: '), FormattedValue(value=Name(id='failed_count', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "notify_geoip",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Telegram GeoIP notification sent: admin events '), FormattedValue(value=Name(id='admin_sent_count', ctx=Load()), conversion=-1), Constant(value=', client chats '), FormattedValue(value=Name(id='client_message_count', ctx=Load()), conversion=-1), Constant(value='.')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "print_maintenance_notice_templates",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Call(func=Name(id='maintenance_notice_message', ctx=Load()), args=[Name(id='ctx', ctx=Load()), Name(id='db', ctx=Load()), Name(id='key', ctx=Load())], keywords=[])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "print_maintenance_notice_templates",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Доступные уведомления о технических работах:')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "print_maintenance_notice_templates",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[FormattedValue(value=Name(id='index', ctx=Load()), conversion=-1), Constant(value=') '), FormattedValue(value=Subscript(value=Name(id='template', ctx=Load()), slice=Constant(value='title'), ctx=Load()), conversion=-1), Constant(value=' ('), FormattedValue(value=Name(id='key', ctx=Load()), conversion=-1), Constant(value=')')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "print_maintenance_notice_templates",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[], keywords=[])",
+    "count": 2
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_maintenance_notice",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Telegram bot notifications are not configured or disabled.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_notice_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='To send, repeat command with --yes.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_notice_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='ERROR: maintenance notice failed for '), FormattedValue(value=Name(id='chat_id', ctx=Load()), conversion=-1), Constant(value=': '), FormattedValue(value=Name(id='exc', ctx=Load()), conversion=-1)])], keywords=[keyword(arg='file', value=Attribute(value=Name(id='sys', ctx=Load()), attr='stderr', ctx=Load()))])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_notice_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Maintenance notice failed: '), FormattedValue(value=Name(id='failed_count', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_notice_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Maintenance notice sent: '), FormattedValue(value=Name(id='sent_count', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_notice_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Notice: '), FormattedValue(value=Name(id='label', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_notice_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Recipients: '), FormattedValue(value=Call(func=Name(id='len', ctx=Load()), args=[Name(id='recipients', ctx=Load())], keywords=[]), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_notice_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Name(id='message', ctx=Load())], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.notifications",
+    "scope": "send_notice_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[], keywords=[])",
+    "count": 2
+  },
+  {
+    "module": "telegram.server_settings",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "telegram.server_settings",
+    "scope": "set_tls_site_version",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 2
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "<module>",
+    "category": "subprocess",
+    "ast": "Import(names=[alias(name='subprocess')])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "apply_config",
+    "category": "subprocess",
+    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "ask_token_if_missing",
+    "category": "input",
+    "ast": "Call(func=Name(id='input', ctx=Load()), args=[Constant(value='BOT_TOKEN: ')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "ask_token_if_missing",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Token Telegram-бота не настроен.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "ask_token_if_missing",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Возьми token у @BotFather и вставь его сюда.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "choose_private_chat",
+    "category": "input",
+    "ast": "Call(func=Name(id='input', ctx=Load()), args=[Constant(value='Enter после отправки /start боту: ')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "choose_private_chat",
+    "category": "input",
+    "ast": "Call(func=Name(id='input', ctx=Load()), args=[Constant(value='Выбери чат для уведомлений [1]: ')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "choose_private_chat",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Личные чаты не найдены. Проверь, что ты написал именно этому боту, и попробуй ещё раз.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "choose_private_chat",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Найденные личные чаты:')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "choose_private_chat",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Неизвестный выбор.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "choose_private_chat",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='После этого нажми Enter здесь, чтобы сервер увидел твой chat_id.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "choose_private_chat",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Теперь отправь любое сообщение новому боту в Telegram, например /start.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "choose_private_chat",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[FormattedValue(value=Name(id='index', ctx=Load()), conversion=-1), Constant(value='. '), FormattedValue(value=Subscript(value=Name(id='row', ctx=Load()), slice=Constant(value='label'), ctx=Load()), conversion=-1), Constant(value=' ('), FormattedValue(value=Subscript(value=Name(id='row', ctx=Load()), slice=Constant(value='id'), ctx=Load()), conversion=-1), Constant(value=')')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "configure_bot_commands",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[BinOp(left=Constant(value='WARN: failed to update Telegram command menu for '), op=Add(), right=Name(id='failure', ctx=Load()))], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "configure_bot_commands",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Telegram command menu updated. Subscriber chats: '), FormattedValue(value=Name(id='updated', ctx=Load()), conversion=-1), Constant(value='.')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "configure_owner",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Telegram bot owner/chat configured.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "configure_owner",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Chat: '), FormattedValue(value=Subscript(value=Name(id='db', ctx=Load()), slice=Constant(value='chatLabel'), ctx=Load()), conversion=-1), Constant(value=' ('), FormattedValue(value=Subscript(value=Name(id='db', ctx=Load()), slice=Constant(value='chatId'), ctx=Load()), conversion=-1), Constant(value=')')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "configure_owner",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Route mode: '), FormattedValue(value=Subscript(value=Name(id='db', ctx=Load()), slice=Constant(value='routeMode'), ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "configure_owner",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Бот найден: @'), FormattedValue(value=BoolOp(op=Or(), values=[Name(id='bot_username', ctx=Load()), Call(func=Attribute(value=Name(id='bot', ctx=Load()), attr='get', ctx=Load()), args=[Constant(value='username'), Constant(value='unknown')], keywords=[])]), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "maybe_adopt_existing_cascade_route",
+    "category": "input",
+    "ast": "Call(func=Name(id='input', ctx=Load()), args=[Constant(value='Использовать cascade для привязки владельца? [Y/n]: ')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "maybe_adopt_existing_cascade_route",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Найден уже настроенный Telegram SOCKS для cascade в Xray config.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "maybe_adopt_existing_cascade_route",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Похоже, первичная настройка оборвалась после применения маршрута, но до выбора владельца бота.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "set_bot_name",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Bot name: '), FormattedValue(value=Subscript(value=Name(id='db', ctx=Load()), slice=Constant(value='botName'), ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "set_enabled",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[IfExp(test=Name(id='value', ctx=Load()), body=Constant(value='Telegram notifications enabled.'), orelse=Constant(value='Telegram notifications disabled.'))], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "set_route_mode",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Telegram Bot API traffic already uses direct server internet route.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "set_route_mode",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Telegram Bot API traffic will use direct server internet route.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "set_route_mode",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Backup: '), FormattedValue(value=Name(id='backup', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 2
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "set_route_mode",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Telegram Bot API traffic will use '), FormattedValue(value=Name(id='cascade_tag', ctx=Load()), conversion=-1), Constant(value=' through SOCKS '), FormattedValue(value=Name(id='TELEGRAM_SOCKS_HOST', ctx=Load()), conversion=-1), Constant(value=':'), FormattedValue(value=Name(id='TELEGRAM_SOCKS_PORT', ctx=Load()), conversion=-1), Constant(value='.')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "input",
+    "ast": "Call(func=Name(id='input', ctx=Load()), args=[Constant(value='BOT_TOKEN: ')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "input",
+    "ast": "Call(func=Name(id='input', ctx=Load()), args=[Constant(value='Route mode [1-direct]: ')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "input",
+    "ast": "Call(func=Name(id='input', ctx=Load()), args=[JoinedStr(values=[Constant(value='BOT_NAME ['), FormattedValue(value=Name(id='current_bot_name', ctx=Load()), conversion=-1), Constant(value=']: ')])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='  xray-telegram owner')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='1. direct: напрямую с этого сервера')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='1. Открой Telegram и найди @BotFather.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='2. cascade: через активный исходящий сервер cascade-*')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='2. Создай бота командой /newbot.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='3. Скопируй token вида 123456:ABC-DEF...')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='BOT_NAME: имя бота в сообщениях пользователям.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Если SSH-сессия оборвётся на перезапуске Xray, подключись заново и запусти:')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Как боту выходить в интернет?')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Например: Vireika. Если нажать Enter, останется текущее значение.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Нужен токен Telegram-бота от @BotFather.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Сейчас будет применён cascade-маршрут для Telegram Bot API.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='или в меню: Telegram бот -> Донастроить владельца/чат')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "setup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[], keywords=[])",
+    "count": 3
+  },
+  {
+    "module": "telegram.setup",
+    "scope": "test_message",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Test message sent.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/caddy-random-tls.d')",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "<module>",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/etc/xray/caddy-random-tls.env')",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_config_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Certificate cache files are not included; Caddy can issue certificates again.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_config_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Contains: /etc/caddy/Caddyfile and /etc/caddy/conf.d when present.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_config_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Caddy backup created: '), FormattedValue(value=Name(id='archive', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_config_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Size: '), FormattedValue(value=Call(func=Name(id='format_size', ctx=Load()), args=[Attribute(value=Call(func=Attribute(value=Name(id='archive', ctx=Load()), attr='stat', ctx=Load()), args=[], keywords=[]), attr='st_size', ctx=Load())], keywords=[]), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_config_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Name(id='archive', ctx=Load())], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_site_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Contains: static site files from the selected site root.')], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_site_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Caddy site backup created: '), FormattedValue(value=Name(id='archive', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_site_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Site root: '), FormattedValue(value=Name(id='root', ctx=Load()), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.caddy",
+    "scope": "create_site_backup",
+    "category": "print",
+    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Size: '), FormattedValue(value=Call(func=Name(id='format_size', ctx=Load()), args=[Attribute(value=Call(func=Attribute(value=Name(id='archive', ctx=Load()), attr='stat', ctx=Load()), args=[], keywords=[]), attr='st_size', ctx=Load())], keywords=[]), conversion=-1)])], keywords=[])",
+    "count": 1
+  },
+  {
+    "module": "xray.client_routes",
+    "scope": "runtime_override_commands",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 2
+  },
+  {
+    "module": "xray.crypto",
+    "scope": "reality_public_key",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "xray.crypto",
+    "scope": "xray_uuid",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  },
+  {
+    "module": "xray.crypto",
+    "scope": "xray_x25519_keys",
+    "category": "/usr/local/",
+    "ast": "Constant(value='/usr/local/bin/xray')",
+    "count": 1
+  }
+]

@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 from xray_vps_manager.core import paths as path_module, process, time as clock
 from xray_vps_manager.core.server_env import read_server_env
-from support.sandbox import Sandbox, FakeProcesses, UnexpectedCommand
+from tests.support.sandbox import Sandbox, FakeProcesses, UnexpectedCommand
 
 
 class FakeProcessesTests(unittest.TestCase):
@@ -345,7 +345,7 @@ class SandboxTests(unittest.TestCase):
         self.assertIs(subprocess.run, runner)
 
     def test_all_legacy_copies_and_function_defaults_are_restored(self):
-        from support.sandbox import LEGACY_PATH_ATTRS, _legacy_owner
+        from tests.support.sandbox import LEGACY_PATH_ATTRS, _legacy_owner
         originals = {(module, name): getattr(*_legacy_owner(module, name))
                      for module, name in LEGACY_PATH_ATTRS}
         defaults = read_server_env.__defaults__

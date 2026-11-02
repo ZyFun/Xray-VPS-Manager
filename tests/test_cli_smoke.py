@@ -14,7 +14,7 @@ HELP_OUTPUT = (
     "Usage: xray-vps-manager COMMAND [ARGS...]\n"
     "\n"
     "Commands: activity, backup, bypass, caddy, cascade, client, manager-update, menu, sqlite, telegram, test, "
-    "traffic-sync, update, warp\n"
+    "traffic-sync, units, update, warp\n"
     "\n"
     "Compatibility command names remain available: xray-menu, xray-client, xray-telegram, ...\n"
 )
@@ -54,8 +54,9 @@ class CliSmokeTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 cli.main()
 
-        self.assertEqual(caught.exception.code, 1)
-        self.assertIn("Unknown command: missing", stderr.getvalue())
+        self.assertEqual(caught.exception.code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertTrue(stderr.getvalue().startswith("ERROR: Unknown command: missing\nUsage:"))
 
     def test_alias_is_translated_before_dispatch(self) -> None:
         calls = []

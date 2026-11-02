@@ -1,8 +1,6 @@
-"""VIREI-84 (T1): коды выхода и вывод трёх вариантов `die()` до шага 1 (R1.5: единая проверка root и перехват в `runner`).
+"""VIREI-106: согласованное изменение T1 — фатальные ошибки CLI в stderr с ERROR.
 
-Каждая команда запускается отдельным процессом так же, как обёртка `/usr/local/sbin/xray-*`: `runner.run_command`.
-Варианты `die()`: `xray-client` — `ERROR:` в stderr; `xray-update` — `FAIL:` в stdout и код из `die(message, code)`;
-`xray-menu` — `ERROR:` в stderr для проверки root и `SystemExit(message)` из шапки (сообщение без префикса).
+B1.1: XR-REV-033 больше не закрывает меню при невалидной зоне.
 """
 
 import json
@@ -66,10 +64,10 @@ class DieExitCodeTests(unittest.TestCase):
             (1, "", f"ERROR: {STRICT_MESSAGE}\n"),
         )
 
-    def test_update_die_prints_fail_to_stdout_and_exits_1(self) -> None:
+    def test_update_die_prints_error_to_stderr_and_exits_1(self) -> None:
         self.assertEqual(
             self.run_command("update", "--check", root=False),
-            (1, "FAIL: Run this script as root.\n", ""),
+            (1, "", "ERROR: Run this script as root.\n"),
         )
         self.assertEqual(
             self.run_command(
@@ -77,24 +75,22 @@ class DieExitCodeTests(unittest.TestCase):
                 "--rollback",
                 patches=[("xray_vps_manager.commands.update", "BACKUP_DIR", str(self.root / "missing"))],
             ),
-            (1, "FAIL: Нет сохранённых предыдущих версий Xray для отката.\n", ""),
+            (1, "", "ERROR: Нет сохранённых предыдущих версий Xray для отката.\n"),
         )
 
     def test_menu_root_check_prints_error_to_stderr_and_exits_1(self) -> None:
         self.assertEqual(self.run_command("menu", root=False), (1, "", "ERROR: Run this script as root.\n"))
 
-    def test_menu_header_system_exit_prints_bare_message_and_exits_1(self) -> None:
-        """Текущее поведение, баг XR-REV-033: невалидная зона закрывает меню до первой строки шапки."""
-        env_path = self.root / "server.env"
-        env_path.write_text("MANAGER_TIMEZONE=Mars/Base\n")
-
-        self.assertEqual(
-            self.run_command(
-                "menu",
-                patches=[("xray_vps_manager.commands.menu_status", "SERVER_ENV_PATH", str(env_path))],
-            ),
-            (1, "\n", f"{STRICT_MESSAGE}\n"),
-        )
+    def test_menu_header_invalid_timezone_keeps_menu_running(self) -> None:
+        """B1.1 / XR-REV-033: предупреждение в шапке, штатный выход пользователя."""
+        from tests.support.sandbox import Sandbox
+        with Sandbox() as box:
+            box.paths.server_env.write_text("MANAGER_TIMEZONE=Mars/Base\n")
+            box.processes.script({("/usr/local/bin/xray", "version"): box.processes.ok("Xray 26.1.1\n")})
+            result = box.run_cli("menu", stdin="0\n")
+            self.assertEqual(result.exit_code, 0, result.stderr)
+            self.assertIn("MANAGER_TIMEZONE invalid: Mars/Base (server local time)", result.stdout)
+            self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from xray_vps_manager.system import unit_sync
 from xray_vps_manager.activity.constants import (
     DETAIL_MODE_ALL,
     DETAIL_MODE_OFF,
@@ -33,13 +34,14 @@ from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.core.terminal import print_table
 
+from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
+
 if hasattr(signal, "SIGPIPE"):
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def log(message):
@@ -48,8 +50,7 @@ def log(message):
 
 
 def require_root():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+    _require_root()
 
 
 def parse_date(value, label="DATE"):
@@ -217,7 +218,9 @@ def set_raw_log_rotate_time(value):
 
 def sync_raw_log_timer(no_systemctl=False):
     try:
-        result = activity_raw_logs.sync_raw_log_timer(run_systemctl=not no_systemctl)
+        result = unit_sync.sync_raw_log_timer(
+            run_systemctl=not no_systemctl, on_warning=lambda message: print(message, file=sys.stderr)
+        )
     except RuntimeError as exc:
         die(f"Raw Xray log rotate timer sync failed: {exc}")
     print(f"Raw Xray log rotate service synced: {result['servicePath']}")
@@ -1058,8 +1061,8 @@ def usage():
     )
 
 
+@command_entry('activity')
 def main():
-    require_root()
     args = [arg for arg in sys.argv[1:] if arg != "--quiet"]
     command = args[0] if args else "status"
     with LOCK_PATH.open("w") as lock:

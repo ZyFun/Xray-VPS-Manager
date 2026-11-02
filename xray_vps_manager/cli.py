@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import sys
 
-from xray_vps_manager.runner import COMMAND_MODULES, run_command
+from xray_vps_manager.runner import COMMAND_MODULES, error_exit, run_command
+from xray_vps_manager.commands.arguments import UsageError
 
 
 ALIASES = {
@@ -26,14 +27,14 @@ def usage() -> None:
 
 
 def main() -> None:
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+    args = sys.argv[1:]
+    if not args or args in (["-h"], ["--help"], ["help"]):
         usage()
         return
     command = ALIASES.get(sys.argv[1], sys.argv[1])
     if command not in COMMAND_MODULES:
-        print(f"Unknown command: {sys.argv[1]}", file=sys.stderr)
-        usage()
-        sys.exit(1)
+        error_exit(UsageError(f"Unknown command: {sys.argv[1]}",
+                              hint="Usage: xray-vps-manager COMMAND [ARGS...] (use --help)"))
     sys.argv = [f"xray-{command}", *sys.argv[2:]]
     run_command(command)
 

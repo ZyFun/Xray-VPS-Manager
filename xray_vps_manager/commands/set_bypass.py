@@ -28,6 +28,8 @@ from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import config as xray_config
 from xray_vps_manager.xray import outbound_links
 
+from xray_vps_manager.runner import command_entry, error_exit, fail as _fail
+
 TEST_INBOUND_TAG = "bypass-test-socks"
 ROUTE_TEST_INBOUND_TAG = "bypass-route-test-socks"
 TEST_SOCKS_HOST = "127.0.0.1"
@@ -57,8 +59,7 @@ GEOIP_REGION_PRESETS = [
 
 
 def die(message: str) -> None:
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def utc_stamp() -> str:
@@ -1111,9 +1112,8 @@ TARGET can be a domain, IP address, or http/https URL. Use "-" to clear the stor
     )
 
 
+@command_entry('bypass')
 def main() -> None:
-    if os.geteuid() != 0:
-        die("Run this script as root.")
     if not CONFIG_PATH.exists():
         die(f"Config not found: {CONFIG_PATH}")
 
@@ -1146,7 +1146,7 @@ def main() -> None:
         else:
             cmd_add(args)
     except ManagerError as exc:
-        die(f"{exc.message}\n{exc.hint}" if exc.hint else exc.message)
+        error_exit(exc)
 
 
 if __name__ == "__main__":

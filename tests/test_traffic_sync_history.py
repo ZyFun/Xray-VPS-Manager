@@ -11,7 +11,7 @@ from unittest import mock
 
 from xray_vps_manager.commands import traffic_sync
 from xray_vps_manager.core import clock
-from support.sandbox import Sandbox
+from tests.support.sandbox import Sandbox
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections

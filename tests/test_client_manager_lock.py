@@ -248,8 +248,8 @@ def writer_worker(argv: list) -> int:
 
 def start_worker(*args: str, function: str = "add_worker") -> subprocess.Popen:
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([str(REPO_ROOT), str(TESTS_DIR)])
-    code = f"import sys, test_client_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    code = f"import sys; from tests import test_client_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
     return subprocess.Popen(
         [sys.executable, "-c", code, *args],
         cwd=str(REPO_ROOT),

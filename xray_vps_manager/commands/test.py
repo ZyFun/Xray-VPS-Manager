@@ -10,8 +10,8 @@ import sys
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfoNotFoundError
 
+from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.core import clock
 from xray_vps_manager.core import interpreter as manager_interpreter
 from xray_vps_manager.core import process as core_process
@@ -33,6 +33,8 @@ from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import caddy as caddy_config
+
+from xray_vps_manager.runner import command_entry, require_root as _require_root
 
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
@@ -60,17 +62,12 @@ HELPER_SCRIPTS = [
     "/usr/local/sbin/xray-manager-update",
 ]
 MANAGER_PACKAGE_DIR = Path("/usr/local/lib/xray-vps-manager/xray_vps_manager")
-TRAFFIC_SERVICE_STEPS = [
-    "/usr/local/sbin/xray-traffic-sync --quiet",
-    "/usr/local/sbin/xray-activity sync --quiet",
-    "/usr/local/sbin/xray-telegram notify-geoip --quiet",
-    "/usr/local/sbin/xray-client enforce-limits --quiet",
-    "/usr/local/sbin/xray-client expire-due --quiet",
-    "/usr/local/sbin/xray-telegram notify-expiry --quiet",
-    "/usr/local/sbin/xray-telegram notify-daily-summary --quiet",
-]
-TRAFFIC_SERVICE_COMMANDS = [f"ExecStart=-{step}" for step in TRAFFIC_SERVICE_STEPS]
-TELEGRAM_POLLER_SERVICE_COMMAND = "ExecStart=/usr/local/sbin/xray-telegram run-poller"
+# Ожидания команд берутся из того же канона, который доставляет units sync.
+TRAFFIC_SERVICE_COMMANDS = [line for line in system_units.unit_text("xray-traffic-sync.service").splitlines()
+                            if line.startswith("ExecStart=")]
+TRAFFIC_SERVICE_STEPS = [line.removeprefix("ExecStart=").lstrip("-") for line in TRAFFIC_SERVICE_COMMANDS]
+TELEGRAM_POLLER_SERVICE_COMMAND = next(line for line in system_units.unit_text("xray-telegram-poller.service").splitlines()
+                                       if line.startswith("ExecStart="))
 TLS_EXPIRY_WARNING_DAYS = 14
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -229,8 +226,7 @@ class Diagnostics:
 
 
 def check_root():
-    if os.geteuid() != 0:
-        raise RuntimeError("run xray-test as root")
+    _require_root(error_type=RuntimeError, message="run xray-test as root")
     return "root privileges"
 
 
@@ -592,14 +588,19 @@ def check_server_env(diag):
 
 
 def check_manager_timezone(diag):
-    value = (diag.context.get("server_env", {}).get("MANAGER_TIMEZONE") or "").strip()
-    if not value:
+    env = diag.context.get("server_env", {})
+    result = clock.manager_timezone(env)
+    if not result.valid:
+        raise RuntimeError(result.label)
+    if not result.name:
+        raw_name = (env.get("MANAGER_TIMEZONE") or "").strip()
+        if raw_name:
+            raise RuntimeError(
+                f"MANAGER_TIMEZONE alias {raw_name!r} is written into timer OnCalendar; "
+                "use xray-client set-timezone server"
+            )
         return "MANAGER_TIMEZONE uses server local time"
-    try:
-        clock.timezone_named(value)
-    except ZoneInfoNotFoundError:
-        raise RuntimeError(f"invalid MANAGER_TIMEZONE: {value}")
-    return f"MANAGER_TIMEZONE={value}"
+    return f"MANAGER_TIMEZONE={result.name}"
 
 
 def check_reality_inbounds(diag):
@@ -731,6 +732,14 @@ def check_stats_runtime():
     return f"Stats API responds on {STATS_SERVER}"
 
 
+def check_unit_drift():
+    changed = unit_sync.sync_units(check=True)
+    if changed:
+        raise RuntimeError("systemd units differ from canonical files: " + ", ".join(changed)
+                           + "; run xray-vps-manager units sync --check")
+    return "systemd unit files match canonical texts"
+
+
 def check_timers():
     inactive = [
         unit
@@ -842,10 +851,7 @@ def check_traffic_db_alignment(diag):
 
 
 def manager_timezone(diag):
-    value = (diag.context.get("server_env", {}).get("MANAGER_TIMEZONE") or "").strip()
-    if not value:
-        return clock.server_local_timezone()
-    return clock.timezone_named(value)
+    return clock.manager_timezone(diag.context.get("server_env", {})).tz
 
 
 def parse_datetime(value):
@@ -1558,6 +1564,7 @@ def run_diagnostics(full_integrity=False):
     diag.check("Xray binary", lambda: check_xray_binary(diag))
     diag.check("Xray assets", check_assets)
     diag.check("Helper scripts", check_helpers)
+    diag.check("Systemd unit drift", check_unit_drift, fatal=False)
     diag.check("Helper interpreter", check_helper_interpreter, fatal=False)
     diag.check("Helper script syntax", check_helper_syntax)
     diag.check("Manager package", check_manager_package)
@@ -1612,6 +1619,7 @@ Use --all when you need a deep SQLite physical integrity check plus Trojan/TLS/C
 """)
 
 
+@command_entry('test')
 def main():
     args = sys.argv[1:]
     if len(args) > 1 or any(arg not in ("--all", "all") for arg in args):

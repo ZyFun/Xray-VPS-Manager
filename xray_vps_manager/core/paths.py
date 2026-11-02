@@ -30,6 +30,7 @@ class Paths:
     lib_dir: Path
     bundle_dir: Path
     systemd_dir: Path
+    localtime: Path
     backup_dir: Path
     export_dir: Path
     initial_link: Path
@@ -61,6 +62,7 @@ class Paths:
             lib_dir=Path('/usr/local/lib/xray-vps-manager'),
             bundle_dir=Path('/root/xray_server'),
             systemd_dir=Path('/etc/systemd/system'),
+            localtime=Path('/etc/localtime'),
             backup_dir=Path('/root/xray_backups'),
             export_dir=Path('/root/xray_activity_exports'),
             initial_link=Path('/root/xray-reality-client.txt'),

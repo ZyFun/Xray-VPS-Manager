@@ -1,14 +1,22 @@
-"""Канон времени. Переходные политики R1.2 сохраняют поведение до B-задач."""
+"""Канон времени и единая политика локальной зоны менеджера."""
 from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import lru_cache
+from io import BufferedReader
+from pathlib import Path
+import os
+import struct
 from datetime import date, datetime, time, timezone, tzinfo
 from typing import Iterator, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from xray_vps_manager.core.paths import paths
 from xray_vps_manager.core.settings import read_env
+
+_LOCAL_TIMEZONE_NAMES = ('', 'server', 'local', 'default', 'system', 'сервер', 'локально', 'по умолчанию')
 
 _moment: ContextVar[datetime | None] = ContextVar('clock_moment', default=None)
 _local_zone: ContextVar[tzinfo | None] = ContextVar('clock_local_zone', default=None)
@@ -63,23 +71,56 @@ def timezone_named(name: str) -> tzinfo:
 
 def normalize_timezone_name(value: str | None) -> str:
     raw = (value or '').strip()
-    if raw.lower() in ('', 'server', 'local', 'default', 'system', 'сервер', 'локально', 'по умолчанию'):
+    if raw.lower() in _LOCAL_TIMEZONE_NAMES:
         return ''
     try:
         timezone_named(raw)
-    except ZoneInfoNotFoundError as exc:
-        # ValueError — текущий клиентский контракт, до поведенческой B-задачи.
+    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+        # Строгая проверка нового значения для set-timezone.
         raise ValueError('MANAGER_TIMEZONE must be an IANA timezone like Europe/Moscow, or empty for server local time.') from exc
     return raw
 
 
+class _TZifReader(BufferedReader):
+    """Прерывает разбор, если zoneinfo ждёт байт правила после конца файла."""
+
+    def read(self, size: int = -1) -> bytes:
+        data = super().read(size)
+        if size > 0 and not data:
+            raise EOFError('Truncated TZif file')
+        return data
+
+
+@lru_cache(maxsize=8)
+def _timezone_from_file(path: Path, identity: tuple[int, ...]) -> tzinfo:
+    """Кэш TZif ограничен; метаданные в ключе обновляют зону при смене файла."""
+    with path.open('rb') as source, _TZifReader(source) as reader:
+        try:
+            return ZoneInfo.from_file(reader)
+        except AssertionError as exc:
+            # zoneinfo сообщает так об обрыве перед завершающим правилом TZif.
+            raise ValueError('Invalid TZif footer') from exc
+
+
 def server_local_timezone() -> tzinfo:
-    """Снимок текущего смещения, включая XR-REV-065; исправление DST — отдельно."""
+    """Зона сервера с DST: инъекция теста, localtime, TZ, текущее смещение."""
     zone = _local_zone.get()
-    local = now().astimezone(zone)
     if zone is not None:
-        return timezone(local.utcoffset(), local.tzname())
-    return local.tzinfo or timezone.utc
+        return zone
+    try:
+        path = paths().localtime
+        stat = path.stat()
+        identity = (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        return _timezone_from_file(path, identity)
+    except (OSError, ValueError, EOFError, struct.error):
+        pass
+    name = os.environ.get('TZ', '').strip().removeprefix(':')
+    if name:
+        try:
+            return timezone_named(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            pass
+    return now().astimezone().tzinfo or timezone.utc
 
 
 @dataclass(frozen=True)
@@ -90,21 +131,21 @@ class ManagerTimezone:
     valid: bool
 
 
-def manager_timezone(env: Mapping[str, str] | None = None, *, invalid: str = 'local') -> ManagerTimezone:
-    """До B1.1 адаптер явно выбирает прежнюю политику local/utc/raise."""
-    if invalid not in ('local', 'utc', 'raise'):
-        raise ValueError('invalid timezone policy')
+def manager_timezone(env: Mapping[str, str] | None = None) -> ManagerTimezone:
+    """Неверная настройка сохраняет имя и предупреждение, используя зону сервера."""
     values = read_env() if env is None else env
     name = (values.get('MANAGER_TIMEZONE') or '').strip()
+    if name.lower() in _LOCAL_TIMEZONE_NAMES:
+        name = ''
     if name:
         try:
             return ManagerTimezone(timezone_named(name), name, name, True)
-        except ZoneInfoNotFoundError:
-            if invalid == 'raise':
-                raise
-            if invalid == 'utc':
-                return ManagerTimezone(timezone.utc, name, f'UTC (invalid MANAGER_TIMEZONE: {name})', False)
-    return ManagerTimezone(server_local_timezone(), name, 'server local time', not bool(name))
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            return ManagerTimezone(
+                server_local_timezone(), name,
+                f'MANAGER_TIMEZONE invalid: {name} (server local time)', False,
+            )
+    return ManagerTimezone(server_local_timezone(), '', 'server local time', True)
 
 
 def today(tz: tzinfo) -> date:

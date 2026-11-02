@@ -11,9 +11,10 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.system import units as system_units
 from xray_vps_manager.core.errors import ManagerError, RestoreError
 from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env, write_env as write_server_env
+from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, env_text as server_env_text, read_env as read_server_env, write_env as write_server_env
 from xray_vps_manager.core.process import (
     WRITER_RESTART_UNITS,
     active_units,
@@ -26,6 +27,8 @@ from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray.config import inbound_listen_endpoints
+
+from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
 
 BACKUP_DIR = Path("/root/xray_backups")
 CONFIG_DIR = Path("/usr/local/etc/xray")
@@ -64,13 +67,11 @@ CADDY_CONFIG_DIRS = [
 
 
 def die(message):
-    print(f"ERROR: {message}", file=sys.stderr)
-    sys.exit(1)
+    _fail(message)
 
 
 def require_root():
-    if os.geteuid() != 0:
-        die("Run this script as root.")
+    _require_root()
 
 
 def run(command, check=True, timeout=None):
@@ -121,16 +122,6 @@ def add_json(tar, name, payload):
     info.mode = 0o600
     info.mtime = int(datetime.now(timezone.utc).timestamp())
     tar.addfile(info, io.BytesIO(data))
-
-
-def server_env_text(values):
-    values = dict(values)
-    values.pop("ACTIVITY_GEOIP_WARNING_CODE", None)
-    lines = [f"{key}={values.get(key, '')}" for key in ORDERED_ENV_KEYS if key in values]
-    for key in sorted(values):
-        if key not in ORDERED_ENV_KEYS:
-            lines.append(f"{key}={values[key]}")
-    return "\n".join(lines) + "\n"
 
 
 def add_text(tar, name, text, mode=0o640):
@@ -479,17 +470,21 @@ def validate_member(member):
     name = member.name
     if name.startswith("/") or ".." in Path(name).parts:
         die(f"Unsafe archive member: {name}")
-    if member.issym() or member.islnk() or member.isdev():
+    if not (member.isfile() or member.isdir()):
         die(f"Unsupported archive member type: {name}")
 
 
 def extract_archive(archive):
     temp_dir = Path(tempfile.mkdtemp(prefix="xray-restore-"))
-    with tarfile.open(archive, "r:gz") as tar:
-        members = tar.getmembers()
-        for member in members:
-            validate_member(member)
-        tar.extractall(temp_dir)
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            members = tar.getmembers()
+            for member in members:
+                validate_member(member)
+            tar.extractall(temp_dir, filter="data")
+    except BaseException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     return temp_dir
 
 
@@ -693,7 +688,7 @@ def restore_caddy_random_tls_state(temp_dir):
         return messages
 
     try:
-        xray_caddy.write_random_tls_systemd_units()
+        system_units.write_random_tls_systemd_units()
     except OSError as exc:
         messages.append(f"Caddy TLS randomizer unit restore failed: {exc}")
         return messages
@@ -938,8 +933,8 @@ def usage():
 """)
 
 
+@command_entry('backup')
 def main():
-    require_root()
     if len(sys.argv) < 2:
         usage()
         sys.exit(1)

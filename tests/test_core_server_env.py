@@ -69,7 +69,8 @@ class ServerEnvTests(unittest.TestCase):
             env_path = Path(tmp_dir) / "server.env"
             env_path.write_text("SERVER_ADDR=example.com\nbroken line\n")
 
-            with self.assertRaisesRegex(RuntimeError, "invalid line without '='"):
+            # B1.2: strict использует согласованный ValidationError; require_exists прежний.
+            with self.assertRaisesRegex(errors.ValidationError, "invalid line without '='"):
                 read_server_env(env_path, strict=True)
 
     def test_read_server_env_can_require_existing_file(self) -> None:
@@ -154,8 +155,8 @@ class ServerEnvCurrentBehaviorTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.env_path = Path(tmp.name) / "server.env"
 
-    def test_read_keeps_raw_keys_export_prefix_and_trailing_comment(self) -> None:
-        """Текущее поведение, баг XR-REV-069: ключи не нормализуются, хвостовой комментарий остаётся в значении."""
+    def test_read_normalizes_keys_export_prefix_and_trailing_comment(self) -> None:
+        """B1.2 / XR-REV-069: ключи нормализуются, хвостовой комментарий удаляется."""
         self.env_path.write_text(
             "  SERVER_NAME=Xray\n"
             "PORT =443\n"
@@ -168,16 +169,17 @@ class ServerEnvCurrentBehaviorTests(unittest.TestCase):
         self.assertEqual(
             values,
             {
-                "  SERVER_NAME": "Xray",
-                "PORT ": "443",
-                "export FINGERPRINT": "chrome",
-                "MANAGER_TIMEZONE": "Europe/Moscow # основная зона",
+                "SERVER_NAME": "Xray",
+                "PORT": "443",
+                "FINGERPRINT": "chrome",
+                "MANAGER_TIMEZONE": "Europe/Moscow",
             },
         )
-        self.assertIsNone(values.get("PORT"))
-        self.assertIsNone(values.get("SERVER_NAME"))
+        self.assertEqual(values["PORT"], "443")
+        self.assertEqual(values["SERVER_NAME"], "Xray")
 
-    def test_read_strips_whitespace_then_double_then_single_quotes(self) -> None:
+    def test_read_preserves_nested_and_unpaired_quotes(self) -> None:
+        """B1.2: снимается одна парная оболочка; вложенные и непарные кавычки — данные."""
         self.env_path.write_bytes(
             "\n".join(
                 [
@@ -208,9 +210,9 @@ class ServerEnvCurrentBehaviorTests(unittest.TestCase):
                 "SINGLE": "value",
                 "APOSTROPHE": "it's",
                 "SINGLE_OUTSIDE": '"both"',
-                "DOUBLE_OUTSIDE": "both",
-                "UNBALANCED": "open",
-                "QUOTED_COMMENT": 'value" # note',
+                "DOUBLE_OUTSIDE": "'both'",
+                "UNBALANCED": '"open',
+                "QUOTED_COMMENT": 'value',
                 "EQUALS": "a=b",
                 "EMPTY": "",
                 "SPACED": "spaced value",
@@ -219,8 +221,8 @@ class ServerEnvCurrentBehaviorTests(unittest.TestCase):
             },
         )
 
-    def test_write_after_read_drops_comments_and_quotes_and_keeps_raw_keys(self) -> None:
-        """Текущее поведение, баг XR-REV-069: запись после чтения сохраняет ненормализованные ключи как есть."""
+    def test_write_after_read_normalizes_keys_and_drops_comments(self) -> None:
+        """B1.2 / XR-REV-069: запись использует нормализованные ключи и значения без комментариев."""
         self.env_path.write_text(
             "# managed by install.sh\n"
             "\n"
@@ -236,10 +238,10 @@ class ServerEnvCurrentBehaviorTests(unittest.TestCase):
         self.assertEqual(
             self.env_path.read_text(),
             "SERVER_ADDR=Demo Server\n"
-            "MANAGER_TIMEZONE=Europe/Moscow # основная зона\n"
-            "  SERVER_NAME=Xray\n"
-            "PORT =443\n"
-            "export FINGERPRINT=chrome\n",
+            "SERVER_NAME=Xray\n"
+            "PORT=443\n"
+            "FINGERPRINT=chrome\n"
+            "MANAGER_TIMEZONE=Europe/Moscow\n",
         )
         self.assertEqual(self.env_path.stat().st_mode & 0o777, 0o640)
 
