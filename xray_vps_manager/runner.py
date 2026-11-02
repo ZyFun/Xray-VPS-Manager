@@ -118,6 +118,7 @@ def _execute(command, main):
         exc.hint = f"Usage: xray-vps-manager {command} [ARGS...] (use --help)"
         raise
     if (command in _ROOT_COMMANDS or command == "caddy"
+            or command == "sqlite" and args[0] in ("init", "migrate")
             or command == "manager-update" and any(arg.split('=', 1)[0] in ("--update", "--rollback") for arg in args)):
         require_root()
     return main()

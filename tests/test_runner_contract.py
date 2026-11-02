@@ -108,12 +108,15 @@ class RunnerContractTests(unittest.TestCase):
                 self.assertFalse(box.paths.activity_lock.exists())
 
     def test_root_policies_are_preserved(self):
-        actions = {'activity': ['status'], 'backup': ['list'], 'bypass': ['status'],
-                   'cascade': ['status'], 'client': ['list'], 'menu': [], 'telegram': ['status'],
-                   'traffic-sync': [], 'update': ['--check'], 'warp': ['status'],
-                   'caddy': ['random-tls-run'], 'manager-update': ['--rollback']}
-        for command, args in actions.items():
-            with self.subTest(command=command), Sandbox() as box:
+        actions = [
+            ('activity', ['status']), ('backup', ['list']), ('bypass', ['status']),
+            ('cascade', ['status']), ('client', ['list']), ('menu', []),
+            ('telegram', ['status']), ('traffic-sync', []), ('update', ['--check']),
+            ('warp', ['status']), ('caddy', ['random-tls-run']), ('manager-update', ['--rollback']),
+            ('sqlite', ['init']), ('sqlite', ['migrate']),
+        ]
+        for command, args in actions:
+            with self.subTest(command=command, args=args), Sandbox() as box:
                 with patch.object(os, 'geteuid', return_value=1000):
                     result = box.run_cli(command, *args)
                 self.assertEqual((result.exit_code, result.stdout, result.stderr),

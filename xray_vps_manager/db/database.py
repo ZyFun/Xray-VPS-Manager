@@ -14,7 +14,7 @@ from typing import Iterator
 
 from xray_vps_manager.core.errors import StateError
 from xray_vps_manager.core.json_store import chown_xray
-from xray_vps_manager.core.paths import MANAGER_DB_PATH
+from xray_vps_manager.core.paths import MANAGER_DB_PATH, paths
 from xray_vps_manager.db import schema
 
 DEFAULT_BUSY_TIMEOUT_MS = 30000
@@ -23,6 +23,7 @@ JOURNAL_SIZE_LIMIT_BYTES = 128 * 1024 * 1024
 WAL_FILE_SUFFIXES = ("-wal", "-shm")
 JOURNAL_FILE_SUFFIXES = (*WAL_FILE_SUFFIXES, "-journal")
 _SAVEPOINT_IDS = count(1)
+_initialized_files: dict[Path, tuple[int, int]] = {}
 
 
 def database_path(path: str | Path | None = None) -> Path:
@@ -57,10 +58,11 @@ def ensure_database_permissions(path: str | Path, mode: int = 0o640) -> None:
         chown_xray(item)
 
 
-def configure_connection(connection: sqlite3.Connection) -> None:
+def configure_connection(connection: sqlite3.Connection, *, busy_timeout_ms: int | None = None) -> None:
     connection.row_factory = sqlite3.Row
     schema.configure_connection(connection)
-    connection.execute(f"PRAGMA busy_timeout = {DEFAULT_BUSY_TIMEOUT_MS}")
+    timeout = DEFAULT_BUSY_TIMEOUT_MS if busy_timeout_ms is None else busy_timeout_ms
+    connection.execute(f"PRAGMA busy_timeout = {timeout}")
     # В WAL при NORMAL fsync идёт на checkpoint, а не на каждую транзакцию (VIREI-245).
     connection.execute("PRAGMA synchronous = NORMAL")
     connection.execute(f"PRAGMA journal_size_limit = {JOURNAL_SIZE_LIMIT_BYTES}")
@@ -84,6 +86,127 @@ def enable_wal(connection: sqlite3.Connection) -> str:
     return str(row[0] if row else mode).lower()
 
 
+@contextmanager
+def report_errors() -> Iterator[None]:
+    """Перевести ошибки SQLite и файлов в ошибку сценария на границе администрирования."""
+    try:
+        yield
+    except (sqlite3.Error, OSError) as exc:
+        raise StateError(f"SQLite manager database: {exc}") from exc
+
+
+def _open(
+    db_path: Path, *, create: bool, timeout: float, autocommit: bool | int
+) -> sqlite3.Connection:
+    if create:
+        ensure_database_parent(db_path)
+        target = str(db_path)
+    else:
+        # mode=rw исключает создание файла даже при его удалении прямо перед открытием.
+        target = db_path.absolute().as_uri() + "?mode=rw"
+    connection = sqlite3.connect(target, uri=not create, timeout=timeout, autocommit=autocommit)
+    try:
+        busy_ms = None if autocommit is not True or timeout == 30.0 else int(timeout * 1000)
+        configure_connection(connection, busy_timeout_ms=busy_ms)
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
+def connect(path: str | Path | None = None, *, timeout: float = 30.0) -> sqlite3.Connection:
+    db_path = Path(path) if path is not None else paths().manager_db
+    try:
+        connection = _open(db_path, create=False, timeout=timeout, autocommit=True)
+    except sqlite3.Error as exc:
+        if not db_path.exists():
+            raise StateError(
+                f"SQLite manager database is missing: {db_path}",
+                hint="On a configured server, restore a backup containing manager.db with xray-backup restore. "
+                     "To create an empty database, run xray-vps-manager sqlite init.",
+            ) from exc
+        raise StateError(f"Cannot open SQLite manager database: {exc}") from exc
+    return connection
+
+
+def _migrate(
+    connection: sqlite3.Connection, db_path: Path, *, backup: bool, backup_dir: str | Path | None = None,
+) -> None:
+    if not schema.pending_migrations(connection):
+        return
+    enable_wal(connection)
+    with transaction(connection, immediate=True):
+        pending = schema.pending_migrations(connection)
+        if backup and schema.pending_migrations_require_backup(pending):
+            backup_database(db_path, backup_dir=backup_dir, label="pre-migration")
+        for migration in pending:
+            schema.apply_migration(connection, migration)
+
+
+def _initialize(
+    db_path: Path, *, backup: bool, backup_dir: str | Path | None, timeout: float, autocommit: bool | int,
+) -> sqlite3.Connection:
+    existed = database_file_exists(db_path)
+    connection = _open(db_path, create=True, timeout=timeout, autocommit=autocommit)
+    try:
+        enable_wal(connection)
+        _migrate(connection, db_path, backup=backup and existed, backup_dir=backup_dir)
+        ensure_database_permissions(db_path)
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
+def initialize(path: str | Path | None = None) -> sqlite3.Connection:
+    db_path = Path(path) if path is not None else paths().manager_db
+    try:
+        return _initialize(db_path, backup=True, backup_dir=None, timeout=30.0, autocommit=True)
+    except (sqlite3.Error, RuntimeError, OSError) as exc:
+        raise StateError(f"Cannot initialize SQLite manager database: {exc}") from exc
+
+
+def _ensure_initialized(connection, db_path, *, force=False):
+    stat = db_path.stat()
+    identity = (stat.st_dev, stat.st_ino)
+    if not force and _initialized_files.get(db_path) == identity:
+        return
+    _initialized_files.pop(db_path, None)
+    try:
+        _migrate(connection, db_path, backup=True)
+    except (RuntimeError, sqlite3.Error, OSError) as exc:
+        raise StateError(f"Cannot migrate SQLite manager database: {exc}") from exc
+    _initialized_files[db_path] = identity
+
+
+def ensure_initialized(path: str | Path | None = None, *, force: bool = False) -> None:
+    db_path = Path(path).absolute() if path is not None else paths().manager_db
+    with closing(connect(db_path)) as connection:
+        _ensure_initialized(connection, db_path, force=force)
+
+
+@contextmanager
+def session(path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
+    db_path = Path(path).absolute() if path is not None else paths().manager_db
+    with closing(connect(db_path)) as connection:
+        _ensure_initialized(connection, db_path)
+        yield connection
+
+
+@contextmanager
+def write_session(path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
+    try:
+        with session(path) as connection:
+            enable_wal(connection)
+            with transaction(connection, immediate=True):
+                yield connection
+    except sqlite3.OperationalError as exc:
+        primary_code = getattr(exc, "sqlite_errorcode", 0) & 0xff
+        if primary_code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise StateError(f"SQLite manager database is locked: {exc}") from exc
+        raise
+
+
 def open_database(
     path: str | Path | None = None,
     *,
@@ -100,11 +223,8 @@ def open_database(
             timeout=timeout,
         )
 
-    db_path = database_path(path)
-    ensure_database_parent(db_path)
-    connection = sqlite3.connect(str(db_path), timeout=timeout)
-    configure_connection(connection)
-    return connection
+    return _open(database_path(path), create=True, timeout=timeout,
+                 autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL)
 
 
 def initialize_database(
@@ -114,21 +234,9 @@ def initialize_database(
     backup_dir: str | Path | None = None,
     timeout: float = 30.0,
 ) -> sqlite3.Connection:
-    db_path = database_path(path)
-    existed_before_open = database_file_exists(db_path)
-    connection = open_database(db_path, initialize=False, timeout=timeout)
-    # Только здесь, не в configure_connection: read-пути (xray-test, sqlite status) базу не пишут.
-    enable_wal(connection)
-    pending = schema.pending_migrations(connection)
-    if (
-        backup_before_destructive_migrations
-        and schema.pending_migrations_require_backup(pending)
-        and existed_before_open
-    ):
-        backup_database(db_path, backup_dir=backup_dir, label="pre-migration")
-    schema.ensure_schema(connection)
-    ensure_database_permissions(db_path)
-    return connection
+    return _initialize(database_path(path), backup=backup_before_destructive_migrations,
+                       backup_dir=backup_dir, timeout=timeout,
+                       autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL)
 
 
 def database_file_exists(path: str | Path | None = None) -> bool:
@@ -222,7 +330,7 @@ def ensure_free_space(path: str | Path | None, required_bytes: int, *, purpose: 
 
 
 @contextmanager
-def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+def transaction(connection: sqlite3.Connection, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
     if connection.in_transaction:
         savepoint = f"xvm_sp_{next(_SAVEPOINT_IDS)}"
         connection.execute(f"SAVEPOINT {savepoint}")
@@ -236,14 +344,14 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
         return
 
-    connection.execute("BEGIN")
+    connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
     try:
         yield connection
+        connection.execute("COMMIT")
     except BaseException:
-        connection.rollback()
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
         raise
-    else:
-        connection.commit()
 
 
 def quick_check(connection: sqlite3.Connection) -> str:
