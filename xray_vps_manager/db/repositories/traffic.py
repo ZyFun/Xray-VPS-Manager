@@ -14,7 +14,7 @@ TRAFFIC_ACCESS_LOG_OFFSET = "traffic-access-log"
 def upsert_traffic_entry(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
     with database.transaction(connection):
         upsert_traffic_totals(connection, name, entry)
-        sync_history(connection, name, entry)
+        _sync_history(connection, name, entry)
 
 
 def upsert_traffic_totals(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
@@ -62,7 +62,7 @@ def upsert_credential_traffic_entry(
 ) -> None:
     with database.transaction(connection):
         upsert_credential_traffic_totals(connection, name, connection_tag, entry)
-        sync_credential_history(connection, name, connection_tag, entry)
+        _sync_history(connection, name, entry, connection_tag=connection_tag)
 
 
 def upsert_credential_traffic_totals(
@@ -245,106 +245,42 @@ def get_access_log_state(connection: sqlite3.Connection) -> dict[str, Any]:
     return state
 
 
-def replace_history(connection: sqlite3.Connection, name: str, history: dict[str, Any]) -> None:
-    with database.transaction(connection):
-        connection.execute("DELETE FROM traffic_history WHERE client_name = ?", (name,))
-        for day_key, hours in history.items():
-            if not isinstance(hours, dict):
-                continue
-            for hour_key, bucket in hours.items():
-                if not isinstance(bucket, dict):
-                    continue
-                connection.execute(
-                    """
-                    INSERT INTO traffic_history(
-                        client_name, bucket_date, bucket_hour, incoming_bytes, outgoing_bytes
-                    )
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        name,
-                        str(day_key),
-                        int(hour_key),
-                        int(bucket.get("incoming") or 0),
-                        int(bucket.get("outgoing") or 0),
-                    ),
-                )
-
-
-def replace_credential_history(
-    connection: sqlite3.Connection,
-    name: str,
-    connection_tag: str,
-    history: dict[str, Any],
+def _sync_history(
+    connection: sqlite3.Connection, name: str, entry: dict[str, Any], *, connection_tag: str | None = None,
 ) -> None:
-    with database.transaction(connection):
-        connection.execute(
-            "DELETE FROM credential_traffic_history WHERE client_name = ? AND connection_tag = ?",
-            (name, connection_tag),
-        )
-        for day_key, hours in history.items():
-            if not isinstance(hours, dict):
+    """Непустой снимок задаёт историю одной записи. Пустой не затирает накопленные часы."""
+    history = entry.get("history")
+    if not isinstance(history, dict) or not history:
+        return
+
+    table, columns, owner = "traffic_history", ("client_name",), (name,)
+    if connection_tag is not None:
+        table, columns, owner = "credential_traffic_history", ("client_name", "connection_tag"), (name, connection_tag)
+    owner_filter = " AND ".join(f"{column} = ?" for column in columns)
+    rows = connection.execute(
+        f"SELECT bucket_date, bucket_hour, incoming_bytes, outgoing_bytes FROM {table} WHERE {owner_filter}", owner,
+    )
+    remaining = {(row[0], row[1]): (row[2], row[3]) for row in rows}
+    bucket_filter = f"{owner_filter} AND bucket_date = ? AND bucket_hour = ?"
+    insert_columns = (*columns, "bucket_date", "bucket_hour", "incoming_bytes", "outgoing_bytes")
+    insert_sql = f"INSERT INTO {table} ({', '.join(insert_columns)}) VALUES ({', '.join('?' for _ in insert_columns)})"
+    for day_key, hours in history.items():
+        if not isinstance(hours, dict):
+            continue
+        for hour_key, bucket in hours.items():
+            if not isinstance(bucket, dict):
                 continue
-            for hour_key, bucket in hours.items():
-                if not isinstance(bucket, dict):
-                    continue
+            key = (str(day_key), int(hour_key))
+            totals = (int(bucket.get("incoming") or 0), int(bucket.get("outgoing") or 0))
+            previous = remaining.pop(key, None)
+            if previous is None:
+                connection.execute(insert_sql, (*owner, *key, *totals))
+            elif totals != previous:
                 connection.execute(
-                    """
-                    INSERT INTO credential_traffic_history(
-                        client_name, connection_tag, bucket_date, bucket_hour, incoming_bytes, outgoing_bytes
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        name,
-                        connection_tag,
-                        str(day_key),
-                        int(hour_key),
-                        int(bucket.get("incoming") or 0),
-                        int(bucket.get("outgoing") or 0),
-                    ),
+                    f"UPDATE {table} SET incoming_bytes = ?, outgoing_bytes = ? WHERE {bucket_filter}",
+                    (*totals, *owner, *key),
                 )
-
-
-def history_bucket_count(connection: sqlite3.Connection, name: str) -> int:
-    row = connection.execute(
-        "SELECT COUNT(*) AS count FROM traffic_history WHERE client_name = ?",
-        (name,),
-    ).fetchone()
-    return int(row["count"] if row else 0)
-
-
-def credential_history_bucket_count(connection: sqlite3.Connection, name: str, connection_tag: str) -> int:
-    row = connection.execute(
-        """
-        SELECT COUNT(*) AS count
-        FROM credential_traffic_history
-        WHERE client_name = ? AND connection_tag = ?
-        """,
-        (name, connection_tag),
-    ).fetchone()
-    return int(row["count"] if row else 0)
-
-
-def sync_history(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
-    history = entry.get("history") if isinstance(entry.get("history"), dict) else {}
-    has_total = int(entry.get("incoming") or 0) > 0 or int(entry.get("outgoing") or 0) > 0
-    if not history and has_total and history_bucket_count(connection, name) > 0:
-        return
-    replace_history(connection, name, history)
-
-
-def sync_credential_history(
-    connection: sqlite3.Connection,
-    name: str,
-    connection_tag: str,
-    entry: dict[str, Any],
-) -> None:
-    history = entry.get("history") if isinstance(entry.get("history"), dict) else {}
-    has_total = int(entry.get("incoming") or 0) > 0 or int(entry.get("outgoing") or 0) > 0
-    if not history and has_total and credential_history_bucket_count(connection, name, connection_tag) > 0:
-        return
-    replace_credential_history(connection, name, connection_tag, history)
+    connection.executemany(f"DELETE FROM {table} WHERE {bucket_filter}", ((*owner, *key) for key in remaining))
 
 
 def add_history_delta(

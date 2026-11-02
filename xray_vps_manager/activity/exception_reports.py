@@ -12,42 +12,10 @@ def iter_events(name, start, end):
     yield from activity_repository.iter_events_for_read(name, start, end, activity_time.parse_time)
 
 
-def add_exception(value: str, source: str = "manual") -> dict:
-    normalized, kind = activity_exceptions.classify_exception_value(value)
-    source = activity_exceptions.normalize_source(source)
-    db = activity_exceptions.load_activity_exceptions()
-    for item in db.get("items", []):
-        if item.get("value") == normalized:
-            return {"added": False, "value": normalized, "kind": kind}
-    db.setdefault("items", []).append(
-        {
-            "value": normalized,
-            "kind": kind,
-            "createdAt": activity_time.utc_stamp(),
-            "source": source,
-        }
-    )
-    activity_exceptions.save_activity_exceptions(db)
-    return {"added": True, "value": normalized, "kind": kind}
-
-
-def delete_exception(value: str) -> str:
-    normalized, _kind = activity_exceptions.classify_exception_value(value)
-    db = activity_exceptions.load_activity_exceptions()
-    before = len(db.get("items", []))
-    db["items"] = [item for item in db.get("items", []) if item.get("value") != normalized]
-    if len(db["items"]) == before:
-        raise KeyError(normalized)
-    activity_exceptions.save_activity_exceptions(db)
-    return normalized
-
-
-def delete_all_exceptions() -> int:
-    db = activity_exceptions.load_activity_exceptions()
-    count = len(db.get("items", []))
-    db["items"] = []
-    activity_exceptions.save_activity_exceptions(db)
-    return count
+# Прежние точки входа команд. Транзакциями владеет фасад исключений.
+add_exception = activity_exceptions.add_exception
+delete_exception = activity_exceptions.delete_exception
+delete_all_exceptions = activity_exceptions.delete_all_exceptions
 
 
 def list_exception_rows() -> list[dict]:

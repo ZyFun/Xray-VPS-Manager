@@ -97,7 +97,9 @@ class TrafficRepositoryWriteTests(unittest.TestCase):
                 access_log_state = sqlite_traffic.get_access_log_state(connection)
             finally:
                 connection.close()
-            self.assertEqual(set(entries), {"alice"})
+            self.assertEqual(set(entries), {"alice", "old_client"})
+            self.assertEqual((entries["old_client"]["incoming"], entries["old_client"]["outgoing"]), (300, 400))
+            self.assertEqual(entries["old_client"]["history"], {"2026-06-12": {"07": {"incoming": 300, "outgoing": 400}}})
             self.assertEqual(entries["alice"]["incoming"], 100)
             self.assertEqual(entries["alice"]["outgoing"], 200)
             self.assertEqual(entries["alice"]["history"]["2026-06-12"]["08"], {"incoming": 100, "outgoing": 200})

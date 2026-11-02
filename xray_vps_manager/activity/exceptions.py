@@ -15,6 +15,7 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
+    ready_write_session,
     sqlite_read_ready,
 )
 
@@ -82,6 +83,30 @@ def save_activity_exceptions(
     write_activity_exceptions_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
+def add_exception(value: str, source: str = "manual") -> dict:
+    normalized, kind = classify_exception_value(value)
+    with ready_write_session(legacy_read_errors=True) as connection:
+        added = not sqlite_activity.exception_exists(connection, normalized)
+        if added:
+            sqlite_activity.upsert_exception(connection, {
+                "value": normalized, "kind": kind, "source": normalize_source(source), "createdAt": utc_stamp(),
+            })
+    return {"added": added, "value": normalized, "kind": kind}
+
+
+def delete_exception(value: str) -> str:
+    normalized, _kind = classify_exception_value(value)
+    with ready_write_session(legacy_read_errors=True) as connection:
+        if not sqlite_activity.delete_exception(connection, normalized):
+            raise KeyError(normalized)
+    return normalized
+
+
+def delete_all_exceptions() -> int:
+    with ready_write_session(legacy_read_errors=True) as connection:
+        return sqlite_activity.clear_exceptions(connection)
+
+
 def exception_items(*, db_path: str | Path | None = None) -> list[dict]:
     return load_activity_exceptions(db_path=db_path).get("items", [])
 
@@ -122,31 +147,20 @@ def write_activity_exceptions_to_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not database.database_file_exists(db_path):
-        if strict:
-            raise RuntimeError("SQLite manager database is missing")
-        return False
-
-    connection = None
     try:
-        connection = database.open_database(db_path)
-        if not sqlite_read_ready(connection):
-            if strict:
-                raise RuntimeError("SQLite database is not marked ready")
-            return False
-        normalized = load_activity_exceptions_from_dict(db)
-        with database.transaction(connection):
-            sqlite_activity.clear_exceptions(connection)
-            for item in normalized.get("items", []):
-                sqlite_activity.upsert_exception(connection, item)
+        with ready_write_session(db_path) as connection:
+            incoming = {item["value"]: item for item in load_activity_exceptions_from_dict(db)["items"]}
+            current = {item["value"]: item for item in sqlite_activity.list_exceptions(connection)}
+            for value in current.keys() - incoming.keys():
+                sqlite_activity.delete_exception(connection, value)
+            for value, item in incoming.items():
+                if item != current.get(value):
+                    sqlite_activity.upsert_exception(connection, item)
         return True
     except Exception:
         if strict:
             raise
         return False
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 def load_activity_exceptions_from_dict(db: dict) -> dict:

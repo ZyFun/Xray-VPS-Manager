@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextlib import closing, contextmanager
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
@@ -101,14 +102,16 @@ def expires_at_from_duration(duration: str | int | None) -> str:
     return (activity_time.utc_now() + timedelta(days=days)).isoformat().replace("+00:00", "Z")
 
 
-def open_ready_database(db_path: str | Path | None = None):
+@contextmanager
+def _ready_session(db_path=None, *, write=False):
     if not database.database_file_exists(db_path):
         raise SQLiteReadUnavailable("SQLite manager database is missing.")
-    connection = database.open_database(db_path)
-    if not sqlite_read_ready(connection):
-        connection.close()
-        raise SQLiteReadUnavailable("SQLite database is not marked ready.")
-    return connection
+    target = database.database_path(db_path)
+    session = database.write_session(target) if write else closing(database.open_database(target))
+    with session as connection:
+        if not sqlite_read_ready(connection):
+            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
+        yield connection
 
 
 def add_block(
@@ -123,9 +126,8 @@ def add_block(
 ) -> dict:
     normalized, kind = classify_block_value(value)
     expires_at = expires_at_from_duration(duration)
-    connection = open_ready_database(db_path)
-    try:
-        item = sqlite_blocklist.upsert_block(
+    with _ready_session(db_path, write=True) as connection:
+        return sqlite_blocklist.upsert_block(
             connection,
             {
                 "value": normalized,
@@ -139,36 +141,24 @@ def add_block(
                 "enabled": True,
             },
         )
-        return item
-    finally:
-        connection.close()
 
 
 def delete_block(value_or_id: str, *, db_path: str | Path | None = None) -> dict:
-    connection = open_ready_database(db_path)
-    try:
+    with _ready_session(db_path, write=True) as connection:
         item = sqlite_blocklist.delete_block(connection, value_or_id)
         if item is None:
             raise KeyError(value_or_id)
         return item
-    finally:
-        connection.close()
 
 
 def block_items(*, db_path: str | Path | None = None) -> list[dict]:
-    connection = open_ready_database(db_path)
-    try:
+    with _ready_session(db_path) as connection:
         return sqlite_blocklist.list_blocks(connection)
-    finally:
-        connection.close()
 
 
 def active_block_items(*, db_path: str | Path | None = None) -> list[dict]:
-    connection = open_ready_database(db_path)
-    try:
+    with _ready_session(db_path) as connection:
         return sqlite_blocklist.active_blocks(connection, activity_time.utc_stamp())
-    finally:
-        connection.close()
 
 
 def item_status(item: dict, now_iso: str | None = None) -> str:
@@ -295,11 +285,8 @@ def block_candidate_rows(client_name: str, days_value: str = "7", region: str = 
 
 
 def block_stats_rows(*, db_path: str | Path | None = None) -> list[dict]:
-    connection = open_ready_database(db_path)
-    try:
+    with _ready_session(db_path) as connection:
         return sqlite_blocklist.list_hit_stats(connection)
-    finally:
-        connection.close()
 
 
 def apply_config(config: dict) -> Path:
@@ -321,13 +308,10 @@ def reconcile_xray_config(
     removed_items: list[dict] | None = None,
     db_path: str | Path | None = None,
 ) -> Path | None:
-    connection = open_ready_database(db_path)
-    try:
+    with _ready_session(db_path) as connection:
         now_iso = activity_time.utc_stamp()
         known_items = sqlite_blocklist.list_blocks(connection)
         active_items = sqlite_blocklist.active_blocks(connection, now_iso)
-    finally:
-        connection.close()
 
     config = load_xray_config()
     changed = xray_blocklist.sync_blocklist_rules(

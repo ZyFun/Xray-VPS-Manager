@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from xray_vps_manager.core.errors import StateError
 from xray_vps_manager.telegram import admin, bot_commands, keyboards, messages, subscriptions, traffic
 from xray_vps_manager.xray import client_routes
 
@@ -399,6 +400,17 @@ def try_delete_chat_commands(ctx: PollerContext, db, chat_id):
         print(f"WARN: failed to reset Telegram command menu for {chat_id}: {exc}", file=sys.stderr)
 
 
+class _SubscriptionWriteFailed(StateError):
+    """После неудачной записи poller должен отбросить изменённый снимок."""
+
+
+def save_subscription_change(ctx, db):
+    try:
+        ctx.save_db_sections(db, ("clientSubscriptions",))
+    except Exception as exc:
+        raise _SubscriptionWriteFailed(str(exc)) from exc
+
+
 def handle_user_message(ctx: PollerContext, db, update):
     message = update.get("message") or update.get("edited_message") or {}
     chat = message.get("chat") or {}
@@ -434,6 +446,7 @@ def handle_user_message(ctx: PollerContext, db, update):
         return True
     if command in ("/unsubscribe", "/stop"):
         text = subscriptions.unsubscribe_chat(db, chat_id)
+        save_subscription_change(ctx, db)
         try_delete_chat_commands(ctx, db, chat_id)
         send_client_menu(ctx, db, chat_id, text)
         return True
@@ -443,6 +456,7 @@ def handle_user_message(ctx: PollerContext, db, update):
         except ValueError as exc:
             send_client_menu(ctx, db, chat_id, str(exc))
             return True
+        save_subscription_change(ctx, db)
         try_set_subscribed_commands(ctx, db, chat_id)
         send_client_menu(
             ctx,
@@ -537,7 +551,7 @@ def handle_callback_query(ctx: PollerContext, db, update):
             ctx.answer_callback_query(db, callback_id, "Подписка не найдена", show_alert=True)
             send_client_menu(ctx, db, chat_id, subscribe_prompt_for_chat(ctx, db, chat_id))
             return True
-        ctx.save_db_sections(db, ("clientSubscriptions",))
+        save_subscription_change(ctx, db)
         ctx.answer_callback_query(db, callback_id, "Готово")
         status = subscriptions.activity_notification_status_for_chat(
             db,
@@ -658,8 +672,9 @@ def handle_callback_query(ctx: PollerContext, db, update):
         send_client_traffic_menu(ctx, db, chat_id, text, parse_mode=parse_mode)
         return True
     if data == "client:unsubscribe":
-        ctx.answer_callback_query(db, callback_id, "Готово")
         text = subscriptions.unsubscribe_chat(db, chat_id)
+        save_subscription_change(ctx, db)
+        ctx.answer_callback_query(db, callback_id, "Готово")
         try_delete_chat_commands(ctx, db, chat_id)
         send_client_menu(ctx, db, chat_id, text)
         return True
@@ -750,6 +765,14 @@ def poll_user_subscriptions(ctx: PollerContext, quiet=False, telegram_timeout=US
             if handle_telegram_update(ctx, db, update):
                 processed += 1
         except Exception as exc:
+            if isinstance(exc, _SubscriptionWriteFailed):
+                callback_id = (update.get("callback_query") or {}).get("id")
+                if callback_id:
+                    # answer_callback_query допускает недоступный или просроченный callback.
+                    ctx.answer_callback_query(db, callback_id, "Не удалось сохранить подписку")
+                # Не переносим отклонённое действие в следующий update или финальную запись пачки.
+                db = ctx.load_db()
+                state = db.setdefault("clientSubscriptionState", {})
             chat_id = update_private_chat_id(update)
             if chat_id:
                 try:
