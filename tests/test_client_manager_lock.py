@@ -1,7 +1,7 @@
 """Регрессия XR-REV-001: писатели client-DB в xray-client работают под manager.lock."""
 
 import ast
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 import fcntl
 from io import StringIO
@@ -192,28 +192,54 @@ def unlocked_client_db_writes(tree: ast.Module) -> list:
     return found
 
 
+@contextmanager
+def signal_lock_contention(root: Path):
+    """Сообщает первому писателю, когда ядро отклонило flock второго писателя."""
+    real_flock = fcntl.flock
+
+    def observed_flock(fd, operation):
+        try:
+            return real_flock(fd, operation)
+        except BlockingIOError:
+            if os.path.samestat(os.fstat(fd), (root / "manager.lock").stat()):
+                (root / "fast-contended").touch()
+            raise
+
+    with mock.patch.object(fcntl, "flock", observed_flock):
+        yield
+
+
 def add_worker(argv: list) -> int:
     """Отдельный процесс xray-client add в общей песочнице.
 
-    role=slow: после load_db ждёт завершения второго писателя внутри окна «xray -test + рестарт».
+    role=slow: после load_db ждёт подтверждённого конфликта блокировки внутри окна «xray -test + рестарт».
     role=fast: стартует, когда медленный писатель уже прочитал снимок.
     """
-    root, name, role, window = Path(argv[0]), argv[1], argv[2], float(argv[3])
+    root, name, role = Path(argv[0]), argv[1], argv[2]
+    contention_timed_out = False
 
     def restart() -> None:
+        nonlocal contention_timed_out
         if role == "slow":
             (root / "slow-loaded").touch()
-            wait_for_file(root / "fast-done", window)
+            contention_timed_out = not wait_for_file(root / "fast-contended", WORKER_TIMEOUT // 2)
 
     if role == "fast" and not wait_for_file(root / "slow-loaded", WORKER_TIMEOUT):
         print("slow writer did not load the snapshot", file=sys.stderr)
         return 2
     try:
-        with sandbox_patches(root, restart=restart, config_suffix=f".{name}"), redirect_stdout(StringIO()):
+        with (
+            signal_lock_contention(root),
+            sandbox_patches(root, restart=restart, config_suffix=f".{name}"),
+            redirect_stdout(StringIO()),
+        ):
             client_command.cmd_add(name, prompt_for_access=False, connection_tag="vless-reality")
     finally:
         if role == "fast":
             (root / "fast-done").touch()
+    if contention_timed_out:
+        print("Второй писатель не встретил занятую manager.lock", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -232,17 +258,14 @@ P1_001_WRITERS = {
 def writer_worker(argv: list) -> int:
     """Отдельный процесс xray-client из P1_001_WRITERS: стартует, когда медленный писатель уже прочитал снимок."""
     root, action = Path(argv[0]), argv[1]
-    try:
-        if not wait_for_file(root / "slow-loaded", WORKER_TIMEOUT):
-            print("slow writer did not load the snapshot", file=sys.stderr)
-            return 2
-        with sandbox_patches(root, config_suffix=f".{action}"), \
-            mock.patch.object(client_command, "SERVER_ENV_PATH", root / "server.env"), \
-            mock.patch.object(client_command.client_connections, "add_connection", side_effect=add_connection_without_xray), \
-            redirect_stdout(StringIO()):
-            P1_001_WRITERS[action]()
-    finally:
-        (root / "fast-done").touch()
+    if not wait_for_file(root / "slow-loaded", WORKER_TIMEOUT):
+        print("slow writer did not load the snapshot", file=sys.stderr)
+        return 2
+    with signal_lock_contention(root), sandbox_patches(root, config_suffix=f".{action}"), \
+        mock.patch.object(client_command, "SERVER_ENV_PATH", root / "server.env"), \
+        mock.patch.object(client_command.client_connections, "add_connection", side_effect=add_connection_without_xray), \
+        redirect_stdout(StringIO()):
+        P1_001_WRITERS[action]()
     return 0
 
 
@@ -269,19 +292,15 @@ class ClientWritersLockTests(unittest.TestCase):
 
     def test_concurrent_add_does_not_lose_client(self) -> None:
         """XR-REV-001: клиент, добавленный между load_db и save_db другого процесса, не теряется."""
-        slow = start_worker(str(self.root), "alice", "slow", SLOW_WRITER_WINDOW)
-        fast = start_worker(str(self.root), "bob", "fast", SLOW_WRITER_WINDOW)
-        results = []
-        for process in (slow, fast):
-            try:
-                stdout, stderr = process.communicate(timeout=WORKER_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                stdout, stderr = process.communicate()
-            results.append((process.returncode, stdout, stderr))
-
-        for returncode, _stdout, stderr in results:
-            self.assertEqual(returncode, 0, stderr)
+        with ExitStack() as workers:
+            processes = []
+            for name, role in (("alice", "slow"), ("bob", "fast")):
+                process = workers.enter_context(start_worker(str(self.root), name, role))
+                workers.callback(process.kill)
+                processes.append(process)
+            for process in processes:
+                _, stderr = process.communicate(timeout=WORKER_TIMEOUT)
+                self.assertEqual(process.returncode, 0, stderr)
         self.assertEqual(db_client_names(self.root), {"alice", "bob"})
         self.assertEqual(config_client_names(self.root), {"alice", "bob"})
 
@@ -468,7 +487,7 @@ class LostUpdateScenariosTests(unittest.TestCase):
             client_command.cmd_add("bob", prompt_for_access=False, connection_tag="vless-reality")
 
     def run_race(self, action: str) -> dict:
-        slow = start_worker(str(self.root), "carol", "slow", SLOW_WRITER_WINDOW)
+        slow = start_worker(str(self.root), "carol", "slow")
         fast = start_worker(str(self.root), action, function="writer_worker")
         results = []
         for process in (slow, fast):

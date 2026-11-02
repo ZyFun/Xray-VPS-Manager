@@ -71,8 +71,8 @@ class ClientRepositoryReadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             missing_db_path = Path(tmp_dir) / "missing.db"
 
-            with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
-                client_repository.load_db_sql_result(db_path=missing_db_path)
+            with self.assertRaisesRegex(SQLiteReadUnavailable, r"^SQLite manager database is missing\.$"):
+                client_repository.load_db_sql(db_path=missing_db_path)
 
             self.assertFalse(missing_db_path.exists())
 
@@ -83,6 +83,16 @@ class ClientRepositoryReadTests(unittest.TestCase):
 
             with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
                 client_repository.load_db_sql_result(db_path=db_path)
+
+    def test_facade_rejects_newly_initialized_database_without_ready_flag(self) -> None:
+        """Текущее поведение, баг XR-REV-021: open_database создаёт схему, фасаду нужен ready-флаг."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "manager.db"
+            database.open_database(db_path).close()
+            self.assertTrue(db_path.is_file())
+
+            with self.assertRaisesRegex(SQLiteReadUnavailable, r"^SQLite database is not marked ready\.$"):
+                client_repository.load_db_sql(db_path=db_path)
 
 
 if __name__ == "__main__":

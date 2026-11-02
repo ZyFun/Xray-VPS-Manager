@@ -33,7 +33,7 @@ def client_db() -> dict:
                     "id": "00000000-0000-0000-0000-000000000001",
                     "email": "alice|created=2026-06-12T08:01:00Z",
                 },
-                "paymentType": "paid",
+                "paymentType": " Да ",
                 "selectedCascadeTag": "cascade-de",
             }
         },
@@ -85,6 +85,20 @@ class ClientRepositoryWriteTests(unittest.TestCase):
             json_path = Path(tmp_dir) / "clients.json"
             self.make_sqlite_db(db_path)
 
+            connection = database.open_database(db_path)
+            try:
+                sqlite_cascades.upsert_route(connection, "old-route", {"label": "old"})
+                # Наблюдаем порядок реальных изменений, в том числе перед каскадным DELETE.
+                connection.execute("CREATE TABLE write_log(operation TEXT)")
+                for table in ("reality_connections", "cascade_routes", "clients"):
+                    for action in ("INSERT", "DELETE"):
+                        connection.execute(f"""
+                            CREATE TRIGGER observe_{action}_{table} BEFORE {action} ON {table}
+                            BEGIN INSERT INTO write_log VALUES ('{action} {table}'); END
+                        """)
+            finally:
+                connection.close()
+
             client_repository.save_db(client_db(), json_path, db_path=db_path)
 
             connection = database.open_database(db_path)
@@ -92,6 +106,17 @@ class ClientRepositoryWriteTests(unittest.TestCase):
                 clients = sqlite_clients.list_clients(connection)
                 connections = sqlite_connections.list_connections(connection)
                 routes = sqlite_cascades.list_routes(connection)
+                operations = connection.execute("SELECT operation FROM write_log ORDER BY rowid")
+                self.assertEqual([row[0] for row in operations], [
+                    "INSERT reality_connections", "INSERT cascade_routes", "DELETE cascade_routes",
+                    "INSERT clients", "DELETE clients", "DELETE reality_connections",
+                ])
+                credentials = connection.execute(
+                    "SELECT client_name, connection_tag, credential_uuid, protocol FROM client_credentials"
+                )
+                self.assertEqual([tuple(row) for row in credentials], [
+                    ("alice", "vless-reality", "00000000-0000-0000-0000-000000000001", "vless"),
+                ])
             finally:
                 connection.close()
             self.assertEqual(set(clients), {"alice"})

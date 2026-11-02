@@ -1,0 +1,20 @@
+Enabled                 : no
+Token                   : not configured
+Bot name                : FixtureBot
+Bot username            : -
+Chat                    : - (-)
+Route mode              : direct
+Server monthly rent     : не указана
+Domain annual rent      : не указана
+Domain monthly rent     : не указана
+Total monthly rent      : не указана
+Payment per paid client : не рассчитана
+Active paid clients     : 1
+Payment rounding        : без округления
+Payment details         : не указаны
+Client subscriptions    : 0
+Activity subscriptions  : 0
+Manager DB              : <ROOT>/usr/local/etc/xray/manager.db
+Last GeoIP notification : never
+Last user poll          : never
+Last expiry reminder    : never
