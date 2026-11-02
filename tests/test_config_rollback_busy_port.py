@@ -8,21 +8,23 @@ import errno
 import json
 import socket
 import sqlite3
-import subprocess
 import tempfile
 import unittest
-from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
 
 from tests import test_client_manager_lock as client_lock_tests
 from tests import test_routing_manager_lock as routing_lock_tests
+from tests.support.sandbox import Sandbox
+from tests.test_restart_verification import FakeClock, show_output
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.commands import menu_reality_actions
-from xray_vps_manager.core import process
+from xray_vps_manager.core import process, systemd
+from xray_vps_manager.db import database
 from xray_vps_manager.xray import config as xray_config
 
 TROJAN_PASSWORD = "p" * 32
@@ -49,75 +51,65 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
     """Любая ошибка после записи config.json в xray-client возвращает прежний конфиг и завершает команду с ERROR:."""
 
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        client_lock_tests.make_sandbox(self.root)
-        self.before = (self.root / "config.json").read_text()
+        self.box = self.enterContext(Sandbox())
+        self.enterContext(mock.patch.object(systemd, "time", FakeClock()))
+        self.before = self.stored_config()
+        self.restore_restarts = 0
+        self.restart_error = None
+        self.restore_error = None
+        ok = self.box.processes.ok()
 
-    def new_config(self) -> dict:
-        config = json.loads(self.before)
-        config["inbounds"][1]["port"] = 9443
-        return config
+        def restart(_args, **_kwargs):
+            restored = self.stored_config() == self.before
+            if restored:
+                self.restore_restarts += 1
+            error = self.restore_error if restored else self.restart_error
+            if error is not None:
+                raise error
+            return ok
 
-    def save(self, *, save_db_error=None, restart_error=None, restore_error=None, interrupt_after_commit=False):
-        """Вызывает save_config_restart_xray_and_db в песочнице; возвращает (результат, stderr, рестарты отката)."""
-        restore_restarts = []
-        self.db_committed = False
-
-        def restart() -> None:
-            if restart_error is not None:
-                raise restart_error
-
-        def save_db(db):
-            if save_db_error is not None:
-                raise save_db_error
-            client_repository.save_db(db)
-            self.db_committed = True
-            if interrupt_after_commit:
-                # Ctrl+C после COMMIT, до возврата из save_db.
-                raise KeyboardInterrupt()
-
-        def restore_restart(unit, **kwargs):
-            restore_restarts.append(unit)
-            if restore_error is not None:
-                raise restore_error
-            return subprocess.CompletedProcess(["systemctl", "restart", unit], 0, "", "")
-
-        stderr = StringIO()
-        with ExitStack() as stack:
-            stack.enter_context(client_lock_tests.sandbox_patches(self.root, restart=restart))
-            stack.enter_context(mock.patch.object(client_command, "save_db", side_effect=save_db))
-            stack.enter_context(mock.patch.object(client_command, "restart_systemd_unit", side_effect=restore_restart))
-            stack.enter_context(mock.patch("shutil.chown"))
-            stack.enter_context(redirect_stderr(stderr))
-            db = client_command.load_db()
-            try:
-                result = client_command.save_config_restart_xray_and_db(self.new_config(), db)
-            except BaseException as exc:  # noqa: BLE001 — тест проверяет, что именно вышло наружу
-                result = exc
-        return result, stderr.getvalue(), restore_restarts
+        self.box.processes.script({
+            ("/usr/local/bin/xray", "run", "-test", "-config", str(self.box.paths.config)): ok,
+            ("systemctl", "stop", "xray"): ok,
+            ("systemctl", "reset-failed", "xray"): ok,
+            ("systemctl", "restart", "xray"): restart,
+            ("systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"):
+                self.box.processes.ok(show_output()),
+        })
 
     def stored_config(self) -> str:
-        return (self.root / "config.json").read_text()
+        return self.box.paths.config.read_text()
+
+    def save(self, *, invalid_client=False):
+        self.restore_restarts = 0
+        db = client_repository.load_db()
+        config = self.box.config()
+        config["inbounds"][1]["port"] = 9443
+        db["connections"]["vless-reality"]["port"] = 9443
+        if invalid_client:
+            db["clients"]["bob"] = {}
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            try:
+                result = client_command.save_config_restart_xray_and_db(config, db)
+            except (SystemExit, KeyboardInterrupt) as exc:
+                result = exc
+        return result, stderr.getvalue()
 
     def test_save_db_value_error_restores_backup(self) -> None:
         """Критерий приёмки: save_db, бросающий ValueError, → restore_config_backup вызван, код 1 с ERROR:."""
-        with mock.patch.object(
-            client_command, "restore_config_backup", wraps=client_command.restore_config_backup
-        ) as restore:
-            result, stderr, restarts = self.save(save_db_error=ValueError("Client has no UUID: bob"))
+        result, stderr = self.save(invalid_client=True)
 
         self.assertIsInstance(result, SystemExit)
         self.assertEqual(result.code, 1)
-        restore.assert_called_once()
-        backup = restore.call_args.args[0]
+        (backup,) = self.box.paths.config.parent.glob("config.json.bak.*")
+        self.assertEqual(backup.read_text(), self.before)
         self.assertEqual(
             stderr.splitlines(),
             [f"ERROR: New config failed: Client has no UUID: bob. Restored backup: {backup}"],
         )
         self.assertEqual(self.stored_config(), self.before)
-        self.assertEqual(restarts, ["xray"])
+        self.assertEqual(self.restore_restarts, 1)
 
     def test_other_save_db_errors_restore_backup(self) -> None:
         errors = {
@@ -125,51 +117,58 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
             "RuntimeError": RuntimeError("manager.db is not ready"),
         }
         for title, error in errors.items():
-            with self.subTest(title):
-                result, stderr, restarts = self.save(save_db_error=error)
+            with self.subTest(title), mock.patch.object(database, "write_session", side_effect=error):
+                result, stderr = self.save()
 
                 self.assertIsInstance(result, SystemExit)
                 self.assertEqual(result.code, 1)
                 self.assertTrue(stderr.startswith(f"ERROR: New config failed: {error}. Restored backup: "), stderr)
                 self.assertEqual(self.stored_config(), self.before)
-                self.assertEqual(restarts, ["xray"])
+                self.assertEqual(self.restore_restarts, 1)
 
     def test_restart_failure_still_restores_backup(self) -> None:
-        error = process.SystemdUnitStartError("xray", "xray ActiveState=failed SubState=failed NRestarts=0")
-        result, stderr, restarts = self.save(restart_error=error)
+        self.restart_error = process.SystemdUnitStartError("xray", "xray ActiveState=failed SubState=failed NRestarts=0")
+        result, stderr = self.save()
 
         self.assertIsInstance(result, SystemExit)
         self.assertEqual(result.code, 1)
         self.assertIn("ActiveState=failed", stderr)
         self.assertIn("Restored backup: ", stderr)
         self.assertEqual(self.stored_config(), self.before)
-        self.assertEqual(restarts, ["xray"])
+        self.assertEqual(self.restore_restarts, 1)
 
     def test_interrupt_during_restart_restores_backup_and_propagates(self) -> None:
         """Ctrl+C на рестарте и проверке старта Xray: manager.db ещё не тронута, конфиг возвращается."""
-        result, stderr, restarts = self.save(restart_error=KeyboardInterrupt())
+        self.restart_error = KeyboardInterrupt()
+        result, stderr = self.save()
 
         self.assertIsInstance(result, KeyboardInterrupt)
         self.assertEqual(stderr, "")
         self.assertEqual(self.stored_config(), self.before)
-        self.assertEqual(restarts, ["xray"])
+        self.assertEqual(self.restore_restarts, 1)
 
     def test_interrupt_after_db_commit_keeps_new_config(self) -> None:
         """71-R03: прерывание после COMMIT внутри save_db не откатывает один конфиг — config и БД остаются согласованы."""
-        result, stderr, restarts = self.save(interrupt_after_commit=True)
+        write_session = database.write_session
+
+        @contextmanager
+        def interrupted_session(*args, **kwargs):
+            with write_session(*args, **kwargs) as conn:
+                yield conn
+            raise KeyboardInterrupt()
+
+        with mock.patch.object(database, "write_session", interrupted_session):
+            result, stderr = self.save()
 
         self.assertIsInstance(result, KeyboardInterrupt)
         self.assertEqual(stderr, "")
-        self.assertTrue(self.db_committed)
+        self.assertEqual(client_repository.load_db()["connections"]["vless-reality"]["port"], 9443)
         self.assertEqual(json.loads(self.stored_config())["inbounds"][1]["port"], 9443)
-        self.assertEqual(restarts, [])
+        self.assertEqual(self.restore_restarts, 0)
 
     def test_restore_failure_reports_both_errors(self) -> None:
-        restore_error = process.SystemdUnitStartError("xray", "xray ActiveState=failed SubState=failed NRestarts=0")
-        result, stderr, restarts = self.save(
-            save_db_error=ValueError("Client has no UUID: bob"),
-            restore_error=restore_error,
-        )
+        self.restore_error = process.SystemdUnitStartError("xray", "xray ActiveState=failed SubState=failed NRestarts=0")
+        result, stderr = self.save(invalid_client=True)
 
         self.assertIsInstance(result, SystemExit)
         self.assertEqual(result.code, 1)
@@ -177,38 +176,30 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
         self.assertEqual(len(lines), 1, stderr)
         self.assertTrue(lines[0].startswith("ERROR: New config failed: Client has no UUID: bob. "), stderr)
         self.assertIn("also failed: xray did not start after restart", lines[0])
-        self.assertEqual(restarts, ["xray"])
+        self.assertEqual(self.restore_restarts, 1)
 
     def test_success_keeps_new_config_without_restore(self) -> None:
-        result, stderr, restarts = self.save()
+        result, stderr = self.save()
 
         self.assertIsInstance(result, Path)
         self.assertEqual(stderr, "")
         self.assertEqual(json.loads(self.stored_config())["inbounds"][1]["port"], 9443)
-        self.assertEqual(restarts, [])
+        self.assertEqual(self.restore_restarts, 0)
 
     def test_disable_trojan_client_only_in_config_restores_config(self) -> None:
         """Сценарий XR-REV-059: disable Trojan-клиента без записи в SQLite падает в save_db — конфиг возвращается."""
-        trojan_config_only_client(self.root)
-        before = self.stored_config()
-        restarts = []
-        stderr = StringIO()
-        with client_lock_tests.sandbox_patches(self.root), \
-            mock.patch.object(client_command, "restart_systemd_unit", side_effect=lambda unit, **_: restarts.append(unit)), \
-            mock.patch("shutil.chown"), \
-            redirect_stderr(stderr), \
-            redirect_stdout(StringIO()):
-            with self.assertRaises(SystemExit) as raised:
-                client_command.cmd_disable("bob")
+        trojan_config_only_client(self.box.paths.config.parent)
+        self.before = self.stored_config()
+        result = self.box.run_cli("client", "disable", "bob")
 
-        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(result.exit_code, 1)
         self.assertTrue(
-            stderr.getvalue().startswith("ERROR: New config failed: Client has no UUID: bob. Restored backup: "),
-            stderr.getvalue(),
+            result.stderr.startswith("ERROR: New config failed: Client has no UUID: bob. Restored backup: "),
+            result.stderr,
         )
-        self.assertEqual(self.stored_config(), before)
-        self.assertEqual(restarts, ["xray"])
-        self.assertNotIn("bob", client_lock_tests.db_client_names(self.root))
+        self.assertEqual(self.stored_config(), self.before)
+        self.assertEqual(self.restore_restarts, 1)
+        self.assertNotIn("bob", client_repository.load_db()["clients"])
 
 
 class FakeProbeSocket:

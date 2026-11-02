@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from xray_vps_manager.db.repositories.activity import (
+    DETAIL_MODE_ALL, DETAIL_MODE_OFF, DETAIL_MODE_SELECTED, DETAIL_MODES,
+)
+
 CONFIG_PATH = Path("/usr/local/etc/xray/config.json")
 SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 EXPORT_DIR = Path("/root/xray_activity_exports")
@@ -27,10 +31,6 @@ DEFAULT_XRAY_ERROR_RETENTION_DAYS = 180
 DEFAULT_XRAY_ACCESS_LOG_RETENTION_DAYS = 180
 DEFAULT_XRAY_ERROR_LOG_RETENTION_DAYS = 180
 DEFAULT_XRAY_RAW_LOG_ROTATE_TIME = "03:00"
-DETAIL_MODE_OFF = "off"
-DETAIL_MODE_ALL = "all"
-DETAIL_MODE_SELECTED = "selected"
-DETAIL_MODES = {DETAIL_MODE_OFF, DETAIL_MODE_ALL, DETAIL_MODE_SELECTED}
 SMTP_PORTS = {"25", "465", "587", "2525"}
 ADMIN_PORTS = {"22", "23", "135", "139", "445", "3389", "5900"}
 DEFAULT_RISK_BURST_EVENTS = 1000

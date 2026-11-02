@@ -1,21 +1,19 @@
 """Регрессия XR-REV-003: удаление подключения не стирает трафик клиентов с другими credentials."""
 
-from contextlib import contextmanager, redirect_stdout
+from contextlib import redirect_stdout
 from io import StringIO
 import json
-from pathlib import Path
-import tempfile
 import unittest
 from unittest import mock
 
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import crud as client_crud
 from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.commands import menu_reality_actions
-from xray_vps_manager.core import paths as core_paths
+from tests.support.sandbox import Sandbox
+from tests.test_restart_verification import FakeClock, FakeSocket, show_output
+from xray_vps_manager.core import systemd
 from xray_vps_manager.db import database
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 
 KEPT_TAG = "vless-reality"
@@ -88,52 +86,36 @@ class RemoveConnectionResultTest(unittest.TestCase):
 
 class RemoveConnectionTrafficTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        self.db_path = self.root / "manager.db"
-
+        self.box = self.enterContext(Sandbox(db="fixtures/db/empty-ready.sql"))
+        self.db_path = self.box.paths.manager_db
+        self.enterContext(mock.patch.object(systemd, "time", FakeClock()))
+        ok = self.box.processes.ok()
+        self.box.processes.script({
+            ("/usr/local/bin/xray", "run", "-test", "-config", str(self.box.paths.config)): ok,
+            ("systemctl", "stop", "xray"): ok,
+            ("systemctl", "reset-failed", "xray"): ok,
+            ("systemctl", "restart", "xray"): ok,
+            ("systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"):
+                self.box.processes.ok(show_output()),
+        })
         config = base_config()
         db = {"connections": {}, "clients": {}}
         build_clients(config, db)
-        (self.root / "config.json").write_text(json.dumps(config))
-
-        connection = database.open_database(self.db_path)
-        try:
-            sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
-        finally:
-            connection.close()
-        client_repository.save_db(db, db_path=self.db_path)
-
-        connection = database.open_database(self.db_path)
-        try:
+        for record in db["connections"].values():
+            record["publicKey"] = "A" * 43
+        self.box.paths.config.write_text(json.dumps(config))
+        client_repository.save_db(db)
+        with database.write_session() as connection:
             sqlite_traffic.upsert_traffic_entry(connection, "alice", traffic_entry(3000, 6000))
             sqlite_traffic.upsert_credential_traffic_entry(connection, "alice", KEPT_TAG, traffic_entry(1000, 2000))
             sqlite_traffic.upsert_credential_traffic_entry(connection, "alice", REMOVED_TAG, traffic_entry(2000, 4000))
             sqlite_traffic.upsert_traffic_entry(connection, "bob", traffic_entry(500, 700))
             sqlite_traffic.upsert_credential_traffic_entry(connection, "bob", REMOVED_TAG, traffic_entry(500, 700))
-        finally:
-            connection.close()
 
-    @contextmanager
-    def sandbox(self):
-        with mock.patch.object(core_paths, "MANAGER_LOCK_PATH", self.root / "manager.lock"), \
-            mock.patch.object(database, "MANAGER_DB_PATH", self.db_path), \
-            mock.patch.object(client_command, "CONFIG_PATH", self.root / "config.json"), \
-            mock.patch.object(client_command, "save_config", self.write_config), \
-            mock.patch.object(client_command, "restart_xray_with_config_test", lambda: None), \
-            mock.patch.object(client_command.client_connections, "server_env_values", return_value={}):
-            yield
-
-    def write_config(self, config: dict) -> Path:
-        (self.root / "config.json").write_text(json.dumps(config))
-        return self.root / "config.json.bak"
-
-    def run_command(self, func, *args) -> str:
-        output = StringIO()
-        with self.sandbox(), redirect_stdout(output):
-            func(*args)
-        return output.getvalue()
+    def run_command(self, *args) -> str:
+        result = self.box.run_cli("client", *args)
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        return result.stdout
 
     def read_traffic(self):
         connection = database.open_database(self.db_path)
@@ -153,7 +135,7 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
             connection.close()
 
     def test_remove_connection_keeps_traffic_of_client_with_other_credentials(self) -> None:
-        self.run_command(client_command.cmd_connection_remove, REMOVED_TAG)
+        self.run_command("remove-connection", REMOVED_TAG)
 
         db = client_repository.load_db(db_path=self.db_path)
         self.assertEqual(set(db["clients"]), {"alice"})
@@ -173,7 +155,7 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
         )
 
     def test_remove_connection_deletes_traffic_of_removed_credential_and_client(self) -> None:
-        self.run_command(client_command.cmd_connection_remove, REMOVED_TAG)
+        self.run_command("remove-connection", REMOVED_TAG)
 
         traffic = self.read_traffic()
         self.assertNotIn("bob", traffic["totals"])
@@ -183,7 +165,7 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
         self.assertEqual(traffic["credential_history"][("alice", REMOVED_TAG)], {})
 
     def test_remove_connection_output_does_not_call_kept_client_removed(self) -> None:
-        output = self.run_command(client_command.cmd_connection_remove, REMOVED_TAG)
+        output = self.run_command("remove-connection", REMOVED_TAG)
 
         self.assertIn("Removed clients: bob\n", output)
         self.assertIn("Removed traffic history for deleted clients.\n", output)
@@ -192,7 +174,7 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
         self.assertNotIn("alice", removed_line)
 
     def test_remove_client_deletes_traffic_and_reports_it(self) -> None:
-        output = self.run_command(client_command.cmd_remove, "bob")
+        output = self.run_command("remove", "bob")
 
         self.assertIn("Removed client: bob\n", output)
         self.assertIn("Removed traffic history.\n", output)
@@ -201,6 +183,79 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
         self.assertEqual(traffic["history"]["bob"], {})
         self.assertNotIn("bob", traffic["credentials"])
         self.assertEqual(traffic["totals"]["alice"]["incoming"], 3000)
+
+    def test_move_replaces_only_source_credential(self):
+        stale = client_repository.load_db()
+        self.run_command("move-connection", "bob", KEPT_TAG)
+        client_repository.save_db(stale)
+        db = client_repository.load_db()
+        self.assertEqual(set(db["clients"]["bob"]["credentials"]), {KEPT_TAG})
+        self.assertEqual(db["clients"]["bob"]["connection"], KEPT_TAG)
+        self.assertEqual(set(db["clients"]["alice"]["credentials"]), {KEPT_TAG, REMOVED_TAG})
+        self.assertNotIn(REMOVED_TAG, self.read_traffic()["credentials"].get("bob", {}))
+        clients_by_tag = {inbound["tag"]: [c["email"].split("|")[0] for c in inbound["settings"]["clients"]]
+                          for inbound in self.box.config()["inbounds"]}
+        self.assertIn("bob", clients_by_tag[KEPT_TAG])
+        self.assertNotIn("bob", clients_by_tag[REMOVED_TAG])
+
+    def test_disabled_move_commits_credentials_without_restarting(self):
+        self.run_command("disable", "bob")
+        before_config = self.box.paths.config.read_bytes()
+        before_restarts = self.box.processes.calls.count(("systemctl", "restart", "xray"))
+        self.run_command("move-connection", "bob", KEPT_TAG)
+        self.assertEqual(self.box.paths.config.read_bytes(), before_config)
+        self.assertEqual(self.box.processes.calls.count(("systemctl", "restart", "xray")), before_restarts)
+        with database.session() as conn:
+            entry = client_repository.get_client(conn, "bob")
+            self.assertFalse(entry["enabled"])
+            self.assertEqual(set(entry["credentials"]), {KEPT_TAG})
+
+    def test_failed_connection_delete_restores_config_credentials_and_traffic(self):
+        before_config = self.box.paths.config.read_bytes()
+        before_db = client_repository.load_db()
+        before_traffic = self.read_traffic()
+        with database.write_session() as conn:
+            conn.execute("CREATE TRIGGER veto BEFORE DELETE ON reality_connections "
+                         "BEGIN SELECT RAISE(ABORT, 'delete refused'); END")
+        failed = self.box.run_cli("client", "remove-connection", REMOVED_TAG)
+        self.assertEqual(failed.exit_code, 1)
+        self.assertIn("delete refused", failed.stderr)
+        self.assertEqual(self.box.paths.config.read_bytes(), before_config)
+        self.assertEqual(client_repository.load_db(), before_db)
+        self.assertEqual(self.read_traffic(), before_traffic)
+
+    def seed_routes(self):
+        self.enterContext(mock.patch("socket.create_connection", return_value=FakeSocket()))
+        config = self.box.config()
+        db = client_repository.load_db()
+        for tag in ("cascade-old", "cascade-next"):
+            config["outbounds"].append({"tag": tag, "protocol": "vless"})
+            db["cascadeRoutes"][tag] = {"tag": tag, "label": tag}
+        config["routing"]["rules"].append({"type": "field", "network": "tcp,udp", "outboundTag": "cascade-old"})
+        db["clients"]["alice"]["selectedCascadeTag"] = "cascade-old"
+        client_repository.save_db(db)
+        self.box.paths.config.write_text(json.dumps(config))
+
+    def test_route_remove_reassigns_to_active_cascade_then_clears_selection(self):
+        self.seed_routes()
+        for name, expected in (("old", "cascade-next"), ("next", "")):
+            result = self.box.run_cli("cascade", "remove", name)
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            with database.session() as conn:
+                self.assertIsNone(client_repository.get_route(conn, "cascade-" + name))
+                self.assertEqual(client_repository.get_client(conn, "alice")["selectedCascadeTag"], expected)
+
+    def test_route_delete_failure_warns_and_rolls_back_sql_batch(self):
+        self.seed_routes()
+        before = client_repository.load_db()
+        with database.write_session() as conn:
+            conn.execute("CREATE TRIGGER veto BEFORE DELETE ON cascade_routes "
+                         "BEGIN SELECT RAISE(ABORT, 'route refused'); END")
+        result = self.box.run_cli("cascade", "remove", "old")
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("WARN: client route DB save skipped: route refused", result.stderr)
+        self.assertEqual(client_repository.load_db(), before)
+        self.assertNotIn("cascade-old", {outbound["tag"] for outbound in self.box.config()["outbounds"]})
 
 
 class MenuDeleteConnectionWarningTest(unittest.TestCase):
