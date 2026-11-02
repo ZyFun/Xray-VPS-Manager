@@ -7,14 +7,13 @@ import sqlite3
 from datetime import timedelta
 from typing import Any, Iterable
 
-from xray_vps_manager.activity.constants import (
-    DETAIL_MODE_ALL,
-    DETAIL_MODE_OFF,
-    DETAIL_MODE_SELECTED,
-    DETAIL_MODES,
-)
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories.base import decode_json, encode_json
+
+DETAIL_MODE_OFF = "off"
+DETAIL_MODE_ALL = "all"
+DETAIL_MODE_SELECTED = "selected"
+DETAIL_MODES = {DETAIL_MODE_OFF, DETAIL_MODE_ALL, DETAIL_MODE_SELECTED}
 
 ACTIVITY_ACCESS_LOG_OFFSET = "activity-access-log"
 ACTIVITY_SOURCE_METADATA_KEY = "activity.sourceMetadata"

@@ -9,6 +9,7 @@ from pathlib import Path
 from collections.abc import Mapping
 
 from xray_vps_manager.clients import crud as client_crud
+from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.errors import StateError, ValidationError
 from xray_vps_manager.core.fs import replace_file
 from xray_vps_manager.core.locks import manager_lock
@@ -151,7 +152,7 @@ def initialize(*, from_install: bool = False) -> None:
                 for tag, record in records["connections"].items():
                     connections.upsert_connection(connection, tag, record)
                 for name, entry in records["clients"].items():
-                    clients.upsert_client(connection, name, entry)
+                    client_repository.save_client(connection, name, entry)
                 settings.set_metadata(connection, SQLITE_READ_READY_KEY, "true")
             try:
                 data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode()

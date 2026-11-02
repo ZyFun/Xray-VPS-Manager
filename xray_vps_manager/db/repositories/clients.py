@@ -5,8 +5,6 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from xray_vps_manager.clients import credentials as client_credentials
-from xray_vps_manager.clients.payments import normalize_payment_type
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories.base import decode_json, encode_json, without_keys
 
@@ -92,12 +90,10 @@ def _entry_from_row(connection: sqlite3.Connection, row) -> dict[str, Any] | Non
     state = get_traffic_limit_state(connection, row["name"])
     entry.update(state)
     entry["credentials"] = list_client_credentials(connection, row["name"])
-    client_credentials.normalize_entry_credentials(entry)
     return entry
 
 
 def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
-    client_credentials.normalize_entry_credentials(entry)
     client = _client_json(entry, name)
     uuid = str(entry.get("id") or client.get("id") or "")
     if not uuid:
@@ -142,7 +138,7 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
                 entry.get("expiresAt") or None,
                 entry.get("accessDays"),
                 entry.get("expiredAt") or None,
-                normalize_payment_type(entry.get("paymentType", "free")),
+                entry.get("paymentType", "free"),
                 entry.get("selectedCascadeTag") or None,
                 encode_json(client),
                 encode_json(extra),
@@ -161,10 +157,8 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
             exceeded_bytes=int(entry.get("trafficLimitExceededBytes") or 0),
             reset_at=entry.get("trafficLimitResetAt") or "",
         )
-        desired_credentials = client_credentials.normalize_entry_credentials(entry)
-        for connection_tag, credential in desired_credentials.items():
-            upsert_client_credential(connection, name, connection_tag, credential)
-        delete_stale_client_credentials(connection, name, set(desired_credentials))
+        for tag, credential in entry.get("credentials", {}).items():
+            upsert_client_credential(connection, name, tag, credential)
 
 
 def get_client(connection: sqlite3.Connection, name: str) -> dict[str, Any] | None:
@@ -331,7 +325,6 @@ def upsert_client_credential(
     link_metadata = credential.get("linkMetadata")
     if not isinstance(link_metadata, dict):
         link_metadata = {}
-    protocol = str(credential.get("protocol") or ("trojan" if client.get("password") else "vless")).strip().lower()
     with database.transaction(connection):
         connection.execute(
             """
@@ -355,7 +348,7 @@ def upsert_client_credential(
                 name,
                 connection_tag,
                 credential.get("id") or client.get("id") or None,
-                protocol,
+                credential["protocol"],
                 str(credential.get("security") or ""),
                 str(credential.get("transport") or ""),
                 0 if credential.get("enabled") is False else 1,
@@ -367,17 +360,16 @@ def upsert_client_credential(
         )
 
 
-def delete_stale_client_credentials(connection: sqlite3.Connection, name: str, desired_connection_tags: set[str]) -> None:
-    rows = connection.execute(
-        "SELECT connection_tag FROM client_credentials WHERE client_name = ?",
-        (name,),
-    ).fetchall()
-    stale = {row["connection_tag"] for row in rows} - desired_connection_tags
-    if not stale:
-        return
+def get_client_credential(connection: sqlite3.Connection, name: str, tag: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        "SELECT * FROM client_credentials WHERE client_name = ? AND connection_tag = ?", (name, tag),
+    ).fetchone()
+    return _credential_from_row(row)
+
+
+def delete_client_credential(connection: sqlite3.Connection, name: str, tag: str) -> bool:
     with database.transaction(connection):
-        for tag in stale:
-            connection.execute(
-                "DELETE FROM client_credentials WHERE client_name = ? AND connection_tag = ?",
-                (name, tag),
-            )
+        result = connection.execute(
+            "DELETE FROM client_credentials WHERE client_name = ? AND connection_tag = ?", (name, tag),
+        )
+    return result.rowcount > 0
