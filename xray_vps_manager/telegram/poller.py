@@ -32,6 +32,7 @@ class PollerContext:
     load_db: Callable[[], dict]
     save_db_sections: Callable[[dict, tuple[str, ...]], None]
     load_client_db: Callable[[], dict]
+    load_country_routes: Callable[[], tuple[dict, dict]]
     load_traffic_db: Callable[[], dict]
     display_timezone: Callable[[], tuple[Any, str]]
     format_access_until: Callable[[str], str]
@@ -232,14 +233,17 @@ def send_client_activity_exceptions_menu(ctx: PollerContext, db, chat_id, text=N
 
 
 def send_client_country_menu(ctx: PollerContext, db, chat_id, text=None):
-    client_db = ctx.load_client_db()
+    client_db, config = ctx.load_country_routes()
+    client_routes.assign_default_client_routes(config, client_db)
     _name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
     if error:
         send_client_menu(ctx, db, chat_id, error)
         return
-    options = client_routes.route_options(client_db)
+    options = client_routes.route_options(client_db, config)
     if not options:
-        send_client_menu(ctx, db, chat_id, "Страны подключения ещё не настроены. Обратись к администратору.")
+        send_client_menu(
+            ctx, db, chat_id, "Сейчас нет доступных для выбора стран. Попробуй позже или обратись к администратору."
+        )
         return
     current_tag = client_routes.selected_route_tag(entry)
     current_label = client_routes.selected_route_label(client_db, entry)
@@ -629,14 +633,14 @@ def handle_callback_query(ctx: PollerContext, db, update):
         send_client_country_menu(ctx, db, chat_id)
         return True
     if data.startswith("client:country:"):
-        client_db = ctx.load_client_db()
+        client_db, config = ctx.load_country_routes()
         name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
         if error:
             ctx.answer_callback_query(db, callback_id)
             send_client_menu(ctx, db, chat_id, error)
             return True
         tag = data[len("client:country:"):]
-        options = {item["tag"]: item for item in client_routes.route_options(client_db)}
+        options = {item["tag"]: item for item in client_routes.route_options(client_db, config)}
         if tag not in options:
             ctx.answer_callback_query(db, callback_id, "Страна недоступна")
             send_client_country_menu(ctx, db, chat_id, "Эта страна сейчас недоступна. Выбери другую.")

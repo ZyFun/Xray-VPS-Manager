@@ -43,7 +43,13 @@ def route_label(record: dict[str, Any] | None, tag: str = "") -> str:
 
 
 def sync_routes_from_config(config: dict[str, Any], db: dict[str, Any]) -> bool:
-    """Mirror configured cascade outbounds into SQLite metadata and default client choices."""
+    """Заполнить метаданные каскадов и выбор клиентов по умолчанию в снимке."""
+    changed = sync_route_metadata_from_config(config, db)
+    return assign_default_client_routes(config, db) or changed
+
+
+def sync_route_metadata_from_config(config: dict[str, Any], db: dict[str, Any]) -> bool:
+    """Заполнить метаданные каскадов, сохраняя исходный выбор каждого клиента."""
 
     changed = False
     routes = client_repository.db_cascade_routes(db)
@@ -73,7 +79,6 @@ def sync_routes_from_config(config: dict[str, Any], db: dict[str, Any]) -> bool:
             routes[tag] = record
             changed = True
 
-    changed = assign_default_client_routes(config, db) or changed
     return changed
 
 

@@ -13,7 +13,9 @@ from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import clients, default_connection_tag, inbound_tag, managed_connection_inbounds
 
 
-def client_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str, Any]]:
+def client_rows(
+    config: dict[str, Any], db: dict[str, Any], *, resolve_countries: bool = False
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     ensure_connections(config, db)
     active_by_name: dict[str, set[str]] = {}
@@ -29,6 +31,9 @@ def client_rows(config: dict[str, Any], db: dict[str, Any]) -> list[dict[str, An
                 entry = db_entry_from_client(item, created=created, enabled=True)
                 entry["connection"] = tag
                 db_clients(db)[name] = entry
+
+    if resolve_countries:
+        client_routes.sync_routes_from_config(config, db)
 
     for name, entry in db_clients(db).items():
         credentials = client_credentials.normalize_entry_credentials(entry)

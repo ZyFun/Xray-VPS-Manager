@@ -1,6 +1,7 @@
 """Регрессия XR-REV-001: каскады, bypass, WARP и меню подключений пишут config.json и client-DB под manager.lock."""
 
 import ast
+import fcntl
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from io import StringIO
@@ -44,12 +45,8 @@ HOLDER = "pid=4242 cmd=xray-client add since=2026-10-11T10:00:00Z"
 LOCK_MESSAGE = f"Другая операция менеджера ещё выполняется: {HOLDER}"
 LOCK_HINT = "Дождись её завершения и повтори команду."
 LOCK_ERROR_LINES = [f"ERROR: {LOCK_MESSAGE}", LOCK_HINT]
-DRIFT_WARN = (
-    f"WARN: {LOCK_MESSAGE}. "
-    "Запись маршрутов клиентов из config.json в manager.db пропущена, следующее чтение повторит её."
-)
 LOCK_TIMEOUTS = {
-    set_cascade: {"MANAGER_LOCK_TIMEOUT": 0.2, "ROUTE_DRIFT_LOCK_TIMEOUT": 0.2},
+    set_cascade: {"MANAGER_LOCK_TIMEOUT": 0.2},
     set_bypass: {"MANAGER_LOCK_TIMEOUT": 0.2},
     warp: {"MANAGER_LOCK_TIMEOUT": 0.2},
     menu_reality_actions: {"MANAGER_LOCK_TIMEOUT": 0.2},
@@ -452,6 +449,28 @@ class RoutingPromptsAndWritesTests(RoutingLockTestCase):
         self.assertTrue(client_lock_tests.lock_is_free(self.lock_path))
         return events
 
+    def test_use_preserves_countries_shown_before_switch(self) -> None:
+        with routing_patches(self.root):
+            shown = {row[3]: row[2] for row in set_cascade.cascade_rows(stored_config(self.root))}
+        self.assertEqual(stored_cascade_routes(self.root), {})
+
+        self.run_interactive(lambda: set_cascade.cmd_use([]), ["2"])
+
+        self.assertEqual(cascade_config.active_cascade_tag(stored_config(self.root)), "cascade-backup")
+        self.assertEqual({tag: row["country"] for tag, row in stored_cascade_routes(self.root).items()}, shown)
+
+    def test_remove_active_preserves_country_shown_for_replacement(self) -> None:
+        with routing_patches(self.root):
+            shown = {row[3]: row[2] for row in set_cascade.cascade_rows(stored_config(self.root))}
+        self.assertEqual(stored_cascade_routes(self.root), {})
+
+        self.run_interactive(lambda: set_cascade.cmd_remove([]), ["1", "y"])
+
+        routes = stored_cascade_routes(self.root)
+        self.assertEqual(cascade_config.active_cascade_tag(stored_config(self.root)), "cascade-backup")
+        self.assertEqual(set(routes), {"cascade-backup"})
+        self.assertEqual(routes["cascade-backup"]["country"], shown["cascade-backup"])
+
     def test_prompts_are_asked_before_lock_and_writes_happen_under_lock(self) -> None:
         scenarios = {
             "xray-set-cascade add": (lambda: set_cascade.cmd_add([]), ["extra", "Германия"]),
@@ -576,8 +595,8 @@ class RoutingPromptsAndWritesTests(RoutingLockTestCase):
 
                 test_bypass.assert_called_once_with("bypass-ru", "US", expected_target)
 
-    def test_cascade_list_drift_write_keeps_client_added_after_snapshot(self) -> None:
-        """XR-REV-001: запись drift маршрутов в xray-set-cascade list не стирает клиента другого процесса."""
+    def test_cascade_list_keeps_client_added_after_snapshot(self) -> None:
+        """B2.2: показ каскадов по снимку не затрагивает клиента, добавленного после чтения."""
         real_load_db_sql = client_repository.load_db_sql
         added = []
 
@@ -585,7 +604,7 @@ class RoutingPromptsAndWritesTests(RoutingLockTestCase):
             db = real_load_db_sql(*args, **kwargs)
             if not added:
                 added.append("bob")
-                # Другой процесс добавил клиента между снимком list и записью drift.
+                # Другой процесс добавил клиента после чтения снимка для list.
                 with client_lock_tests.sandbox_patches(self.root):
                     client_command.cmd_add("bob", prompt_for_access=False, connection_tag="vless-reality")
             return db
@@ -675,18 +694,23 @@ class RoutingBusyLockTests(RoutingLockTestCase):
                 self.assertEqual(raised.exception.code, f"{LOCK_MESSAGE}\n{LOCK_HINT}")
                 self.assertEqual(self.snapshot(), before)
 
-    def test_cascade_list_skips_drift_write_when_lock_is_busy(self) -> None:
-        stdout = StringIO()
+    def test_cascade_rows_display_drift_without_writing_or_locking(self) -> None:
+        """B2.2: список сразу показывает подписи из памяти, даже если другой процесс держит manager.lock."""
+        db_path = self.root / "manager.db"
+        before = db_path.read_bytes()
         stderr = StringIO()
         with routing_patches(self.root), \
-            mock.patch.multiple(set_cascade, **LOCK_TIMEOUTS[set_cascade]), \
+            mock.patch.object(client_repository, "save_db") as save_db, \
             client_lock_tests.foreign_lock_holder(self.lock_path, HOLDER), \
-            redirect_stdout(stdout), \
+            mock.patch.object(fcntl, "flock", side_effect=AssertionError("Чтение попыталось взять flock")) as lock, \
             redirect_stderr(stderr):
-            set_cascade.cmd_status()
+            rows = set_cascade.cascade_rows(set_cascade.load_config())
 
-        self.assertEqual(stderr.getvalue().splitlines(), [DRIFT_WARN])
-        self.assertIn("cascade-backup", stdout.getvalue())
+        lock.assert_not_called()
+        save_db.assert_not_called()
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual({row[3]: row[2] for row in rows}, {"cascade-main": "Германия", "cascade-backup": "США"})
+        self.assertEqual(db_path.read_bytes(), before)
         self.assertEqual(stored_cascade_routes(self.root), {})
 
 

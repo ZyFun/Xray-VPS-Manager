@@ -1,3 +1,4 @@
+import json
 import unittest
 from dataclasses import replace
 from datetime import datetime
@@ -7,8 +8,10 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 from tests.support.sandbox import Sandbox
+from xray_vps_manager.commands import telegram as telegram_command
 from xray_vps_manager.db import database
 from xray_vps_manager.telegram import admin, poller, settings
+from xray_vps_manager.xray import cascade
 
 
 class TelegramPollerTests(unittest.TestCase):
@@ -21,6 +24,10 @@ class TelegramPollerTests(unittest.TestCase):
             load_client_db = lambda: client_db
         if run_capture is None:
             run_capture = lambda *args, **kwargs: None
+
+        def load_country_routes():
+            snapshot = load_client_db()
+            return snapshot, {"outbounds": [{"tag": tag} for tag in snapshot.get("cascadeRoutes", {})]}
 
         def save_db_sections(updated_db, sections):
             state = updated_db.get("clientSubscriptionState", {})
@@ -50,6 +57,7 @@ class TelegramPollerTests(unittest.TestCase):
             load_db=lambda: db,
             save_db_sections=save_db_sections,
             load_client_db=load_client_db,
+            load_country_routes=load_country_routes,
             load_traffic_db=lambda: {"clients": {}},
             display_timezone=lambda: (ZoneInfo("Europe/Moscow"), "Europe/Moscow"),
             format_access_until=lambda value: value or "бессрочно",
@@ -1338,6 +1346,96 @@ class TelegramPollerTests(unittest.TestCase):
 
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Текущая страна: Германия", sent[2])
+
+    def test_selecting_default_country_persists_choice_after_catchall_changes(self) -> None:
+        """117-R01: явное нажатие закрепляет страну, которую /status до этого только вычислял."""
+        with Sandbox() as box:
+            config = box.config()
+            config["outbounds"].extend({"tag": tag, "protocol": "vless"} for tag in ("cascade-de", "cascade-us"))
+            cascade.activate_cascade_route(config, "cascade-de")
+            box.paths.config.write_text(json.dumps(config))
+            db = {"enabled": True, "token": "test-token", "chatId": "111",
+                  "clientSubscriptions": {"222": {"client": "alice", "enabled": True}}}
+            update = {"update_id": 1, "callback_query": {
+                "id": "select-de", "data": "client:country:cascade-de",
+                "message": {"chat": {"id": 222, "type": "private"}},
+            }}
+
+            def run_route(command, timeout):
+                result = box.run_cli("client", *command[1:])
+                return SimpleNamespace(returncode=result.exit_code, stdout=result.stdout, stderr=result.stderr)
+
+            ctx = replace(
+                telegram_command.poller_context(),
+                load_db=lambda: db,
+                curl_json=mock.Mock(return_value={"ok": True, "result": [update]}),
+                send_chat_message=mock.Mock(return_value=None),
+                answer_callback_query=mock.Mock(),
+                run_capture=mock.Mock(side_effect=run_route),
+            )
+            with database.session(box.paths.manager_db) as conn:
+                self.assertFalse(conn.execute("SELECT selected_cascade_tag FROM clients WHERE name = 'alice'").fetchone()[0])
+            self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+            ctx.run_capture.assert_called_once_with(
+                [str(ctx.xray_client), "route", "alice", "cascade-de"], timeout=poller.CLIENT_ROUTE_TIMEOUT,
+            )
+            cascade.activate_cascade_route(config, "cascade-us")
+            box.paths.config.write_text(json.dumps(config))
+            self.assertEqual(ctx.load_client_db()["clients"]["alice"]["selectedCascadeTag"], "cascade-de")
+            with database.session(box.paths.manager_db) as conn:
+                stored = conn.execute("SELECT selected_cascade_tag FROM clients WHERE name = 'alice'").fetchone()[0]
+                self.assertEqual(stored, "cascade-de")
+
+    def test_country_menu_and_old_callback_ignore_removed_outbound(self) -> None:
+        with Sandbox() as box:
+            config = box.config()
+            config["outbounds"].append({"tag": "cascade-de", "protocol": "vless"})
+            cascade.activate_cascade_route(config, "cascade-de")
+            box.paths.config.write_text(json.dumps(config))
+            with database.write_session(box.paths.manager_db) as conn:
+                conn.execute("UPDATE clients SET selected_cascade_tag = 'cascade-old' WHERE name = 'alice'")
+                conn.execute("INSERT INTO cascade_routes(tag, country) VALUES ('cascade-old', 'Архив')")
+            before = box.db_rows("clients", "cascade_routes")
+            db = {"clientSubscriptions": {"222": {"client": "alice"}}}
+            ctx = replace(telegram_command.poller_context(), send_chat_message=mock.Mock(return_value=None),
+                          answer_callback_query=mock.Mock(), run_capture=mock.Mock())
+            poller.send_client_country_menu(ctx, db, "222")
+            buttons = ctx.send_chat_message.call_args.kwargs["reply_markup"]["inline_keyboard"]
+            offered = [button["callback_data"] for row in buttons for button in row]
+            self.assertIn("client:country:cascade-de", offered)
+            self.assertNotIn("client:country:cascade-old", offered)
+
+            update = {"callback_query": {"id": "old", "data": "client:country:cascade-old",
+                                         "message": {"chat": {"type": "private", "id": 222}}}}
+            self.assertTrue(poller.handle_callback_query(ctx, db, update))
+            ctx.answer_callback_query.assert_called_once_with(db, "old", "Страна недоступна")
+            ctx.run_capture.assert_not_called()
+            self.assertEqual(box.db_rows("clients", "cascade_routes"), before)
+
+    def test_country_unavailable_when_config_cannot_be_read(self) -> None:
+        with Sandbox() as box:
+            with database.write_session(box.paths.manager_db) as conn:
+                conn.execute("UPDATE clients SET selected_cascade_tag = 'cascade-de' WHERE name = 'alice'")
+                conn.execute("INSERT INTO cascade_routes(tag, country) VALUES ('cascade-de', 'Германия')")
+            box.paths.config.unlink()
+            db = {"clientSubscriptions": {"222": {"client": "alice"}}}
+            ctx = replace(
+                telegram_command.poller_context(),
+                send_chat_message=mock.Mock(return_value=None),
+                answer_callback_query=mock.Mock(),
+                run_capture=mock.Mock(),
+            )
+            for action in ("client:country", "client:country:cascade-de"):
+                with self.subTest(action=action):
+                    ctx.send_chat_message.reset_mock()
+                    update = {"callback_query": {
+                        "id": "choice", "data": action, "message": {"chat": {"type": "private", "id": 222}},
+                    }}
+                    self.assertTrue(poller.handle_callback_query(ctx, db, update))
+                    ctx.send_chat_message.assert_called_once()
+                    self.assertEqual(ctx.send_chat_message.call_args.args[2],
+                                     "Сейчас нет доступных для выбора стран. Попробуй позже или обратись к администратору.")
+            ctx.run_capture.assert_not_called()
 
     def test_selecting_current_country_does_not_call_route_command(self) -> None:
         db = {

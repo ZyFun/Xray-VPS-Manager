@@ -1038,7 +1038,7 @@ def cmd_list():
     config = load_config()
     db = load_db_readonly()
     ensure_connections(config, db)
-    rows = client_listing.client_rows(config, db)
+    rows = client_listing.client_rows(config, db, resolve_countries=True)
     if not rows:
         print("No clients.")
         return

@@ -1,6 +1,7 @@
-"""Регрессия XR-REV-001: писатели Telegram и запись drift в load_client_db работают под manager.lock."""
+"""Блокировки писателей Telegram и чтение клиентских маршрутов при обработке update."""
 
 import ast
+import fcntl
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 import json
@@ -37,10 +38,6 @@ LOCK_ERROR_LINES = [
     f"ERROR: Другая операция менеджера ещё выполняется: {HOLDER}",
     "Дождись её завершения и повтори команду.",
 ]
-DRIFT_WARN = (
-    f"WARN: Другая операция менеджера ещё выполняется: {HOLDER}. "
-    "Запись маршрутов клиентов из config.json в manager.db пропущена, следующее чтение повторит её."
-)
 PAYMENT_SECTIONS = ("paymentTotalAmount", "paymentCurrency")
 
 
@@ -104,21 +101,22 @@ def stored_routes(root: Path) -> dict:
 
 
 def poller_worker(argv: list) -> int:
-    """Отдельный процесс xray-telegram poll-users: /status читает client-DB с drift и сохраняет его.
+    """Poller читает снимок для /status и продолжает после завершения параллельного xray-client add."""
+    root = Path(argv[0])
+    real_load_db_sql = client_repository.load_db_sql
 
-    Между load_db_sql и save_db poller ждёт второго писателя внутри окна.
-    """
-    root, window = Path(argv[0]), float(argv[1])
-    real_save_db = client_repository.save_db
-
-    def slow_save_db(db, *args, **kwargs):
-        (root / "poller-saving").touch()
-        client_lock_tests.wait_for_file(root / "writer-done", window)
-        return real_save_db(db, *args, **kwargs)
+    def load_then_wait_for_writer(*args, **kwargs):
+        db = real_load_db_sql(*args, **kwargs)
+        (root / "poller-loaded").touch()
+        if not client_lock_tests.wait_for_file(root / "writer-done", client_lock_tests.WORKER_TIMEOUT // 2):
+            raise AssertionError("Писатель не завершился во время обработки update")
+        return db
 
     with telegram_patches(root, updates=[message_update(CLIENT_CHAT, 1, "/status")]) as sent, \
-        mock.patch.object(telegram_command.client_repository, "save_db", side_effect=slow_save_db):
+        mock.patch.object(client_repository, "load_db_sql", side_effect=load_then_wait_for_writer), \
+        mock.patch.object(client_repository, "save_db") as save_db:
         returncode = telegram_command.poll_user_subscriptions(quiet=True)
+        save_db.assert_not_called()
     (root / "poller-sent.json").write_text(json.dumps(sent))
     return returncode
 
@@ -127,8 +125,8 @@ def writer_worker(argv: list) -> int:
     """Отдельный процесс xray-client add: стартует, когда poller уже прочитал снимок client-DB."""
     root, name = Path(argv[0]), argv[1]
     try:
-        if not client_lock_tests.wait_for_file(root / "poller-saving", client_lock_tests.WORKER_TIMEOUT):
-            print("poller did not reach save_db", file=sys.stderr)
+        if not client_lock_tests.wait_for_file(root / "poller-loaded", client_lock_tests.WORKER_TIMEOUT):
+            print("poller did not load the client snapshot", file=sys.stderr)
             return 2
         with client_lock_tests.sandbox_patches(root, config_suffix=f".{name}"), redirect_stdout(StringIO()):
             client_command.cmd_add(name, prompt_for_access=False, connection_tag="vless-reality")
@@ -194,9 +192,9 @@ class TelegramPollerLockTests(unittest.TestCase):
         self.lock_path = self.root / "manager.lock"
         make_telegram_sandbox(self.root)
 
-    def test_poller_drift_write_does_not_lose_client_added_by_other_process(self) -> None:
-        """XR-REV-001: обработка update poller'ом пишет drift под lock и не стирает клиента другого процесса."""
-        poller = start_worker("poller_worker", str(self.root), client_lock_tests.SLOW_WRITER_WINDOW)
+    def test_poller_read_does_not_lose_client_added_by_other_process(self) -> None:
+        """B2.2: poller отвечает по снимку и не сохраняет его поверх результата параллельного add."""
+        poller = start_worker("poller_worker", str(self.root))
         writer = start_worker("writer_worker", str(self.root), "bob")
         results = []
         for process in (poller, writer):
@@ -216,51 +214,35 @@ class TelegramPollerLockTests(unittest.TestCase):
         self.assertEqual([chat_id for chat_id, _text in sent], [CLIENT_CHAT])
         self.assertTrue(client_lock_tests.lock_is_free(self.lock_path))
 
-    def test_load_client_db_saves_drift_once_and_then_reads_without_lock(self) -> None:
-        """Текущее поведение, баг XR-REV-014: чтение сохраняет расхождение маршрутов под блокировкой."""
-        stderr = StringIO()
-        with telegram_patches(self.root):
-            first = telegram_command.load_client_db()
-            self.assertIn(CASCADE_TAG, stored_routes(self.root))
-            self.assertTrue(client_lock_tests.lock_is_free(self.lock_path))
-            # Drift уже записан: чтение не ждёт занятую блокировку.
-            with mock.patch.object(telegram_command, "ROUTE_DRIFT_LOCK_TIMEOUT", 10), \
-                client_lock_tests.foreign_lock_holder(self.lock_path, HOLDER), \
-                redirect_stderr(stderr):
-                started = time.monotonic()
-                second = telegram_command.load_client_db()
-                elapsed = time.monotonic() - started
-
-        self.assertLess(elapsed, 5)
-        self.assertEqual(stderr.getvalue(), "")
-        self.assertIn(CASCADE_TAG, first["cascadeRoutes"])
-        self.assertEqual(second["cascadeRoutes"], first["cascadeRoutes"])
-
-    def test_load_client_db_skips_drift_write_when_lock_is_busy(self) -> None:
-        stderr = StringIO()
+    def test_load_client_db_syncs_drift_only_in_memory(self) -> None:
+        """B2.2 исправляет XR-REV-014: раньше первое чтение сохраняло подписи, теперь они только в снимке."""
+        db_path = self.root / "manager.db"
+        before = db_path.read_bytes()
         with telegram_patches(self.root), \
-            mock.patch.object(telegram_command, "ROUTE_DRIFT_LOCK_TIMEOUT", 0.2), \
             client_lock_tests.foreign_lock_holder(self.lock_path, HOLDER), \
-            redirect_stderr(stderr):
+            mock.patch.object(fcntl, "flock", side_effect=AssertionError("Чтение попыталось взять flock")) as lock, \
+            mock.patch.object(client_repository, "save_db") as save_db:
             db = telegram_command.load_client_db()
 
-        # Ответ строится по снимку, синхронизированному в памяти; запись повторит следующее чтение.
-        self.assertIn(CASCADE_TAG, db["cascadeRoutes"])
+        lock.assert_not_called()
+        save_db.assert_not_called()
+        self.assertEqual(db["cascadeRoutes"][CASCADE_TAG]["country"], "США")
+        self.assertEqual(db_path.read_bytes(), before)
         self.assertNotIn(CASCADE_TAG, stored_routes(self.root))
-        self.assertEqual(stderr.getvalue().splitlines(), [DRIFT_WARN])
 
     def test_poller_answers_and_continues_when_lock_is_busy(self) -> None:
         updates = [message_update(CLIENT_CHAT, 1, "/status"), message_update(OTHER_CHAT, 2, "/status")]
         stderr = StringIO()
         with telegram_patches(self.root, updates=updates) as sent, \
-            mock.patch.object(telegram_command, "ROUTE_DRIFT_LOCK_TIMEOUT", 0.2), \
             client_lock_tests.foreign_lock_holder(self.lock_path, HOLDER), \
+            mock.patch.object(fcntl, "flock", side_effect=AssertionError("Poller попытался взять flock")) as lock, \
             redirect_stderr(stderr):
             returncode = telegram_command.poll_user_subscriptions(quiet=True)
 
+        lock.assert_not_called()
         self.assertEqual(returncode, 0)
         self.assertEqual([chat_id for chat_id, _text in sent], [CLIENT_CHAT, OTHER_CHAT])
-        self.assertEqual(stderr.getvalue().splitlines(), [DRIFT_WARN, DRIFT_WARN])
+        self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn(CASCADE_TAG, stored_routes(self.root))
         self.assertEqual(stored_settings(self.root)["clientSubscriptionState"]["userUpdateOffset"], 3)
 
@@ -277,7 +259,7 @@ class TelegramPollerLockTests(unittest.TestCase):
         self.assertEqual(returncode, 0)
         self.assertEqual([chat_id for chat_id, _text in sent], [CLIENT_CHAT, OTHER_CHAT])
         self.assertEqual(lock_states, [True, True])
-        self.assertIn(CASCADE_TAG, stored_routes(self.root))
+        self.assertNotIn(CASCADE_TAG, stored_routes(self.root))
         self.assertTrue(client_lock_tests.lock_is_free(self.lock_path))
 
 
