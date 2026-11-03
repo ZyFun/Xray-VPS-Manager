@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from xray_vps_manager.core import clock
-from xray_vps_manager.core.errors import LockTimeout, ManagerError
+from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.settings import read_env as read_server_env
 from xray_vps_manager.clients import repository as client_repository
@@ -31,8 +31,6 @@ XRAY_CLIENT = Path("/usr/local/sbin/xray-client")
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 DEFAULT_SERVER_NAME = "Xray"
 MANAGER_LOCK_TIMEOUT = 60
-# Drift write on a read path (poller, notify-*): wait briefly, otherwise answer from the synced snapshot.
-ROUTE_DRIFT_LOCK_TIMEOUT = 5
 
 
 def die(message):
@@ -114,26 +112,19 @@ def format_event_time(value):
     return f"{moment.astimezone(tzinfo).strftime('%Y-%m-%d %H:%M:%S')} {label}"
 
 
-def load_client_db():
+def load_country_routes():
     db = client_repository.load_db_sql()
     try:
         config = xray_config.load_config()
     except Exception:
-        return db
-    if not client_routes.sync_routes_from_config(config, db):
-        return db
-    # Drift between config.json and manager.db: persist it from a fresh snapshot under manager.lock.
-    try:
-        with manager_lock(ROUTE_DRIFT_LOCK_TIMEOUT, purpose="sync-client-routes"):
-            db = client_repository.load_db_sql()
-            if client_routes.sync_routes_from_config(xray_config.load_config(), db):
-                client_repository.save_db(db)
-    except LockTimeout as exc:
-        print(
-            f"WARN: {exc.message}. "
-            "Запись маршрутов клиентов из config.json в manager.db пропущена, следующее чтение повторит её.",
-            file=sys.stderr,
-        )
+        return db, {}
+    client_routes.sync_route_metadata_from_config(config, db)
+    return db, config
+
+
+def load_client_db():
+    db, config = load_country_routes()
+    client_routes.assign_default_client_routes(config, db)
     return db
 
 
@@ -202,6 +193,7 @@ def poller_context():
         load_db=load_db,
         save_db_sections=save_db_sections,
         load_client_db=load_client_db,
+        load_country_routes=load_country_routes,
         load_traffic_db=load_traffic_db,
         display_timezone=display_timezone,
         format_access_until=format_access_until,
