@@ -181,11 +181,7 @@ def load_db():
         die(str(exc))
 
 
-def load_db_readonly():
-    try:
-        return client_repository.load_db_sql_result()
-    except ValueError as exc:
-        die(str(exc))
+load_db_readonly = load_db
 
 
 def save_db(db, *, deletions=None):
@@ -572,11 +568,8 @@ def print_connection_title(config, db, tag):
 
 def cmd_connection_list():
     config = load_config()
-    read_result = load_db_readonly()
-    db = read_result.db
+    db = load_db_readonly()
     ensure_connections(config, db)
-    if read_result.source == "json":
-        save_db(db)
     headers = ["NAME", "TAG", "PROTOCOL", "SECURITY", "PORT", "SNI", "TRANSPORT", "FINGERPRINT", "CREATED"]
     print_table(headers, connection_rows(config, db), empty_message=None)
 
@@ -1043,11 +1036,8 @@ def cmd_connection_remove(identifier):
 
 def cmd_list():
     config = load_config()
-    read_result = load_db_readonly()
-    db = read_result.db
+    db = load_db_readonly()
     ensure_connections(config, db)
-    if read_result.source == "json":
-        save_db(db)
     rows = client_listing.client_rows(config, db)
     if not rows:
         print("No clients.")
@@ -1119,7 +1109,7 @@ def traffic_report_context(name):
     validate_name(name)
     sync_traffic()
     config = load_config()
-    db = load_db_readonly().db
+    db = load_db_readonly()
     ensure_connections(config, db)
     traffic_db = load_traffic_db_readonly()
     if not known_for_traffic_report(config, db, traffic_db, name):
@@ -1131,11 +1121,8 @@ def cmd_traffic_summary(month_value=None):
     month_key = parse_month_value(month_value)
     sync_traffic()
     config = load_config()
-    read_result = load_db_readonly()
-    db = read_result.db
+    db = load_db_readonly()
     ensure_connections(config, db)
-    if read_result.source == "json":
-        save_db(db)
     rows = client_listing.client_rows(config, db)
     if not rows:
         print("No clients.")
@@ -1228,7 +1215,7 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
     if prompt_for_access:
         # ACCESS_DAYS is asked from a read-only snapshot, before manager.lock is taken.
         config = load_config()
-        db = load_db_readonly().db
+        db = load_db_readonly()
         existing_client = client_crud.client_exists(config, db, name)
         try:
             client_crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
@@ -1562,7 +1549,7 @@ def cmd_clear_limit(name):
 
 def cmd_trojan_password_check():
     config = load_config()
-    db = load_db_readonly().db
+    db = load_db_readonly()
     rows = client_crud.trojan_password_policy_rows(config, db)
     if not rows:
         print("No Trojan credentials.")
@@ -1606,11 +1593,8 @@ def cmd_rotate_trojan_password(name, connection_tag=None):
 def cmd_limit_list():
     sync_traffic()
     config = load_config()
-    read_result = load_db_readonly()
-    db = read_result.db
+    db = load_db_readonly()
     ensure_connections(config, db)
-    if read_result.source == "json":
-        save_db(db)
     traffic_db = load_traffic_db_readonly()
     rows = client_listing.client_rows(config, db)
     if not rows:
@@ -2199,7 +2183,7 @@ def parse_name_connection_args(args):
 def cmd_link(name, connection_tag=None):
     validate_name(name)
     config = load_config()
-    db = load_db_readonly().db
+    db = load_db_readonly()
     ensure_connections(config, db)
     links = []
     for row in client_listing.credential_rows(config, db):
@@ -2223,7 +2207,7 @@ def cmd_link(name, connection_tag=None):
 def cmd_key(name):
     validate_name(name)
     config = load_config()
-    db = load_db_readonly().db
+    db = load_db_readonly()
     ensure_connections(config, db)
     entry = client_repository.db_clients(db).get(name)
     if not entry:

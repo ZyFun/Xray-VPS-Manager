@@ -10,13 +10,12 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 
 class ActivityRepositoryReadTests(unittest.TestCase):
-    def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
-        connection = database.open_database(path)
+    def make_sqlite_db(self, path: Path) -> None:
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -63,8 +62,6 @@ class ActivityRepositoryReadTests(unittest.TestCase):
                     "createdAt": "2026-06-12T09:01:00Z",
                 },
             )
-            if ready:
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 
@@ -108,18 +105,18 @@ class ActivityRepositoryReadTests(unittest.TestCase):
 
             self.assertFalse(missing_db_path.exists())
 
-    def test_read_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
+    def test_read_fails_when_sqlite_database_is_uninitialized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            self.make_sqlite_db(db_path, ready=False)
+            db_path.touch()
 
-            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not initialized"):
                 self.read_events("sqlite_client", db_path)
-            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not initialized"):
                 activity_repository.event_client_names_for_read(date(2026, 6, 12), date(2026, 6, 12), db_path=db_path)
-            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not initialized"):
                 activity_exceptions.exception_items_for_read(db_path=db_path)
-            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not initialized"):
                 activity_repository.first_event_time_for_read(db_path=db_path)
 
 

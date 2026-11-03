@@ -1,3 +1,5 @@
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -10,7 +12,6 @@ from xray_vps_manager.db import schema as sqlite_schema
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 
@@ -43,8 +44,8 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
         }
         return diag
 
-    def make_sqlite_db(self, path: Path, *, ready: bool = True, client_name: str = "alice") -> None:
-        connection = database.open_database(path)
+    def make_sqlite_db(self, path: Path, *, client_name: str = "alice") -> None:
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -103,8 +104,6 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
                     "createdAt": "2026-06-12T08:01:00Z",
                 },
             )
-            if ready:
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 
@@ -119,6 +118,19 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
 
             self.assertFalse(db_path.exists())
 
+    def test_uninitialized_database_warning_includes_recovery_hint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manager.db"
+            path.touch()
+            diag = test_command.Diagnostics()
+            output = StringIO()
+            with mock.patch.object(test_command, "MANAGER_DB_PATH", path), redirect_stdout(output):
+                diag.check("Manager SQLite DB", lambda: test_command.check_sqlite_database(diag), fatal=False)
+
+            self.assertIn("SQLite manager database is not initialized", output.getvalue())
+            self.assertIn(database.DATABASE_RECOVERY_HINT, output.getvalue())
+            self.assertEqual(path.read_bytes(), b"")
+
     def test_ready_sqlite_database_skips_full_integrity_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
@@ -132,7 +144,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
 
             self.assertIn(f"schema={sqlite_schema.CURRENT_SCHEMA_VERSION}", result)
             self.assertIn("quick_check=skipped", result)
-            self.assertIn("sqliteReady=yes", result)
+            self.assertNotIn("sqliteReady", result)
             self.assertIn("clients=1", result)
             quick_check.assert_not_called()
 
@@ -194,7 +206,7 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
 
             self.assertIn(f"schema={sqlite_schema.CURRENT_SCHEMA_VERSION}", result)
             self.assertIn("quick_check=ok", result)
-            self.assertIn("sqliteReady=yes", result)
+            self.assertNotIn("sqliteReady", result)
             self.assertIn("clients=1", result)
 
     def test_sqlite_full_integrity_reports_quick_check_error(self) -> None:
@@ -235,15 +247,14 @@ class SQLiteDiagnosticsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "missing connection"):
                     test_command.check_sqlite_database(diag)
 
-    def test_sqlite_database_requires_read_ready_metadata(self) -> None:
+    def test_sqlite_database_reports_schema_without_ready_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            self.make_sqlite_db(db_path, ready=False)
+            self.make_sqlite_db(db_path)
             diag = self.make_diag()
 
             with mock.patch.object(test_command, "MANAGER_DB_PATH", db_path):
-                with self.assertRaisesRegex(RuntimeError, "read-ready metadata"):
-                    test_command.check_sqlite_database(diag)
+                self.assertIn("schema=8", test_command.check_sqlite_database(diag))
 
     def test_sqlite_allows_multiple_telegram_subscriptions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

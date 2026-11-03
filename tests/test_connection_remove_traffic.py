@@ -86,7 +86,7 @@ class RemoveConnectionResultTest(unittest.TestCase):
 
 class RemoveConnectionTrafficTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.box = self.enterContext(Sandbox(db="fixtures/db/empty-ready.sql"))
+        self.box = self.enterContext(Sandbox(db=None))
         self.db_path = self.box.paths.manager_db
         self.enterContext(mock.patch.object(systemd, "time", FakeClock()))
         ok = self.box.processes.ok()

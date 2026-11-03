@@ -2,6 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from xray_vps_manager.core.errors import StateError
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
@@ -60,8 +61,8 @@ def telegram_db() -> dict:
 
 
 class TelegramSettingsWriteTests(unittest.TestCase):
-    def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
-        connection = database.open_database(path)
+    def make_sqlite_db(self, path: Path) -> None:
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -107,8 +108,6 @@ class TelegramSettingsWriteTests(unittest.TestCase):
                     "createdAt": "2026-06-12T07:30:00Z",
                 },
             )
-            if ready:
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 
@@ -118,7 +117,7 @@ class TelegramSettingsWriteTests(unittest.TestCase):
             json_path = Path(tmp_dir) / "telegram-bot.json"
             self.make_sqlite_db(db_path)
 
-            telegram_settings.save_db(telegram_db(), json_path, db_path=db_path)
+            telegram_settings.save_db(telegram_db(), db_path=db_path)
 
             connection = database.open_database(db_path)
             try:
@@ -150,28 +149,22 @@ class TelegramSettingsWriteTests(unittest.TestCase):
             db_path = Path(tmp_dir) / "missing.db"
             json_path = Path(tmp_dir) / "telegram-bot.json"
 
-            with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
-                telegram_settings.save_db(telegram_db(), json_path, db_path=db_path)
+            with self.assertRaisesRegex(StateError, "manager database is missing"):
+                telegram_settings.save_db(telegram_db(), db_path=db_path)
 
             self.assertFalse(json_path.exists())
             self.assertFalse(db_path.exists())
 
-    def test_save_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
+    def test_save_fails_when_sqlite_database_is_uninitialized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             json_path = Path(tmp_dir) / "telegram-bot.json"
-            self.make_sqlite_db(db_path, ready=False)
+            db_path.touch()
 
-            with self.assertRaisesRegex(RuntimeError, "database is not marked ready"):
-                telegram_settings.save_db(telegram_db(), json_path, db_path=db_path)
+            with self.assertRaisesRegex(StateError, "database is not initialized"):
+                telegram_settings.save_db(telegram_db(), db_path=db_path)
 
-            connection = database.open_database(db_path)
-            try:
-                self.assertEqual(sqlite_telegram.get_setting(connection, "botName"), "OldBot")
-                self.assertEqual(sqlite_settings.get_payment_setting(connection, "paymentTotalAmount"), "1")
-                self.assertEqual(len(sqlite_telegram.list_subscriptions(connection)), 1)
-            finally:
-                connection.close()
+            self.assertEqual(db_path.read_bytes(), b"")
             self.assertFalse(json_path.exists())
 
     def test_save_sections_updates_only_requested_sections(self) -> None:
@@ -180,7 +173,7 @@ class TelegramSettingsWriteTests(unittest.TestCase):
             json_path = Path(tmp_dir) / "telegram-bot.json"
             self.make_sqlite_db(db_path)
 
-            telegram_settings.save_db_sections({"enabled": True}, ["enabled"], json_path, db_path=db_path)
+            telegram_settings.save_db_sections({"enabled": True}, ["enabled"], db_path=db_path)
 
             connection = database.open_database(db_path)
             try:
@@ -221,7 +214,6 @@ class TelegramSettingsWriteTests(unittest.TestCase):
                     }
                 },
                 ["clientSubscriptionState"],
-                json_path,
                 db_path=db_path,
             )
 
@@ -248,7 +240,6 @@ class TelegramSettingsWriteTests(unittest.TestCase):
                     "clientSubscriptionState": {"userUpdateOffset": 11, "expiryReminders": {}},
                 },
                 ["clientSubscriptionState"],
-                json_path,
                 db_path=db_path,
             )
 

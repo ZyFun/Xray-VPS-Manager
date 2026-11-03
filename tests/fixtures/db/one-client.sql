@@ -1,4 +1,3 @@
-INSERT INTO manager_metadata(key, value, updated_at) VALUES ('jsonImport.completed', 'true', '2026-10-06T12:00:00Z');
 INSERT INTO reality_connections(tag,name,port,sni,dest,fingerprint,public_key,short_id,created_at)
 VALUES ('vless-reality','Reality',443,'www.example.com','www.example.com:443','chrome','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','0123456789abcdef','2026-10-06T12:00:00Z');
 INSERT INTO clients(name,uuid,email,connection_tag,created_at,enabled,payment_type,xray_client_json)

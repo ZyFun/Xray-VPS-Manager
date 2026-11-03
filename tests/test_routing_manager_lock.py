@@ -94,7 +94,7 @@ def make_routing_sandbox(root: Path) -> None:
     (root / "config.json").write_text(json.dumps(config))
     write_server_env(env_values, root / "server.env", ORDERED_ENV_KEYS)
     (root / "wgcf-profile.conf").write_text("[Interface]\n")
-    connection = database.open_database(root / "manager.db")
+    connection = database.initialize(root / "manager.db")
     try:
         sqlite_bypass.upsert_route(connection, "bypass-ru", bypass_record())
     finally:

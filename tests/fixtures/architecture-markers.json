@@ -30,13 +30,6 @@
   {
     "module": "activity.cleanup",
     "scope": "<module>",
-    "category": "sqlite3",
-    "ast": "Import(names=[alias(name='sqlite3')])",
-    "count": 1
-  },
-  {
-    "module": "activity.cleanup",
-    "scope": "<module>",
     "category": "subprocess",
     "ast": "Import(names=[alias(name='subprocess')])",
     "count": 1
@@ -46,27 +39,6 @@
     "scope": "cleanup_activity_data",
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "activity.cleanup",
-    "scope": "database_stats",
-    "category": "sqlite3",
-    "ast": "Attribute(value=Name(id='sqlite3', ctx=Load()), attr='connect', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "activity.cleanup",
-    "scope": "quick_check",
-    "category": "sqlite3",
-    "ast": "Attribute(value=Name(id='sqlite3', ctx=Load()), attr='connect', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "activity.cleanup",
-    "scope": "vacuum_database",
-    "category": "sqlite3",
-    "ast": "Attribute(value=Name(id='sqlite3', ctx=Load()), attr='connect', ctx=Load())",
     "count": 1
   },
   {

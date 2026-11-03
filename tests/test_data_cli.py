@@ -5,7 +5,6 @@ import sqlite3
 import unittest
 
 from tests.support.sandbox import Sandbox
-from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 
 class DataCliTests(unittest.TestCase):
@@ -39,10 +38,26 @@ class DataCliTests(unittest.TestCase):
             self.assertEqual(box.http.calls, [])
             box.assert_golden("telegram/status", {"stdout.txt": result.stdout})
 
-    def test_client_list_propagates_missing_database_error(self):
-        """Текущее поведение, баг XR-REV-034: SQLiteReadUnavailable выходит за границу CLI."""
+    def test_missing_or_uninitialized_database_reports_error_to_cli_and_pipeline(self):
+        """B2.1 (XR-REV-034): CLI и каждый шаг таймера сообщают ERROR без traceback и автосоздания."""
+        commands = [
+            ("client", "list"), ("traffic-sync", "--quiet"), ("activity", "sync", "--quiet"),
+            ("telegram", "notify-geoip", "--quiet"), ("client", "enforce-limits", "--quiet"),
+            ("client", "expire-due", "--quiet"), ("telegram", "notify-expiry", "--quiet"),
+            ("telegram", "notify-daily-summary", "--quiet"),
+        ]
         with Sandbox() as box:
-            box.paths.manager_db.unlink()
-            with self.assertRaisesRegex(SQLiteReadUnavailable, r"^SQLite manager database is missing\.$"):
-                box.run_cli("client", "list")
-            self.assertFalse(box.paths.manager_db.exists())
+            path = box.paths.manager_db
+            path.unlink()
+            for exists, reason in ((False, "missing"), (True, "not initialized")):
+                if exists:
+                    path.touch()
+                for command in commands:
+                    with self.subTest(command=command, reason=reason):
+                        result = box.run_cli(*command)
+                        self.assertEqual(result.exit_code, 1)
+                        self.assertIn(f"ERROR: SQLite manager database is {reason}", result.stderr)
+                        self.assertNotIn("Traceback", result.stderr)
+                        self.assertEqual(path.exists(), exists)
+                        if exists:
+                            self.assertEqual(path.read_bytes(), b"")

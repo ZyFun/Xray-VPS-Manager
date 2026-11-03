@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 from itertools import chain
-from dataclasses import dataclass
 import re
 import shutil
 from pathlib import Path
@@ -14,12 +13,7 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
-from xray_vps_manager.db.storage import (
-    SQLiteReadUnavailable,
-    ready_write_session,
-    sqlite_read_ready,
-    truthy,
-)
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
 from xray_vps_manager.telegram.payments import (
     PAYMENT_SETTING_KEYS,
     normalize_payment_transfer_method,
@@ -27,6 +21,7 @@ from xray_vps_manager.telegram.payments import (
     parse_payment_value,
 )
 
+TRUE_VALUES = {"1", "true", "yes", "y", "on", "enable", "enabled"}
 DEFAULT_BOT_NAME = "Vireika"
 
 DEFAULT_DB = {
@@ -58,12 +53,6 @@ DEFAULT_DB = {
 
 TELEGRAM_SETTING_KEYS = ("version", "enabled", "token", "botName", "botUsername", "chatId", "chatLabel", "routeMode")
 STATE_KEYS = ("geoipState", "clientSubscriptionState", "dailySummaryState", "adminState")
-
-
-@dataclass(frozen=True)
-class TelegramDbReadResult:
-    db: dict
-    source: str
 
 
 def chown_xray(path):
@@ -148,30 +137,18 @@ def normalize_db(db):
     return merged
 
 
-def load_db(path=None, *, db_path: str | Path | None = None):
-    return load_db_sql(path, db_path=db_path)
+def load_db(*, db_path: str | Path | None = None):
+    return load_db_sql(db_path=db_path)
 
 
-def load_db_sql(path=None, *, db_path: str | Path | None = None):
-    return load_db_sql_result(path, db_path=db_path).db
-
-
-def load_db_sql_result(path=None, *, db_path: str | Path | None = None) -> TelegramDbReadResult:
-    if not database.database_file_exists(db_path):
-        raise SQLiteReadUnavailable("SQLite manager database is missing.")
-    connection = None
+def load_db_sql(*, db_path: str | Path | None = None):
     try:
-        connection = database.open_database(db_path)
-        if not sqlite_read_ready(connection):
-            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
-        return TelegramDbReadResult(load_db_from_sqlite(connection), "sqlite")
+        with database.session(database.database_path(db_path)) as connection:
+            return load_db_from_sqlite(connection)
     except SQLiteReadUnavailable:
         raise
     except Exception as exc:
         raise SQLiteReadUnavailable(f"SQLite Telegram settings cannot be read: {exc}") from exc
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 class _TelegramSnapshot(dict):
@@ -202,7 +179,7 @@ def load_settings(connection) -> dict:
             except (TypeError, ValueError):
                 db[key] = DEFAULT_DB["version"]
         elif key == "enabled":
-            db[key] = truthy(value)
+            db[key] = str(value or "").strip().lower() in TRUE_VALUES
         else:
             db[key] = value
 
@@ -309,18 +286,18 @@ def save_settings(connection, changes, *, sections=None):
             sqlite_telegram.set_state(connection, key, value)
 
 
-def save_db(db, path=None, *, db_path: str | Path | None = None):
+def save_db(db, *, db_path: str | Path | None = None):
     write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
-def save_db_sections(db, sections, path=None, *, db_path: str | Path | None = None):
+def save_db_sections(db, sections, *, db_path: str | Path | None = None):
     write_db_sections_to_sqlite_for_write(db, sections, db_path=db_path, strict=True)
 
 
 def write_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None, strict: bool = False) -> bool:
     """Полная замена для совместимости с прежней инициализацией."""
     try:
-        with ready_write_session(db_path) as connection:
+        with database.write_session(database.database_path(db_path)) as connection:
             normalized = normalize_db(db)
             save_settings(connection, {key: normalized[key] for key in (*TELEGRAM_SETTING_KEYS, *PAYMENT_SETTING_KEYS)})
             for key in STATE_KEYS:
@@ -363,7 +340,7 @@ def write_db_sections_to_sqlite_for_write(
     strict: bool = False,
 ) -> bool:
     try:
-        with ready_write_session(db_path) as connection:
+        with database.write_session(database.database_path(db_path)) as connection:
             sections = tuple(sections)
             save_settings(connection, db, sections=sections)
             if "clientSubscriptions" in sections:

@@ -24,7 +24,8 @@ class InstallSQLiteFirstTests(unittest.TestCase):
 
         self.assertNotIn("MANAGER_SQLITE_READS_ENABLED=true", content)
         self.assertNotIn("MANAGER_SQLITE_WRITES_ENABLED=true", content)
-        self.assertIn("xray-vps-manager sqlite init --from-install", content)
+        self.assertEqual(content.count("xray-vps-manager sqlite init --from-install"), 1)
+        self.assertNotIn("jsonImport", content)
         self.assertIn("chown root:xray /usr/local/etc/xray/manager.db", content)
         self.assertNotIn("cat >/usr/local/etc/xray/clients.json", content)
         self.assertNotIn("activity-exceptions.json", content)

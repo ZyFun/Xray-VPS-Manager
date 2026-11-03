@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import sqlite3
-from pathlib import Path
-
-from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
 CURRENT_SCHEMA_VERSION = 8
 
@@ -559,13 +556,6 @@ MIGRATIONS: tuple[Migration, ...] = (
         ),
     ),
 )
-
-
-def connect(path: Path = MANAGER_DB_PATH) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    configure_connection(connection)
-    return connection
 
 
 def configure_connection(connection: sqlite3.Connection) -> None:

@@ -13,7 +13,7 @@ from tests.support.sandbox import Sandbox
 
 @contextmanager
 def sync_environment(credentials, runtime, now, tz="UTC"):
-    with Sandbox(now=now, tz=tz, db='fixtures/db/empty-ready.sql') as box:
+    with Sandbox(now=now, tz=tz, db=None) as box:
         inbounds = []
         for (name, tag), email in credentials.items():
             inbounds.append({"tag": tag, "protocol": "trojan" if tag.startswith("trojan") else "vless",

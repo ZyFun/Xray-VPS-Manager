@@ -4,6 +4,7 @@ import unittest
 from tests.support.sandbox import Sandbox
 
 from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.core.errors import StateError
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import cascades as sqlite_cascades
@@ -45,7 +46,7 @@ def client_db() -> dict:
 
 class ClientRepositoryWriteTests(unittest.TestCase):
     def seed_client(self, path: Path) -> None:
-        connection = database.open_database(path)
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -79,7 +80,7 @@ class ClientRepositoryWriteTests(unittest.TestCase):
 
     def test_save_writes_clients_and_connections_to_sqlite(self) -> None:
         """XR-REV-001: save_db сохраняет пропущенные записи и прежний порядок вставок."""
-        with Sandbox(db="fixtures/db/empty-ready.sql") as box:
+        with Sandbox(db=None) as box:
             db_path = box.paths.manager_db
             json_path = box.root / "clients.json"
             self.seed_client(db_path)
@@ -98,7 +99,7 @@ class ClientRepositoryWriteTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            client_repository.save_db(client_db(), json_path, db_path=db_path)
+            client_repository.save_db(client_db(), db_path=db_path)
 
             connection = database.open_database(db_path)
             try:
@@ -128,33 +129,26 @@ class ClientRepositoryWriteTests(unittest.TestCase):
             self.assertFalse(json_path.exists())
 
     def test_save_fails_when_sqlite_database_is_missing(self) -> None:
-        with Sandbox(db="fixtures/db/empty-ready.sql") as box:
+        with Sandbox(db=None) as box:
             db_path = box.root / "missing.db"
             json_path = box.root / "clients.json"
 
-            with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
-                client_repository.save_db(client_db(), json_path, db_path=db_path)
+            with self.assertRaisesRegex(StateError, "manager database is missing"):
+                client_repository.save_db(client_db(), db_path=db_path)
 
             self.assertFalse(json_path.exists())
             self.assertFalse(db_path.exists())
 
-    def test_save_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
+    def test_save_fails_when_sqlite_database_is_uninitialized(self) -> None:
         with Sandbox(db=None) as box:
             db_path = box.paths.manager_db
             json_path = box.root / "clients.json"
-            self.seed_client(db_path)
+            db_path.write_bytes(b"")
 
-            with self.assertRaisesRegex(RuntimeError, "database is not marked ready"):
-                client_repository.save_db(client_db(), json_path, db_path=db_path)
+            with self.assertRaisesRegex(StateError, "database is not initialized"):
+                client_repository.save_db(client_db(), db_path=db_path)
 
-            connection = database.open_database(db_path)
-            try:
-                clients = sqlite_clients.list_clients(connection)
-                connections = sqlite_connections.list_connections(connection)
-            finally:
-                connection.close()
-            self.assertEqual(set(clients), {"old_client"})
-            self.assertEqual(set(connections), {"old-connection"})
+            self.assertEqual(db_path.read_bytes(), b"")
             self.assertFalse(json_path.exists())
 
 

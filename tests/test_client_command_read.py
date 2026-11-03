@@ -96,7 +96,7 @@ class ClientCommandReadTests(unittest.TestCase):
         output = StringIO()
 
         with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
-            mock.patch.object(client_command, "load_db_readonly", return_value=SimpleNamespace(db={})), \
+            mock.patch.object(client_command, "load_db_readonly", return_value={}), \
             mock.patch.object(
                 client_command.client_crud,
                 "trojan_password_policy_rows",
@@ -224,10 +224,9 @@ class ClientCommandReadTests(unittest.TestCase):
                 ws_path="/trojan",
             )
 
-        read_result = client_command.client_repository.ClientDbReadResult(db, "sqlite")
         output = StringIO()
         with mock.patch.object(client_command, "load_config", return_value=config), \
-            mock.patch.object(client_command, "load_db_readonly", return_value=read_result), \
+            mock.patch.object(client_command, "load_db_readonly", return_value=db), \
             mock.patch.object(client_command.client_connections, "server_env_values", return_value={}), \
             mock.patch.object(client_command.client_connections, "fingerprint", return_value="chrome"), \
             redirect_stdout(output):

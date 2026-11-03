@@ -7,11 +7,11 @@ from unittest import mock
 from xray_vps_manager.activity import exceptions as activity_exceptions
 from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import settings as activity_settings
+from xray_vps_manager.core.errors import StateError
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 
 
 def activity_event(client: str = "alice") -> dict:
@@ -42,8 +42,8 @@ def exception_db() -> dict:
 
 
 class ActivityRepositoryWriteTests(unittest.TestCase):
-    def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
-        connection = database.open_database(path)
+    def make_sqlite_db(self, path: Path) -> None:
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -104,10 +104,22 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
                     "updated": "2026-06-12T07:40:00Z",
                 },
             )
-            if ready:
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
+
+    def test_restored_database_switches_to_wal_on_activity_write(self):
+        """116-SR-001: чтение снимка из backup оставляет DELETE, первая запись активности возвращает WAL."""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "manager.db"
+            self.make_sqlite_db(source)
+            restored = database.backup_database(source)
+            activity_repository.detail_capture_status_for_read(db_path=restored)
+            with database.session(restored) as connection:
+                self.assertEqual(database.journal_mode(connection), "delete")
+            activity_repository.set_detail_mode_for_write("all", db_path=restored)
+            with database.session(restored) as connection:
+                self.assertEqual(database.journal_mode(connection), "wal")
+                self.assertEqual(sqlite_activity.get_detail_mode(connection), "all")
 
     def test_append_event_writes_to_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -162,17 +174,46 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
             finally:
                 connection.close()
 
-    def test_strict_pipeline_write_fails_for_missing_or_not_ready_database(self) -> None:
+    def test_event_writers_check_one_client_inside_the_write_transaction(self):
+        statements = []
+        original_connect = database.connect
+
+        def traced_connect(*args, **kwargs):
+            connection = original_connect(*args, **kwargs)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "manager.db"
+            self.make_sqlite_db(db_path)
+            writers = (
+                (activity_repository.write_event_to_sqlite_for_write, {}),
+                (activity_repository.record_pipeline_event_for_write,
+                 {"detail_mode": "off", "selected_clients": [], "alerts_enabled": False}),
+            )
+            for writer, options in writers:
+                for name in ("alice", "unknown"):
+                    with self.subTest(writer=writer.__name__, client=name):
+                        statements.clear()
+                        with mock.patch.object(database, "connect", traced_connect):
+                            writer(activity_event(name), db_path=db_path, **options)
+                        start = statements.index("BEGIN IMMEDIATE")
+                        end = statements.index("COMMIT", start)
+                        lookups = [sql for sql in statements[start:end] if "FROM CLIENTS " in sql.upper()]
+                        self.assertEqual(len(lookups), 1)
+                        self.assertIn("WHERE NAME =", lookups[0].upper())
+
+    def test_strict_pipeline_write_fails_for_missing_or_uninitialized_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             missing_db_path = Path(tmp_dir) / "missing.db"
-            not_ready_db_path = Path(tmp_dir) / "not-ready.db"
-            self.make_sqlite_db(not_ready_db_path, ready=False)
+            uninitialized_db_path = Path(tmp_dir) / "uninitialized.db"
+            uninitialized_db_path.touch()
 
             for db_path, error in (
                 (missing_db_path, "manager database is missing"),
-                (not_ready_db_path, "database is not marked ready"),
+                (uninitialized_db_path, "database is not initialized"),
             ):
-                with self.subTest(db_path=db_path.name), self.assertRaisesRegex(RuntimeError, error):
+                with self.subTest(db_path=db_path.name), self.assertRaisesRegex(StateError, error):
                     activity_repository.record_pipeline_event_for_write(
                         activity_event(),
                         detail_mode="all",
@@ -353,16 +394,16 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
             # Изменённое ожидание VIREI-248: обрезки сводки в памяти больше нет, только lastPrune.
             self.assertIn("lastPrune", db)
 
-    def test_activity_write_fails_for_missing_or_not_ready_database(self) -> None:
+    def test_activity_write_fails_for_missing_or_uninitialized_database(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             missing_db_path = Path(tmp_dir) / "missing.db"
-            not_ready_db_path = Path(tmp_dir) / "not-ready.db"
-            self.make_sqlite_db(not_ready_db_path, ready=False)
+            uninitialized_db_path = Path(tmp_dir) / "uninitialized.db"
+            uninitialized_db_path.touch()
 
-            with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
+            with self.assertRaisesRegex(StateError, "manager database is missing"):
                 activity_repository.append_event(activity_event(), db_path=missing_db_path)
-            with self.assertRaisesRegex(RuntimeError, "database is not marked ready"):
-                activity_exceptions.save_activity_exceptions(exception_db(), db_path=not_ready_db_path)
+            with self.assertRaisesRegex(StateError, "database is not initialized"):
+                activity_exceptions.save_activity_exceptions(exception_db(), db_path=uninitialized_db_path)
 
             self.assertFalse(missing_db_path.exists())
 

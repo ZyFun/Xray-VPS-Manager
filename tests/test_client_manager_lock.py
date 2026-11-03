@@ -23,7 +23,6 @@ from xray_vps_manager.commands import traffic_sync
 from xray_vps_manager.core import locks as core_locks
 from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.db import database
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
@@ -68,11 +67,7 @@ def make_sandbox(root: Path) -> None:
         "routing": {"rules": []},
     }
     (root / "config.json").write_text(json.dumps(config))
-    connection = database.open_database(root / "manager.db")
-    try:
-        sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
-    finally:
-        connection.close()
+    database.initialize(root / "manager.db").close()
 
 
 def write_config(root: Path, config: dict, suffix: str = "") -> Path:
@@ -157,19 +152,6 @@ def is_client_db_lock(node: ast.AST) -> bool:
     )
 
 
-def is_dead_json_source_branch(node: ast.AST) -> bool:
-    # `if read_result.source == "json": save_db(db)` в командах чтения: load_db_sql_result
-    # всегда возвращает source="sqlite", ветка не выполняется.
-    test = getattr(node, "test", None)
-    return (
-        isinstance(node, ast.If)
-        and isinstance(test, ast.Compare)
-        and isinstance(test.left, ast.Attribute)
-        and test.left.attr == "source"
-        and any(isinstance(item, ast.Constant) and item.value == "json" for item in test.comparators)
-    )
-
-
 def unlocked_client_db_writes(tree: ast.Module) -> list:
     found = []
 
@@ -179,7 +161,7 @@ def unlocked_client_db_writes(tree: ast.Module) -> list:
                 isinstance(child, ast.Call)
                 and isinstance(child.func, ast.Name)
                 and child.func.id in CLIENT_DB_WRITES
-                and not any(is_client_db_lock(item) or is_dead_json_source_branch(item) for item in stack)
+                and not any(is_client_db_lock(item) for item in stack)
             ):
                 found.append(f"{function_name}:{child.lineno} {child.func.id}")
             visit(child, stack + [child], function_name)
