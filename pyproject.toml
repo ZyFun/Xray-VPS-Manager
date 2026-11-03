@@ -1,6 +1,6 @@
 [project]
 name = "xray-vps-manager"
-version = "3.0.0"
+version = "3.1.0"
 description = "VPS manager for Xray VLESS Reality, clients, traffic, Telegram notifications, backups, and diagnostics."
 requires-python = ">=3.12"
 readme = "README.md"
