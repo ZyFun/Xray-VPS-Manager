@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import sqlite3
 import subprocess
 import time
 from typing import Callable
@@ -69,11 +68,9 @@ def _cutoff_for_retention(days: int) -> str:
 
 def database_stats(db_path: str | Path = MANAGER_DB_PATH, *, retention_days: int | None = None) -> CleanupStats:
     path = Path(db_path)
-    if not path.exists():
-        raise RuntimeError(f"SQLite manager database is missing: {path}")
     days = retention_days or settings.retention_days()
     cutoff = _cutoff_for_retention(days)
-    connection = sqlite3.connect(str(path))
+    connection = database.open_database(path, initialize=False, timeout=5.0)
     try:
         page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
         page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
@@ -95,7 +92,7 @@ def database_stats(db_path: str | Path = MANAGER_DB_PATH, *, retention_days: int
 
 
 def quick_check(db_path: str | Path = MANAGER_DB_PATH) -> str:
-    connection = sqlite3.connect(str(db_path))
+    connection = database.open_database(db_path, initialize=False, timeout=5.0)
     try:
         row = connection.execute("PRAGMA quick_check").fetchone()
         return str(row[0] if row else "")
@@ -105,7 +102,7 @@ def quick_check(db_path: str | Path = MANAGER_DB_PATH) -> str:
 
 def vacuum_database(db_path: str | Path = MANAGER_DB_PATH) -> float:
     start = time.monotonic()
-    connection = sqlite3.connect(str(db_path), timeout=VACUUM_BUSY_TIMEOUT_SECONDS)
+    connection = database.open_database(db_path, initialize=False, timeout=VACUUM_BUSY_TIMEOUT_SECONDS)
     try:
         connection.execute("VACUUM")
         # В WAL VACUUM пишет копию базы в `-wal`: переносим её в файл базы и усекаем `-wal` до нуля.

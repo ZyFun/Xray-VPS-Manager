@@ -257,7 +257,7 @@ class SandboxTests(unittest.TestCase):
             env_before = box.paths.server_env.read_bytes()
             result = box.run_cli('sqlite', 'status')
             self.assertEqual((result.exit_code, result.stderr), (0, ''))
-            self.assertIn('Schema: 8\nQuick check: ok\nSQLite ready: yes\n', result.stdout)
+            self.assertIn('Schema: 8\nQuick check: ok\n', result.stdout)
             self.assertIn('clients: 1\n', result.stdout)
             self.assertEqual(box.db_rows('clients', 'client_credentials'), before)
             self.assertEqual(box.processes.calls, [])

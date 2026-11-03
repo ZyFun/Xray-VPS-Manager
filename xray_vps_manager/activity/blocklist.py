@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 import subprocess
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
@@ -21,7 +21,6 @@ from xray_vps_manager.activity.parser import parse_target
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity_blocklist as sqlite_blocklist
-from xray_vps_manager.db.storage import SQLiteReadUnavailable, sqlite_read_ready
 from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray.config import load_config as load_xray_config
 from xray_vps_manager.xray.config import save_config
@@ -104,13 +103,9 @@ def expires_at_from_duration(duration: str | int | None) -> str:
 
 @contextmanager
 def _ready_session(db_path=None, *, write=False):
-    if not database.database_file_exists(db_path):
-        raise SQLiteReadUnavailable("SQLite manager database is missing.")
     target = database.database_path(db_path)
-    session = database.write_session(target) if write else closing(database.open_database(target))
+    session = database.write_session(target) if write else database.session(target)
     with session as connection:
-        if not sqlite_read_ready(connection):
-            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
         yield connection
 
 

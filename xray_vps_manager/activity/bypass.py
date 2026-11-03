@@ -59,11 +59,8 @@ def bypass_tag_for_event(event: dict[str, Any], config: dict[str, Any] | None = 
 def status_rows(config: dict[str, Any] | None = None) -> list[list[Any]]:
     current_config = config if config is not None else load_config()
     try:
-        connection = sqlite_database.open_database()
-        try:
+        with sqlite_database.session(sqlite_database.database_path()) as connection:
             routes = sqlite_bypass.list_routes(connection)
-        finally:
-            connection.close()
     except Exception:
         routes = {}
 

@@ -5,15 +5,14 @@ import unittest
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
 from xray_vps_manager.traffic import repository as traffic_repository
 
 
 class TrafficRepositoryReadTests(unittest.TestCase):
-    def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
-        connection = database.open_database(path)
+    def make_sqlite_db(self, path: Path) -> None:
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -60,8 +59,6 @@ class TrafficRepositoryReadTests(unittest.TestCase):
                     "updated": "2026-06-12T09:02:00Z",
                 },
             )
-            if ready:
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 
@@ -70,30 +67,29 @@ class TrafficRepositoryReadTests(unittest.TestCase):
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
 
-            result = traffic_repository.load_traffic_db_for_read_result(db_path=db_path)
+            result = traffic_repository.load_traffic_db_for_read(db_path=db_path)
 
-            self.assertEqual(result.source, "sqlite")
-            entry = result.db["clients"]["sqlite_client"]
+            entry = result["clients"]["sqlite_client"]
             self.assertEqual(entry["incoming"], 300)
             self.assertEqual(entry["history"]["2026-06-12"]["09"], {"incoming": 300, "outgoing": 400})
-            self.assertEqual(result.db["accessLog"]["offset"], 900)
+            self.assertEqual(result["accessLog"]["offset"], 900)
 
     def test_read_fails_when_sqlite_database_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             missing_db_path = Path(tmp_dir) / "missing.db"
 
             with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
-                traffic_repository.load_traffic_db_for_read_result(db_path=missing_db_path)
+                traffic_repository.load_traffic_db_for_read(db_path=missing_db_path)
 
             self.assertFalse(missing_db_path.exists())
 
-    def test_read_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
+    def test_read_fails_when_sqlite_database_is_uninitialized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            self.make_sqlite_db(db_path, ready=False)
+            db_path.touch()
 
-            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
-                traffic_repository.load_traffic_db_for_read_result(db_path=db_path)
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not initialized"):
+                traffic_repository.load_traffic_db_for_read(db_path=db_path)
 
 
 if __name__ == "__main__":

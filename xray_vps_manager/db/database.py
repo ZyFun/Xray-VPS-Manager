@@ -17,6 +17,10 @@ from xray_vps_manager.core.json_store import chown_xray
 from xray_vps_manager.core.paths import MANAGER_DB_PATH, paths
 from xray_vps_manager.db import schema
 
+DATABASE_RECOVERY_HINT = (
+    "On a configured server, ask the administrator to recover manager.db from a verified backup. "
+    "To create a new empty database, run xray-vps-manager sqlite init."
+)
 DEFAULT_BUSY_TIMEOUT_MS = 30000
 # После пика записи (VACUUM, большой прогон) `-wal` усекается до этого размера при checkpoint.
 JOURNAL_SIZE_LIMIT_BYTES = 128 * 1024 * 1024
@@ -106,7 +110,7 @@ def _open(
         target = db_path.absolute().as_uri() + "?mode=rw"
     connection = sqlite3.connect(target, uri=not create, timeout=timeout, autocommit=autocommit)
     try:
-        busy_ms = None if autocommit is not True or timeout == 30.0 else int(timeout * 1000)
+        busy_ms = None if timeout == 30.0 else int(timeout * 1000)
         configure_connection(connection, busy_timeout_ms=busy_ms)
     except BaseException:
         connection.close()
@@ -114,19 +118,29 @@ def _open(
     return connection
 
 
+def unavailable_database(db_path: Path, reason: str = "missing") -> StateError:
+    return StateError(
+        f"SQLite manager database is {reason}: {db_path}",
+        hint=DATABASE_RECOVERY_HINT,
+    )
+
+
+def _open_existing(db_path: Path, *, timeout: float, autocommit: bool | int) -> sqlite3.Connection:
+    try:
+        return _open(db_path, create=False, timeout=timeout, autocommit=autocommit)
+    except sqlite3.Error as exc:
+        try:
+            db_path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            raise unavailable_database(db_path) from exc
+        except OSError as stat_error:
+            raise StateError(f"Cannot open SQLite manager database: {stat_error}") from stat_error
+        raise StateError(f"Cannot open SQLite manager database: {exc}") from exc
+
+
 def connect(path: str | Path | None = None, *, timeout: float = 30.0) -> sqlite3.Connection:
     db_path = Path(path) if path is not None else paths().manager_db
-    try:
-        connection = _open(db_path, create=False, timeout=timeout, autocommit=True)
-    except sqlite3.Error as exc:
-        if not db_path.exists():
-            raise StateError(
-                f"SQLite manager database is missing: {db_path}",
-                hint="On a configured server, restore a backup containing manager.db with xray-backup restore. "
-                     "To create an empty database, run xray-vps-manager sqlite init.",
-            ) from exc
-        raise StateError(f"Cannot open SQLite manager database: {exc}") from exc
-    return connection
+    return _open_existing(db_path, timeout=timeout, autocommit=True)
 
 
 def _migrate(
@@ -166,10 +180,22 @@ def initialize(path: str | Path | None = None) -> sqlite3.Connection:
         raise StateError(f"Cannot initialize SQLite manager database: {exc}") from exc
 
 
+@report_errors()
+def initialized_schema_version(connection: sqlite3.Connection, db_path: Path) -> int:
+    version = schema.schema_version(connection)
+    if version == 0:
+        raise unavailable_database(db_path, "not initialized")
+    return version
+
+
 def _ensure_initialized(connection, db_path, *, force=False):
-    stat = db_path.stat()
+    version = initialized_schema_version(connection, db_path)
+    try:
+        stat = db_path.stat()
+    except FileNotFoundError as exc:
+        raise unavailable_database(db_path) from exc
     identity = (stat.st_dev, stat.st_ino)
-    if not force and _initialized_files.get(db_path) == identity:
+    if not force and version == schema.CURRENT_SCHEMA_VERSION and _initialized_files.get(db_path) == identity:
         return
     _initialized_files.pop(db_path, None)
     try:
@@ -194,12 +220,18 @@ def session(path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
+def write_transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """Берёт блокировку записи на уже открытом соединении после подготовки файловых данных."""
+    enable_wal(connection)
+    with transaction(connection, immediate=True):
+        yield connection
+
+
+@contextmanager
 def write_session(path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
     try:
-        with session(path) as connection:
-            enable_wal(connection)
-            with transaction(connection, immediate=True):
-                yield connection
+        with session(path) as connection, write_transaction(connection):
+            yield connection
     except sqlite3.OperationalError as exc:
         primary_code = getattr(exc, "sqlite_errorcode", 0) & 0xff
         if primary_code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
@@ -215,16 +247,18 @@ def open_database(
     backup_before_destructive_migrations: bool = True,
     backup_dir: str | Path | None = None,
 ) -> sqlite3.Connection:
-    if initialize:
-        return initialize_database(
-            path,
-            backup_before_destructive_migrations=backup_before_destructive_migrations,
-            backup_dir=backup_dir,
-            timeout=timeout,
-        )
-
-    return _open(database_path(path), create=True, timeout=timeout,
-                 autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL)
+    db_path = database_path(path)
+    connection = _open_existing(db_path, timeout=timeout, autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL)
+    try:
+        initialized_schema_version(connection, db_path)
+        if initialize:
+            enable_wal(connection)
+            _migrate(connection, db_path, backup=backup_before_destructive_migrations, backup_dir=backup_dir)
+            ensure_database_permissions(db_path)
+    except BaseException:
+        connection.close()
+        raise
+    return connection
 
 
 def initialize_database(
@@ -266,7 +300,10 @@ def backup_database(
         backup_path = destination_dir / f"{db_path.stem}-{safe_label}-{stamp}-{counter_value}.db"
         counter_value += 1
 
-    with closing(sqlite3.connect(str(db_path))) as source, closing(sqlite3.connect(str(backup_path))) as target:
+    with (
+        closing(sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)) as source,
+        closing(sqlite3.connect(str(backup_path))) as target,
+    ):
         source.backup(target)
         # Backup API забирает кадры `-wal`, но копирует и флаг WAL; копия остаётся одним файлом, как до WAL.
         target.execute("PRAGMA journal_mode = DELETE")

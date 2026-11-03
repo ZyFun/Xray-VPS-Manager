@@ -271,7 +271,7 @@ class BackupSQLiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
-            connection = database.open_database(db_path)
+            connection = database.initialize(db_path)
             try:
                 connection.execute(
                     "INSERT INTO manager_metadata(key, value) VALUES ('sample', 'value')"
@@ -433,7 +433,7 @@ class BackupSQLiteTests(unittest.TestCase):
             (config_dir / "config.json").write_text("{}\n")
             (config_dir / "server.env").write_text("SERVER_NAME=Virei\n")
             db_path = config_dir / "manager.db"
-            database.open_database(db_path).close()
+            database.initialize(db_path).close()
             holder = open_with_pending_wal_frames(db_path, "from-wal")
 
             backup_files = [
@@ -495,7 +495,7 @@ class BackupSQLiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
-            database.open_database(db_path).close()
+            database.initialize(db_path).close()
             holder = open_with_pending_wal_frames(db_path, "from-wal")
             try:
                 with mock.patch.object(backup, "BACKUP_DIR", root / "backups"), mock.patch.object(
@@ -771,7 +771,7 @@ class BackupSQLiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
-            connection = database.open_database(db_path)
+            connection = database.initialize(db_path)
             try:
                 connection.execute(
                     "INSERT INTO manager_metadata(key, value) VALUES ('sample', 'value')"

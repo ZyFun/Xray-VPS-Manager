@@ -7,7 +7,7 @@ from xray_vps_manager.db.repositories import activity, activity_blocklist, clien
 
 class SQLiteRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.connection = database.open_database(":memory:")
+        self.connection = database.initialize(":memory:")
         connections.upsert_connection(
             self.connection,
             "vless-reality",

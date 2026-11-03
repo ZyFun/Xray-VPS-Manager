@@ -85,11 +85,8 @@ def save_client_db_optional(db, *, deletions=None):
 
 def load_enabled_bypass_routes_optional():
     try:
-        connection = sqlite_database.open_database()
-        try:
+        with sqlite_database.session(sqlite_database.database_path()) as connection:
             return sqlite_bypass.list_enabled_routes(connection)
-        finally:
-            connection.close()
     except Exception as exc:
         print(f"WARN: bypass route DB sync skipped: {exc}", file=sys.stderr)
         return None

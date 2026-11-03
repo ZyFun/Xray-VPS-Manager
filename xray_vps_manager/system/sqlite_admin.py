@@ -14,9 +14,8 @@ from xray_vps_manager.core.errors import StateError, ValidationError
 from xray_vps_manager.core.fs import replace_file
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import paths
-from xray_vps_manager.db import database, schema
+from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients, connections, settings
-from xray_vps_manager.db.storage import SQLITE_READ_READY_KEY, sqlite_read_ready
 from xray_vps_manager.xray.config import load_config
 
 
@@ -39,7 +38,6 @@ COUNT_TABLES = {
 class DatabaseStatus:
     version: int
     quick_check: str
-    ready: bool
     counts: dict[str, int]
 
 
@@ -49,7 +47,7 @@ def status() -> DatabaseStatus | None:
         return None
     with closing(database.connect()) as connection:
         return DatabaseStatus(
-            schema.schema_version(connection), database.quick_check(connection), sqlite_read_ready(connection),
+            database.initialized_schema_version(connection, paths().manager_db), database.quick_check(connection),
             {label: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
              for label, table in COUNT_TABLES.items()},
         )
@@ -129,9 +127,11 @@ def _prepare_config(path: Path) -> None:
 
 @database.report_errors()
 def initialize(*, from_install: bool = False) -> None:
+    # Метка совместимости только для старого установщика.
+    legacy_key = "jsonImport.completed"
     if not from_install:
         with closing(database.initialize()) as connection, database.transaction(connection, immediate=True):
-            settings.set_metadata(connection, SQLITE_READ_READY_KEY, "true")
+            settings.set_metadata(connection, legacy_key, "true")
         return
 
     with manager_lock(purpose="sqlite init --from-install"):
@@ -146,14 +146,14 @@ def initialize(*, from_install: bool = False) -> None:
 
         with closing(database.initialize()) as connection:
             with database.transaction(connection, immediate=True):
-                if (settings.get_metadata(connection, SQLITE_READ_READY_KEY)
+                if (settings.get_metadata(connection, legacy_key)
                         or clients.list_clients(connection) or connections.list_connections(connection)):
                     raise StateError("Installation requires an empty manager database.")
                 for tag, record in records["connections"].items():
                     connections.upsert_connection(connection, tag, record)
                 for name, entry in records["clients"].items():
                     client_repository.save_client(connection, name, entry)
-                settings.set_metadata(connection, SQLITE_READ_READY_KEY, "true")
+                settings.set_metadata(connection, legacy_key, "true")
             try:
                 data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode()
                 replace_file(config_path, data, prepare=_prepare_config)
@@ -163,5 +163,5 @@ def initialize(*, from_install: bool = False) -> None:
                         clients.delete_client(connection, name)
                     for tag in records["connections"]:
                         connections.delete_connection(connection, tag)
-                    settings.delete_metadata(connection, SQLITE_READ_READY_KEY)
+                    settings.delete_metadata(connection, legacy_key)
                 raise StateError(f"Cannot save initial Xray configuration: {exc}") from exc

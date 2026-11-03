@@ -132,7 +132,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.core.server_env', 'SERVER_ENV_PATH'),
     ('xray_vps_manager.core.time', 'SERVER_ENV_PATH'),
     ('xray_vps_manager.db.database', 'MANAGER_DB_PATH'),
-    ('xray_vps_manager.db.schema', 'MANAGER_DB_PATH'),
     ('xray_vps_manager.telegram.admin', 'AdminContext.xray_client'),
     ('xray_vps_manager.telegram.notifications', 'MANAGER_DB_PATH'),
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PATH'),

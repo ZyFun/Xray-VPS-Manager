@@ -140,11 +140,8 @@ def candidate_rows(client_name: str, days: str, region: str = "RU") -> list[dict
 
 def active_bypass_route_for_region(region: str) -> dict | None:
     try:
-        connection = sqlite_database.open_database()
-        try:
+        with sqlite_database.session(sqlite_database.database_path()) as connection:
             return sqlite_bypass.active_route_for_region(connection, region)
-        finally:
-            connection.close()
     except Exception:
         return None
 

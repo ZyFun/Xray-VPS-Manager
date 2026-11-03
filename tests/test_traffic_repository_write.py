@@ -2,10 +2,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from xray_vps_manager.core.errors import StateError
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.traffic import repository as traffic_repository
 
@@ -37,8 +37,8 @@ def traffic_db() -> dict:
 
 
 class TrafficRepositoryWriteTests(unittest.TestCase):
-    def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
-        connection = database.open_database(path)
+    def make_sqlite_db(self, path: Path) -> None:
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -78,8 +78,6 @@ class TrafficRepositoryWriteTests(unittest.TestCase):
                     "history": {"2026-06-12": {"07": {"incoming": 300, "outgoing": 400}}},
                 },
             )
-            if ready:
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 
@@ -89,7 +87,7 @@ class TrafficRepositoryWriteTests(unittest.TestCase):
             json_path = Path(tmp_dir) / "traffic.json"
             self.make_sqlite_db(db_path)
 
-            traffic_repository.save_traffic_db(traffic_db(), json_path, db_path=db_path)
+            traffic_repository.save_traffic_db(traffic_db(), db_path=db_path)
 
             connection = database.open_database(db_path)
             try:
@@ -123,7 +121,6 @@ class TrafficRepositoryWriteTests(unittest.TestCase):
                         }
                     }
                 },
-                json_path,
                 db_path=db_path,
             )
 
@@ -142,7 +139,7 @@ class TrafficRepositoryWriteTests(unittest.TestCase):
             json_path = Path(tmp_dir) / "traffic.json"
             self.make_sqlite_db(db_path)
 
-            removed = traffic_repository.remove_traffic_clients(["old_client"], json_path, db_path=db_path)
+            removed = traffic_repository.remove_traffic_clients(["old_client"], db_path=db_path)
 
             self.assertTrue(removed)
             connection = database.open_database(db_path)
@@ -158,27 +155,22 @@ class TrafficRepositoryWriteTests(unittest.TestCase):
             db_path = Path(tmp_dir) / "missing.db"
             json_path = Path(tmp_dir) / "traffic.json"
 
-            with self.assertRaisesRegex(RuntimeError, "manager database is missing"):
-                traffic_repository.save_traffic_db(traffic_db(), json_path, db_path=db_path)
+            with self.assertRaisesRegex(StateError, "manager database is missing"):
+                traffic_repository.save_traffic_db(traffic_db(), db_path=db_path)
 
             self.assertFalse(json_path.exists())
             self.assertFalse(db_path.exists())
 
-    def test_save_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
+    def test_save_fails_when_sqlite_database_is_uninitialized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             json_path = Path(tmp_dir) / "traffic.json"
-            self.make_sqlite_db(db_path, ready=False)
+            db_path.touch()
 
-            with self.assertRaisesRegex(RuntimeError, "database is not marked ready"):
-                traffic_repository.save_traffic_db(traffic_db(), json_path, db_path=db_path)
+            with self.assertRaisesRegex(StateError, "database is not initialized"):
+                traffic_repository.save_traffic_db(traffic_db(), db_path=db_path)
 
-            connection = database.open_database(db_path)
-            try:
-                entries = sqlite_traffic.list_traffic_entries(connection)
-            finally:
-                connection.close()
-            self.assertEqual(set(entries), {"old_client"})
+            self.assertEqual(db_path.read_bytes(), b"")
             self.assertFalse(json_path.exists())
 
 

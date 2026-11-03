@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import shutil
 import sqlite3
 from threading import Event
 import unittest
@@ -14,6 +15,7 @@ from xray_vps_manager.db import database, schema
 
 class DatabaseSessionTests(unittest.TestCase):
     def test_connect_does_not_create_or_migrate(self):
+        """B2.1: connect осматривает версию 0, рабочие соединения больше не создают в таком файле схему."""
         with Sandbox() as box:
             missing = box.root / "missing" / "db?#.sqlite"
             with self.assertRaises(StateError):
@@ -26,6 +28,16 @@ class DatabaseSessionTests(unittest.TestCase):
                 self.assertEqual(schema.schema_version(conn), 0)
                 self.assertEqual(schema.table_names(conn), set())
                 self.assertEqual(conn.execute("PRAGMA busy_timeout").fetchone()[0], 100)
+            for session in (database.session, database.write_session):
+                with self.subTest(session=session.__name__), self.assertRaisesRegex(StateError, "not initialized"):
+                    with session(missing):
+                        self.fail("пустой файл допущен в рабочий сеанс")
+            for initialize in (True, False):
+                with self.subTest(initialize=initialize), self.assertRaisesRegex(StateError, "not initialized"):
+                    database.open_database(missing, initialize=initialize)
+            self.assertEqual(missing.read_bytes(), b"")
+            with closing(database.initialize(missing)) as conn:
+                self.assertEqual(schema.schema_version(conn), 8)
             with database.session(missing) as conn:
                 self.assertEqual(schema.schema_version(conn), 8)
             with self.assertRaises(sqlite3.ProgrammingError):
@@ -46,6 +58,26 @@ class DatabaseSessionTests(unittest.TestCase):
             replacement.replace(box.paths.manager_db)
             with self.assertRaisesRegex(StateError, "newer than supported"):
                 database.ensure_initialized()
+
+    def test_session_rechecks_schema_after_restore_into_the_same_inode(self):
+        """116-SR-003: restore копирует поверх файла, поэтому совпадение inode недостаточно."""
+        with Sandbox() as box:
+            path = box.paths.manager_db
+            with database.session(path):
+                pass
+            inode = path.stat().st_ino
+            archived = box.root / "older.db"
+            with closing(sqlite3.connect(archived)) as conn, conn:
+                schema.apply_migration(conn, schema.MIGRATIONS[0])
+            shutil.copy2(archived, path)
+            self.assertEqual(path.stat().st_ino, inode)
+            with database.session(path) as conn:
+                self.assertEqual(schema.schema_version(conn), schema.CURRENT_SCHEMA_VERSION)
+            with closing(database.connect(path)) as conn:
+                conn.execute(f"PRAGMA user_version={schema.CURRENT_SCHEMA_VERSION + 1}")
+            with self.assertRaisesRegex(StateError, "newer than supported"):
+                with database.write_session(path):
+                    self.fail("новая версия допущена к записи")
 
     def test_failed_migration_rolls_back_ddl_and_keeps_pre_migration_backup(self):
         with Sandbox() as box:

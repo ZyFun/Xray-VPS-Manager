@@ -57,7 +57,7 @@ class ActivityBlocklistTests(unittest.TestCase):
         self.assertFalse(any("domain" in rule and rule.get("outboundTag") == "blocked" for rule in config["routing"]["rules"]))
 
     def test_blocked_event_records_hit_for_matching_blocklist_entry(self) -> None:
-        connection = database.open_database(":memory:")
+        connection = database.initialize(":memory:")
         try:
             connections.upsert_connection(
                 connection,
@@ -80,7 +80,6 @@ class ActivityBlocklistTests(unittest.TestCase):
                     "client": {"email": "alice|created=2026-06-12T08:00:00Z"},
                 },
             )
-            settings.set_metadata(connection, "jsonImport.completed", "true")
             item = sqlite_blocklist.upsert_block(
                 connection,
                 {

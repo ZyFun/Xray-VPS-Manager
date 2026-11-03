@@ -300,8 +300,10 @@ erDiagram
 | Таблица | Назначение |
 |---|---|
 | `schema_migrations` | История применённых миграций схемы. |
-| `manager_metadata` | Служебные флаги и метаданные менеджера: read-ready, detailed mode, source metadata и короткое состояние `activity.alertWindows` для window-level alert рисков. |
+| `manager_metadata` | Служебные флаги и метаданные менеджера: detailed mode, source metadata и короткое состояние `activity.alertWindows` для window-level alert рисков. |
 | `file_offsets` | Позиции чтения файлов, например access log offset для traffic/activity sync. |
+
+Ключ `jsonImport.completed` сохраняется командой `sqlite init` только для совместимости со старым установщиком. Рабочие чтение, запись и диагностика не используют его как признак готовности базы.
 
 ### Подключения и клиенты
 
@@ -480,4 +482,4 @@ clients.name -> telegram_subscriptions.client_name
 xray-vps-manager sqlite status
 ```
 
-Команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check`, готовность SQLite и количество строк в основных таблицах.
+Команда показывает путь к базе, версию схемы, результат `PRAGMA quick_check` и количество строк в основных таблицах.

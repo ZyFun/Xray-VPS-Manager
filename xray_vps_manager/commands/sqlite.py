@@ -3,6 +3,7 @@
 import sys
 
 from xray_vps_manager.core.paths import paths
+from xray_vps_manager.db.database import DATABASE_RECOVERY_HINT
 from xray_vps_manager.runner import command_entry
 from xray_vps_manager.system import sqlite_admin
 
@@ -12,12 +13,11 @@ def status() -> int:
     report = sqlite_admin.status()
     if report is None:
         print("Status: missing")
-        print("Run install.sh or restore a backup that contains manager.db.")
+        print(DATABASE_RECOVERY_HINT)
         return 1
 
     print(f"Schema: {report.version}")
     print(f"Quick check: {report.quick_check}")
-    print(f"SQLite ready: {'yes' if report.ready else 'no'}")
     for key in sorted(report.counts):
         print(f"{key}: {report.counts[key]}")
     return 0

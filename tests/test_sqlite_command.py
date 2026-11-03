@@ -37,17 +37,16 @@ class SQLiteCommandTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 1)
             self.assertFalse(box.paths.manager_db.exists())
             self.assertIn("Status: missing", result.stdout)
-            self.assertIn("Run install.sh or restore a backup", result.stdout)
+            self.assertIn("recover manager.db from a verified backup", result.stdout)
+            self.assertNotIn("run install.sh", result.stdout.lower())
 
     def test_status_reports_ready_database(self) -> None:
         with Sandbox(db=None) as box:
-            with database.write_session() as connection:
-                settings.set_metadata(connection, "jsonImport.completed", "true")
             result = box.run_cli("sqlite", "status")
             self.assertEqual(result.exit_code, 0)
             self.assertIn(f"Schema: {schema.CURRENT_SCHEMA_VERSION}", result.stdout)
             self.assertIn("Quick check: ok", result.stdout)
-            self.assertIn("SQLite ready: yes", result.stdout)
+            self.assertNotIn("SQLite ready:", result.stdout)
             self.assertIn("activity_blocklist: 0", result.stdout)
             self.assertIn("activity_blocklist_hits: 0", result.stdout)
             self.assertIn("clients: 0", result.stdout)
@@ -61,11 +60,12 @@ class SQLiteCommandTests(unittest.TestCase):
             result = box.run_cli("sqlite", "migrate")
             self.assertEqual(result.exit_code, 1)
             self.assertIn("ERROR:", result.stderr)
-            self.assertIn("restore a backup containing manager.db with xray-backup restore", result.stderr)
-            self.assertIn("To create an empty database, run xray-vps-manager sqlite init", result.stderr)
+            self.assertIn("recover manager.db from a verified backup", result.stderr)
+            self.assertNotIn("xray-backup restore", result.stderr)
+            self.assertIn("To create a new empty database, run xray-vps-manager sqlite init", result.stderr)
             self.assertFalse(box.paths.manager_db.exists())
             self.assertEqual(box.run_cli("sqlite", "init").exit_code, 0)
-            self.assertIn("SQLite ready: yes", box.run_cli("sqlite", "status").stdout)
+            self.assertIn("Schema: 8", box.run_cli("sqlite", "status").stdout)
             with closing(database.connect()) as conn:
                 conn.execute(f"PRAGMA user_version={schema.CURRENT_SCHEMA_VERSION + 1}")
             result = box.run_cli("sqlite", "migrate")
