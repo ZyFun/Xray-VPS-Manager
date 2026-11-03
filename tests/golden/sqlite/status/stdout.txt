@@ -1,14 +1,32 @@
 Database: <ROOT>/usr/local/etc/xray/manager.db
 Schema: 8
 Quick check: ok
+Size manager.db: <BYTES> bytes
 activity_alert_events: 0
 activity_blocklist: 0
 activity_blocklist_hits: 0
+activity_capture_clients: 0
+activity_client_counter_uniques: 0
 activity_client_counters: 0
+activity_event_risks: 0
 activity_events: 0
 activity_exceptions: 0
+bypass_routes: 0
+cascade_routes: 0
+client_credentials: 1
+client_traffic_limit_state: 0
+client_traffic_limits: 0
 clients: 1
-connections: 1
+credential_traffic_history: 0
+credential_traffic_totals: 0
+file_offsets: 0
+manager_metadata: 0
+payment_settings: 0
+reality_connections: 1
+schema_migrations: 8
+telegram_settings: 0
+telegram_state: 0
 telegram_subscriptions: 0
-traffic: 0
+traffic_history: 0
+traffic_totals: 0
 xray_error_events: 0
