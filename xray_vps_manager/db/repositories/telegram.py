@@ -97,6 +97,15 @@ def list_subscriptions(connection: sqlite3.Connection, *, enabled_only: bool = F
     return [_subscription_from_row(row) for row in rows]
 
 
+def subscriptions_for_chat(connection: sqlite3.Connection, chat_id: str) -> list[dict[str, Any]]:
+    # Старые полные сохранения допускали пробелы вокруг ID. Порядок совпадает с list_subscriptions.
+    key = str(chat_id).strip()
+    rows = connection.execute(
+        "SELECT * FROM telegram_subscriptions WHERE instr(chat_id, ?) > 0 ORDER BY chat_id, client_uuid", (key,)
+    )
+    return [_subscription_from_row(row) for row in rows if row["chat_id"].strip() == key]
+
+
 def delete_subscription(connection: sqlite3.Connection, chat_id: str, client_uuid: str) -> bool:
     with database.transaction(connection):
         result = connection.execute(

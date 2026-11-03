@@ -459,14 +459,14 @@ class TrafficSyncHistoryWriteTests(unittest.TestCase):
 
     def traced_run(self, instant: datetime, stats) -> list:
         statements = []
-        real_open = database.open_database
+        real_open = database.connect
 
         def traced_open(*args, **kwargs):
             connection = real_open(*args, **kwargs)
             connection.set_trace_callback(statements.append)
             return connection
 
-        with mock.patch.object(database, "open_database", side_effect=traced_open):
+        with mock.patch.object(database, "connect", side_effect=traced_open):
             self.sandbox.run(instant, stats)
         return statements
 

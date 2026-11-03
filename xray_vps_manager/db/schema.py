@@ -594,13 +594,17 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
     configure_connection(connection)
     for migration in pending_migrations(connection):
         with connection:
-            for statement in migration.statements:
-                connection.execute(statement)
-            connection.execute(
-                "INSERT OR REPLACE INTO schema_migrations(version, name) VALUES (?, ?)",
-                (migration.version, migration.name),
-            )
-            connection.execute(f"PRAGMA user_version = {migration.version}")
+            apply_migration(connection, migration)
+
+
+def apply_migration(connection: sqlite3.Connection, migration: Migration) -> None:
+    for statement in migration.statements:
+        connection.execute(statement)
+    connection.execute(
+        "INSERT OR REPLACE INTO schema_migrations(version, name) VALUES (?, ?)",
+        (migration.version, migration.name),
+    )
+    connection.execute(f"PRAGMA user_version = {migration.version}")
 
 
 def table_names(connection: sqlite3.Connection) -> set[str]:

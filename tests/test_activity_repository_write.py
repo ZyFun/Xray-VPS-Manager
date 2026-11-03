@@ -262,6 +262,10 @@ class ActivityRepositoryWriteTests(unittest.TestCase):
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
 
+            activity_exceptions.save_activity_exceptions(
+                {"items": [{"value": "old.example.org", "kind": "domain"}]}, db_path=db_path,
+            )
+            self.assertEqual(activity_exceptions.exception_items(db_path=db_path)[0]["value"], "old.example.org")
             activity_exceptions.save_activity_exceptions(exception_db(), db_path=db_path)
             loaded = activity_exceptions.load_activity_exceptions(db_path=db_path)
 

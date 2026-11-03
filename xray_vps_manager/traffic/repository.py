@@ -11,6 +11,7 @@ from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
+    ready_write_session,
     sqlite_read_ready,
 )
 from xray_vps_manager.traffic.history import HistoryChanges
@@ -164,36 +165,22 @@ def write_traffic_db_to_sqlite_for_write(
 ) -> bool:
     """Сохраняет итоги и историю трафика одной транзакцией.
 
-    Без `history_changes` история каждой записи переписывается целиком из снимка `db`.
+    Без `history_changes` непустая история записи заменяет её прежние бакеты точечными операциями.
     С `history_changes` (прогон `xray-traffic-sync`, VIREI-247) записи, которые уже есть в базе,
     получают только дельты изменённых бакетов и общую обрезку старше `cutoff`; целиком пишется
     история только новых записей (например, первой credential, скопировавшей историю клиента).
     """
-    if not database.database_file_exists(db_path):
-        if strict:
-            raise RuntimeError("SQLite manager database is missing")
-        return False
-
-    connection = None
+    entries = traffic_clients(db)
+    credential_entries = traffic_credentials(db)
     try:
-        connection = database.open_database(db_path)
-        if not sqlite_read_ready(connection):
-            if strict:
-                raise RuntimeError("SQLite database is not marked ready")
-            return False
-
-        entries = traffic_clients(db)
-        credential_entries = traffic_credentials(db)
-        known_clients = set(sqlite_clients.list_clients(connection))
-        desired_clients = {str(name) for name, entry in entries.items() if isinstance(entry, dict)}
-        mirrorable_clients = desired_clients & known_clients
-
-        with database.transaction(connection):
+        with ready_write_session(db_path) as connection:
+            mirrorable_clients = {
+                name for name, entry in entries.items()
+                if isinstance(entry, dict) and sqlite_clients.client_exists(connection, name)
+            }
             stored_clients: set[str] = set()
             stored_credentials: set[tuple[str, str]] = set()
             if history_changes is not None:
-                # Первой — запись: в WAL отложенная транзакция, начатая чтением, после чужого commit
-                # не становится пишущей (`database is locked` без busy_timeout), а poller пишет параллельно.
                 # Обрезка до дельт — тот же порядок, что в памяти: prune_history до восстановления пропусков.
                 sqlite_traffic.delete_history_before(connection, history_changes.cutoff.isoformat())
                 stored_clients = sqlite_traffic.traffic_client_names(connection)
@@ -205,15 +192,12 @@ def write_traffic_db_to_sqlite_for_write(
                     sqlite_traffic.upsert_traffic_entry(connection, name, entries[name])
             written_credentials: set[tuple[str, str]] = set()
             if "credentials" in db:
-                known_credentials = {
-                    client_name: set(sqlite_clients.list_client_credentials(connection, client_name))
-                    for client_name in known_clients
-                }
                 for name, credentials in credential_entries.items():
-                    if name not in known_credentials or not isinstance(credentials, dict):
+                    if not isinstance(credentials, dict):
                         continue
+                    known = sqlite_clients.list_client_credentials(connection, name)
                     for connection_tag, entry in credentials.items():
-                        if isinstance(entry, dict) and str(connection_tag) in known_credentials[name]:
+                        if isinstance(entry, dict) and str(connection_tag) in known:
                             key = (str(name), str(connection_tag))
                             if key in stored_credentials:
                                 sqlite_traffic.upsert_credential_traffic_totals(connection, *key, entry)
@@ -239,19 +223,11 @@ def write_traffic_db_to_sqlite_for_write(
                             outgoing,
                         )
             sqlite_traffic.upsert_access_log_state(connection, db.get("accessLog"))
-
-            current_clients = sqlite_traffic.traffic_client_names(connection)
-            stale_clients = current_clients - mirrorable_clients
-            if stale_clients:
-                sqlite_traffic.remove_traffic_clients(connection, stale_clients)
         return True
     except Exception:
         if strict:
             raise
         return False
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 def remove_traffic_clients_from_sqlite_for_write(
@@ -260,23 +236,10 @@ def remove_traffic_clients_from_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not database.database_file_exists(db_path):
-        if strict:
-            raise RuntimeError("SQLite manager database is missing")
-        return False
-
-    connection = None
     try:
-        connection = database.open_database(db_path)
-        if not sqlite_read_ready(connection):
-            if strict:
-                raise RuntimeError("SQLite database is not marked ready")
-            return False
-        return sqlite_traffic.remove_traffic_clients(connection, names)
+        with ready_write_session(db_path) as connection:
+            return sqlite_traffic.remove_traffic_clients(connection, names)
     except Exception:
         if strict:
             raise
         return False
-    finally:
-        if connection is not None:
-            connection.close()

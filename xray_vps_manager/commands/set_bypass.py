@@ -436,7 +436,9 @@ def apply_enable(
     return conflict
 
 
-def save_route(connection, record: dict) -> None:
+def save_route(connection, record: dict, conflict: dict | None = None) -> None:
+    if conflict:
+        sqlite_bypass.set_enabled(connection, conflict["tag"], False, utc_stamp())
     sqlite_bypass.upsert_route(connection, str(record["tag"]), record)
 
 
@@ -506,9 +508,8 @@ def cmd_add(args: list[str]) -> None:
                 env_values=env_values,
             )
             backup = apply_config(config, before)
-            if conflict:
-                sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
-            save_route(connection, record)
+            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
+                save_route(writer, record, conflict)
             write_server_env_values(env_values)
     finally:
         connection.close()
@@ -605,11 +606,10 @@ def cmd_enable(args: list[str]) -> None:
                 env_values=env_values,
             )
             backup = apply_config(config, before)
-            if conflict:
-                sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
             record["enabled"] = True
             record["updated"] = utc_stamp()
-            save_route(connection, record)
+            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
+                save_route(writer, record, conflict)
             write_server_env_values(env_values)
     finally:
         connection.close()
@@ -659,6 +659,7 @@ def cmd_region(args: list[str]) -> None:
                 }
             before = copy.deepcopy(config)
             env_values = read_server_env()
+            conflict = None
             if record.get("enabled"):
                 if old_region:
                     bypass_config.disable_bypass_route(config, tag, old_region, env_values=env_values)
@@ -673,8 +674,6 @@ def cmd_region(args: list[str]) -> None:
                     env_values=env_values,
                 )
                 backup = apply_config(config, before)
-                if conflict:
-                    sqlite_bypass.set_enabled(connection, str(conflict.get("tag") or ""), False, utc_stamp())
             else:
                 record["regionCode"] = region
                 record["regionLabel"] = region_label
@@ -682,7 +681,8 @@ def cmd_region(args: list[str]) -> None:
             if options["test_target"]:
                 set_record_test_target(record, read_test_target(str(options["test_target"] or ""), record_test_target(record)))
             record["updated"] = utc_stamp()
-            save_route(connection, record)
+            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
+                save_route(writer, record, conflict)
             write_server_env_values(env_values)
     finally:
         connection.close()
@@ -718,9 +718,10 @@ def cmd_target(args: list[str]) -> None:
         set_record_test_target(record, read_test_target(target_arg, record_test_target(record)))
         record["updated"] = utc_stamp()
         with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="target"):
-            if sqlite_bypass.get_route(connection, tag) != current:
-                die(f"GeoIP bypass route {tag} was changed by another operation. Run the command again.")
-            save_route(connection, record)
+            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
+                if sqlite_bypass.get_route(writer, tag) != current:
+                    die(f"GeoIP bypass route {tag} was changed by another operation. Run the command again.")
+                save_route(writer, record)
     finally:
         connection.close()
     print(f"GeoIP bypass test target updated: {tag}")
@@ -742,7 +743,8 @@ def cmd_disable(args: list[str]) -> None:
             backup = apply_config(config, before)
             record["enabled"] = False
             record["updated"] = utc_stamp()
-            save_route(connection, record)
+            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
+                save_route(writer, record)
             write_server_env_values(env_values)
     finally:
         connection.close()
@@ -781,7 +783,8 @@ def cmd_remove(args: list[str]) -> None:
                 env_values=env_values,
             )
             backup = apply_config(config, before)
-            sqlite_bypass.delete_route(connection, tag)
+            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
+                sqlite_bypass.delete_route(writer, tag)
             write_server_env_values(env_values)
     finally:
         connection.close()

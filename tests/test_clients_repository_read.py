@@ -1,18 +1,18 @@
 from pathlib import Path
-import tempfile
 import unittest
+
+from tests.support.sandbox import Sandbox
 
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import cascades as sqlite_cascades
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 
 class ClientRepositoryReadTests(unittest.TestCase):
-    def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
+    def seed_client(self, path: Path) -> None:
         connection = database.open_database(path)
         try:
             sqlite_connections.upsert_connection(
@@ -48,15 +48,13 @@ class ClientRepositoryReadTests(unittest.TestCase):
                 "cascade-us",
                 {"tag": "cascade-us", "country": "США", "label": "us"},
             )
-            if ready:
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 
     def test_read_uses_sqlite_database(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            db_path = Path(tmp_dir) / "manager.db"
-            self.make_sqlite_db(db_path)
+        with Sandbox(db="fixtures/db/empty-ready.sql") as box:
+            db_path = box.paths.manager_db
+            self.seed_client(db_path)
 
             result = client_repository.load_db_sql_result(db_path=db_path)
 
@@ -64,25 +62,36 @@ class ClientRepositoryReadTests(unittest.TestCase):
             self.assertIn("sqlite_client", result.db["clients"])
             self.assertEqual(result.db["connections"]["sqlite-connection"]["fingerprint"], "safari")
             self.assertEqual(result.db["clients"]["sqlite_client"]["paymentType"], "free")
+            self.assertEqual(set(result.db["clients"]["sqlite_client"]["credentials"]), {"sqlite-connection"})
             self.assertEqual(result.db["clients"]["sqlite_client"]["selectedCascadeTag"], "cascade-us")
             self.assertEqual(result.db["cascadeRoutes"]["cascade-us"]["country"], "США")
 
     def test_read_fails_when_sqlite_database_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            missing_db_path = Path(tmp_dir) / "missing.db"
+        with Sandbox(db="fixtures/db/empty-ready.sql") as box:
+            missing_db_path = box.root / "missing.db"
 
-            with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
-                client_repository.load_db_sql_result(db_path=missing_db_path)
+            with self.assertRaisesRegex(SQLiteReadUnavailable, r"^SQLite manager database is missing\.$"):
+                client_repository.load_db_sql(db_path=missing_db_path)
 
             self.assertFalse(missing_db_path.exists())
 
     def test_read_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            db_path = Path(tmp_dir) / "manager.db"
-            self.make_sqlite_db(db_path, ready=False)
+        with Sandbox(db=None) as box:
+            db_path = box.paths.manager_db
+            self.seed_client(db_path)
 
             with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
                 client_repository.load_db_sql_result(db_path=db_path)
+
+    def test_facade_rejects_newly_initialized_database_without_ready_flag(self) -> None:
+        """Текущее поведение, баг XR-REV-021: open_database создаёт схему, фасаду нужен ready-флаг."""
+        with Sandbox(db=None) as box:
+            db_path = box.paths.manager_db
+            database.open_database(db_path).close()
+            self.assertTrue(db_path.is_file())
+
+            with self.assertRaisesRegex(SQLiteReadUnavailable, r"^SQLite database is not marked ready\.$"):
+                client_repository.load_db_sql(db_path=db_path)
 
 
 if __name__ == "__main__":

@@ -74,11 +74,11 @@ def load_client_db_optional():
         return None
 
 
-def save_client_db_optional(db):
+def save_client_db_optional(db, *, deletions=None):
     if db is None:
         return
     try:
-        client_repository.save_db(db)
+        client_repository.save_db(db, deletions=deletions)
     except Exception as exc:
         print(f"WARN: client route DB save skipped: {exc}", file=sys.stderr)
 
@@ -590,7 +590,7 @@ def cmd_remove(args):
                 if isinstance(entry, dict) and entry.get("selectedCascadeTag") == tag:
                     entry["selectedCascadeTag"] = cascade_config.active_cascade_tag(config)
             client_routes.sync_routes_from_config(config, db)
-            save_client_db_optional(db)
+            save_client_db_optional(db, deletions=client_repository.Deletions(routes=(tag,)))
     print(f"Cascade removed: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Current catch-all route: {current_route_label(config)}")
     print(f"Backup: {backup}")

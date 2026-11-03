@@ -15,6 +15,11 @@ def get_metadata(connection: sqlite3.Connection, key: str, default: str = "") ->
     return _get_key_value(connection, "manager_metadata", key, default)
 
 
+def delete_metadata(connection: sqlite3.Connection, key: str) -> None:
+    with database.transaction(connection):
+        connection.execute("DELETE FROM manager_metadata WHERE key = ?", (key,))
+
+
 def list_metadata(connection: sqlite3.Connection) -> dict[str, str]:
     return _list_key_values(connection, "manager_metadata")
 

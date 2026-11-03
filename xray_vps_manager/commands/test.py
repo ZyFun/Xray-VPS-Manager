@@ -23,7 +23,7 @@ from xray_vps_manager.db import schema as sqlite_schema
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import activity_blocklist as sqlite_blocklist
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
-from xray_vps_manager.db.repositories import clients as sqlite_clients
+from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
@@ -334,7 +334,7 @@ def check_client_db(diag):
     try:
         db = {
             "connections": sqlite_connections.list_connections(connection),
-            "clients": sqlite_clients.list_clients(connection),
+            "clients": client_repository.list_clients(connection),
         }
     finally:
         connection.close()

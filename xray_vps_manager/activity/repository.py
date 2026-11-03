@@ -649,7 +649,9 @@ def write_event_to_sqlite_for_write(
         sqlite_activity.add_event(connection, event)
         from xray_vps_manager.activity import blocklist as activity_blocklist
 
-        activity_blocklist.record_blocked_event_hit(connection, event)
+        if activity_blocklist.event_is_blocked(event):
+            with database.write_session(database.database_path(db_path)) as writer:
+                activity_blocklist.record_blocked_event_hit(writer, event)
         return True
     except Exception:
         if strict:

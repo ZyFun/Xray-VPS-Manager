@@ -1,15 +1,14 @@
 import io
-import tempfile
+import json
+import sys
 import unittest
 from contextlib import ExitStack
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from xray_vps_manager.commands import set_bypass
-from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.db import database
-from xray_vps_manager.db import schema
+from tests.support.sandbox import Sandbox
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import outbound_links
@@ -43,13 +42,6 @@ def bypass_outbound(name: str) -> dict:
 
 
 class BypassManagementTests(unittest.TestCase):
-    def setUp(self) -> None:
-        lock_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(lock_dir.cleanup)
-        lock_patch = mock.patch.object(core_paths, "MANAGER_LOCK_PATH", Path(lock_dir.name) / "manager.lock")
-        lock_patch.start()
-        self.addCleanup(lock_patch.stop)
-
     def test_apply_bypass_uses_notification_marker_before_client_routes(self) -> None:
         config = base_config()
         outbound = bypass_outbound("ru")
@@ -175,67 +167,55 @@ class BypassManagementTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             set_bypass.normalize_test_target("example.com:bad")
 
+    def configure_sandbox(self, box, config):
+        box.paths.config.write_text(json.dumps(config))
+        box.processes.script({
+            (str(box.paths.xray_bin), "run", "-test", "-config", str(box.paths.config)): box.processes.ok(),
+            "systemctl stop xray": box.processes.ok(),
+            "systemctl reset-failed xray": box.processes.ok(),
+            "systemctl restart xray": box.processes.ok(),
+            "systemctl show --property=ActiveState,SubState,NRestarts xray": box.processes.ok(
+                "ActiveState=active\nSubState=running\nNRestarts=0\n"
+            ),
+        })
+
     def test_add_reads_vless_link_before_interactive_region_selection(self) -> None:
         events = []
-        tmp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp_dir.cleanup)
-        db_path = Path(tmp_dir.name) / "manager.db"
-        connection = database.open_database(db_path)
 
-        def read_link() -> str:
-            events.append("link")
-            return VLESS_LINK
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
 
-        def read_region(_value: str = "") -> tuple[str, str]:
-            events.append("region")
-            return "RU", "Россия"
+            def readline(self, *args):
+                events.append("link")
+                return super().readline(*args)
 
-        def read_target(_value: str = "", _default: str = "") -> str:
+        def answer(prompt):
+            if prompt == "GeoIP region: ":
+                events.append("region")
+                return "1"
+            self.assertIn("test target", prompt)
             events.append("target")
-            return "https://ya.ru/"
+            return "ya.ru"
 
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch.object(set_bypass.sys, "stdin", SimpleNamespace(isatty=lambda: True)))
-            stack.enter_context(mock.patch.object(set_bypass, "read_vless_link", side_effect=read_link))
-            stack.enter_context(mock.patch.object(set_bypass, "read_region", side_effect=read_region))
-            stack.enter_context(mock.patch.object(set_bypass, "read_test_target", side_effect=read_target))
-            stack.enter_context(mock.patch.object(set_bypass, "load_config", return_value=base_config()))
-            stack.enter_context(mock.patch.object(set_bypass, "read_server_env", return_value={}))
-            stack.enter_context(mock.patch.object(set_bypass, "open_db", return_value=connection))
-            stack.enter_context(mock.patch.object(set_bypass, "apply_config", return_value=Path("/tmp/config.json.bak")))
-            stack.enter_context(mock.patch.object(set_bypass, "write_server_env_values"))
-            stack.enter_context(mock.patch.object(set_bypass, "notify_config_event"))
-            set_bypass.cmd_add(["ru"])
-
-        read_connection = database.open_database(db_path)
-        try:
-            record = sqlite_bypass.get_route(read_connection, "bypass-ru")
-        finally:
-            read_connection.close()
+        with Sandbox() as box:
+            self.configure_sandbox(box, base_config())
+            with mock.patch.object(sys, "stdin", Terminal(VLESS_LINK)), mock.patch("builtins.input", side_effect=answer):
+                set_bypass.cmd_add(["ru"])
+            with database.session() as connection:
+                record = sqlite_bypass.get_route(connection, "bypass-ru")
         self.assertEqual(events, ["link", "region", "target"])
         self.assertEqual(record["testTarget"], "https://ya.ru/")
 
     def test_enable_outbound_only_repairs_missing_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            db_path = Path(tmp_dir) / "manager.db"
-            connection = database.open_database(db_path)
+        with Sandbox() as box:
             config = base_config()
             bypass_config.upsert_bypass_outbound(config, bypass_outbound("ru"))
-
-            with ExitStack() as stack:
-                stack.enter_context(mock.patch.object(set_bypass, "load_config", return_value=config))
-                stack.enter_context(mock.patch.object(set_bypass, "read_server_env", return_value={}))
-                stack.enter_context(mock.patch.object(set_bypass, "open_db", return_value=connection))
-                stack.enter_context(mock.patch.object(set_bypass, "apply_config", return_value=Path("/tmp/config.json.bak")))
-                stack.enter_context(mock.patch.object(set_bypass, "write_server_env_values"))
-                stack.enter_context(mock.patch.object(set_bypass, "notify_config_event"))
-                set_bypass.cmd_enable(["ru", "--region", "RU", "--test-target", "ya.ru"])
-
-            read_connection = database.open_database(db_path)
-            try:
-                record = sqlite_bypass.get_route(read_connection, "bypass-ru")
-            finally:
-                read_connection.close()
+            self.configure_sandbox(box, config)
+            set_bypass.cmd_enable(["ru", "--region", "RU", "--test-target", "ya.ru"])
+            config = json.loads(box.paths.config.read_text())
+            with database.session() as connection:
+                record = sqlite_bypass.get_route(connection, "bypass-ru")
         self.assertIsNotNone(record)
         self.assertEqual(record["regionCode"], "RU")
         self.assertEqual(record["regionLabel"], "Россия")

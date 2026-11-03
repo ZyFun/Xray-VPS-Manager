@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import copy
+from itertools import chain
 from dataclasses import dataclass
 import re
 import shutil
 from pathlib import Path
 
+from xray_vps_manager.core.errors import ConflictError
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.storage import (
     SQLiteReadUnavailable,
+    ready_write_session,
     sqlite_read_ready,
     truthy,
 )
@@ -171,7 +174,26 @@ def load_db_sql_result(path=None, *, db_path: str | Path | None = None) -> Teleg
             connection.close()
 
 
+class _TelegramSnapshot(dict):
+    """Подписки на момент чтения нужны poller, чтобы сохранить только свои изменения."""
+
+    def __init__(self, values, *, original=None, stored=None):
+        super().__init__(values)
+        self.original_subscriptions = copy.deepcopy(values["clientSubscriptions"]) if original is None else original
+        # После записи в словаре poller могут оставаться поля, которых в SQLite нет.
+        self.stored_subscriptions = self.original_subscriptions if stored is None else stored
+
+    def copy(self):
+        return _TelegramSnapshot(self, original=self.original_subscriptions, stored=self.stored_subscriptions)
+
+
 def load_db_from_sqlite(connection) -> dict:
+    values = load_settings(connection)
+    values["clientSubscriptions"] = list_subscriptions(connection)
+    return _TelegramSnapshot(values)
+
+
+def load_settings(connection) -> dict:
     db = copy.deepcopy(DEFAULT_DB)
     for key, value in sqlite_telegram.list_settings(connection).items():
         if key == "version":
@@ -187,33 +209,107 @@ def load_db_from_sqlite(connection) -> dict:
     for key, value in sqlite_settings.list_payment_settings(connection).items():
         db[key] = value
 
-    for key in ("geoipState", "clientSubscriptionState", "dailySummaryState", "adminState"):
+    for key in STATE_KEYS:
         db[key] = sqlite_telegram.get_state(connection, key, db.get(key, {}))
 
-    subscriptions = {}
-    for item in sqlite_telegram.list_subscriptions(connection):
-        chat_id = str(item.get("chatId") or "").strip()
-        if not chat_id:
-            continue
-        link_signature = item.get("linkSignature") if isinstance(item.get("linkSignature"), dict) else {}
-        subscriptions[chat_id] = {
-            "client": item.get("clientName") or "",
-            "clientId": item.get("clientUuid") or "",
-            "connection": item.get("connection") or "",
-            "chatLabel": item.get("chatLabel") or "",
-            "linkHash": link_signature.get("linkHash", ""),
-            "subscribedAt": item.get("createdAt") or "",
-            "enabled": item.get("enabled") is not False,
-            "activityNotificationsEnabled": item.get("activityNotificationsEnabled") is True,
-        }
-        if item.get("updatedAt"):
-            subscriptions[chat_id]["updatedAt"] = item["updatedAt"]
-    db["clientSubscriptions"] = subscriptions
-    return normalize_db(db)
+    settings = normalize_db(db)
+    del settings["clientSubscriptions"]
+    return settings
+
+
+def _subscription_from_row(item):
+    link_signature = item.get("linkSignature")
+    record = {
+        "client": item["clientName"],
+        "clientId": item["clientUuid"],
+        "connection": item["connection"],
+        "chatLabel": item["chatLabel"],
+        "linkHash": link_signature.get("linkHash", "") if isinstance(link_signature, dict) else "",
+        "subscribedAt": item["createdAt"],
+        "enabled": item["enabled"],
+        "activityNotificationsEnabled": item["activityNotificationsEnabled"],
+    }
+    if item["updatedAt"]:
+        record["updatedAt"] = item["updatedAt"]
+    return record
+
+
+def list_subscriptions(connection) -> dict:
+    return {
+        row["chatId"].strip(): _subscription_from_row(row)
+        for row in sqlite_telegram.list_subscriptions(connection) if row["chatId"].strip()
+    }
+
+
+def get_subscription(connection, chat_id):
+    rows = sqlite_telegram.subscriptions_for_chat(connection, chat_id)
+    return _subscription_from_row(rows[-1]) if rows else None
+
+
+def delete_subscription(connection, chat_id):
+    for row in sqlite_telegram.subscriptions_for_chat(connection, chat_id):
+        sqlite_telegram.delete_subscription(connection, row["chatId"], row["clientUuid"])
+
+
+def save_subscription(connection, chat_id, subscription):
+    """Одна подписка на чат в фасаде, составной ключ (chat_id, client_uuid) в SQLite."""
+    key = str(chat_id).strip()
+    rows = sqlite_telegram.subscriptions_for_chat(connection, key)
+    record = _subscription_to_row(connection, key, subscription)
+    for row in rows:
+        if (not record or row["chatId"] != key or row["clientUuid"] != record["clientUuid"]
+                or row["createdAt"] != record["createdAt"]):
+            sqlite_telegram.delete_subscription(connection, row["chatId"], row["clientUuid"])
+    if record:
+        sqlite_telegram.upsert_subscription(connection, record)
+        return _subscription_from_row(record)
+    return None
+
+
+def _subscription_to_row(connection, chat_id, subscription):
+    if not isinstance(subscription, dict):
+        return None
+    uuid = str(subscription.get("clientId") or subscription.get("clientUuid") or "").strip()
+    if not uuid:
+        return None
+    name = str(subscription.get("client") or subscription.get("clientName") or "").strip()
+    return {
+        "chatId": str(chat_id),
+        "chatLabel": subscription.get("chatLabel") or "",
+        "clientName": name if name and sqlite_clients.client_exists(connection, name) else "",
+        "clientUuid": uuid,
+        "connection": subscription.get("connection") or "",
+        "linkSignature": {"linkHash": subscription.get("linkHash") or ""},
+        "enabled": subscription.get("enabled") is not False,
+        "activityNotificationsEnabled": subscription.get("activityNotificationsEnabled") is True,
+        "createdAt": subscription.get("subscribedAt") or subscription.get("createdAt") or "",
+        "updatedAt": subscription.get("updatedAt") or subscription.get("subscribedAt") or "",
+    }
+
+
+def update_state(connection, key, mutate):
+    """Чтение и запись выполняются в write_session вызывающего сценария."""
+    state = mutate(sqlite_telegram.get_state(connection, key, {}))
+    sqlite_telegram.set_state(connection, key, state)
+    return state
+
+
+def save_settings(connection, changes, *, sections=None):
+    normalized = normalize_db(changes)
+    keys = changes if sections is None else sections
+    for key in keys:
+        value = normalized.get(key)
+        if key in TELEGRAM_SETTING_KEYS:
+            sqlite_telegram.set_setting(connection, key, _sqlite_scalar(value))
+        elif key in PAYMENT_SETTING_KEYS:
+            sqlite_settings.set_payment_setting(connection, key, str(value))
+        elif key == "clientSubscriptionState":
+            update_state(connection, key, lambda current: merge_client_subscription_state(current, value))
+        elif key in STATE_KEYS:
+            sqlite_telegram.set_state(connection, key, value)
 
 
 def save_db(db, path=None, *, db_path: str | Path | None = None):
-    db = normalize_db(db)
     write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
@@ -222,37 +318,41 @@ def save_db_sections(db, sections, path=None, *, db_path: str | Path | None = No
 
 
 def write_db_to_sqlite_for_write(db, *, db_path: str | Path | None = None, strict: bool = False) -> bool:
-    if not database.database_file_exists(db_path):
-        if strict:
-            raise RuntimeError("SQLite manager database is missing")
-        return False
-
-    connection = None
+    """Полная замена для совместимости с прежней инициализацией."""
     try:
-        connection = database.open_database(db_path)
-        if not sqlite_read_ready(connection):
-            if strict:
-                raise RuntimeError("SQLite database is not marked ready")
-            return False
-
-        normalized = normalize_db(db)
-        with database.transaction(connection):
-            for key in TELEGRAM_SETTING_KEYS:
-                sqlite_telegram.set_setting(connection, key, _sqlite_scalar(normalized.get(key, "")))
-            for key in PAYMENT_SETTING_KEYS:
-                sqlite_settings.set_payment_setting(connection, key, str(normalized.get(key, "")))
+        with ready_write_session(db_path) as connection:
+            normalized = normalize_db(db)
+            save_settings(connection, {key: normalized[key] for key in (*TELEGRAM_SETTING_KEYS, *PAYMENT_SETTING_KEYS)})
             for key in STATE_KEYS:
-                state = normalized.get(key)
-                sqlite_telegram.set_state(connection, key, state if isinstance(state, dict) else {})
-            replace_subscriptions_in_sqlite(connection, normalized)
+                sqlite_telegram.set_state(connection, key, normalized[key])
+            sqlite_telegram.delete_all_subscriptions(connection)
+            for chat_id, item in normalized["clientSubscriptions"].items():
+                record = _subscription_to_row(connection, chat_id, item)
+                if record:
+                    sqlite_telegram.upsert_subscription(connection, record)
         return True
     except Exception:
         if strict:
             raise
         return False
-    finally:
-        if connection is not None:
-            connection.close()
+
+
+def _save_changed_subscriptions(connection, snapshot, incoming):
+    tracked = isinstance(snapshot, _TelegramSnapshot)
+    original = snapshot.original_subscriptions if tracked else {}
+    stored = snapshot.stored_subscriptions.copy() if tracked else {}
+    removed = (chat_id for chat_id in original if chat_id not in incoming)
+    for chat_id in chain(removed, incoming):
+        if chat_id in original and chat_id in incoming and original[chat_id] == incoming[chat_id]:
+            continue
+        if tracked and get_subscription(connection, chat_id) != stored.get(chat_id):
+            raise ConflictError("Подписка чата изменилась. Откройте меню заново и повторите действие.")
+        if chat_id in incoming:
+            stored[chat_id] = save_subscription(connection, chat_id, incoming[chat_id])
+        else:
+            delete_subscription(connection, chat_id)
+            stored.pop(chat_id, None)
+    return stored
 
 
 def write_db_sections_to_sqlite_for_write(
@@ -262,74 +362,23 @@ def write_db_sections_to_sqlite_for_write(
     db_path: str | Path | None = None,
     strict: bool = False,
 ) -> bool:
-    if not database.database_file_exists(db_path):
-        if strict:
-            raise RuntimeError("SQLite manager database is missing")
-        return False
-
-    connection = None
     try:
-        connection = database.open_database(db_path)
-        if not sqlite_read_ready(connection):
-            if strict:
-                raise RuntimeError("SQLite database is not marked ready")
-            return False
-
-        normalized = normalize_db(db)
-        with database.transaction(connection):
-            for section in sections:
-                if section in TELEGRAM_SETTING_KEYS:
-                    sqlite_telegram.set_setting(connection, section, _sqlite_scalar(normalized.get(section, "")))
-                elif section in PAYMENT_SETTING_KEYS:
-                    sqlite_settings.set_payment_setting(connection, section, str(normalized.get(section, "")))
-                elif section in STATE_KEYS:
-                    state = normalized.get(section)
-                    if not isinstance(state, dict):
-                        state = {}
-                    if section == "clientSubscriptionState":
-                        current = sqlite_telegram.get_state(connection, section, {})
-                        state = merge_client_subscription_state(current, state)
-                    sqlite_telegram.set_state(connection, section, state)
-                elif section == "clientSubscriptions":
-                    replace_subscriptions_in_sqlite(connection, normalized)
+        with ready_write_session(db_path) as connection:
+            sections = tuple(sections)
+            save_settings(connection, db, sections=sections)
+            if "clientSubscriptions" in sections:
+                incoming = db.get("clientSubscriptions")
+                if not isinstance(incoming, dict):
+                    incoming = {}
+                stored = _save_changed_subscriptions(connection, db, incoming)
+        if "clientSubscriptions" in sections and isinstance(db, _TelegramSnapshot):
+            db.original_subscriptions = copy.deepcopy(incoming)
+            db.stored_subscriptions = stored
         return True
     except Exception:
         if strict:
             raise
         return False
-    finally:
-        if connection is not None:
-            connection.close()
-
-
-def replace_subscriptions_in_sqlite(connection, normalized: dict) -> None:
-    known_clients = set(sqlite_clients.list_clients(connection))
-    sqlite_telegram.delete_all_subscriptions(connection)
-    subscriptions = normalized.get("clientSubscriptions", {})
-    if not isinstance(subscriptions, dict):
-        return
-    for chat_id, subscription in subscriptions.items():
-        if not isinstance(subscription, dict):
-            continue
-        client_uuid = str(subscription.get("clientId") or subscription.get("clientUuid") or "").strip()
-        if not client_uuid:
-            continue
-        client_name = str(subscription.get("client") or subscription.get("clientName") or "").strip()
-        sqlite_telegram.upsert_subscription(
-            connection,
-            {
-                "chatId": str(chat_id),
-                "chatLabel": subscription.get("chatLabel") or "",
-                "clientName": client_name if client_name in known_clients else "",
-                "clientUuid": client_uuid,
-                "connection": subscription.get("connection") or "",
-                "linkSignature": {"linkHash": subscription.get("linkHash") or ""},
-                "enabled": subscription.get("enabled") is not False,
-                "activityNotificationsEnabled": subscription.get("activityNotificationsEnabled") is True,
-                "createdAt": subscription.get("subscribedAt") or subscription.get("createdAt") or "",
-                "updatedAt": subscription.get("updatedAt") or subscription.get("subscribedAt") or "",
-            },
-        )
 
 
 def merge_client_subscription_state(current: dict, incoming: dict) -> dict:

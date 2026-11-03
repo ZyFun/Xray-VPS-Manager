@@ -188,8 +188,8 @@ def load_db_readonly():
         die(str(exc))
 
 
-def save_db(db):
-    client_repository.save_db(db)
+def save_db(db, *, deletions=None):
+    client_repository.save_db(db, deletions=deletions)
 
 
 def restart_xray_with_config_test():
@@ -210,14 +210,14 @@ def restore_config_file(backup):
     os.chmod(CONFIG_PATH, 0o640)
 
 
-def save_config_restart_xray_and_db(config, db):
+def save_config_restart_xray_and_db(config, db, *, deletions=None):
     client_routes.ensure_all_client_route_config(config, db)
     backup = save_config(config)
     saving_db = False
     try:
         restart_xray_with_config_test()
         saving_db = True
-        save_db(db)
+        save_db(db, deletions=deletions)
     except BaseException as exc:
         # Любой сбой после записи config.json — рестарт, ValueError/IntegrityError/RuntimeError save_db, Ctrl+C
         # на рестарте — возвращает прежний конфиг, иначе config.json и manager.db расходятся (XR-REV-059, XR-REV-056).
@@ -971,7 +971,7 @@ def cmd_trojan_connection_update(
             caddy_result = update_trojan_caddy_site(result)
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             restore_config_backup(backup)
-            save_db(original_db)
+            client_repository.restore_after_update(db, original_db)
             die(
                 "Trojan connection was updated, but Caddy update failed. "
                 f"Rolled back Xray config and database. Detail: {exc}"
@@ -1020,8 +1020,12 @@ def cmd_connection_remove(identifier):
         except ValueError as exc:
             die(str(exc))
 
-        # save_db removes traffic of deleted clients and credentials via FK cascade; kept clients keep theirs.
-        backup = save_config_restart_xray_and_db(config, db)
+        deletions = client_repository.Deletions(
+            clients=tuple(result.removed_client_names),
+            credentials=tuple((name, result.tag) for name in result.detached_client_names),
+            connections=(result.tag,),
+        )
+        backup = save_config_restart_xray_and_db(config, db, deletions=deletions)
         if result.env_update is not None:
             save_server_env_values(result.env_update)
 
@@ -1354,8 +1358,8 @@ def cmd_remove(name):
         except ValueError as exc:
             die(str(exc))
 
-        # save_db removes the client's traffic and history via FK cascade.
-        backup = save_config_restart_xray_and_db(config, db)
+        deletions = client_repository.Deletions(clients=(result.name,))
+        backup = save_config_restart_xray_and_db(config, db, deletions=deletions)
 
     print(f"Removed client: {result.name}")
     print("Removed traffic history.")
@@ -1422,11 +1426,12 @@ def cmd_move_connection(name, target_connection_identifier):
         except ValueError as exc:
             die(str(exc))
 
+        deletions = client_repository.Deletions(credentials=((name, result.source_connection_tag),))
         backup = None
         if result.config_changed:
-            backup = save_config_restart_xray_and_db(config, db)
+            backup = save_config_restart_xray_and_db(config, db, deletions=deletions)
         else:
-            save_db(db)
+            save_db(db, deletions=deletions)
 
     print(f"Moved client: {result.name}")
     print(

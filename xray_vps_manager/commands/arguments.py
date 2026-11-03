@@ -203,7 +203,8 @@ def validate(command, args):
     action, rest = (args[0], args[1:]) if args else (defaults[command], [])
     forms = {'client': CLIENT, 'activity': ACTIVITY, 'telegram': TELEGRAM,
              'backup': BACKUP, 'cascade': CASCADE, 'bypass': BYPASS, 'warp': WARP, 'update': UPDATE,
-             'sqlite': {'status': Form()}, 'units': {'sync': Form(switches=('--check', '--no-systemctl'))},
+             'sqlite': {'status': Form(), 'init': Form(switches=('--from-install',)), 'migrate': Form()},
+             'units': {'sync': Form(switches=('--check', '--no-systemctl'))},
              'caddy': {'random-tls-run': Form(switches=('--quiet',), values=('--domain',), interspersed=True)}}
     form = forms[command].get(action)
     if form is None:

@@ -21,7 +21,7 @@ LOCK_TIMEOUT_MESSAGE = "Другая операция менеджера ещё 
 LOCK_TIMEOUT_HINT = "Дождись её завершения и повтори команду."
 MANAGER_UPDATE_LOCK_MESSAGE = "Другое обновление или откат менеджера уже выполняется"
 
-_manager_lock_depth = 0
+_held_manager_locks: set[tuple[int, Path]] = set()
 
 
 def lock_holder_line(purpose: str = "") -> str:
@@ -85,28 +85,25 @@ def hold_file_lock(path: Path, timeout: float, purpose: str = "", message: str =
 
 
 @contextmanager
-def manager_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "") -> Iterator[None]:
+def manager_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "", path: Path | None = None) -> Iterator[None]:
     """Hold manager.lock around a state-changing operation.
 
     Reentrant within the process: a nested call does not take flock again.
     Never use it in traffic sync: it runs from ExecStop of xray.service while
     the Xray restart itself happens under this lock.
     """
-    global _manager_lock_depth
-    if _manager_lock_depth:
-        _manager_lock_depth += 1
-        try:
-            yield
-        finally:
-            _manager_lock_depth -= 1
+    lock_path = path if path is not None else paths.MANAGER_LOCK_PATH
+    key = (os.getpid(), lock_path.resolve())
+    if key in _held_manager_locks:
+        yield
         return
 
-    with hold_file_lock(paths.MANAGER_LOCK_PATH, timeout, purpose):
-        _manager_lock_depth = 1
+    with hold_file_lock(lock_path, timeout, purpose):
+        _held_manager_locks.add(key)
         try:
             yield
         finally:
-            _manager_lock_depth = 0
+            _held_manager_locks.remove(key)
 
 
 @contextmanager

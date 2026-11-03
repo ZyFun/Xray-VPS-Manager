@@ -1,11 +1,14 @@
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from xray_vps_manager.telegram import admin, poller
+from tests.support.sandbox import Sandbox
+from xray_vps_manager.db import database
+from xray_vps_manager.telegram import admin, poller, settings
 
 
 class TelegramPollerTests(unittest.TestCase):
@@ -1463,6 +1466,69 @@ class TelegramPollerTests(unittest.TestCase):
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Страна подключения изменена: США.", sent[2])
         self.assertIn("Переподключи VPN", sent[2])
+
+    def test_conflicting_stop_does_not_acknowledge_or_roll_back_another_chat(self) -> None:
+        events = []
+        stored_at_menu_reset = []
+        updates = [
+            {"update_id": 42, "message": {"chat": {"id": 42, "type": "private"}, "text": "/stop"}},
+            {"update_id": 43, "callback_query": {
+                "id": "stop-43", "data": "client:unsubscribe", "message": {"chat": {"id": 43, "type": "private"}},
+            }},
+        ]
+        with Sandbox():
+            settings.save_db({
+                "enabled": True, "token": "fixture", "chatId": "999",
+                "clientSubscriptions": {chat: {"clientId": "first"} for chat in ("42", "43")},
+            })
+            ctx = self.make_context({}, updates, events)
+
+            def transport(db, method, payload=None, timeout=30):
+                if method == "getUpdates":
+                    with database.write_session() as conn:
+                        settings.save_subscription(conn, "42", {"clientId": "next"})
+                elif method == "deleteMyCommands":
+                    stored_at_menu_reset.append((payload["scope"]["chat_id"], set(settings.load_db()["clientSubscriptions"])))
+                return {"ok": True, "result": updates}
+
+            ctx = replace(ctx, load_db=settings.load_db, save_db_sections=settings.save_db_sections, curl_json=transport)
+            self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+            saved = settings.load_db()
+        self.assertEqual(stored_at_menu_reset, [("43", {"42"})])
+        self.assertEqual(saved["clientSubscriptionState"]["userUpdateOffset"], 44)
+        self.assertEqual(set(saved["clientSubscriptions"]), {"42"})
+        self.assertEqual(saved["clientSubscriptions"]["42"]["clientId"], "next")
+        messages = {event[1]: event[2] for event in events if event[0] == "send"}
+        self.assertIn("Не удалось обработать действие", messages["42"])
+        self.assertIn("Подписка на бота отключена", messages["43"])
+        self.assertNotIn("Подписка на бота отключена", messages["42"])
+
+    def test_conflicting_subscription_button_answers_callback_once(self) -> None:
+        for action in ("client:unsubscribe", "client:activity:on"):
+            with self.subTest(action), Sandbox():
+                settings.save_db({
+                    "enabled": True, "token": "fixture", "chatId": "999",
+                    "clientSubscriptions": {"42": {"clientId": "first"}},
+                })
+                update = {"update_id": 1, "callback_query": {
+                    "id": "button", "data": action, "message": {"message_id": 1, "chat": {"id": 42, "type": "private"}},
+                }}
+                events = []
+                answers = []
+                ctx = self.make_context({}, [update], events)
+
+                def transport(db, method, payload=None, timeout=30):
+                    if method == "getUpdates":
+                        with database.write_session() as conn:
+                            settings.save_subscription(conn, "42", {"clientId": "next"})
+                    return {"ok": True, "result": [update]}
+
+                ctx = replace(ctx, load_db=settings.load_db, save_db_sections=settings.save_db_sections,
+                              curl_json=transport, answer_callback_query=lambda db, uid, text: answers.append((uid, text)))
+                self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
+                self.assertEqual(answers, [("button", "Не удалось сохранить подписку")])
+                self.assertTrue(any(e[0] == "send" and "Не удалось обработать действие" in e[2] for e in events))
+                self.assertEqual(settings.load_db()["clientSubscriptions"]["42"]["clientId"], "next")
 
     def test_unsubscribe_callback_resets_chat_command_menu(self) -> None:
         db = {
