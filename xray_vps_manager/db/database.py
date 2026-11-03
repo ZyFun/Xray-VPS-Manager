@@ -91,12 +91,12 @@ def enable_wal(connection: sqlite3.Connection) -> str:
 
 
 @contextmanager
-def report_errors() -> Iterator[None]:
+def report_errors(*, detail: str = "") -> Iterator[None]:
     """Перевести ошибки SQLite и файлов в ошибку сценария на границе администрирования."""
     try:
         yield
     except (sqlite3.Error, OSError) as exc:
-        raise StateError(f"SQLite manager database: {exc}") from exc
+        raise StateError(f"SQLite manager database: {exc}", detail=detail) from exc
 
 
 def _open(
@@ -388,6 +388,17 @@ def transaction(connection: sqlite3.Connection, *, immediate: bool = False) -> I
     except BaseException:
         if connection.in_transaction:
             connection.execute("ROLLBACK")
+        raise
+
+
+def table_count(connection: sqlite3.Connection, table: str, *, allow_unavailable: bool) -> int | None:
+    identifier = table.replace('"', '""')
+    try:
+        return connection.execute(f'SELECT COUNT(*) FROM "{identifier}"').fetchone()[0]
+    except sqlite3.OperationalError as exc:
+        # Некоторые сторонние виртуальные таблицы разрешают поиск, но запрещают полный просмотр.
+        if allow_unavailable and exc.sqlite_errorcode == sqlite3.SQLITE_ERROR:
+            return None
         raise
 
 

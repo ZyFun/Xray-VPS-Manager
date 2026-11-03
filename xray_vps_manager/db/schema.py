@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 import sqlite3
 
@@ -599,9 +600,19 @@ def apply_migration(connection: sqlite3.Connection, migration: Migration) -> Non
 
 def table_names(connection: sqlite3.Connection) -> set[str]:
     rows = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'"
     ).fetchall()
     return {str(row[0]) for row in rows}
+
+
+def required_table_names(version: int) -> set[str]:
+    """Получить таблицы эталонной схемы из миграций, не открывая рабочую базу."""
+    with closing(sqlite3.connect(":memory:")) as reference:
+        for migration in MIGRATIONS:
+            if migration.version > version:
+                break
+            apply_migration(reference, migration)
+        return table_names(reference)
 
 
 def index_names(connection: sqlite3.Connection) -> set[str]:
