@@ -78,12 +78,17 @@ def save_activity_exceptions(
     write_activity_exceptions_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
+def _upsert_exception(connection, item: dict) -> None:
+    with database.unique_conflict(f"Activity exception conflicts with an existing entry: {item['value']}"):
+        sqlite_activity.upsert_exception(connection, item)
+
+
 def add_exception(value: str, source: str = "manual") -> dict:
     normalized, kind = classify_exception_value(value)
     with database.write_session(database.database_path()) as connection:
         added = not sqlite_activity.exception_exists(connection, normalized)
         if added:
-            sqlite_activity.upsert_exception(connection, {
+            _upsert_exception(connection, {
                 "value": normalized, "kind": kind, "source": normalize_source(source), "createdAt": utc_stamp(),
             })
     return {"added": added, "value": normalized, "kind": kind}
@@ -140,7 +145,7 @@ def write_activity_exceptions_to_sqlite_for_write(
                 sqlite_activity.delete_exception(connection, value)
             for value, item in incoming.items():
                 if item != current.get(value):
-                    sqlite_activity.upsert_exception(connection, item)
+                    _upsert_exception(connection, item)
         return True
     except Exception:
         if strict:

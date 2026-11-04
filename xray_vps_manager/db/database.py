@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterator
 
-from xray_vps_manager.core.errors import StateError
+from xray_vps_manager.core.errors import ConflictError, StateError
 from xray_vps_manager.core.json_store import chown_xray
 from xray_vps_manager.core.paths import MANAGER_DB_PATH, paths
 from xray_vps_manager.db import schema
@@ -217,6 +217,19 @@ def session(path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
     with closing(connect(db_path)) as connection:
         _ensure_initialized(connection, db_path)
         yield connection
+
+
+@contextmanager
+def unique_conflict(message: str) -> Iterator[None]:
+    """Переводит отказ записи из-за уникальности на границе вызвавшего фасада."""
+    try:
+        yield
+    except sqlite3.IntegrityError as exc:
+        if getattr(exc, "sqlite_errorcode", None) in (
+            sqlite3.SQLITE_CONSTRAINT_UNIQUE, sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY, sqlite3.SQLITE_CONSTRAINT_ROWID,
+        ):
+            raise ConflictError(message) from exc
+        raise
 
 
 @contextmanager
