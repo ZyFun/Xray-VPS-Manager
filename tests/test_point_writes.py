@@ -109,6 +109,39 @@ class PointWriteTests(unittest.TestCase):
                 self.assertEqual(settings.get_subscription(conn, "1")["clientId"], "abc")
                 self.assertEqual(sqlite_telegram.get_state(conn, "clientSubscriptionState")["userUpdateOffset"], 10)
 
+    def test_exception_unique_conflict_and_snapshot_rollback(self):
+        """B2.4: повтор успешен, но отказ UNIQUE из SQLite становится ConflictError."""
+        with Sandbox() as box:
+            with database.write_session() as conn:
+                conn.execute("CREATE UNIQUE INDEX test_unique_source ON activity_exceptions(source)")
+            exceptions.add_exception("first.example")
+            exceptions.add_exception("keep.example", "imported")
+            initial = exceptions.exception_items()
+            repeat = box.run_cli("activity", "exception-add", "FIRST.example", "changed")
+            self.assertEqual((repeat.exit_code, repeat.stdout, repeat.stderr),
+                             (0, "Exception already exists: first.example\n", ""))
+            with self.assertRaises(ConflictError) as caught:
+                exceptions.add_exception("other.example")
+            self.assertEqual(caught.exception.__cause__.sqlite_errorcode, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
+            result = box.run_cli("activity", "exception-add", "other.example")
+            self.assertEqual(result.exit_code, 1)
+            self.assertEqual(result.stderr, "ERROR: Activity exception conflicts with an existing entry: other.example\n")
+            self.assertEqual(result.stdout, "")
+            snapshot = {"items": [initial[0], {"value": "other.example", "source": "manual"}]}
+            with self.assertRaises(ConflictError):
+                exceptions.save_activity_exceptions(snapshot)
+            self.assertFalse(exceptions.write_activity_exceptions_to_sqlite_for_write(snapshot))
+            self.assertEqual(exceptions.exception_items(), initial)
+
+    def test_exception_unrelated_constraint_is_not_a_conflict(self):
+        with Sandbox():
+            with database.write_session() as conn:
+                conn.execute("""CREATE TRIGGER refuse BEFORE INSERT ON activity_exceptions
+                                BEGIN SELECT RAISE(ABORT, 'unrelated'); END""")
+            with self.assertRaises(sqlite3.IntegrityError) as caught:
+                exceptions.add_exception("example.com")
+            self.assertEqual(caught.exception.sqlite_errorcode, sqlite3.SQLITE_CONSTRAINT_TRIGGER)
+
     def test_exception_replacement_only_writes_changed_values(self):
         fixed = {"value": "EXAMPLE.com", "createdAt": "first", "source": "manual"}
         with Sandbox():

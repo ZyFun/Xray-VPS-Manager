@@ -139,6 +139,12 @@ def add_event(connection: sqlite3.Connection, event: dict[str, Any]) -> int:
     return event_id
 
 
+def event_id_exists(connection: sqlite3.Connection, event_id: int) -> bool:
+    if not -(2**63) <= event_id < 2**63:
+        return False
+    return connection.execute("SELECT 1 FROM activity_events WHERE id = ?", (event_id,)).fetchone() is not None
+
+
 def event_exists(connection: sqlite3.Connection, event: dict[str, Any]) -> bool:
     row = connection.execute(
         """

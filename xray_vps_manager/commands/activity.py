@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import fcntl
 import os
+import re
 import shlex
 import signal
 import sys
@@ -30,7 +31,7 @@ from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.activity import status as activity_status
 from xray_vps_manager.activity import sync as activity_sync
-from xray_vps_manager.core.errors import ManagerError
+from xray_vps_manager.core.errors import ConflictError, ManagerError, NotFoundError
 from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.core.terminal import print_table
 
@@ -409,7 +410,7 @@ def bypass_events(days_value="7"):
 def add_exception(value, source="manual"):
     try:
         result = activity_exception_reports.add_exception(value, source)
-    except ValueError as exc:
+    except (ConflictError, ValueError) as exc:
         die(str(exc))
     if not result["added"]:
         print(f"Exception already exists: {result['value']}")
@@ -561,7 +562,15 @@ def print_block_candidates(client_name, days_value="7", region="RU", plain=False
 
 
 def add_block(value, source_client="", duration="forever", comment="", source_event_id=""):
-    event_id = int(source_event_id) if str(source_event_id or "").isdigit() else None
+    event_id = None
+    if source_event_id not in ("", None):
+        raw_id = str(source_event_id)
+        if not re.fullmatch(r"[+-]?\d+", raw_id):
+            die("Activity event id must be an integer.")
+        try:
+            event_id = int(raw_id)
+        except ValueError:
+            die("Activity event id is too long.")
     try:
         item = activity_blocklist.add_block(
             value,
@@ -572,9 +581,7 @@ def add_block(value, source_client="", duration="forever", comment="", source_ev
             source="geoip-menu" if source_client else "manual",
         )
         backup = activity_blocklist.reconcile_xray_config()
-    except ValueError as exc:
-        die(str(exc))
-    except RuntimeError as exc:
+    except (ConflictError, NotFoundError, ValueError, RuntimeError) as exc:
         die(str(exc))
     print(f"Added activity block: {item['value']}")
     print(f"Kind: {item['kind']}")

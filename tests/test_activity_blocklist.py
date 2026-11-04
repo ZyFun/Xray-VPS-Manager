@@ -1,14 +1,77 @@
+import sqlite3
 import unittest
 from unittest import mock
 
+from tests.support.sandbox import Sandbox
 from xray_vps_manager.activity import blocklist as activity_blocklist
+from xray_vps_manager.core.errors import ConflictError, NotFoundError
 from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import activity_blocklist as sqlite_blocklist
 from xray_vps_manager.db.repositories import clients, connections, settings
 from xray_vps_manager.xray import blocklist as xray_blocklist
 
 
 class ActivityBlocklistTests(unittest.TestCase):
+    def test_add_block_missing_source(self) -> None:
+        """B2.4 / XR-REV-070: вместо IntegrityError фасад сообщает, какая ссылка отсутствует."""
+        with Sandbox() as box:
+            with database.write_session() as connection:
+                event_id = sqlite_activity.add_event(connection, {"client": "alice"})
+            original = activity_blocklist.add_block("example.com", source_client=" alice ", source_event_id=event_id)
+            self.assertEqual((original["sourceClient"], original["sourceEventId"]), ("alice", event_id))
+            for client, missing_id, message in (
+                ("ghost", event_id, "Unknown client: ghost"),
+                ("alice", 0, "Unknown activity event id: 0"),
+                ("alice", -1, "Unknown activity event id: -1"),
+                ("alice", 2**63, f"Unknown activity event id: {2**63}"),
+            ):
+                with self.subTest(client=client, event=missing_id):
+                    with self.assertRaises(NotFoundError) as caught:
+                        activity_blocklist.add_block("example.com", source_client=client, source_event_id=missing_id)
+                    self.assertEqual(str(caught.exception), message)
+                    with mock.patch.object(activity_blocklist, "reconcile_xray_config") as reconcile:
+                        result = box.run_cli("activity", "block-add", "example.com", client, "forever", "", str(missing_id))
+                    self.assertEqual((result.exit_code, result.stderr, result.stdout), (1, f"ERROR: {message}\n", ""))
+                    reconcile.assert_not_called()
+            self.assertEqual(activity_blocklist.block_items(), [original])
+
+    def test_cli_invalid_event_id_preserves_disabled_block(self) -> None:
+        with Sandbox() as box:
+            with database.write_session() as connection:
+                event_id = sqlite_activity.add_event(connection, {"client": "alice"})
+            activity_blocklist.add_block("example.com", source_client="alice", source_event_id=event_id)
+            with database.write_session() as connection:
+                connection.execute("UPDATE activity_blocklist SET enabled = 0 WHERE value = 'example.com'")
+            before = activity_blocklist.block_items()
+            with mock.patch.object(activity_blocklist, "reconcile_xray_config") as reconcile:
+                for value, message in (("-1", "Unknown activity event id: -1"),
+                                       ("bad", "Activity event id must be an integer.")):
+                    with self.subTest(value=value):
+                        result = box.run_cli("activity", "block-add", "example.com", "alice", "forever", "new", value)
+                        self.assertEqual((result.exit_code, result.stderr, result.stdout), (1, f"ERROR: {message}\n", ""))
+            self.assertEqual(activity_blocklist.block_items(), before)
+            reconcile.assert_not_called()
+
+    def test_add_block_unique_conflict_and_repeat(self) -> None:
+        """B2.4: настоящий отказ UNIQUE даёт ConflictError, повтор значения обновляет блок."""
+        with Sandbox() as box:
+            with database.write_session() as connection:
+                connection.execute("CREATE UNIQUE INDEX test_unique_source ON activity_blocklist(source)")
+            original = activity_blocklist.add_block("first.example")
+            updated = activity_blocklist.add_block("first.example", comment="updated")
+            self.assertEqual(updated, {**original, "comment": "updated"})
+            with self.assertRaises(ConflictError) as caught:
+                activity_blocklist.add_block("other.example")
+            self.assertEqual(caught.exception.__cause__.sqlite_errorcode, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
+            with mock.patch.object(activity_blocklist, "reconcile_xray_config") as reconcile:
+                result = box.run_cli("activity", "block-add", "other.example", "", "forever", "")
+            self.assertEqual(result.exit_code, 1)
+            self.assertEqual(result.stderr, "ERROR: Activity block conflicts with an existing entry: other.example\n")
+            self.assertEqual(result.stdout, "")
+            reconcile.assert_not_called()
+            self.assertEqual(activity_blocklist.block_items(), [updated])
+
     def test_xray_blocklist_rules_are_inserted_before_geoip_warning(self) -> None:
         config = {
             "outbounds": [
