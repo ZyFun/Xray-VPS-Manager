@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 import subprocess
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
@@ -18,10 +18,12 @@ from xray_vps_manager.activity import reports as activity_reports
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.activity.constants import EXCEPTION_VALUE_RE
 from xray_vps_manager.activity.parser import parse_target
+from xray_vps_manager.core.errors import NotFoundError
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import activity_blocklist as sqlite_blocklist
-from xray_vps_manager.db.storage import SQLiteReadUnavailable, sqlite_read_ready
+from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray.config import load_config as load_xray_config
 from xray_vps_manager.xray.config import save_config
@@ -104,13 +106,9 @@ def expires_at_from_duration(duration: str | int | None) -> str:
 
 @contextmanager
 def _ready_session(db_path=None, *, write=False):
-    if not database.database_file_exists(db_path):
-        raise SQLiteReadUnavailable("SQLite manager database is missing.")
     target = database.database_path(db_path)
-    session = database.write_session(target) if write else closing(database.open_database(target))
+    session = database.write_session(target) if write else database.session(target)
     with session as connection:
-        if not sqlite_read_ready(connection):
-            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
         yield connection
 
 
@@ -126,21 +124,27 @@ def add_block(
 ) -> dict:
     normalized, kind = classify_block_value(value)
     expires_at = expires_at_from_duration(duration)
+    source_client = source_client.strip()
     with _ready_session(db_path, write=True) as connection:
-        return sqlite_blocklist.upsert_block(
-            connection,
-            {
-                "value": normalized,
-                "kind": kind,
-                "sourceClient": source_client.strip() or None,
-                "sourceEventId": source_event_id,
-                "source": normalize_source(source),
-                "comment": comment.strip(),
-                "createdAt": activity_time.utc_stamp(),
-                "expiresAt": expires_at,
-                "enabled": True,
-            },
-        )
+        if source_client and not sqlite_clients.client_exists(connection, source_client):
+            raise NotFoundError(f"Unknown client: {source_client}")
+        if source_event_id is not None and not sqlite_activity.event_id_exists(connection, source_event_id):
+            raise NotFoundError(f"Unknown activity event id: {source_event_id}")
+        with database.unique_conflict(f"Activity block conflicts with an existing entry: {normalized}"):
+            return sqlite_blocklist.upsert_block(
+                connection,
+                {
+                    "value": normalized,
+                    "kind": kind,
+                    "sourceClient": source_client or None,
+                    "sourceEventId": source_event_id,
+                    "source": normalize_source(source),
+                    "comment": comment.strip(),
+                    "createdAt": activity_time.utc_stamp(),
+                    "expiresAt": expires_at,
+                    "enabled": True,
+                },
+            )
 
 
 def delete_block(value_or_id: str, *, db_path: str | Path | None = None) -> dict:

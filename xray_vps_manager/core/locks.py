@@ -106,6 +106,36 @@ def manager_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "", path: P
             _held_manager_locks.remove(key)
 
 
+def _check_waiting_owner(entry: int, message: str) -> None:
+    try:
+        os.lockf(entry, os.F_TEST, 0)
+    except (BlockingIOError, PermissionError):
+        raise LockTimeout(message, hint=LOCK_TIMEOUT_HINT) from None
+
+
+@contextmanager
+def telegram_poller_lock(timeout: float = 0.0, *, purpose: str = "poll-users") -> Iterator[None]:
+    """Ожидающий owner входит после текущей пачки, до следующего опроса службы."""
+    path = paths.paths().telegram_poller_lock
+    message = "Опрос Telegram уже выполняется"
+    # Каждый ожидающий владелец блокирует свой байт. F_TEST проверяет весь диапазон
+    # без захвата; эксклюзивный байт виден и при проверке на чтение (glibc).
+    entry = os.open(path.with_suffix(".entry.lock"), os.O_RDWR | os.O_CREAT, LOCK_FILE_MODE)
+    try:
+        if purpose == "owner":
+            fcntl.lockf(entry, fcntl.LOCK_EX | fcntl.LOCK_NB, 1, os.getpid(), os.SEEK_SET)
+        else:
+            # Не занимаем основной flock даже на время проверки, если owner уже ждёт.
+            _check_waiting_owner(entry, message)
+        with hold_file_lock(path, timeout, purpose, message):
+            if purpose != "owner":
+                # Регистрация могла появиться между первой проверкой и взятием flock.
+                _check_waiting_owner(entry, message)
+            yield
+    finally:
+        os.close(entry)
+
+
 @contextmanager
 def manager_update_lock(timeout: float = 0.0, *, purpose: str = "") -> Iterator[None]:
     """Serialize ``xray-manager-update --update/--rollback`` (manager-update.lock).

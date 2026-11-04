@@ -5,11 +5,15 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, ExitStack
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from xray_vps_manager.core.errors import StateError
+from xray_vps_manager.core.clock import parse_time
+from xray_vps_manager.core.errors import LockTimeout, StateError
+from xray_vps_manager.db import database
 from xray_vps_manager.telegram import admin, bot_commands, keyboards, messages, subscriptions, traffic
 from xray_vps_manager.xray import client_routes
 
@@ -30,8 +34,10 @@ CLIENT_CALLBACK_CROSS_MENU_PREFIXES = ("client:activity-exception:",)
 @dataclass(frozen=True)
 class PollerContext:
     load_db: Callable[[], dict]
+    claim_user_updates: Callable[[dict, dict, str], int | None]
     save_db_sections: Callable[[dict, tuple[str, ...]], None]
     load_client_db: Callable[[], dict]
+    load_country_routes: Callable[[], tuple[dict, dict]]
     load_traffic_db: Callable[[], dict]
     display_timezone: Callable[[], tuple[Any, str]]
     format_access_until: Callable[[str], str]
@@ -44,6 +50,7 @@ class PollerContext:
     utc_stamp: Callable[[], str]
     admin_context: admin.AdminContext
     xray_client: Path
+    consumer_lock: Callable[[], AbstractContextManager[None]]
 
 
 def chat_label(chat):
@@ -232,14 +239,17 @@ def send_client_activity_exceptions_menu(ctx: PollerContext, db, chat_id, text=N
 
 
 def send_client_country_menu(ctx: PollerContext, db, chat_id, text=None):
-    client_db = ctx.load_client_db()
+    client_db, config = ctx.load_country_routes()
+    client_routes.assign_default_client_routes(config, client_db)
     _name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
     if error:
         send_client_menu(ctx, db, chat_id, error)
         return
-    options = client_routes.route_options(client_db)
+    options = client_routes.route_options(client_db, config)
     if not options:
-        send_client_menu(ctx, db, chat_id, "Страны подключения ещё не настроены. Обратись к администратору.")
+        send_client_menu(
+            ctx, db, chat_id, "Сейчас нет доступных для выбора стран. Попробуй позже или обратись к администратору."
+        )
         return
     current_tag = client_routes.selected_route_tag(entry)
     current_label = client_routes.selected_route_label(client_db, entry)
@@ -629,14 +639,14 @@ def handle_callback_query(ctx: PollerContext, db, update):
         send_client_country_menu(ctx, db, chat_id)
         return True
     if data.startswith("client:country:"):
-        client_db = ctx.load_client_db()
+        client_db, config = ctx.load_country_routes()
         name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
         if error:
             ctx.answer_callback_query(db, callback_id)
             send_client_menu(ctx, db, chat_id, error)
             return True
         tag = data[len("client:country:"):]
-        options = {item["tag"]: item for item in client_routes.route_options(client_db)}
+        options = {item["tag"]: item for item in client_routes.route_options(client_db, config)}
         if tag not in options:
             ctx.answer_callback_query(db, callback_id, "Страна недоступна")
             send_client_country_menu(ctx, db, chat_id, "Эта страна сейчас недоступна. Выбери другую.")
@@ -718,20 +728,60 @@ def configured(db):
     return bool(db.get("enabled") and db.get("token") and db.get("chatId"))
 
 
-def update_offset_from_updates(state, updates):
-    current = int(state.get("userUpdateOffset", 0) or 0)
+def user_updates_payload(state, timeout, stamp):
+    offset = int(state.get("userUpdateOffset", 0) or 0)
+    payload = {"allowed_updates": ["message", "callback_query"], "timeout": max(0, int(timeout))}
+    # Telegram хранит обновления не дольше суток. После перерыва подтверждать старую пачку уже не нужно.
+    last_poll = parse_time(state.get("lastUserPoll"))
+    now = parse_time(stamp)
+    modern = "userUpdateOffsetConfirmed" in state
+    recent = last_poll is not None and now is not None and timedelta(0) <= now - last_poll <= timedelta(days=1)
+    # У старой базы без признака подтверждения сохраняем прежнюю границу: повтор действия недопустим.
+    if offset and not state.get("userUpdateOffsetConfirmed") and (not modern or recent):
+        payload["offset"] = offset
+    return payload
+
+
+def updates_by_id(updates):
+    result = {}
     for update in updates:
         try:
-            update_id = int(update.get("update_id", 0))
-        except (TypeError, ValueError):
+            update_id = int(update["update_id"])
+        except (KeyError, TypeError, ValueError):
             continue
-        next_offset = update_id + 1
-        if next_offset > current:
-            current = next_offset
-    state["userUpdateOffset"] = current
+        result.setdefault(update_id, update)
+    return result
+
+
+def fetch_user_updates(db, timeout, stamp, transport, request_timeout):
+    state = db.get("clientSubscriptionState", {})
+    payload = user_updates_payload(state, timeout, stamp)
+    data = transport(db, "getUpdates", payload, timeout=request_timeout)
+    updates = updates_by_id(data.get("result", []))
+    if "userUpdateOffsetConfirmed" not in state and updates and min(updates) < payload.get("offset", 0):
+        # Старая версия могла выполнить пачку с головы, но оставить высокий offset.
+        # Ответ на повтор того же offset бывает укорочен до одного сообщения.
+        # Читаем с первого полученного ID включительно: запрос отличается и от
+        # прежнего offset, и от поиска чатов owner без offset. Пачка остаётся в очереди.
+        head = {"allowed_updates": payload["allowed_updates"], "timeout": 0, "offset": min(updates)}
+        data = transport(db, "getUpdates", head, timeout=request_timeout)
+        updates = updates_by_id(data.get("result", []))
+    return updates
 
 
 def poll_user_subscriptions(ctx: PollerContext, quiet=False, telegram_timeout=USER_POLL_SHORT_TIMEOUT):
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(ctx.consumer_lock())
+        except LockTimeout as exc:
+            if not quiet:
+                print(exc.message)
+            return 1
+        with database.wait_for_writer():
+            return _poll_user_subscriptions(ctx, quiet, telegram_timeout)
+
+
+def _poll_user_subscriptions(ctx: PollerContext, quiet, telegram_timeout):
     db = ctx.load_db()
     if not db.get("enabled") or not db.get("token"):
         if not quiet:
@@ -742,25 +792,23 @@ def poll_user_subscriptions(ctx: PollerContext, quiet=False, telegram_timeout=US
             print("Owner chat is not configured; user subscription polling skipped.")
         return 0
     state = db.setdefault("clientSubscriptionState", {})
-    offset = int(state.get("userUpdateOffset", 0) or 0)
-    payload = {"allowed_updates": ["message", "callback_query"], "timeout": max(0, int(telegram_timeout))}
-    if offset:
-        payload["offset"] = offset
     try:
-        data = ctx.curl_json(db, "getUpdates", payload, timeout=max(15, int(telegram_timeout) + 10))
+        polled_at = ctx.utc_stamp()
+        updates = fetch_user_updates(db, telegram_timeout, polled_at, ctx.curl_json, max(15, int(telegram_timeout) + 10))
     except Exception as exc:
         if not quiet:
             print(f"ERROR: Telegram user polling failed: {exc}", file=sys.stderr)
             return 1
         return 0
 
-    updates = data.get("result", [])
-    update_offset_from_updates(state, updates)
-    state["lastUserPoll"] = ctx.utc_stamp()
-    ctx.save_db_sections(db, ("clientSubscriptionState",))
+    previous = ctx.claim_user_updates(state, updates, polled_at)
+    if previous is None:
+        return 0
 
     processed = 0
-    for update in updates:
+    for update_id, update in updates.items():
+        if update_id < previous:
+            continue
         try:
             if handle_telegram_update(ctx, db, update):
                 processed += 1
@@ -772,7 +820,6 @@ def poll_user_subscriptions(ctx: PollerContext, quiet=False, telegram_timeout=US
                     ctx.answer_callback_query(db, callback_id, "Не удалось сохранить подписку")
                 # Не переносим отклонённое действие в следующий update или финальную запись пачки.
                 db = ctx.load_db()
-                state = db.setdefault("clientSubscriptionState", {})
             chat_id = update_private_chat_id(update)
             if chat_id:
                 try:
@@ -781,8 +828,6 @@ def poll_user_subscriptions(ctx: PollerContext, quiet=False, telegram_timeout=US
                     pass
             if not quiet:
                 print(f"ERROR: failed to process Telegram user update: {exc}", file=sys.stderr)
-    state["lastUserPoll"] = ctx.utc_stamp()
-    ctx.save_db_sections(db, ("clientSubscriptions", "clientSubscriptionState"))
     if not quiet:
         print(f"Processed Telegram user messages: {processed}")
     return 0
@@ -792,7 +837,8 @@ def run_user_poller(ctx: PollerContext):
     print("Telegram user poller started.", flush=True)
     while True:
         try:
-            db = ctx.load_db()
+            with database.wait_for_writer():
+                db = ctx.load_db()
             if not configured(db):
                 print("Telegram user poller waits for enabled bot, token, and owner chat.", flush=True)
                 time.sleep(USER_POLLER_SLEEP_UNCONFIGURED)

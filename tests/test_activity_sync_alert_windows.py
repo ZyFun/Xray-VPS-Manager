@@ -26,7 +26,6 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "activity_sync" / "access-alert-windows.log"
 WINDOW_KEY = sqlite_activity.ACTIVITY_ALERT_WINDOW_STATE_KEY
@@ -92,7 +91,7 @@ class AlertWindowSyncCase(unittest.TestCase):
         self.make_sqlite_db()
 
     def make_sqlite_db(self) -> None:
-        connection = database.open_database(self.db_path)
+        connection = database.initialize(self.db_path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -122,7 +121,6 @@ class AlertWindowSyncCase(unittest.TestCase):
                         },
                     },
                 )
-            sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 

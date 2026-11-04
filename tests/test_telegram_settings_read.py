@@ -12,8 +12,8 @@ from xray_vps_manager.telegram import settings as telegram_settings
 
 
 class TelegramSettingsReadTests(unittest.TestCase):
-    def make_sqlite_db(self, path: Path, *, ready: bool = True) -> None:
-        connection = database.open_database(path)
+    def make_sqlite_db(self, path: Path) -> None:
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -77,8 +77,6 @@ class TelegramSettingsReadTests(unittest.TestCase):
                     "updatedAt": "2026-06-12T09:11:00Z",
                 },
             )
-            if ready:
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 
@@ -87,20 +85,19 @@ class TelegramSettingsReadTests(unittest.TestCase):
             db_path = Path(tmp_dir) / "manager.db"
             self.make_sqlite_db(db_path)
 
-            result = telegram_settings.load_db_sql_result(db_path=db_path)
+            result = telegram_settings.load_db_sql(db_path=db_path)
 
-            self.assertEqual(result.source, "sqlite")
-            self.assertTrue(result.db["enabled"])
-            self.assertEqual(result.db["botName"], "SQLiteBot")
-            self.assertEqual(result.db["botUsername"], "SQLiteVpnBot")
-            self.assertEqual(result.db["paymentTotalAmount"], "500")
-            self.assertEqual(result.db["paymentDomainAnnualAmount"], "1200")
-            self.assertEqual(result.db["paymentCurrency"], "$")
-            self.assertEqual(result.db["paymentTransferMethod"], "card")
-            self.assertEqual(result.db["paymentCard"], "2200 0000 0000 0000")
-            self.assertEqual(result.db["dailySummaryState"], {"lastSentDay": "2026-06-12"})
+            self.assertTrue(result["enabled"])
+            self.assertEqual(result["botName"], "SQLiteBot")
+            self.assertEqual(result["botUsername"], "SQLiteVpnBot")
+            self.assertEqual(result["paymentTotalAmount"], "500")
+            self.assertEqual(result["paymentDomainAnnualAmount"], "1200")
+            self.assertEqual(result["paymentCurrency"], "$")
+            self.assertEqual(result["paymentTransferMethod"], "card")
+            self.assertEqual(result["paymentCard"], "2200 0000 0000 0000")
+            self.assertEqual(result["dailySummaryState"], {"lastSentDay": "2026-06-12"})
             self.assertEqual(
-                result.db["clientSubscriptions"]["222"],
+                result["clientSubscriptions"]["222"],
                 {
                     "client": "sqlite_client",
                     "clientId": "00000000-0000-0000-0000-000000000002",
@@ -119,17 +116,17 @@ class TelegramSettingsReadTests(unittest.TestCase):
             missing_db_path = Path(tmp_dir) / "missing.db"
 
             with self.assertRaisesRegex(SQLiteReadUnavailable, "manager database is missing"):
-                telegram_settings.load_db_sql_result(db_path=missing_db_path)
+                telegram_settings.load_db_sql(db_path=missing_db_path)
 
             self.assertFalse(missing_db_path.exists())
 
-    def test_read_fails_when_sqlite_database_is_not_marked_ready(self) -> None:
+    def test_read_fails_when_sqlite_database_is_uninitialized(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            self.make_sqlite_db(db_path, ready=False)
+            db_path.touch()
 
-            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not marked ready"):
-                telegram_settings.load_db_sql_result(db_path=db_path)
+            with self.assertRaisesRegex(SQLiteReadUnavailable, "database is not initialized"):
+                telegram_settings.load_db_sql(db_path=db_path)
 
 
 if __name__ == "__main__":

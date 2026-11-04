@@ -13,11 +13,7 @@ from xray_vps_manager.activity.parser import parse_target
 from xray_vps_manager.activity.time import utc_stamp
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
-from xray_vps_manager.db.storage import (
-    SQLiteReadUnavailable,
-    ready_write_session,
-    sqlite_read_ready,
-)
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 
 def normalize_exception_value(value: str, fatal: bool = True) -> str:
@@ -70,25 +66,29 @@ def classify_exception_value(value: str, fatal: bool = True) -> tuple[str, str]:
     return normalized, "domain"
 
 
-def load_activity_exceptions(path=None, *, db_path: str | Path | None = None) -> dict:
-    return load_activity_exceptions_for_read(path, db_path=db_path)
+def load_activity_exceptions(*, db_path: str | Path | None = None) -> dict:
+    return load_activity_exceptions_for_read(db_path=db_path)
 
 
 def save_activity_exceptions(
     db: dict,
-    path=None,
     *,
     db_path: str | Path | None = None,
 ) -> None:
     write_activity_exceptions_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
 
+def _upsert_exception(connection, item: dict) -> None:
+    with database.unique_conflict(f"Activity exception conflicts with an existing entry: {item['value']}"):
+        sqlite_activity.upsert_exception(connection, item)
+
+
 def add_exception(value: str, source: str = "manual") -> dict:
     normalized, kind = classify_exception_value(value)
-    with ready_write_session(legacy_read_errors=True) as connection:
+    with database.write_session(database.database_path()) as connection:
         added = not sqlite_activity.exception_exists(connection, normalized)
         if added:
-            sqlite_activity.upsert_exception(connection, {
+            _upsert_exception(connection, {
                 "value": normalized, "kind": kind, "source": normalize_source(source), "createdAt": utc_stamp(),
             })
     return {"added": added, "value": normalized, "kind": kind}
@@ -96,14 +96,14 @@ def add_exception(value: str, source: str = "manual") -> dict:
 
 def delete_exception(value: str) -> str:
     normalized, _kind = classify_exception_value(value)
-    with ready_write_session(legacy_read_errors=True) as connection:
+    with database.write_session(database.database_path()) as connection:
         if not sqlite_activity.delete_exception(connection, normalized):
             raise KeyError(normalized)
     return normalized
 
 
 def delete_all_exceptions() -> int:
-    with ready_write_session(legacy_read_errors=True) as connection:
+    with database.write_session(database.database_path()) as connection:
         return sqlite_activity.clear_exceptions(connection)
 
 
@@ -112,33 +112,23 @@ def exception_items(*, db_path: str | Path | None = None) -> list[dict]:
 
 
 def load_activity_exceptions_for_read(
-    path=None,
     *,
     db_path: str | Path | None = None,
 ) -> dict:
-    if not database.database_file_exists(db_path):
-        raise SQLiteReadUnavailable("SQLite manager database is missing.")
-    connection = None
     try:
-        connection = database.open_database(db_path)
-        if sqlite_read_ready(connection):
+        with database.session(database.database_path(db_path), read_snapshot=True) as connection:
             return {"version": 1, "items": sqlite_activity.list_exceptions(connection)}
-        raise SQLiteReadUnavailable("SQLite database is not marked ready.")
     except SQLiteReadUnavailable:
         raise
     except Exception as exc:
         raise SQLiteReadUnavailable(f"SQLite activity exceptions cannot be read: {exc}") from exc
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 def exception_items_for_read(
-    path=None,
     *,
     db_path: str | Path | None = None,
 ) -> list[dict]:
-    return load_activity_exceptions_for_read(path, db_path=db_path).get("items", [])
+    return load_activity_exceptions_for_read(db_path=db_path).get("items", [])
 
 
 def write_activity_exceptions_to_sqlite_for_write(
@@ -148,14 +138,14 @@ def write_activity_exceptions_to_sqlite_for_write(
     strict: bool = False,
 ) -> bool:
     try:
-        with ready_write_session(db_path) as connection:
+        with database.write_session(database.database_path(db_path)) as connection:
             incoming = {item["value"]: item for item in load_activity_exceptions_from_dict(db)["items"]}
             current = {item["value"]: item for item in sqlite_activity.list_exceptions(connection)}
             for value in current.keys() - incoming.keys():
                 sqlite_activity.delete_exception(connection, value)
             for value, item in incoming.items():
                 if item != current.get(value):
-                    sqlite_activity.upsert_exception(connection, item)
+                    _upsert_exception(connection, item)
         return True
     except Exception:
         if strict:

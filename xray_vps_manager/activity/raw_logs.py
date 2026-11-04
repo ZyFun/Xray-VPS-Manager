@@ -18,7 +18,6 @@ from xray_vps_manager.core import systemd
 from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
-from xray_vps_manager.db.storage import sqlite_read_ready
 
 RAW_LOG_ROTATION_STATE_KEY = "xrayRawLogRotation.state"
 ERROR_LOG_OFFSET_NAME = "xray-error-log"
@@ -60,31 +59,18 @@ def next_rotation_label(now: datetime | None = None) -> str:
 def _load_state() -> dict:
     if not database.database_file_exists():
         return {}
-    connection = None
     try:
-        connection = database.open_database()
-        if not sqlite_read_ready(connection):
-            return {}
-        return sqlite_activity.get_metadata_json(connection, RAW_LOG_ROTATION_STATE_KEY)
+        with database.session(database.database_path()) as connection:
+            return sqlite_activity.get_metadata_json(connection, RAW_LOG_ROTATION_STATE_KEY)
     except Exception:
         return {}
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 def _save_state(state: dict) -> None:
     if not database.database_file_exists():
         return
-    connection = None
-    try:
-        connection = database.open_database()
-        if not sqlite_read_ready(connection):
-            return
+    with database.write_session(database.database_path()) as connection:
         sqlite_activity.set_metadata_json(connection, RAW_LOG_ROTATION_STATE_KEY, state)
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 def _load_error_offset(connection) -> dict:
@@ -164,47 +150,40 @@ def sync_error_log(log: Callable[[str], None] | None = None) -> int:
         emit(f"Cannot stat Xray error log: {exc}")
         return 1
 
-    connection = None
     try:
-        connection = database.open_database()
-        if not sqlite_read_ready(connection):
-            emit("SQLite database is not marked ready; Xray error log sync skipped.")
+        with database.session(database.database_path()) as connection:
+            state = _load_error_offset(connection)
+            previous_inode = state.get("inode")
+            previous_offset = int(state.get("offset") or 0)
+            offset = previous_offset if previous_inode == stat.st_ino and stat.st_size >= previous_offset else 0
+            with ERROR_LOG_PATH.open("rb") as handle:
+                handle.seek(offset)
+                data = handle.read()
+                new_offset = handle.tell()
+            parsed = 0
+            skipped = 0
+            with database.write_transaction(connection):
+                for raw_line in data.decode("utf-8", errors="replace").splitlines():
+                    item = parse_xray_error_line(raw_line)
+                    if not item:
+                        skipped += 1
+                        continue
+                    sqlite_activity.upsert_xray_error_event(connection, item)
+                    parsed += 1
+                _save_error_offset(
+                    connection,
+                    {
+                        "path": str(ERROR_LOG_PATH),
+                        "inode": stat.st_ino,
+                        "offset": new_offset,
+                        "updated": activity_time.utc_stamp(),
+                    },
+                )
+            emit(f"Xray error log sync saved: {parsed} events, {skipped} skipped.")
             return 0
-        state = _load_error_offset(connection)
-        previous_inode = state.get("inode")
-        previous_offset = int(state.get("offset") or 0)
-        offset = previous_offset if previous_inode == stat.st_ino and stat.st_size >= previous_offset else 0
-        with ERROR_LOG_PATH.open("rb") as handle:
-            handle.seek(offset)
-            data = handle.read()
-            new_offset = handle.tell()
-        parsed = 0
-        skipped = 0
-        with database.transaction(connection):
-            for raw_line in data.decode("utf-8", errors="replace").splitlines():
-                item = parse_xray_error_line(raw_line)
-                if not item:
-                    skipped += 1
-                    continue
-                sqlite_activity.upsert_xray_error_event(connection, item)
-                parsed += 1
-            _save_error_offset(
-                connection,
-                {
-                    "path": str(ERROR_LOG_PATH),
-                    "inode": stat.st_ino,
-                    "offset": new_offset,
-                    "updated": activity_time.utc_stamp(),
-                },
-            )
-        emit(f"Xray error log sync saved: {parsed} events, {skipped} skipped.")
-        return 0
     except OSError as exc:
         emit(f"Cannot read Xray error log: {exc}")
         return 1
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 def rotation_due(now: datetime | None = None, state: dict | None = None) -> tuple[bool, str, str]:

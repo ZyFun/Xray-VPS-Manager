@@ -227,7 +227,7 @@ class ActivitySyncTests(unittest.TestCase):
             save_activity_db.assert_not_called()
             self.assertTrue(any("offset was not advanced" in message for message in messages))
 
-    def test_sync_keeps_offset_when_sqlite_is_missing_or_not_ready_for_pipeline_write(self) -> None:
+    def test_sync_keeps_offset_when_sqlite_is_missing_or_uninitialized_for_pipeline_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             access_log = root / "access.log"
@@ -236,12 +236,12 @@ class ActivitySyncTests(unittest.TestCase):
                 "[vless-reality -> direct] email: alice|created=2026-06-12T07:01:00Z\n"
             )
             missing_db = root / "missing.db"
-            not_ready_db = root / "not-ready.db"
-            database.open_database(not_ready_db).close()
+            uninitialized_db = root / "uninitialized.db"
+            uninitialized_db.touch()
 
             for db_path, error in (
                 (missing_db, "manager database is missing"),
-                (not_ready_db, "database is not marked ready"),
+                (uninitialized_db, "database is not initialized"),
             ):
                 with self.subTest(db_path=db_path.name):
                     db = {"accessLog": {"inode": access_log.stat().st_ino, "offset": 0}, "clients": {}}

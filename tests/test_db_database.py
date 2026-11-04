@@ -9,10 +9,19 @@ from xray_vps_manager.db import database, schema
 
 
 class SQLiteDatabaseInfrastructureTests(unittest.TestCase):
-    def test_open_database_creates_file_and_initializes_schema(self) -> None:
+    def test_runtime_open_never_creates_manager_database(self):
+        """B2.1 (XR-REV-021): только явная инициализация создаёт файл и его каталог."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing" / "manager?#.db"
+            for initialize in (True, False):
+                with self.subTest(initialize=initialize), self.assertRaisesRegex(StateError, "database is missing"):
+                    database.open_database(path, initialize=initialize)
+                self.assertFalse(path.parent.exists())
+
+    def test_initialize_creates_file_and_initializes_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            connection = database.open_database(db_path)
+            connection = database.initialize(db_path)
             try:
                 self.assertTrue(db_path.exists())
                 self.assertEqual(schema.schema_version(connection), schema.CURRENT_SCHEMA_VERSION)
@@ -22,8 +31,19 @@ class SQLiteDatabaseInfrastructureTests(unittest.TestCase):
             finally:
                 connection.close()
 
-    def test_open_database_uses_full_busy_timeout(self) -> None:
-        connection = database.open_database(":memory:")
+    def test_runtime_open_reports_inaccessible_parent_as_state_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manager.db"
+            denied = PermissionError(13, "Permission denied", str(path))
+            for opener in (database.connect, database.open_database):
+                with self.subTest(opener=opener.__name__), mock.patch.object(Path, "stat", side_effect=denied):
+                    with self.assertRaisesRegex(StateError, "Permission denied") as error:
+                        opener(path)
+                    self.assertFalse(error.exception.hint)
+            self.assertFalse(path.exists())
+
+    def test_initialized_connection_uses_full_busy_timeout(self) -> None:
+        connection = database.initialize(":memory:")
         try:
             row = connection.execute("PRAGMA busy_timeout").fetchone()
             self.assertEqual(row[0], database.DEFAULT_BUSY_TIMEOUT_MS)
@@ -32,7 +52,7 @@ class SQLiteDatabaseInfrastructureTests(unittest.TestCase):
             connection.close()
 
     def test_transaction_commits_and_rolls_back(self) -> None:
-        connection = database.open_database(":memory:")
+        connection = database.initialize(":memory:")
         try:
             connection.execute("CREATE TABLE sample(value TEXT NOT NULL)")
 
@@ -57,7 +77,7 @@ class SQLiteDatabaseInfrastructureTests(unittest.TestCase):
             connection.close()
 
     def test_nested_transaction_uses_savepoint(self) -> None:
-        connection = database.open_database(":memory:")
+        connection = database.initialize(":memory:")
         try:
             connection.execute("CREATE TABLE sample(value TEXT NOT NULL)")
             with database.transaction(connection):
@@ -79,7 +99,7 @@ class SQLiteDatabaseInfrastructureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
             backup_dir = Path(tmp_dir) / "backups"
-            connection = database.open_database(db_path)
+            connection = database.initialize(db_path)
             try:
                 connection.execute(
                     "INSERT INTO manager_metadata(key, value) VALUES ('server-name', 'demo')"
@@ -106,7 +126,7 @@ class SQLiteDatabaseInfrastructureTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            connection = database.open_database(db_path)
+            connection = database.initialize(db_path)
             connection.close()
 
             with mock.patch.object(schema, "CURRENT_SCHEMA_VERSION", destructive.version), mock.patch.object(
@@ -150,7 +170,7 @@ class SQLiteWalModeTests(unittest.TestCase):
     def test_initialized_database_uses_wal_with_normal_sync_on_every_connection(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            database.open_database(db_path).close()
+            database.initialize(db_path).close()
 
             for connection in (database.open_database(db_path), database.open_database(db_path, initialize=False)):
                 try:
@@ -166,7 +186,7 @@ class SQLiteWalModeTests(unittest.TestCase):
     def test_existing_delete_mode_database_switches_only_on_initialize(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            database.open_database(db_path).close()
+            database.initialize(db_path).close()
             raw = sqlite3.connect(str(db_path))
             raw.execute("PRAGMA journal_mode = DELETE")
             raw.close()
@@ -181,7 +201,7 @@ class SQLiteWalModeTests(unittest.TestCase):
     def test_busy_database_keeps_previous_mode_without_failing_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            database.open_database(db_path).close()
+            database.initialize(db_path).close()
             raw = sqlite3.connect(str(db_path))
             raw.execute("PRAGMA journal_mode = DELETE")
             raw.execute("BEGIN")
@@ -201,7 +221,7 @@ class SQLiteWalModeTests(unittest.TestCase):
         """Фиксация записи держит EXCLUSIVE: в режиме delete читатель получал `database is locked` (VIREI-237)."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            writer = database.open_database(db_path)
+            writer = database.initialize(db_path)
             reader = database.open_database(db_path, initialize=False)
             try:
                 writer.execute("BEGIN EXCLUSIVE")
@@ -219,7 +239,7 @@ class SQLiteWalModeTests(unittest.TestCase):
     def test_ensure_database_permissions_covers_wal_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            database.open_database(db_path).close()
+            database.initialize(db_path).close()
             holder = open_with_pending_wal_frames(db_path, "value")
             try:
                 sidecars = [Path(f"{db_path}-wal"), Path(f"{db_path}-shm")]
@@ -239,7 +259,7 @@ class SQLiteWalModeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "manager.db"
-            database.open_database(db_path).close()
+            database.initialize(db_path).close()
             holder = open_with_pending_wal_frames(db_path, "from-wal")
             try:
                 backup_path = database.backup_database(db_path, backup_dir=root / "backups", label="pre-restore")

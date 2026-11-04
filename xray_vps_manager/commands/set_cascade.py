@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.core.errors import LockTimeout, ManagerError
+from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.terminal import print_table
@@ -31,8 +31,6 @@ TEST_INBOUND_TAG = "cascade-test-socks"
 TEST_SOCKS_HOST = "127.0.0.1"
 TEST_SOCKS_PORT = 10808
 MANAGER_LOCK_TIMEOUT = 60
-# Drift write on a read path (list, cascade selection): wait briefly, otherwise show the synced snapshot.
-ROUTE_DRIFT_LOCK_TIMEOUT = 5
 
 
 def die(message):
@@ -85,11 +83,8 @@ def save_client_db_optional(db, *, deletions=None):
 
 def load_enabled_bypass_routes_optional():
     try:
-        connection = sqlite_database.open_database()
-        try:
+        with sqlite_database.session(sqlite_database.database_path()) as connection:
             return sqlite_bypass.list_enabled_routes(connection)
-        finally:
-            connection.close()
     except Exception as exc:
         print(f"WARN: bypass route DB sync skipped: {exc}", file=sys.stderr)
         return None
@@ -353,19 +348,8 @@ def current_route_label(config):
 def cascade_rows(config):
     active = cascade_config.active_cascade_tag(config)
     db = load_client_db_optional()
-    if db is not None and client_routes.sync_routes_from_config(config, db):
-        # Drift between config.json and manager.db: persist it from a fresh snapshot under manager.lock.
-        try:
-            with manager_lock(ROUTE_DRIFT_LOCK_TIMEOUT, purpose="sync-client-routes"):
-                fresh_db = load_client_db_optional()
-                if fresh_db is not None and client_routes.sync_routes_from_config(load_config(), fresh_db):
-                    save_client_db_optional(fresh_db)
-        except LockTimeout as exc:
-            print(
-                f"WARN: {exc.message}. "
-                "Запись маршрутов клиентов из config.json в manager.db пропущена, следующее чтение повторит её.",
-                file=sys.stderr,
-            )
+    if db is not None:
+        client_routes.sync_routes_from_config(config, db)
     rows = []
     for index, outbound in enumerate(cascade_config.cascade_outbounds(config), start=1):
         tag = outbound.get("tag", "")
@@ -532,12 +516,13 @@ def cmd_use(args):
         config = load_config()
         before = copy.deepcopy(config)
         db = load_client_db_optional()
+        if db is not None:
+            client_routes.sync_route_metadata_from_config(config, db)
         try:
             set_active_cascade(config, tag)
         except ValueError as exc:
             die(str(exc))
         if db is not None:
-            client_routes.sync_routes_from_config(config, db)
             client_routes.ensure_all_client_route_config(config, db)
         backup = apply_config(config, before)
         save_client_db_optional(db)
@@ -585,11 +570,12 @@ def cmd_remove(args):
         backup = apply_config(config, before)
         db = load_client_db_optional()
         if db is not None:
+            client_routes.sync_route_metadata_from_config(before, db)
             client_repository.db_cascade_routes(db).pop(tag, None)
             for entry in client_repository.db_clients(db).values():
                 if isinstance(entry, dict) and entry.get("selectedCascadeTag") == tag:
                     entry["selectedCascadeTag"] = cascade_config.active_cascade_tag(config)
-            client_routes.sync_routes_from_config(config, db)
+            client_routes.assign_default_client_routes(config, db)
             save_client_db_optional(db, deletions=client_repository.Deletions(routes=(tag,)))
     print(f"Cascade removed: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Current catch-all route: {current_route_label(config)}")

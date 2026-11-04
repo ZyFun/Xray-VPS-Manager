@@ -9,13 +9,12 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.telegram import notifications
 
 
 class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
     def make_sqlite_db(self, path: Path) -> None:
-        connection = database.open_database(path)
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -90,7 +89,6 @@ class TelegramGeoIPNotificationSQLiteTests(unittest.TestCase):
                     "risks": ["xray-geoip:RU"],
                 },
             )
-            sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 

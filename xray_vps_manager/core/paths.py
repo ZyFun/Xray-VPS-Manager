@@ -15,6 +15,7 @@ class Paths:
     server_env: Path
     manager_db: Path
     manager_lock: Path
+    telegram_poller_lock: Path
     manager_update_lock: Path
     traffic_lock: Path
     activity_lock: Path
@@ -47,6 +48,7 @@ class Paths:
             server_env=Path('/usr/local/etc/xray/server.env'),
             manager_db=Path('/usr/local/etc/xray/manager.db'),
             manager_lock=Path('/usr/local/etc/xray/manager.lock'),
+            telegram_poller_lock=Path('/usr/local/etc/xray/telegram-poller.lock'),
             manager_update_lock=Path('/usr/local/etc/xray/manager-update.lock'),
             traffic_lock=Path('/usr/local/etc/xray/traffic.lock'),
             activity_lock=Path('/usr/local/etc/xray/activity.lock'),

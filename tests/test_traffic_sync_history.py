@@ -15,7 +15,6 @@ from tests.support.sandbox import Sandbox
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "traffic_sync"
@@ -160,7 +159,6 @@ class TrafficSyncSandbox:
                 sqlite_traffic.upsert_traffic_entry(connection, name, entry)
             for (name, connection_tag), entry in credential_traffic.items():
                 sqlite_traffic.upsert_credential_traffic_entry(connection, name, connection_tag, entry)
-            sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 

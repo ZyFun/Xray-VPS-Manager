@@ -2,63 +2,35 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
-from xray_vps_manager.db.storage import (
-    SQLiteReadUnavailable,
-    ready_write_session,
-    sqlite_read_ready,
-)
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
 from xray_vps_manager.traffic.history import HistoryChanges
-
-
-@dataclass(frozen=True)
-class TrafficDbReadResult:
-    db: dict[str, Any]
-    source: str
 
 
 def default_db() -> dict[str, Any]:
     return {"clients": {}, "credentials": {}}
 
 
-def load_traffic_db(path: Path | None = None) -> dict[str, Any]:
-    return load_traffic_db_for_read(path)
+def load_traffic_db(*, db_path: str | Path | None = None) -> dict[str, Any]:
+    return load_traffic_db_for_read(db_path=db_path)
 
 
 def load_traffic_db_for_read(
-    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    return load_traffic_db_for_read_result(path, db_path=db_path).db
-
-
-def load_traffic_db_for_read_result(
-    path: Path | None = None,
-    *,
-    db_path: str | Path | None = None,
-) -> TrafficDbReadResult:
-    if not database.database_file_exists(db_path):
-        raise SQLiteReadUnavailable("SQLite manager database is missing.")
-    connection = None
     try:
-        connection = database.open_database(db_path)
-        if not sqlite_read_ready(connection):
-            raise SQLiteReadUnavailable("SQLite database is not marked ready.")
-        return TrafficDbReadResult(load_traffic_db_from_sqlite(connection), "sqlite")
+        with database.session(database.database_path(db_path), read_snapshot=True) as connection:
+            return load_traffic_db_from_sqlite(connection)
     except SQLiteReadUnavailable:
         raise
     except Exception as exc:
         raise SQLiteReadUnavailable(f"SQLite traffic cannot be read: {exc}") from exc
-    finally:
-        if connection is not None:
-            connection.close()
 
 
 def load_traffic_db_from_sqlite(connection) -> dict[str, Any]:
@@ -74,7 +46,6 @@ def load_traffic_db_from_sqlite(connection) -> dict[str, Any]:
 
 def save_traffic_db(
     db: dict[str, Any],
-    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
     history_changes: HistoryChanges | None = None,
@@ -149,7 +120,6 @@ def ensure_credential_entry(entries: dict, name: str, connection_tag: str, email
 
 def remove_traffic_clients(
     names: list[str] | tuple[str, ...] | set[str],
-    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> bool:
@@ -173,7 +143,7 @@ def write_traffic_db_to_sqlite_for_write(
     entries = traffic_clients(db)
     credential_entries = traffic_credentials(db)
     try:
-        with ready_write_session(db_path) as connection:
+        with database.write_session(database.database_path(db_path)) as connection:
             mirrorable_clients = {
                 name for name, entry in entries.items()
                 if isinstance(entry, dict) and sqlite_clients.client_exists(connection, name)
@@ -237,7 +207,7 @@ def remove_traffic_clients_from_sqlite_for_write(
     strict: bool = False,
 ) -> bool:
     try:
-        with ready_write_session(db_path) as connection:
+        with database.write_session(database.database_path(db_path)) as connection:
             return sqlite_traffic.remove_traffic_clients(connection, names)
     except Exception:
         if strict:

@@ -16,43 +16,56 @@ from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import paths
 from xray_vps_manager.db import database, schema
 from xray_vps_manager.db.repositories import clients, connections, settings
-from xray_vps_manager.db.storage import SQLITE_READ_READY_KEY, sqlite_read_ready
 from xray_vps_manager.xray.config import load_config
-
-
-COUNT_TABLES = {
-    "connections": "reality_connections",
-    "clients": "clients",
-    "traffic": "traffic_totals",
-    "activity_events": "activity_events",
-    "activity_alert_events": "activity_alert_events",
-    "activity_client_counters": "activity_client_counters",
-    "activity_exceptions": "activity_exceptions",
-    "activity_blocklist": "activity_blocklist",
-    "activity_blocklist_hits": "activity_blocklist_hits",
-    "xray_error_events": "xray_error_events",
-    "telegram_subscriptions": "telegram_subscriptions",
-}
 
 
 @dataclass(frozen=True)
 class DatabaseStatus:
     version: int
     quick_check: str
-    ready: bool
-    counts: dict[str, int]
+    counts: dict[str, int | None]
+    file_sizes: dict[str, int]
 
 
 @database.report_errors()
 def status() -> DatabaseStatus | None:
-    if not paths().manager_db.exists():
+    db_path = paths().manager_db
+    try:
+        file_sizes = {db_path.name: db_path.stat().st_size}
+    except FileNotFoundError:
         return None
-    with closing(database.connect()) as connection:
-        return DatabaseStatus(
-            schema.schema_version(connection), database.quick_check(connection), sqlite_read_ready(connection),
-            {label: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-             for label, table in COUNT_TABLES.items()},
-        )
+    # Снимаем размеры до открытия: первое WAL-соединение может само создать -wal и -shm.
+    for sidecar in database.sidecar_paths(db_path, database.JOURNAL_FILE_SUFFIXES):
+        try:
+            file_sizes[sidecar.name] = sidecar.stat().st_size
+        except FileNotFoundError:
+            continue
+
+    with closing(database.connect(db_path)) as connection, database.transaction(connection):
+        version = database.initialized_schema_version(connection, db_path)
+        if not 1 <= version <= schema.CURRENT_SCHEMA_VERSION:
+            raise StateError(
+                f"Unsupported SQLite schema version {version} (supported: 1–{schema.CURRENT_SCHEMA_VERSION}).",
+                hint=(
+                    "Use a manager version that supports this database. Schema downgrades are not supported. "
+                    "To roll back an incompatible upgrade, use the previous manager version with a verified "
+                    "pre-upgrade backup. Restoring the backup returns data to the time it was taken."
+                ),
+            )
+        tables = schema.table_names(connection)
+        required = schema.required_table_names(version)
+        missing = required - {name.lower() for name in tables if name.isascii()}
+        if missing:
+            raise StateError(f"SQLite schema {version} is missing tables: {', '.join(sorted(missing))}")
+        quick_check = database.quick_check(connection)
+        counts = {}
+        with database.report_errors(detail=f"Quick check: {quick_check}" if quick_check != "ok" else ""):
+            for table in sorted(tables):
+                is_required = table.isascii() and table.lower() in required
+                counts[table] = database.table_count(
+                    connection, table, allow_unavailable=not is_required and quick_check == "ok",
+                )
+        return DatabaseStatus(version, quick_check, counts, file_sizes)
 
 
 @database.report_errors()
@@ -129,9 +142,11 @@ def _prepare_config(path: Path) -> None:
 
 @database.report_errors()
 def initialize(*, from_install: bool = False) -> None:
+    # Метка совместимости только для старого установщика.
+    legacy_key = "jsonImport.completed"
     if not from_install:
         with closing(database.initialize()) as connection, database.transaction(connection, immediate=True):
-            settings.set_metadata(connection, SQLITE_READ_READY_KEY, "true")
+            settings.set_metadata(connection, legacy_key, "true")
         return
 
     with manager_lock(purpose="sqlite init --from-install"):
@@ -146,14 +161,14 @@ def initialize(*, from_install: bool = False) -> None:
 
         with closing(database.initialize()) as connection:
             with database.transaction(connection, immediate=True):
-                if (settings.get_metadata(connection, SQLITE_READ_READY_KEY)
+                if (settings.get_metadata(connection, legacy_key)
                         or clients.list_clients(connection) or connections.list_connections(connection)):
                     raise StateError("Installation requires an empty manager database.")
                 for tag, record in records["connections"].items():
                     connections.upsert_connection(connection, tag, record)
                 for name, entry in records["clients"].items():
                     client_repository.save_client(connection, name, entry)
-                settings.set_metadata(connection, SQLITE_READ_READY_KEY, "true")
+                settings.set_metadata(connection, legacy_key, "true")
             try:
                 data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode()
                 replace_file(config_path, data, prepare=_prepare_config)
@@ -163,5 +178,5 @@ def initialize(*, from_install: bool = False) -> None:
                         clients.delete_client(connection, name)
                     for tag in records["connections"]:
                         connections.delete_connection(connection, tag)
-                    settings.delete_metadata(connection, SQLITE_READ_READY_KEY)
+                    settings.delete_metadata(connection, legacy_key)
                 raise StateError(f"Cannot save initial Xray configuration: {exc}") from exc

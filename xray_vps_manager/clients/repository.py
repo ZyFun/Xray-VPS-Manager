@@ -16,16 +16,7 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import cascades as sqlite_cascades
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.storage import (
-    SQLiteReadUnavailable,
-    sqlite_read_ready,
-)
-
-
-@dataclass(frozen=True)
-class ClientDbReadResult:
-    db: dict[str, Any]
-    source: str
+from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 
 def db_clients(db: dict[str, Any]) -> dict[str, Any]:
@@ -159,17 +150,16 @@ class Deletions:
             delete_route(conn, tag)
 
 
-def load_db(path: Path | None = None, *, db_path: str | Path | None = None) -> dict[str, Any]:
+def load_db(*, db_path: str | Path | None = None) -> dict[str, Any]:
     target = database.database_path(db_path)
     if not database.database_file_exists(target):
-        raise SQLiteReadUnavailable("SQLite manager database is missing.")
+        raise database.unavailable_database(target)
     with manager_lock(purpose="load clients", path=target.with_name(paths().manager_lock.name)):
-        return load_db_sql(path, db_path=target)
+        return load_db_sql(db_path=target)
 
 
 def save_db(
     db: dict[str, Any],
-    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
     deletions: Deletions | None = None,
@@ -183,26 +173,13 @@ def save_db(
 
 
 def load_db_sql(
-    path: Path | None = None,
     *,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    return load_db_sql_result(path, db_path=db_path).db
-
-
-def load_db_sql_result(
-    path: Path | None = None,
-    *,
-    db_path: str | Path | None = None,
-) -> ClientDbReadResult:
     target = database.database_path(db_path)
-    if not database.database_file_exists(target):
-        raise SQLiteReadUnavailable("SQLite manager database is missing.")
     try:
-        with database.session(target) as conn, database.transaction(conn):
-            if not sqlite_read_ready(conn):
-                raise SQLiteReadUnavailable("SQLite database is not marked ready.")
-            return ClientDbReadResult(_Snapshot(load_db_from_sqlite(conn)), "sqlite")
+        with database.session(target, read_snapshot=True) as conn, database.transaction(conn):
+            return _Snapshot(load_db_from_sqlite(conn))
     except SQLiteReadUnavailable:
         raise
     except Exception as exc:
@@ -253,15 +230,11 @@ def write_db_to_sqlite_for_write(
     target = database.database_path(db_path)
     if not database.database_file_exists(target):
         if strict:
-            raise RuntimeError("SQLite manager database is missing")
+            raise database.unavailable_database(target)
         return False
     try:
         with manager_lock(purpose="save clients", path=target.with_name(paths().manager_lock.name)):
             with database.write_session(target) as conn:
-                if not sqlite_read_ready(conn):
-                    if strict:
-                        raise RuntimeError("SQLite database is not marked ready")
-                    return False
                 _write_records(conn, db, deletions)
                 if isinstance(db, _Snapshot):
                     committed = load_db_from_sqlite(conn)

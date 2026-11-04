@@ -13,6 +13,7 @@ from pathlib import Path
 
 from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.core import clock
+from xray_vps_manager.core.errors import StateError
 from xray_vps_manager.core import interpreter as manager_interpreter
 from xray_vps_manager.core import process as core_process
 from xray_vps_manager.core.settings import read_env as read_server_env
@@ -27,7 +28,6 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import telegram as sqlite_telegram
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
-from xray_vps_manager.db.storage import sqlite_read_ready
 from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray import bypass as bypass_config
@@ -330,7 +330,7 @@ def check_config_json(diag):
 
 
 def check_client_db(diag):
-    connection = sqlite_ready_connection()
+    connection = sqlite_connection()
     try:
         db = {
             "connections": sqlite_connections.list_connections(connection),
@@ -344,7 +344,7 @@ def check_client_db(diag):
 
 
 def check_traffic_db(diag):
-    connection = sqlite_ready_connection()
+    connection = sqlite_connection()
     try:
         diag.context["traffic_db"] = {"clients": sqlite_traffic.list_traffic_entries(connection)}
     finally:
@@ -354,7 +354,7 @@ def check_traffic_db(diag):
 
 
 def check_activity_exceptions_db(diag):
-    connection = sqlite_ready_connection()
+    connection = sqlite_connection()
     try:
         diag.context["activity_exceptions_db"] = {"items": sqlite_activity.list_exceptions(connection)}
     finally:
@@ -363,7 +363,7 @@ def check_activity_exceptions_db(diag):
 
 
 def check_activity_blocklist_db(diag):
-    connection = sqlite_ready_connection()
+    connection = sqlite_connection()
     try:
         items = sqlite_blocklist.list_blocks(connection)
         stats = sqlite_blocklist.list_hit_stats(connection)
@@ -374,7 +374,7 @@ def check_activity_blocklist_db(diag):
 
 
 def check_telegram_bot_db(diag):
-    connection = sqlite_ready_connection()
+    connection = sqlite_connection()
     try:
         db = sqlite_telegram_settings_db(connection)
     finally:
@@ -415,17 +415,10 @@ def check_telegram_bot_db(diag):
     return f"{MANAGER_DB_PATH} Telegram settings loaded from SQLite"
 
 
-def sqlite_ready_connection():
+def sqlite_connection():
     if not MANAGER_DB_PATH.exists():
         raise RuntimeError(f"not found: {MANAGER_DB_PATH}")
-    connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
-    try:
-        if not sqlite_read_ready(connection):
-            raise RuntimeError("SQLite read-ready metadata is not true")
-        return connection
-    except Exception:
-        connection.close()
-        raise
+    return sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
 
 
 def sqlite_telegram_settings_db(connection):
@@ -471,9 +464,14 @@ def table_values(connection, table, column):
 
 def check_sqlite_database(diag, full_integrity=False):
     if not MANAGER_DB_PATH.exists():
-        raise RuntimeError(f"not found: {MANAGER_DB_PATH}; run install.sh or restore a backup with manager.db")
+        raise RuntimeError(f"not found: {MANAGER_DB_PATH}. {sqlite_database.DATABASE_RECOVERY_HINT}")
 
-    connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
+    try:
+        connection = sqlite_database.open_database(MANAGER_DB_PATH, initialize=False)
+    except StateError as exc:
+        if exc.hint:
+            raise RuntimeError(f"{exc}. {exc.hint}") from exc
+        raise
     try:
         quick_check_status = "skipped; run xray-test --all for full SQLite integrity scan"
         if full_integrity:
@@ -495,10 +493,6 @@ def check_sqlite_database(diag, full_integrity=False):
         if leftover_journal.exists():
             journal_warnings.append(f"leftover rollback journal {leftover_journal}")
 
-        ready = sqlite_read_ready(connection)
-        if not ready:
-            raise RuntimeError("SQLite read-ready metadata is not true")
-
         counts = {
             "connections": table_count(connection, "reality_connections"),
             "clients": table_count(connection, "clients"),
@@ -514,15 +508,14 @@ def check_sqlite_database(diag, full_integrity=False):
             "telegramSubscriptions": table_count(connection, "telegram_subscriptions"),
         }
         diag.context["sqlite_counts"] = counts
-        if ready:
-            issues = sqlite_alignment_issues(diag, connection)
-            if issues:
-                raise RuntimeError("; ".join(issues[:8]))
+        issues = sqlite_alignment_issues(diag, connection)
+        if issues:
+            raise RuntimeError("; ".join(issues[:8]))
 
         count_text = ", ".join(f"{key}={value}" for key, value in counts.items())
         detail = (
             f"{MANAGER_DB_PATH} schema={version}, journal={journal}, quick_check={quick_check_status}, "
-            f"sqliteReady=yes, {count_text}"
+            f"{count_text}"
         )
         if journal_warnings:
             raise RuntimeError(f"{'; '.join(journal_warnings)}; {detail}")
@@ -1094,7 +1087,7 @@ def check_geoip_warning_routing(diag):
 
 def check_bypass_config(diag):
     config = diag.context["config"]
-    connection = sqlite_ready_connection()
+    connection = sqlite_connection()
     try:
         routes = sqlite_bypass.list_routes(connection)
         enabled_routes = sqlite_bypass.list_enabled_routes(connection)
@@ -1204,7 +1197,7 @@ def blocked_rule_index_before_geoip(config, key, value):
 
 def check_activity_blocklist_routing(diag):
     config = diag.context["config"]
-    connection = sqlite_ready_connection()
+    connection = sqlite_connection()
     try:
         active_items = sqlite_blocklist.active_blocks(connection, activity_time.utc_stamp())
     finally:

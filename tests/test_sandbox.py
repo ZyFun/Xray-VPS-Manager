@@ -250,21 +250,22 @@ class SandboxTests(unittest.TestCase):
                 raise RuntimeError('original error')
 
     def test_cli_reads_real_schema_fixture_and_reports_missing_database(self):
-        """Текущее поведение, баг XR-REV-046: в golden отсутствует счётчик непустой client_credentials."""
+        """B2.3, XR-REV-046: golden теперь включает размеры файлов и все таблицы под именами схемы."""
         with Sandbox() as box:
             before = box.db_rows('clients', 'client_credentials')
             config_before = box.paths.config.read_bytes()
             env_before = box.paths.server_env.read_bytes()
             result = box.run_cli('sqlite', 'status')
             self.assertEqual((result.exit_code, result.stderr), (0, ''))
-            self.assertIn('Schema: 8\nQuick check: ok\nSQLite ready: yes\n', result.stdout)
+            self.assertIn('Schema: 8\nQuick check: ok\n', result.stdout)
             self.assertIn('clients: 1\n', result.stdout)
             self.assertEqual(box.db_rows('clients', 'client_credentials'), before)
             self.assertEqual(box.processes.calls, [])
             self.assertEqual(box.paths.config.read_bytes(), config_before)
             self.assertEqual(box.paths.server_env.read_bytes(), env_before)
+            size_line = f'Size manager.db: {box.paths.manager_db.stat().st_size} bytes'
             box.assert_golden('sqlite/status', {
-                'stdout.txt': result.stdout, 'stderr.txt': result.stderr,
+                'stdout.txt': result.stdout.replace(size_line, 'Size manager.db: <BYTES> bytes'), 'stderr.txt': result.stderr,
                 'exit_code.txt': str(result.exit_code)+'\n', 'db.txt': before,
                 'config.json': box.paths.config.read_text(),
                 'server.env': box.paths.server_env.read_text(),

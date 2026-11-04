@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 import sqlite3
-from pathlib import Path
-
-from xray_vps_manager.core.paths import MANAGER_DB_PATH
 
 CURRENT_SCHEMA_VERSION = 8
 
@@ -561,13 +559,6 @@ MIGRATIONS: tuple[Migration, ...] = (
 )
 
 
-def connect(path: Path = MANAGER_DB_PATH) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    configure_connection(connection)
-    return connection
-
-
 def configure_connection(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA foreign_keys = ON")
 
@@ -609,9 +600,19 @@ def apply_migration(connection: sqlite3.Connection, migration: Migration) -> Non
 
 def table_names(connection: sqlite3.Connection) -> set[str]:
     rows = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*'"
     ).fetchall()
     return {str(row[0]) for row in rows}
+
+
+def required_table_names(version: int) -> set[str]:
+    """Получить таблицы эталонной схемы из миграций, не открывая рабочую базу."""
+    with closing(sqlite3.connect(":memory:")) as reference:
+        for migration in MIGRATIONS:
+            if migration.version > version:
+                break
+            apply_migration(reference, migration)
+        return table_names(reference)
 
 
 def index_names(connection: sqlite3.Connection) -> set[str]:

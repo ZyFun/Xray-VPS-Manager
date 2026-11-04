@@ -16,7 +16,6 @@ from xray_vps_manager.activity.constants import ACCESS_LOG_PATH
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
-from xray_vps_manager.db.storage import sqlite_read_ready
 
 
 def access_log_files(path: Path = ACCESS_LOG_PATH) -> list[Path]:
@@ -123,17 +122,15 @@ def run_backfill(
     }
     if not files:
         return stats
-    if not database.database_file_exists():
-        raise RuntimeError("SQLite manager database is missing")
 
-    connection = database.open_database()
-    try:
-        if not sqlite_read_ready(connection):
-            raise RuntimeError("SQLite database is not marked ready")
+    with database.session(database.database_path()) as connection:
         known_client_names = set(sqlite_clients.list_clients(connection))
         retention_start = _retention_start()
         file_stats: list[dict[str, Any]] = []
         config = activity_bypass.load_config()
+        if apply:
+            # Начинаем запись при первом подходящем событии, после чтения архива.
+            database.enable_wal(connection)
         with database.transaction(connection):
             for _path, event in iter_backfill_events(
                 files,
@@ -163,6 +160,4 @@ def run_backfill(
         stats["fileStats"] = file_stats
         stats["rawLines"] = sum(int(item.get("rawLines") or 0) for item in file_stats)
         stats["parsedEvents"] = sum(int(item.get("parsedEvents") or 0) for item in file_stats)
-    finally:
-        connection.close()
     return stats

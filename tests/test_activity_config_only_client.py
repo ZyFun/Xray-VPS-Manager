@@ -23,7 +23,6 @@ from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import settings as sqlite_settings
-from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 TAG = "vless-reality"
 ALICE = "alice|created=2026-06-12T07:01:00Z"
@@ -85,7 +84,7 @@ class ConfigOnlyClientTests(unittest.TestCase):
         }
 
     def make_manager_db(self) -> None:
-        connection = database.open_database(self.db_path)
+        connection = database.initialize(self.db_path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -112,14 +111,13 @@ class ConfigOnlyClientTests(unittest.TestCase):
                 },
             )
             sqlite_activity.set_detail_mode(connection, "all")
-            sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
         finally:
             connection.close()
 
     def write_log(self, *lines: str) -> None:
         self.access_log.write_text("".join(lines))
 
-    def mark_sqlite_not_ready(self) -> None:
+    def set_false_legacy_marker(self) -> None:
         connection = database.open_database(self.db_path)
         try:
             sqlite_settings.set_metadata(connection, "jsonImport.completed", "false")
@@ -242,15 +240,14 @@ class ConfigOnlyClientTests(unittest.TestCase):
         self.assertEqual(self.counter_totals(), {})
         self.assertEqual(self.detailed_hosts(), [])
 
-    def test_sync_fails_without_advancing_offset_when_sqlite_is_not_ready(self) -> None:
+    def test_sync_ignores_false_legacy_marker(self) -> None:
+        """B2.1: старая метка false не отключает сбор в инициализированной базе."""
         self.write_log(access_line(ALICE, "a1.example"), access_line(BOB, "b1.example"))
-        self.mark_sqlite_not_ready()
+        self.set_false_legacy_marker()
 
-        with self.assertRaises(SQLiteReadUnavailable):
-            activity_sync.sync_activity(lambda _message: None)
-
-        self.assertEqual(self.access_offset(), 0)
-        self.assertEqual(self.counter_totals(), {})
+        self.assertEqual(activity_sync.sync_activity(lambda _message: None), 0)
+        self.assertEqual(self.access_offset(), self.access_log.stat().st_size)
+        self.assertEqual(self.counter_totals(), {"alice": 1})
 
     def test_rotate_raw_logs_due_rotates_when_log_has_config_only_client(self) -> None:
         self.write_log(access_line(ALICE, "a1.example"), access_line(BOB, "b1.example"), access_line(ALICE, "a2.example"))
@@ -276,7 +273,7 @@ class ConfigOnlyClientTests(unittest.TestCase):
 
     def test_rotate_raw_logs_due_rotates_and_fails_when_pre_sync_cannot_read_sqlite(self) -> None:
         self.write_log(access_line(ALICE, "a1.example"), access_line(BOB, "b1.example"))
-        self.mark_sqlite_not_ready()
+        self.db_path.unlink()
         messages: list = []
         restarted = subprocess.CompletedProcess(["systemctl", "try-restart", "xray.service"], 0, "", "")
 

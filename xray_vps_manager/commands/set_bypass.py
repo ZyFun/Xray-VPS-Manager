@@ -106,10 +106,6 @@ def apply_config(config: dict, before: dict) -> Path:
     return backup
 
 
-def open_db():
-    return sqlite_database.open_database()
-
-
 def region_label_for_code(code: str) -> str:
     normalized = bypass_config.normalize_region_code(code)
     labels = {item_code: label for item_code, label in GEOIP_REGION_PRESETS}
@@ -451,11 +447,8 @@ def notify_config_event(event: str, record: dict) -> None:
 
 def cmd_status() -> None:
     config = load_config()
-    connection = open_db()
-    try:
+    with sqlite_database.session(sqlite_database.database_path()) as connection:
         routes = sqlite_bypass.list_routes(connection)
-    finally:
-        connection.close()
     print_bypass_table(config, routes)
 
 
@@ -476,8 +469,7 @@ def cmd_add(args: list[str]) -> None:
         die(str(exc))
     region, region_label = read_region(str(options["region"] or ""))
 
-    connection = open_db()
-    try:
+    with sqlite_database.session(sqlite_database.database_path()) as connection:
         existing = sqlite_bypass.get_route(connection, tag) or {}
         test_target = read_test_target(str(options["test_target"] or ""), record_test_target(existing))
         confirmed_tag = confirm_region_conflict(connection, tag, region, replace=bool(options["replace"]))
@@ -511,8 +503,6 @@ def cmd_add(args: list[str]) -> None:
             with sqlite_database.write_session(sqlite_database.database_path()) as writer:
                 save_route(writer, record, conflict)
             write_server_env_values(env_values)
-    finally:
-        connection.close()
 
     print(f"GeoIP bypass configured: {name} ({tag})")
     print(f"Region: {region} / {region_label}")
@@ -571,8 +561,7 @@ def route_record_for_outbound(
 def cmd_enable(args: list[str]) -> None:
     rest, options = parse_common_options(args)
     config = load_config()
-    connection = open_db()
-    try:
+    with sqlite_database.session(sqlite_database.database_path()) as connection:
         routes = sqlite_bypass.list_routes(connection)
         tag = tag_from_name_or_die(rest[0]) if rest else choose_bypass_tag(config, routes, "Enable bypass")
         outbound = bypass_config.bypass_outbound(config, tag)
@@ -611,8 +600,6 @@ def cmd_enable(args: list[str]) -> None:
             with sqlite_database.write_session(sqlite_database.database_path()) as writer:
                 save_route(writer, record, conflict)
             write_server_env_values(env_values)
-    finally:
-        connection.close()
     print(f"GeoIP bypass enabled: {tag}")
     print(f"Region: {record.get('regionCode')} / {record.get('regionLabel') or '-'}")
     if record_test_target(record):
@@ -628,8 +615,7 @@ def cmd_region(args: list[str]) -> None:
     if len(rest) < 1 and not sys.stdin.isatty():
         die("Usage: xray-set-bypass region NAME [CODE] [--replace]")
     config = load_config()
-    connection = open_db()
-    try:
+    with sqlite_database.session(sqlite_database.database_path()) as connection:
         routes = sqlite_bypass.list_routes(connection)
         tag = tag_from_name_or_die(rest[0]) if rest else choose_bypass_tag(config, routes, "Bypass")
         region_arg = rest[1] if len(rest) >= 2 else str(options["region"] or "")
@@ -684,8 +670,6 @@ def cmd_region(args: list[str]) -> None:
             with sqlite_database.write_session(sqlite_database.database_path()) as writer:
                 save_route(writer, record, conflict)
             write_server_env_values(env_values)
-    finally:
-        connection.close()
     print(f"GeoIP bypass region updated: {tag}")
     print(f"Region: {region} / {region_label}")
     if record_test_target(record):
@@ -702,8 +686,7 @@ def cmd_target(args: list[str]) -> None:
     if len(rest) < 2 and not options["test_target"] and not sys.stdin.isatty():
         die("Usage: xray-set-bypass target NAME TARGET")
     config = load_config()
-    connection = open_db()
-    try:
+    with sqlite_database.session(sqlite_database.database_path()) as connection:
         routes = sqlite_bypass.list_routes(connection)
         tag = tag_from_name_or_die(rest[0]) if rest else choose_bypass_tag(config, routes, "Bypass")
         outbound = bypass_config.bypass_outbound(config, tag)
@@ -722,16 +705,13 @@ def cmd_target(args: list[str]) -> None:
                 if sqlite_bypass.get_route(writer, tag) != current:
                     die(f"GeoIP bypass route {tag} was changed by another operation. Run the command again.")
                 save_route(writer, record)
-    finally:
-        connection.close()
     print(f"GeoIP bypass test target updated: {tag}")
     print(f"Test target: {record_test_target(record) or '-'}")
 
 
 def cmd_disable(args: list[str]) -> None:
     config = load_config()
-    connection = open_db()
-    try:
+    with sqlite_database.session(sqlite_database.database_path()) as connection:
         routes = sqlite_bypass.list_routes(connection)
         tag = tag_from_name_or_die(args[0]) if args else choose_bypass_tag(config, routes, "Disable bypass")
         with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="disable"):
@@ -746,8 +726,6 @@ def cmd_disable(args: list[str]) -> None:
             with sqlite_database.write_session(sqlite_database.database_path()) as writer:
                 save_route(writer, record)
             write_server_env_values(env_values)
-    finally:
-        connection.close()
     print(f"GeoIP bypass disabled: {tag}")
     print(f"Backup: {backup}")
     notify_config_event("disabled", record)
@@ -762,8 +740,7 @@ def confirm_remove(tag: str) -> bool:
 
 def cmd_remove(args: list[str]) -> None:
     config = load_config()
-    connection = open_db()
-    try:
+    with sqlite_database.session(sqlite_database.database_path()) as connection:
         routes = sqlite_bypass.list_routes(connection)
         tag = tag_from_name_or_die(args[0]) if args else choose_bypass_tag(config, routes, "Remove bypass")
         record = route_record_or_die(connection, tag)
@@ -786,8 +763,6 @@ def cmd_remove(args: list[str]) -> None:
             with sqlite_database.write_session(sqlite_database.database_path()) as writer:
                 sqlite_bypass.delete_route(writer, tag)
             write_server_env_values(env_values)
-    finally:
-        connection.close()
     print(f"GeoIP bypass removed: {tag}")
     print(f"Backup: {backup}")
     notify_config_event("removed", record)
@@ -1069,11 +1044,8 @@ def test_bypass(tag: str, region: str = "", test_target: str = "") -> None:
 def cmd_test(args: list[str]) -> None:
     rest, options = parse_common_options(args)
     config = load_config()
-    connection = open_db()
-    try:
+    with sqlite_database.session(sqlite_database.database_path()) as connection:
         routes = sqlite_bypass.list_routes(connection)
-    finally:
-        connection.close()
     tag = tag_from_name_or_die(rest[0]) if rest else choose_bypass_tag(config, routes, "Test bypass")
     record = routes.get(tag, {})
     # None means the target stored in the route; "" or a URL is the admin's explicit answer.
@@ -1086,11 +1058,8 @@ def cmd_test(args: list[str]) -> None:
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="test"):
         # The route may have changed while waiting for the lock: read region and stored target again.
         config = load_config()
-        connection = open_db()
-        try:
+        with sqlite_database.session(sqlite_database.database_path()) as connection:
             routes = sqlite_bypass.list_routes(connection)
-        finally:
-            connection.close()
         if test_target is None:
             test_target = record_test_target(routes.get(tag, {}))
         test_bypass(tag, active_region_for_tag(config, routes, tag), test_target)

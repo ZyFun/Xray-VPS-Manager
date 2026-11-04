@@ -70,7 +70,7 @@ class XrayTestCommandTests(unittest.TestCase):
         diag = SimpleNamespace(context={"config": self.bypass_config()})
         connection = self.bypass_db()
 
-        with mock.patch.object(test_command, "sqlite_ready_connection", return_value=connection):
+        with mock.patch.object(test_command, "sqlite_connection", return_value=connection):
             result = test_command.check_bypass_config(diag)
 
         self.assertIn("active regions=RU", result)
@@ -81,7 +81,7 @@ class XrayTestCommandTests(unittest.TestCase):
         connection.row_factory = sqlite3.Row
         schema.ensure_schema(connection)
 
-        with mock.patch.object(test_command, "sqlite_ready_connection", return_value=connection):
+        with mock.patch.object(test_command, "sqlite_connection", return_value=connection):
             with self.assertRaisesRegex(RuntimeError, "no enabled SQLite bypass_routes row"):
                 test_command.check_bypass_config(diag)
 
@@ -94,7 +94,7 @@ class XrayTestCommandTests(unittest.TestCase):
         diag = SimpleNamespace(context={"config": config})
         connection = self.bypass_db()
 
-        with mock.patch.object(test_command, "sqlite_ready_connection", return_value=connection):
+        with mock.patch.object(test_command, "sqlite_connection", return_value=connection):
             with self.assertRaisesRegex(RuntimeError, "direct geoip:ru"):
                 test_command.check_bypass_config(diag)
 

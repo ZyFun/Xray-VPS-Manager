@@ -19,7 +19,6 @@ from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.db import database
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 VLADIVOSTOK = ZoneInfo("Asia/Vladivostok")
@@ -58,11 +57,6 @@ class SetTimezoneAccessDeadlinesTests(unittest.TestCase):
         self.root = self.server.root
         self.db_path = self.server.paths.manager_db
         self.env_path = self.server.paths.server_env
-        connection = database.open_database(self.db_path)
-        try:
-            sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
-        finally:
-            connection.close()
         self.server.processes.script({
             ("systemctl", "daemon-reload"): ProcessResult(),
             ("systemctl", "enable", "--now", "xray-raw-log-rotate.timer"): ProcessResult(),

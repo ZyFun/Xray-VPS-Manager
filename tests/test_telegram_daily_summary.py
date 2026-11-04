@@ -9,7 +9,6 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 from xray_vps_manager.telegram import notifications
 
 
@@ -107,7 +106,7 @@ class TelegramDailySummaryTests(unittest.TestCase):
     def test_daily_summary_includes_first_activity_event_age(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "manager.db"
-            connection = database.open_database(db_path)
+            connection = database.initialize(db_path)
             try:
                 sqlite_connections.upsert_connection(
                     connection,
@@ -145,7 +144,6 @@ class TelegramDailySummaryTests(unittest.TestCase):
                         "port": "443",
                     },
                 )
-                sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
             finally:
                 connection.close()
             ctx = self.make_context({"paymentTotalAmount": "500", "paymentCurrency": "₽"}, db_path)

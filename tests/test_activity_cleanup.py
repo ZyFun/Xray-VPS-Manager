@@ -12,7 +12,6 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import connections as sqlite_connections
-from xray_vps_manager.db.repositories import settings as sqlite_settings
 
 
 def activity_event(moment: str) -> dict:
@@ -30,7 +29,7 @@ def activity_event(moment: str) -> dict:
 
 class ActivityCleanupTests(unittest.TestCase):
     def make_sqlite_db(self, path: Path) -> None:
-        connection = database.open_database(path)
+        connection = database.initialize(path)
         try:
             sqlite_connections.upsert_connection(
                 connection,
@@ -59,7 +58,6 @@ class ActivityCleanupTests(unittest.TestCase):
                     },
                 },
             )
-            sqlite_settings.set_metadata(connection, "jsonImport.completed", "true")
             sqlite_activity.add_event(connection, activity_event("2026-06-01T08:00:00Z"))
             sqlite_activity.add_event(connection, activity_event("2026-06-12T08:00:00Z"))
         finally:
