@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from xray_vps_manager.core import clock
 from xray_vps_manager.core.errors import ManagerError
-from xray_vps_manager.core.locks import manager_lock
+from xray_vps_manager.core.locks import manager_lock, telegram_poller_lock
 from xray_vps_manager.core.settings import read_env as read_server_env
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.traffic import repository as traffic_repository
@@ -191,6 +191,8 @@ def admin_context():
 def poller_context():
     return telegram_poller.PollerContext(
         load_db=load_db,
+        claim_user_updates=telegram_settings.claim_user_updates,
+        consumer_lock=telegram_poller_lock,
         save_db_sections=save_db_sections,
         load_client_db=load_client_db,
         load_country_routes=load_country_routes,

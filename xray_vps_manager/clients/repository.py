@@ -178,7 +178,7 @@ def load_db_sql(
 ) -> dict[str, Any]:
     target = database.database_path(db_path)
     try:
-        with database.session(target) as conn, database.transaction(conn):
+        with database.session(target, read_snapshot=True) as conn, database.transaction(conn):
             return _Snapshot(load_db_from_sqlite(conn))
     except SQLiteReadUnavailable:
         raise

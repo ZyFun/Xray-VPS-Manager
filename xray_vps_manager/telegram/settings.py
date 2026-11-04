@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from itertools import chain
 import re
 import shutil
@@ -62,6 +64,71 @@ def chown_xray(path):
         shutil.chown(path, user="root")
 
 
+POLL_CURSOR_KEYS = ("userUpdateOffset", "userUpdateOffsetConfirmed", "userUpdateSequence", "lastUserPoll")
+
+
+def user_update_offset(state):
+    try:
+        return int(state.get("userUpdateOffset", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _update_signatures(updates):
+    """Отпечатки отличают повтор той же пачки от новых сообщений с переиспользованными ID."""
+    return {
+        str(uid): hashlib.sha256(json.dumps(update, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        for uid, update in updates.items()
+    }
+
+
+def claim_user_updates(snapshot, updates, stamp, *, db_path=None):
+    """Резервирует диапазон до обработки и возвращает первый допустимый ID."""
+    signatures = _update_signatures(updates)
+    with database.write_session(database.database_path(db_path)) as connection:
+        return _claim_user_updates(connection, snapshot, updates, stamp, signatures)
+
+
+def _claim_user_updates(connection, snapshot, updates, stamp, signatures):
+    state = sqlite_telegram.get_state(connection, "clientSubscriptionState")
+    previous = user_update_offset(state)
+    sequence = state.get("userUpdateSequence", 0)
+    if sequence != snapshot.get("userUpdateSequence", 0):
+        # Пока шёл запрос, другой потребитель уже забрал новую последовательность.
+        return None
+    dispatch_from = previous
+    same_offset = previous == user_update_offset(snapshot)
+    recent = state.get("userUpdateSignatures", {})
+    if updates and same_offset and min(updates) < previous:
+        repeated = any(recent.get(uid) == digest for uid, digest in signatures.items())
+        if not repeated:
+            # При обновлении старой базы низкие ID фиксируем, но не выполняем повторно.
+            if "userUpdateOffsetConfirmed" in state:
+                dispatch_from = 0
+            previous = 0
+            sequence += 1
+            recent = {}
+    if updates:
+        recent.update(signatures)
+        # Bot API отдаёт не более 100 обновлений за один запрос.
+        state["userUpdateSignatures"] = {uid: recent[uid] for uid in sorted(recent, key=int)[-100:]}
+        state["userUpdateOffset"] = max(previous, max(updates) + 1)
+        state["userUpdateOffsetConfirmed"] = False
+    elif same_offset:
+        # Пустой ответ подтверждает предыдущую пачку. Дальше ждём с начала очереди.
+        state["userUpdateOffsetConfirmed"] = True
+        state.pop("userUpdateSignatures", None)
+    state["userUpdateSequence"] = sequence
+    if same_offset and state.get("lastUserPoll") == snapshot.get("lastUserPoll"):
+        # Свежий запрос исправляет метку, оставшуюся в будущем после коррекции часов.
+        state["lastUserPoll"] = stamp
+    else:
+        state["lastUserPoll"] = max(str(state.get("lastUserPoll") or ""), stamp)
+    sqlite_telegram.set_state(connection, "clientSubscriptionState", state)
+    snapshot.update({key: state[key] for key in POLL_CURSOR_KEYS if key in state})
+    return dispatch_from
+
+
 def normalize_db(db):
     merged = copy.deepcopy(DEFAULT_DB)
     merged.update(db)
@@ -81,10 +148,7 @@ def normalize_db(db):
     subscription_state = merged.get("clientSubscriptionState")
     if not isinstance(subscription_state, dict):
         subscription_state = {}
-    try:
-        subscription_state["userUpdateOffset"] = int(subscription_state.get("userUpdateOffset", 0) or 0)
-    except (TypeError, ValueError):
-        subscription_state["userUpdateOffset"] = 0
+    subscription_state["userUpdateOffset"] = user_update_offset(subscription_state)
     reminders = subscription_state.get("expiryReminders")
     if not isinstance(reminders, dict):
         reminders = {}
@@ -143,7 +207,7 @@ def load_db(*, db_path: str | Path | None = None):
 
 def load_db_sql(*, db_path: str | Path | None = None):
     try:
-        with database.session(database.database_path(db_path)) as connection:
+        with database.session(database.database_path(db_path), read_snapshot=True) as connection:
             return load_db_from_sqlite(connection)
     except SQLiteReadUnavailable:
         raise
@@ -286,6 +350,16 @@ def save_settings(connection, changes, *, sections=None):
             sqlite_telegram.set_state(connection, key, value)
 
 
+def save_owner_binding(db, cursor_snapshot, updates, stamp):
+    """Сохраняет владельца и исключает уже прочитанную при привязке пачку в одной транзакции."""
+    signatures = _update_signatures(updates)
+    with database.write_session(database.database_path()) as connection:
+        if _claim_user_updates(connection, cursor_snapshot, updates, stamp, signatures) is None:
+            return False
+        save_settings(connection, db, sections=("botUsername", "chatId", "chatLabel", "enabled", "geoipState"))
+        return True
+
+
 def save_db(db, *, db_path: str | Path | None = None):
     write_db_to_sqlite_for_write(db, db_path=db_path, strict=True)
 
@@ -363,13 +437,18 @@ def merge_client_subscription_state(current: dict, incoming: dict) -> dict:
     incoming = incoming if isinstance(incoming, dict) else {}
     merged.update(incoming)
 
-    try:
-        merged["userUpdateOffset"] = max(
-            int((current or {}).get("userUpdateOffset", 0) or 0),
-            int(incoming.get("userUpdateOffset", 0) or 0),
-        )
-    except (TypeError, ValueError):
-        merged["userUpdateOffset"] = int((current or {}).get("userUpdateOffset", 0) or 0)
+    current = current or {}
+    offset = user_update_offset(current)
+    if incoming.get("userUpdateSequence", 0) == current.get("userUpdateSequence", 0):
+        offset = max(offset, user_update_offset(incoming))
+    merged["userUpdateOffset"] = offset
+    for key in ("userUpdateSequence", "userUpdateOffsetConfirmed", "userUpdateSignatures"):
+        if key in current:
+            merged[key] = current[key]
+        else:
+            merged.pop(key, None)
+    if offset > user_update_offset(current):
+        merged["userUpdateOffsetConfirmed"] = False
 
     current_reminders = (current or {}).get("expiryReminders", {})
     incoming_reminders = incoming.get("expiryReminders", {})
@@ -383,7 +462,11 @@ def merge_client_subscription_state(current: dict, incoming: dict) -> dict:
     merged["expiryReminders"] = reminders
 
     for key in ("lastUserPoll", "lastExpiryReminderCheck", "lastExpiryReminder"):
-        current_value = str((current or {}).get(key) or "")
+        current_value = str(current.get(key) or "")
+        if key == "lastUserPoll" and "userUpdateSequence" in current:
+            # После перехода на резервирование время принадлежит курсору, включая коррекцию назад.
+            merged[key] = current_value
+            continue
         incoming_value = str(incoming.get(key) or "")
         if current_value or incoming_value:
             merged[key] = max(current_value, incoming_value)

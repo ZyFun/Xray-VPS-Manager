@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from itertools import count
 import os
 import re
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -28,6 +30,32 @@ WAL_FILE_SUFFIXES = ("-wal", "-shm")
 JOURNAL_FILE_SUFFIXES = (*WAL_FILE_SUFFIXES, "-journal")
 _SAVEPOINT_IDS = count(1)
 _initialized_files: dict[Path, tuple[int, int]] = {}
+
+
+_wait_for_writer = ContextVar("wait_for_sqlite_writer", default=False)
+
+
+@contextmanager
+def wait_for_writer() -> Iterator[None]:
+    """В этом сценарии временная конкуренция писателей может пережить busy_timeout."""
+    token = _wait_for_writer.set(True)
+    try:
+        yield
+    finally:
+        _wait_for_writer.reset(token)
+
+
+def _wait_if_busy(operation, *args, **kwargs):
+    while True:
+        try:
+            return operation(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            # SNAPSHOT требует новой транзакции, LOCKED может означать конфликт со своим курсором.
+            if not _wait_for_writer.get() or getattr(exc, "sqlite_errorcode", None) not in (
+                sqlite3.SQLITE_BUSY, sqlite3.SQLITE_BUSY_RECOVERY, sqlite3.SQLITE_BUSY_TIMEOUT,
+            ):
+                raise
+            time.sleep(0.1)
 
 
 def database_path(path: str | Path | None = None) -> Path:
@@ -73,7 +101,7 @@ def configure_connection(connection: sqlite3.Connection, *, busy_timeout_ms: int
 
 
 def journal_mode(connection: sqlite3.Connection) -> str:
-    row = connection.execute("PRAGMA journal_mode").fetchone()
+    row = _wait_if_busy(connection.execute, "PRAGMA journal_mode").fetchone()
     return str(row[0] if row else "").lower()
 
 
@@ -127,7 +155,7 @@ def unavailable_database(db_path: Path, reason: str = "missing") -> StateError:
 
 def _open_existing(db_path: Path, *, timeout: float, autocommit: bool | int) -> sqlite3.Connection:
     try:
-        return _open(db_path, create=False, timeout=timeout, autocommit=autocommit)
+        return _wait_if_busy(_open, db_path, create=False, timeout=timeout, autocommit=autocommit)
     except sqlite3.Error as exc:
         try:
             db_path.stat()
@@ -146,7 +174,7 @@ def connect(path: str | Path | None = None, *, timeout: float = 30.0) -> sqlite3
 def _migrate(
     connection: sqlite3.Connection, db_path: Path, *, backup: bool, backup_dir: str | Path | None = None,
 ) -> None:
-    if not schema.pending_migrations(connection):
+    if not _wait_if_busy(schema.pending_migrations, connection):
         return
     enable_wal(connection)
     with transaction(connection, immediate=True):
@@ -182,7 +210,7 @@ def initialize(path: str | Path | None = None) -> sqlite3.Connection:
 
 @report_errors()
 def initialized_schema_version(connection: sqlite3.Connection, db_path: Path) -> int:
-    version = schema.schema_version(connection)
+    version = _wait_if_busy(schema.schema_version, connection)
     if version == 0:
         raise unavailable_database(db_path, "not initialized")
     return version
@@ -212,11 +240,17 @@ def ensure_initialized(path: str | Path | None = None, *, force: bool = False) -
 
 
 @contextmanager
-def session(path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
+def session(path: str | Path | None = None, *, read_snapshot: bool = False) -> Iterator[sqlite3.Connection]:
     db_path = Path(path).absolute() if path is not None else paths().manager_db
     with closing(connect(db_path)) as connection:
         _ensure_initialized(connection, db_path)
-        yield connection
+        if read_snapshot and _wait_for_writer.get():
+            with transaction(connection):
+                # BEGIN отложен. Первое чтение закрепляет снимок до возврата вызывающему.
+                _wait_if_busy(schema.schema_version, connection)
+                yield connection
+        else:
+            yield connection
 
 
 @contextmanager
@@ -394,10 +428,10 @@ def transaction(connection: sqlite3.Connection, *, immediate: bool = False) -> I
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
         return
 
-    connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+    _wait_if_busy(connection.execute, "BEGIN IMMEDIATE" if immediate else "BEGIN")
     try:
         yield connection
-        connection.execute("COMMIT")
+        _wait_if_busy(connection.execute, "COMMIT")
     except BaseException:
         if connection.in_transaction:
             connection.execute("ROLLBACK")

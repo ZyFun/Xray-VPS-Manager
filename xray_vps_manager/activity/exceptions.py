@@ -116,7 +116,7 @@ def load_activity_exceptions_for_read(
     db_path: str | Path | None = None,
 ) -> dict:
     try:
-        with database.session(database.database_path(db_path)) as connection:
+        with database.session(database.database_path(db_path), read_snapshot=True) as connection:
             return {"version": 1, "items": sqlite_activity.list_exceptions(connection)}
     except SQLiteReadUnavailable:
         raise
