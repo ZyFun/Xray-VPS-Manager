@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.core.errors import ConflictError
-from xray_vps_manager.core.locks import manager_lock
+from xray_vps_manager.core.locks import manager_lock, telegram_poller_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.core.process import run_capture
 from xray_vps_manager.telegram import api, bot_commands, poller, settings
@@ -23,6 +23,7 @@ TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
 TELEGRAM_SOCKS_HOST = api.TELEGRAM_SOCKS_HOST
 TELEGRAM_SOCKS_PORT = api.TELEGRAM_SOCKS_PORT
 MANAGER_LOCK_TIMEOUT = 60
+OWNER_POLL_LOCK_TIMEOUT = 60
 
 
 def utc_stamp():
@@ -223,17 +224,8 @@ def initialize_geoip_offsets(db):
     state["updated"] = utc_stamp()
 
 
-def refresh_user_update_offset(db):
-    try:
-        data = api.curl_json(db, "getUpdates", {"allowed_updates": ["message", "callback_query"], "timeout": 1}, timeout=10)
-    except Exception:
-        return
-    updates = data.get("result", [])
-    if not updates:
-        return
-    offset = max(int(update.get("update_id", 0)) + 1 for update in updates)
-    state = db.setdefault("clientSubscriptionState", {})
-    state["userUpdateOffset"] = max(int(state.get("userUpdateOffset", 0) or 0), offset)
+def pending_owner_updates(db, polled_at):
+    return poller.fetch_user_updates(db, 1, polled_at, api.curl_json, 10)
 
 
 def ask_token_if_missing(db):
@@ -291,6 +283,16 @@ def configure_bot_commands():
         print("WARN: failed to update Telegram command menu for " + failure)
 
 
+def owner_settings_for_token(token):
+    db = settings.load_db_sql()
+    if db.get("token", "") != token:
+        raise ConflictError(
+            "Token Telegram-бота изменён другой операцией во время привязки владельца.",
+            hint="Запусти xray-telegram owner ещё раз.",
+        )
+    return db
+
+
 def configure_owner(send_test=True):
     db = ask_token_if_missing(settings.load_db_sql())
     db = maybe_adopt_existing_cascade_route(db)
@@ -300,28 +302,22 @@ def configure_owner(send_test=True):
     bot_username = settings.normalize_bot_username(bot.get("username", ""))
     print(f"Бот найден: @{bot_username or bot.get('username', 'unknown')}")
     chat = choose_private_chat(db)
-    refresh_user_update_offset(db)
-    update_offset = int(db.get("clientSubscriptionState", {}).get("userUpdateOffset", 0) or 0)
-    # Questions and Bot API calls are done; write from a fresh snapshot under manager.lock.
-    with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="owner"):
-        db = settings.load_db_sql()
-        if db.get("token", "") != token:
-            # Bot username, chat and update offset belong to the bot of the token used above.
-            raise ConflictError(
-                "Token Telegram-бота изменён другой операцией во время привязки владельца.",
-                hint="Запусти xray-telegram owner ещё раз.",
-            )
-        db["botUsername"] = bot_username
-        db["chatId"] = chat["id"]
-        db["chatLabel"] = chat["label"]
-        db["enabled"] = True
-        initialize_geoip_offsets(db)
-        state = db.setdefault("clientSubscriptionState", {})
-        state["userUpdateOffset"] = max(int(state.get("userUpdateOffset", 0) or 0), update_offset)
-        # Only changed sections: geoipState is reset as a whole, clientSubscriptionState is merged.
-        settings.save_db_sections(
-            db, ("botUsername", "chatId", "chatLabel", "enabled", "geoipState", "clientSubscriptionState")
-        )
+    with telegram_poller_lock(OWNER_POLL_LOCK_TIMEOUT, purpose="owner"):
+        while True:
+            db = owner_settings_for_token(token)
+            cursor_snapshot = db.get("clientSubscriptionState", {})
+            polled_at = utc_stamp()
+            updates = pending_owner_updates(db, polled_at)
+            with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="owner"):
+                db = owner_settings_for_token(token)
+                db["botUsername"] = bot_username
+                db["chatId"] = chat["id"]
+                db["chatLabel"] = chat["label"]
+                db["enabled"] = True
+                initialize_geoip_offsets(db)
+                if settings.save_owner_binding(db, cursor_snapshot, updates, polled_at):
+                    break
+            # За время запроса сменилась последовательность. Перед привязкой перечитываем очередь.
     configure_bot_commands()
     if send_test:
         api.send_message(db, "Xray VPS Manager: Telegram-уведомления подключены. GeoIP-уведомления будут отправляться только в этот чат.")

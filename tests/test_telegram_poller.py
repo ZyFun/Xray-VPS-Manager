@@ -1,5 +1,6 @@
 import json
 import unittest
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,14 @@ class TelegramPollerTests(unittest.TestCase):
             state = updated_db.get("clientSubscriptionState", {})
             events.append(("save", tuple(sections), state.get("userUpdateOffset")))
 
+        def claim(snapshot, updates, stamp):
+            state = db.setdefault("clientSubscriptionState", {})
+            previous = settings.user_update_offset(state)
+            next_offset = max(updates, default=previous - 1) + 1
+            state.update(userUpdateOffset=max(previous, next_offset), lastUserPoll=stamp)
+            events.append(("claim", previous, next_offset))
+            return previous
+
         def send_chat_message(_db, chat_id, text, reply_markup=None, parse_mode=None):
             events.append(("send", str(chat_id), text))
             if callable(send_response):
@@ -55,6 +64,8 @@ class TelegramPollerTests(unittest.TestCase):
         )
         return poller.PollerContext(
             load_db=lambda: db,
+            claim_user_updates=claim,
+            consumer_lock=nullcontext,
             save_db_sections=save_db_sections,
             load_client_db=load_client_db,
             load_country_routes=load_country_routes,
@@ -72,7 +83,8 @@ class TelegramPollerTests(unittest.TestCase):
             xray_client=Path("/usr/local/sbin/xray-client"),
         )
 
-    def test_poll_saves_update_offset_before_sending_admin_menu(self) -> None:
+    def test_poll_claims_batch_before_sending_admin_menu(self) -> None:
+        """B2.5: до ответа пачка атомарно закрепляется за потребителем вместо безусловной записи offset."""
         db = {
             "enabled": True,
             "token": "token",
@@ -95,7 +107,7 @@ class TelegramPollerTests(unittest.TestCase):
 
         self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
 
-        self.assertEqual(events[0], ("save", ("clientSubscriptionState",), 16))
+        self.assertEqual(events[0], ("claim", 10, 16))
         self.assertIn(("answer",), events)
         self.assertTrue(any(event[0] == "send" for event in events))
 
@@ -652,7 +664,8 @@ class TelegramPollerTests(unittest.TestCase):
         sent = [event for event in events if event[0] == "send"][-1]
         self.assertIn("Срок доступа должен быть числом дней.", sent[2])
 
-    def test_poll_saves_update_offset_before_replying_to_text_message(self) -> None:
+    def test_poll_claims_batch_before_replying_to_text_message(self) -> None:
+        """B2.5: до ответа пачка атомарно закрепляется за потребителем вместо безусловной записи offset."""
         db = {
             "enabled": True,
             "token": "token",
@@ -674,7 +687,7 @@ class TelegramPollerTests(unittest.TestCase):
 
         self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
 
-        self.assertEqual(events[0], ("save", ("clientSubscriptionState",), 26))
+        self.assertEqual(events[0], ("claim", 20, 26))
         self.assertTrue(any(event[0] == "send" for event in events))
 
     def test_start_shows_status_for_subscribed_client(self) -> None:
@@ -1589,7 +1602,7 @@ class TelegramPollerTests(unittest.TestCase):
                     stored_at_menu_reset.append((payload["scope"]["chat_id"], set(settings.load_db()["clientSubscriptions"])))
                 return {"ok": True, "result": updates}
 
-            ctx = replace(ctx, load_db=settings.load_db, save_db_sections=settings.save_db_sections, curl_json=transport)
+            ctx = replace(ctx, load_db=settings.load_db, claim_user_updates=settings.claim_user_updates, save_db_sections=settings.save_db_sections, curl_json=transport)
             self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
             saved = settings.load_db()
         self.assertEqual(stored_at_menu_reset, [("43", {"42"})])
@@ -1621,7 +1634,7 @@ class TelegramPollerTests(unittest.TestCase):
                             settings.save_subscription(conn, "42", {"clientId": "next"})
                     return {"ok": True, "result": [update]}
 
-                ctx = replace(ctx, load_db=settings.load_db, save_db_sections=settings.save_db_sections,
+                ctx = replace(ctx, load_db=settings.load_db, claim_user_updates=settings.claim_user_updates, save_db_sections=settings.save_db_sections,
                               curl_json=transport, answer_callback_query=lambda db, uid, text: answers.append((uid, text)))
                 self.assertEqual(poller.poll_user_subscriptions(ctx, quiet=True), 0)
                 self.assertEqual(answers, [("button", "Не удалось сохранить подписку")])

@@ -25,7 +25,7 @@ def load_traffic_db_for_read(
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     try:
-        with database.session(database.database_path(db_path)) as connection:
+        with database.session(database.database_path(db_path), read_snapshot=True) as connection:
             return load_traffic_db_from_sqlite(connection)
     except SQLiteReadUnavailable:
         raise

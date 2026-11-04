@@ -11,6 +11,9 @@ class TelegramSetupTests(unittest.TestCase):
     def setUp(self) -> None:
         lock_dir = tempfile.TemporaryDirectory()
         self.addCleanup(lock_dir.cleanup)
+        paths = core_paths.Paths.under(Path(lock_dir.name))
+        paths.telegram_poller_lock.parent.mkdir(parents=True)
+        self.enterContext(core_paths.use(paths))
         lock_patch = mock.patch.object(core_paths, "MANAGER_LOCK_PATH", Path(lock_dir.name) / "manager.lock")
         lock_patch.start()
         self.addCleanup(lock_patch.stop)
@@ -19,13 +22,17 @@ class TelegramSetupTests(unittest.TestCase):
         db = {"token": "token", "routeMode": "direct"}
         saved = []
 
+        def save_binding(current_db, *_args):
+            saved.append(dict(current_db))
+            return True
+
         with mock.patch.object(setup.settings, "load_db_sql", return_value=db):
             with mock.patch.object(setup, "maybe_adopt_existing_cascade_route", side_effect=lambda current_db: current_db):
                 with mock.patch.object(setup.api, "curl_json", return_value={"ok": True, "result": {"username": "ExampleVpnBot"}}):
                     with mock.patch.object(setup, "choose_private_chat", return_value={"id": "111", "label": "owner"}):
                         with mock.patch.object(setup, "initialize_geoip_offsets"):
-                            with mock.patch.object(setup, "refresh_user_update_offset"):
-                                with mock.patch.object(setup.settings, "save_db_sections", side_effect=lambda current_db, _sections: saved.append(dict(current_db))):
+                            with mock.patch.object(setup, "pending_owner_updates", return_value={}):
+                                with mock.patch.object(setup.settings, "save_owner_binding", side_effect=save_binding):
                                     with mock.patch.object(setup, "configure_bot_commands"):
                                         with mock.patch.object(setup.api, "send_message"):
                                             with mock.patch("builtins.print"):

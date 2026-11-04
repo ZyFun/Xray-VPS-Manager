@@ -242,7 +242,7 @@ def geoip_events_after_for_read(
     db_path: str | Path | None = None,
 ) -> tuple[list[dict], int]:
     try:
-        with database.session(database.database_path(db_path)) as connection:
+        with database.session(database.database_path(db_path), read_snapshot=True) as connection:
             if after_id <= 0 and not after_time:
                 return [], sqlite_activity.max_event_id(connection)
             events = list(
@@ -270,7 +270,7 @@ def geoip_alerts_after_for_read(
     db_path: str | Path | None = None,
 ) -> tuple[list[dict], int]:
     try:
-        with database.session(database.database_path(db_path)) as connection:
+        with database.session(database.database_path(db_path), read_snapshot=True) as connection:
             if after_id <= 0 and not after_time:
                 return [], sqlite_activity.max_alert_id(connection)
             events = list(
