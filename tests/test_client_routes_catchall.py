@@ -336,6 +336,8 @@ class ClientDbWriteCommandTests(unittest.TestCase):
             self.add_client("carol")
 
         config, db = self.stored()
+        self.assertEqual(config["outbounds"][0]["tag"], "direct")
+        self.assertIn("carol", db["clients"])
         self.assertEqual(client_outbounds(config, db), {"alice": "warp-out", "bob": "warp-out", "carol": "warp-out"})
         self.assertEqual(client_rule_tags(config), [])
 
