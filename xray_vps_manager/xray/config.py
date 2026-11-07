@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -97,15 +94,9 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any], path: Path = CONFIG_PATH) -> Path:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    backup = path.with_name(f"{path.name}.bak.{timestamp}")
-    shutil.copy2(path, backup)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(path)
-    return backup
+    """Совместимый путь старых адаптеров до VIREI-124/125."""
+    from xray_vps_manager.xray.apply import save_config as save
+    return save(config, path)
 
 
 def reality_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:
