@@ -35,7 +35,7 @@ class SandboxSetupFailuresTests(unittest.TestCase):
 
     def test_rollback_helper_restores_context_after_setup_write_failure(self):
         original_write = Path.write_text
-        original_config = json.dumps(restart_tests.config_with_port(443))
+        original_config = json.dumps(restart_tests.valid_config_with_port(443))
 
         def write(path, data, *args, **kwargs):
             if data == original_config:

@@ -2,7 +2,6 @@
 import copy
 import os
 import re
-import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -10,6 +9,8 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from xray_vps_manager.clients import routes as client_route_service
+from xray_vps_manager.clients import service as client_service
+from xray_vps_manager.commands.presenters import apply_error_text, backup_text
 from xray_vps_manager.system import unit_sync
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import connections as client_connections
@@ -22,9 +23,9 @@ from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import runtime as client_runtime
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.clients import status as client_status
-from xray_vps_manager.core.errors import LockTimeout
+from xray_vps_manager.core.errors import ApplyConfigError, LockTimeout, ManagerError
 from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.process import restart_systemd_unit, tcp_port_in_use
+from xray_vps_manager.core.process import tcp_port_in_use
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
@@ -34,6 +35,7 @@ from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import caddy as xray_caddy
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
+from xray_vps_manager.xray import apply as xray_apply
 
 from xray_vps_manager.runner import command_entry, error_exit, fail as _fail
 
@@ -189,47 +191,23 @@ def save_db(db, *, deletions=None):
     client_repository.save_db(db, deletions=deletions)
 
 
-def restart_xray_with_config_test():
-    run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-    restart_systemd_unit("xray")
-
-
 def restore_config_backup(backup):
-    shutil.copy2(backup, CONFIG_PATH)
-    shutil.chown(CONFIG_PATH, user="root", group="xray")
-    os.chmod(CONFIG_PATH, 0o640)
-    restart_systemd_unit("xray")
+    xray_apply.restore_config_backup(backup)
 
 
 def restore_config_file(backup):
-    shutil.copy2(backup, CONFIG_PATH)
-    shutil.chown(CONFIG_PATH, user="root", group="xray")
-    os.chmod(CONFIG_PATH, 0o640)
+    xray_apply.restore_config_backup(backup, restart=False)
 
 
 def save_config_restart_xray_and_db(config, db, *, deletions=None):
-    client_route_service.ensure_all_client_route_config(config, db)
-    backup = save_config(config)
-    saving_db = False
     try:
-        restart_xray_with_config_test()
-        saving_db = True
-        save_db(db, deletions=deletions)
-    except BaseException as exc:
-        # Любой сбой после записи config.json — рестарт, ValueError/IntegrityError/RuntimeError save_db, Ctrl+C
-        # на рестарте — возвращает прежний конфиг, иначе config.json и manager.db расходятся (XR-REV-059, XR-REV-056).
-        # Ошибки save_db возникают до COMMIT и откатываются транзакцией; прерывание внутри save_db могло прийти
-        # уже после COMMIT, и откат одного конфига рассогласовал бы его с базой (71-R03).
-        if saving_db and not isinstance(exc, Exception):
-            raise
-        try:
-            restore_config_backup(backup)
-        except Exception as restore_exc:
-            die(f"New config failed: {exc}. Restoring backup {backup} also failed: {restore_exc}")
-        if not isinstance(exc, Exception):
-            raise
-        die(f"New config failed: {exc}. Restored backup: {backup}")
-    return backup
+        return client_service.apply_config_and_save_db(config, db, deletions=deletions).backup
+    except ApplyConfigError as exc:
+        if exc.exit_code == 130:
+            raise KeyboardInterrupt from exc
+        die(apply_error_text(exc))
+    except ManagerError as exc:
+        error_exit(exc)
 
 
 def normalize_access_deadlines(tz, previous_tz=None, now=None):
@@ -666,7 +644,7 @@ def cmd_connection_add(
             except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
                 die(
                     "TLS-XHTTP connection was added, but Caddy setup failed. "
-                    f"Config backup: {backup}. Detail: {exc}"
+                    f"Config backup: {backup_text(backup)}. Detail: {exc}"
                 )
 
     print(f"Added connection: {result.name}")
@@ -694,7 +672,7 @@ def cmd_connection_add(
         print(f"XHTTP_MODE: {result.xhttp_mode}")
         extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
         print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
 
 
 def cmd_trojan_connection_add(
@@ -781,7 +759,7 @@ def cmd_trojan_connection_add(
             except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
                 die(
                     "Trojan Caddy connection was added, but Caddy setup failed. "
-                    f"Config backup: {backup}. Detail: {exc}"
+                    f"Config backup: {backup_text(backup)}. Detail: {exc}"
                 )
 
     print(f"Added Trojan connection: {result.name}")
@@ -803,7 +781,7 @@ def cmd_trojan_connection_add(
         print(f"PORT: {result.port}")
         print(f"CERT_FILE: {result.cert_file}")
         print(f"KEY_FILE: {result.key_file}")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
 
 
 def cmd_connection_transport(identifier, transport_value, grpc_service_name="", xhttp_path="", xhttp_mode="", xhttp_extra_json=None):
@@ -843,7 +821,7 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
         extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
         print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
     print("Updated clients: " + (", ".join(result.updated_clients or []) if result.updated_clients else "none"))
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
 
 
@@ -861,7 +839,7 @@ def cmd_connection_xhttp_extra(identifier, xhttp_extra_json=None, clear=False):
     extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
     print(f"Connection: {result.display_name} ({result.tag})")
     print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
 
 
@@ -986,7 +964,7 @@ def cmd_trojan_connection_update(
         print("CADDY_SITE: not updated")
     else:
         print("CADDY_SITE: disabled for this connection")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
     print("Выведи клиентам новые Trojan-ссылки через xray-client link NAME: параметры подключения изменились.")
 
 
@@ -1032,7 +1010,7 @@ def cmd_connection_remove(identifier):
         print("Kept clients with other connections: " + ", ".join(result.detached_client_names))
     if result.env_switch_tag:
         print(f"server.env switched to connection: {result.env_switch_name} ({result.env_switch_tag})")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
 
 
 def cmd_list():
@@ -1245,7 +1223,7 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
     print(f"Created: {result.created}")
     print(f"Access until: {client_access.format_access_until(result.entry.get('expiresAt', ''))}")
     print(f"Access key: {access_key_for_client_id(result.client_id)}")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
     print_payment_summary()
     print(link_for(config, result.credential_id, name, result.connection_tag, db))
 
@@ -1275,7 +1253,7 @@ def cmd_sync_routes():
             save_db(db)
     if changed:
         print("Client cascade routes synchronized.")
-        print(f"Backup: {backup}")
+        print(f"Backup: {backup_text(backup)}")
     else:
         print("Client cascade routes are already synchronized.")
     print_route_options(config, db)
@@ -1317,8 +1295,8 @@ def cmd_route(name, route_value=None):
         client_route_service.ensure_client_route_config(config, name, next_entry, tag)
         backup = save_config(config)
         try:
-            run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        except subprocess.CalledProcessError:
+            xray_apply.test_config_file(CONFIG_PATH)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             restore_config_file(backup)
             die(f"New route config failed. Restored backup: {backup}")
 
@@ -1332,7 +1310,7 @@ def cmd_route(name, route_value=None):
     print(f"Client: {name}")
     print(f"Selected country: {client_route_service.selected_route_label(db, next_entry)}")
     print(f"Cascade: {tag}")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
     print("Runtime route updated without Xray restart.")
 
 
@@ -1351,7 +1329,7 @@ def cmd_remove(name):
 
     print(f"Removed client: {result.name}")
     print("Removed traffic history.")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
 
 
 def cmd_disable(name, connection_tag=None):
@@ -1369,7 +1347,7 @@ def cmd_disable(name, connection_tag=None):
     print(f"Disabled client: {result.name}")
     if result.connection_tags:
         print("Disabled credentials: " + ", ".join(result.connection_tags))
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
 
 
 def cmd_enable(name, connection_tag=None):
@@ -1399,7 +1377,7 @@ def cmd_enable(name, connection_tag=None):
         print("Enabled credentials: " + ", ".join(result.connection_tags))
     if result.connection_tag:
         print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
     if result.connection_tag:
         print(link_for(config, result.credential_id, result.name, result.connection_tag, db))
 
@@ -1432,7 +1410,7 @@ def cmd_move_connection(name, target_connection_identifier):
     )
     print("Status: " + ("enabled" if result.enabled else "disabled"))
     if backup:
-        print(f"Backup: {backup}")
+        print(f"Backup: {backup_text(backup)}")
     else:
         print("Xray restart is not required for disabled client.")
     print("New link:")
@@ -1473,7 +1451,7 @@ def run_access_update(name, result_factory, purpose):
             f"can be enabled after reset: {traffic_status['resetAt']}"
         )
     if backup:
-        print(f"Backup: {backup}")
+        print(f"Backup: {backup_text(backup)}")
     notify_access_updated(name)
 
 
@@ -1584,7 +1562,7 @@ def cmd_rotate_trojan_password(name, connection_tag=None):
     print(f"Client: {name}")
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
     if backup:
-        print(f"Backup: {backup}")
+        print(f"Backup: {backup_text(backup)}")
     else:
         print("Backup: not created; credential is not active in config.")
     print("Client must reimport this Trojan link:")
@@ -1636,7 +1614,7 @@ def cmd_enforce_limits(quiet=False, sync_first=False):
             print("Re-enabled clients after traffic limit reset: " + ", ".join(result.reactivated_names))
         if result.due_names:
             print("Disabled clients by traffic limit: " + ", ".join(result.due_names))
-        print(f"Backup: {backup}")
+        print(f"Backup: {backup_text(backup)}")
 
 
 def cmd_expire_due(quiet=False):
@@ -1658,7 +1636,7 @@ def cmd_expire_due(quiet=False):
 
     if not quiet:
         print("Disabled expired clients: " + ", ".join(result.due_names))
-        print(f"Backup: {backup}")
+        print(f"Backup: {backup_text(backup)}")
 
 
 def cmd_timezone():

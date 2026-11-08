@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
 from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.core.paths import CONFIG_PATH, paths
 from xray_vps_manager.core.systemd import MANAGER_UNITS
 from xray_vps_manager.core.terminal import green, red
+from xray_vps_manager.commands.presenters import apply_error_text, backup_text
+from xray_vps_manager.core.errors import ApplyConfigError
+from xray_vps_manager.routing import torrent as torrent_service
+from xray_vps_manager.xray import apply as xray_apply
 from xray_vps_manager.xray import caddy
+from xray_vps_manager.xray.torrent import torrent_block_enabled
 
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 
@@ -35,73 +37,13 @@ def load_config() -> dict:
     return json.loads(CONFIG_PATH.read_text())
 
 
-def write_config(config: dict) -> Path:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.{timestamp}")
-    shutil.copy2(CONFIG_PATH, backup)
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(CONFIG_PATH)
-    return backup
-
-
-def apply_config(config: dict) -> Path:
-    backup = write_config(config)
+def apply_config(config: dict) -> Path | None:
     try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
-    return backup
-
-
-def ensure_blocked_outbound(config: dict) -> bool:
-    outbounds = config.setdefault("outbounds", [])
-    if not any(outbound.get("tag") == "blocked" for outbound in outbounds):
-        outbounds.append({"tag": "blocked", "protocol": "blackhole"})
-        return True
-    return False
-
-
-def routing_rules(config: dict) -> list[dict]:
-    routing = config.setdefault("routing", {})
-    routing.setdefault("domainStrategy", "IPIfNonMatch")
-    return routing.setdefault("rules", [])
-
-
-def rule_values(rule: dict, key: str) -> list:
-    value = rule.get(key, [])
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return value
-    return []
-
-
-def is_api_rule(rule: dict) -> bool:
-    return rule.get("outboundTag") == "api" or "api" in rule_values(rule, "inboundTag")
-
-
-def is_bittorrent_rule(rule: dict) -> bool:
-    return "bittorrent" in rule_values(rule, "protocol")
-
-
-def torrent_block_rule() -> dict:
-    return {
-        "type": "field",
-        "protocol": ["bittorrent"],
-        "outboundTag": "blocked",
-    }
-
-
-def torrent_block_enabled(config: dict) -> bool:
-    return any(rule.get("outboundTag") == "blocked" and is_bittorrent_rule(rule) for rule in routing_rules(config))
+        return xray_apply.apply_config(config).backup
+    except ApplyConfigError as exc:
+        if exc.exit_code == 130:
+            raise KeyboardInterrupt from exc
+        die(apply_error_text(exc))
 
 
 def print_torrent_status() -> None:
@@ -113,34 +55,18 @@ def print_torrent_status() -> None:
         print("Рекомендуемое состояние для сервера: запрещены.")
 
 
-def insert_torrent_rule(rules: list[dict]) -> None:
-    insert_index = 0
-    while insert_index < len(rules) and is_api_rule(rules[insert_index]):
-        insert_index += 1
-    rules.insert(insert_index, torrent_block_rule())
-
-
 def set_torrent_block(blocked: bool) -> None:
-    config = load_config()
-    changed = ensure_blocked_outbound(config)
-    rules = routing_rules(config)
-    rules_without_torrent = [rule for rule in rules if not is_bittorrent_rule(rule)]
-
-    if blocked:
-        insert_torrent_rule(rules_without_torrent)
-
-    if rules_without_torrent != rules:
-        changed = True
-
-    if not changed:
-        print_torrent_status()
-        print("Изменения не требуются.")
-        return
-
-    config["routing"]["rules"] = rules_without_torrent
-    backup = apply_config(config)
+    try:
+        result = torrent_service.set_blocked(blocked)
+    except ApplyConfigError as exc:
+        if exc.exit_code == 130:
+            raise KeyboardInterrupt from exc
+        die(apply_error_text(exc))
     print_torrent_status()
-    print(f"Backup: {backup}")
+    if not result.changed:
+        print("Изменения не требуются.")
+    else:
+        print(f"Backup: {backup_text(result.backup)}")
 
 
 def show_xray_status(call: CommandRunner) -> None:
@@ -153,7 +79,7 @@ def restart_xray(call: CommandRunner) -> None:
 
 
 def check_config(call: CommandRunner) -> None:
-    call(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
+    call(xray_apply.config_test_command(CONFIG_PATH))
 
 
 def check_timers(call: CommandRunner) -> None:

@@ -13,9 +13,12 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.commands.presenters import exception_text
+from xray_vps_manager.core import paths
 from xray_vps_manager.core.http import http_json as _http_json
-from xray_vps_manager.core.process import restart_systemd_unit
-from xray_vps_manager.xray.config import inbound_listen_endpoints
+from xray_vps_manager.core.errors import StateError
+from xray_vps_manager.core.locks import manager_lock
+from xray_vps_manager.xray import apply as xray_apply
 
 from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
 
@@ -139,10 +142,7 @@ def check_tcp(host, port, timeout=2):
 
 
 def config_test(binary=XRAY_BIN, asset_dir=None):
-    env = os.environ.copy()
-    if asset_dir:
-        env["XRAY_LOCATION_ASSET"] = str(asset_dir)
-    return run([str(binary), "run", "-test", "-config", str(CONFIG_PATH)], timeout=30, env=env)
+    return xray_apply.test_config_file(CONFIG_PATH, binary=binary, asset_dir=asset_dir, check=False)
 
 
 def preflight(verbose=True):
@@ -463,8 +463,7 @@ def install_assets(extract_dir, names=ASSET_NAMES):
 
 
 def restart_xray():
-    # Проверка старта и портов inbound внутри helper'а; ошибка — CalledProcessError для except Exception выше.
-    restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
+    return xray_apply.restart_installed_config(reason="update")
 
 
 def backup_dirs():
@@ -496,18 +495,16 @@ def list_backups():
 def restore_backup(backup):
     if not (backup / "xray").exists():
         raise RuntimeError(f"Backup does not contain xray binary: {backup}")
-    shutil.copy2(backup / "xray", XRAY_BIN)
-    XRAY_BIN.chmod(0o755)
-    XRAY_ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    for name in ("geoip.dat", "geosite.dat"):
-        src = backup / name
-        if src.exists():
-            shutil.copy2(src, XRAY_ASSET_DIR / name)
-            (XRAY_ASSET_DIR / name).chmod(0o644)
-    result = config_test()
-    if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or "config test failed after rollback").strip())
-    restart_xray()
+    with manager_lock(purpose="rollback xray"):
+        shutil.copy2(backup / "xray", XRAY_BIN)
+        XRAY_BIN.chmod(0o755)
+        XRAY_ASSET_DIR.mkdir(parents=True, exist_ok=True)
+        for name in ("geoip.dat", "geosite.dat"):
+            src = backup / name
+            if src.exists():
+                shutil.copy2(src, XRAY_ASSET_DIR / name)
+                (XRAY_ASSET_DIR / name).chmod(0o644)
+        restart_xray()
 
 
 def rollback(name=None):
@@ -526,7 +523,7 @@ def run_passthrough(command, timeout=120):
 
 
 def run_diagnostics(stage):
-    candidates = [Path("/usr/local/sbin/xray-test")]
+    candidates = [paths.paths().sbin_dir / "xray-test"]
     found = next((path for path in candidates if path.exists()), None)
     if not found:
         warn("xray-test не найден, использую встроенную базовую проверку.")
@@ -583,19 +580,22 @@ def cmd_update():
     warn(f"Будет выполнено обновление Xray: {current} -> {latest}")
     with tempfile.TemporaryDirectory(prefix="xray-update-") as tmp:
         extract_dir, _ = test_candidate(release, Path(tmp))
-        backup = backup_current(latest)
-        try:
-            install_candidate(extract_dir)
-            result = config_test()
-            if result.returncode != 0:
-                raise RuntimeError((result.stderr or result.stdout or "installed config test failed").strip())
-            restart_xray()
-            run_diagnostics("после обновления")
-        except Exception as exc:
-            fail(f"Update failed: {exc}")
-            warn("Пробую автоматически откатиться на предыдущую версию...")
-            restore_backup(backup)
-            die("Обновление не применено, предыдущая версия восстановлена.")
+        with manager_lock(purpose="update xray"):
+            backup = backup_current(latest)
+            try:
+                install_candidate(extract_dir)
+                restart_xray()
+                run_diagnostics("после обновления")
+            except BaseException as exc:
+                fail(f"Update failed: {exception_text(exc)}")
+                warn("Пробую автоматически откатиться на предыдущую версию...")
+                try:
+                    restore_backup(backup)
+                except BaseException as rollback_error:
+                    raise StateError(f"Update failed: {exception_text(exc)}; rollback failed: {exception_text(rollback_error)}") from rollback_error
+                if isinstance(exc, KeyboardInterrupt) or getattr(exc, "exit_code", None) == 130:
+                    raise KeyboardInterrupt from exc
+                die("Обновление не применено, предыдущая версия восстановлена.")
     ok(f"Xray updated successfully: {current_version()}")
 
 
@@ -652,36 +652,34 @@ def cmd_update_assets(source_value="xray"):
         asset_dir, names, source_detail = prepare_asset_source(source, workdir)
         prepare_asset_config_test_dir(asset_dir, names)
 
-        result = config_test(asset_dir=asset_dir)
-        if result.returncode != 0:
-            die((result.stderr or result.stdout or "downloaded assets failed config test").strip())
-
-        current_hashes = current_asset_hashes(names=names)
-        new_hashes = current_asset_hashes(asset_dir, names)
-        changed = [name for name in names if current_hashes.get(name) != new_hashes.get(name)]
-        if not changed:
-            ok(f"{', '.join(names)} already match {source_detail}.")
-            return
-
-        backup = workdir / "asset-backup"
-        backup_assets(backup, names)
-        try:
-            install_assets(asset_dir, changed)
-            result = config_test()
+        with manager_lock(purpose="update xray assets"):
+            result = config_test(asset_dir=asset_dir)
             if result.returncode != 0:
-                raise RuntimeError((result.stderr or result.stdout or "installed assets failed config test").strip())
-            restart_xray()
-        except Exception as exc:
-            fail(f"Asset update failed: {exc}")
-            warn("Восстанавливаю предыдущие geo assets...")
-            restore_assets(backup, names)
-            restore_result = config_test()
-            if restore_result.returncode == 0:
+                die((result.stderr or result.stdout or "downloaded assets failed config test").strip())
+
+            current_hashes = current_asset_hashes(names=names)
+            new_hashes = current_asset_hashes(asset_dir, names)
+            changed = [name for name in names if current_hashes.get(name) != new_hashes.get(name)]
+            if not changed:
+                ok(f"{', '.join(names)} already match {source_detail}.")
+                return
+
+            backup = workdir / "asset-backup"
+            backup_assets(backup, names)
+            try:
+                install_assets(asset_dir, changed)
+                restart_xray()
+            except BaseException as exc:
+                fail(f"Asset update failed: {exception_text(exc)}")
+                warn("Восстанавливаю предыдущие geo assets...")
                 try:
+                    restore_assets(backup, names)
                     restart_xray()
-                except Exception as restart_exc:
-                    warn(f"Не удалось перезапустить Xray после восстановления assets: {restart_exc}")
-            die("Обновление geo assets не применено, предыдущие assets восстановлены.")
+                except BaseException as rollback_error:
+                    raise StateError(f"Asset update failed: {exception_text(exc)}; rollback failed: {exception_text(rollback_error)}") from rollback_error
+                if isinstance(exc, KeyboardInterrupt) or getattr(exc, "exit_code", None) == 130:
+                    raise KeyboardInterrupt from exc
+                die("Обновление geo assets не применено, предыдущие assets восстановлены.")
 
     ok("Updated assets: " + ", ".join(changed))
     ok(f"Source: {source_detail}")

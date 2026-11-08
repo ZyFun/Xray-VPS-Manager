@@ -23,6 +23,9 @@ from xray_vps_manager.commands import traffic_sync
 from xray_vps_manager.core import locks as core_locks
 from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.db import database
+from tests.support.sandbox import Sandbox
+from tests.test_restart_verification import FakeClock, FakeSocket, show_output
+from xray_vps_manager.core import systemd
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
@@ -64,8 +67,11 @@ def make_sandbox(root: Path) -> None:
     config = {
         "inbounds": [reality_inbound("vless-reality", 443), reality_inbound("vless-reality-2", 8443)],
         "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "blocked", "protocol": "blackhole"}],
-        "routing": {"rules": []},
+        "api": {"tag": "api", "services": ["StatsService"]},
+        "routing": {"rules": [{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}]},
     }
+    config["inbounds"].append({"tag": "api", "listen": "127.0.0.1", "port": 10085,
+                               "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1", "clients": []}})
     (root / "config.json").write_text(json.dumps(config))
     database.initialize(root / "manager.db").close()
 
@@ -84,16 +90,34 @@ def add_client_without_xray(*args, **kwargs):
 
 @contextmanager
 def sandbox_patches(root: Path, *, restart=None, config_suffix: str = ""):
-    with mock.patch.object(core_paths, "MANAGER_LOCK_PATH", root / "manager.lock"), \
-        mock.patch.object(database, "MANAGER_DB_PATH", root / "manager.db"), \
-        mock.patch.object(client_command, "CONFIG_PATH", root / "config.json"), \
-        mock.patch.object(client_command, "save_config", lambda config: write_config(root, config, config_suffix)), \
-        mock.patch.object(client_command, "restart_xray_with_config_test", restart or (lambda: None)), \
+    root = root.resolve()
+    with Sandbox(existing_config_dir=root) as box, \
+        mock.patch.object(systemd, "time", FakeClock()), \
+        mock.patch("socket.create_connection", return_value=FakeSocket()), \
         mock.patch.object(client_command, "link_for", return_value="vless://test"), \
         mock.patch.object(client_command, "print_payment_summary"), \
         mock.patch.object(client_command.client_connections, "server_env_values", return_value={}), \
         mock.patch.object(client_command.client_crud, "add_client", side_effect=add_client_without_xray):
+        script_apply(box, restart=restart)
         yield
+
+
+def script_apply(box, *, restart=None, record=None):
+    def response(argv, **kwargs):
+        if record is not None:
+            record("run", " ".join(str(item) for item in argv[1:3]))
+        if argv == ["systemctl", "restart", "xray"] and restart is not None:
+            restart()
+        return box.processes.ok(show_output() if "show" in argv else "")
+    box.processes.script({
+        (str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(box.paths.config.with_suffix(".json.tmp"))): response,
+        (str(box.paths.xray_bin), "run", "-test", "-config", str(box.paths.config)): response,
+        "openssl rand -hex 8": box.processes.ok("0123456789abcdef"),
+        "systemctl stop xray": response,
+        "systemctl reset-failed xray": response,
+        "systemctl restart xray": response,
+        "systemctl show --property=ActiveState,SubState,NRestarts xray": response,
+    })
 
 
 def db_client_names(root: Path) -> set:

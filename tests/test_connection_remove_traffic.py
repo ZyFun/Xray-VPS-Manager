@@ -43,9 +43,11 @@ def reality_inbound(tag: str, port: int) -> dict:
 
 def base_config() -> dict:
     return {
-        "inbounds": [reality_inbound(KEPT_TAG, 443), reality_inbound(REMOVED_TAG, 8443)],
+        "inbounds": [reality_inbound(KEPT_TAG, 443), reality_inbound(REMOVED_TAG, 8443),
+                     {"tag": "api", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1", "clients": []}}],
         "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "blocked", "protocol": "blackhole"}],
-        "routing": {"rules": []},
+        "api": {"tag": "api", "services": ["StatsService"]},
+        "routing": {"rules": [{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}]},
     }
 
 
@@ -89,9 +91,11 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
         self.box = self.enterContext(Sandbox(db=None))
         self.db_path = self.box.paths.manager_db
         self.enterContext(mock.patch.object(systemd, "time", FakeClock()))
+        self.enterContext(mock.patch("socket.create_connection", return_value=FakeSocket()))
         ok = self.box.processes.ok()
         self.box.processes.script({
             ("/usr/local/bin/xray", "run", "-test", "-config", str(self.box.paths.config)): ok,
+            (str(self.box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(self.box.paths.config.with_suffix(".json.tmp"))): ok,
             ("systemctl", "stop", "xray"): ok,
             ("systemctl", "reset-failed", "xray"): ok,
             ("systemctl", "restart", "xray"): ok,
