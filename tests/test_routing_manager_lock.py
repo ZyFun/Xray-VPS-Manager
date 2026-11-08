@@ -17,6 +17,11 @@ import unittest
 from unittest import mock
 
 from tests import test_client_manager_lock as client_lock_tests
+from tests.support.sandbox import Sandbox
+from tests.test_restart_verification import FakeClock, FakeSocket
+from xray_vps_manager.core import systemd
+
+WORKER_POPEN = subprocess.Popen
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.commands import client as client_command
@@ -112,6 +117,7 @@ def routing_patches(root: Path, *, restart=None, record=None):
 
     record(kind, detail) получает каждую запись файла (chown), внешнюю команду и запись manager.db.
     """
+    root = root.resolve()
     config_path = root / "config.json"
     env_path = root / "server.env"
     record = record or (lambda _kind, _detail="": None)
@@ -149,6 +155,11 @@ def routing_patches(root: Path, *, restart=None, record=None):
 
     with ExitStack() as stack:
         enter = stack.enter_context
+        box = enter(Sandbox(existing_config_dir=root))
+        client_lock_tests.script_apply(box, restart=restart, record=record)
+        enter(mock.patch.object(systemd, "time", FakeClock()))
+        enter(mock.patch("socket.create_connection", return_value=FakeSocket()))
+        enter(mock.patch("socket.getaddrinfo", return_value=[]))
         enter(mock.patch.object(core_paths, "MANAGER_LOCK_PATH", root / "manager.lock"))
         enter(mock.patch.object(database, "MANAGER_DB_PATH", root / "manager.db"))
         enter(mock.patch("shutil.chown", side_effect=chown))
@@ -176,19 +187,9 @@ def routing_patches(root: Path, *, restart=None, record=None):
         enter(mock.patch.object(warp, "ensure_warp_profile"))
         enter(mock.patch.object(warp, "profile_endpoint", return_value=WARP_ENDPOINT))
         enter(mock.patch.object(warp, "warp_outbound_from_profile", side_effect=warp_outbound))
-        enter(mock.patch.object(menu_reality_actions, "CONFIG_PATH", config_path))
-        enter(mock.patch.object(menu_reality_actions, "run", side_effect=run))
-        enter(mock.patch.object(menu_reality_actions, "restart_systemd_unit", side_effect=restart_xray))
         # Пробный bind нового PORT не должен зависеть от портов машины, на которой идут тесты.
         enter(mock.patch.object(menu_reality_actions, "tcp_port_in_use", return_value=False))
         enter(mock.patch.object(menu_reality_actions, "load_xray_config", side_effect=lambda: xray_config.load_config(config_path)))
-        enter(
-            mock.patch.object(
-                menu_reality_actions,
-                "save_config",
-                side_effect=lambda config: xray_config.save_config(config, config_path),
-            )
-        )
         enter(mock.patch.object(menu_reality_actions, "save_db", side_effect=save_db))
         enter(mock.patch.object(menu_reality_actions, "server_env_values", side_effect=lambda: read_server_env(env_path)))
         enter(
@@ -295,7 +296,7 @@ def start_worker(function: str, *args: str) -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
     code = f"import sys; from tests import test_routing_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
-    return subprocess.Popen(
+    return WORKER_POPEN(
         [sys.executable, "-c", code, *args],
         cwd=str(REPO_ROOT),
         env=env,
@@ -310,7 +311,7 @@ def start_client_add_worker(root: Path, name: str) -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
     code = "import sys; from tests import test_client_manager_lock as t; sys.exit(t.add_worker(sys.argv[1:]))"
-    return subprocess.Popen(
+    return WORKER_POPEN(
         [sys.executable, "-c", code, str(root), name, "fast"],
         cwd=str(REPO_ROOT),
         env=env,
@@ -767,7 +768,7 @@ class ExecStopTrafficSyncTests(RoutingLockTestCase):
                 },
                 ("probe_warp_endpoint", "probe_warp_disabled", "test_warp"),
             ),
-            "menu_reality_actions.py": ({"apply_config", "update_connection_db", "write_server_env"}, ()),
+            "menu_reality_actions.py": ({"apply_config", "update_connection_db", "write_server_env"}, ("apply_config",)),
         }
         for name, (calls, skip_functions) in checks.items():
             with self.subTest(name):

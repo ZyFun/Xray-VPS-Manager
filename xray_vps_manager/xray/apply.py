@@ -44,6 +44,81 @@ def _detail(error: BaseException, limit: int = 12) -> str:
     return "\n".join("\n".join(parts).splitlines()[:limit])
 
 
+def config_test_command(path: Path | None = None, *, binary: Path | None = None,
+                        json_format: bool = False) -> list[str]:
+    """Команда проверки для обычного запуска и потокового вывода ручного меню."""
+    command = [str(binary or paths.paths().xray_bin), "run", "-test"]
+    if json_format:
+        command.extend(["-format", "json"])
+    command.extend(["-config", str(path or paths.paths().config)])
+    return command
+
+
+def test_config_file(path: Path | None = None, *, binary: Path | None = None,
+                     asset_dir: Path | None = None, json_format: bool = False,
+                     check: bool = True):
+    """Проверить указанный файл выбранным бинарником/assets, ничего не устанавливая."""
+    command = config_test_command(path, binary=binary, json_format=json_format)
+    env = {**os.environ, "XRAY_LOCATION_ASSET": str(asset_dir)} if asset_dir is not None else None
+    return process.run(command, timeout=30, check=check, env=env)
+
+
+def _local_ports(config: dict) -> list[tuple[str, int]]:
+    from xray_vps_manager.xray.config import inbound_listen_endpoints
+    return [endpoint for endpoint in inbound_listen_endpoints(config)
+            if endpoint[0] in {"127.0.0.1", "::1"}]
+
+
+def restart_installed_config(*, verify_timeout: float = systemd.DEFAULT_VERIFY_TIMEOUT,
+                             reason: str = "") -> ApplyResult:
+    """Проверить и обязательно запустить установленный комплект под lock сценария.
+
+    Байты config.json и технические копии не меняются. Откат архива, бинарника
+    или assets выполняет владеющий ими сценарий, включая отмену операции.
+    """
+    stage = "test"
+    try:
+        config = json.loads(paths.paths().config.read_bytes())
+        test_config_file()
+        ports = _local_ports(config)
+        stage = "restart"
+        systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=ports)
+        return ApplyResult(False, restarted=True,
+                           verified_ports=tuple(port for _, port in ports) if verify_timeout > 0 else ())
+    except BaseException as error:
+        failure = ApplyConfigError(
+            "Не удалось запустить установленную конфигурацию Xray" + (f" ({reason})" if reason else ""),
+            stage="verify" if isinstance(error, systemd.SystemdUnitStartError) else stage,
+            detail=_detail(error),
+        )
+        if isinstance(error, KeyboardInterrupt):
+            failure.exit_code = 130
+        raise failure from error
+
+
+def _restore(data: bytes, *, restart: bool, verify_timeout: float) -> None:
+    ports = _local_ports(json.loads(data)) if restart else ()
+    fs.replace_file(paths.paths().config, data, prepare=_permissions)
+    if restart:
+        systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=ports)
+
+
+def restore_config_backup(backup: Path | None, *, restart: bool = True,
+                          verify_timeout: float = systemd.DEFAULT_VERIFY_TIMEOUT) -> None:
+    """Компенсировать успешный apply после ошибки следующего шага БД/Caddy.
+
+    Не вызывается после ошибки самого apply. None означает, что apply не менял
+    файл. Копия возвращается байт-в-байт, без нового бэкапа и без ротации.
+    """
+    if backup is None:
+        return
+    try:
+        _restore(backup.read_bytes(), restart=restart, verify_timeout=verify_timeout)
+    except BaseException as error:
+        raise ApplyConfigError("Не удалось восстановить конфигурацию Xray", stage="rollback",
+                               backup=backup, detail=_detail(error)) from error
+
+
 def apply_config(config: dict, *, restart: bool = True,
                  verify_timeout: float = systemd.DEFAULT_VERIFY_TIMEOUT,
                  reason: str = "") -> ApplyResult:
@@ -54,7 +129,6 @@ def apply_config(config: dict, *, restart: bool = True,
     Ротация копий вводится отдельно в VIREI-126. reason — контекст ошибки без вывода.
     """
     from xray_vps_manager.xray import invariants
-    from xray_vps_manager.xray.config import inbound_listen_endpoints
 
     path = paths.paths().config
     candidate = path.with_suffix(".json.tmp")
@@ -67,7 +141,7 @@ def apply_config(config: dict, *, restart: bool = True,
         data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         try:
             fs.replace_file(candidate, data, prepare=_permissions)
-            process.run([str(paths.paths().xray_bin), "run", "-test", "-format", "json", "-config", str(candidate)], check=True)
+            test_config_file(candidate, json_format=True)
         except BaseException as error:
             try:
                 candidate.unlink(missing_ok=True)
@@ -81,11 +155,8 @@ def apply_config(config: dict, *, restart: bool = True,
         original = path.read_bytes()
         if data == original:
             return ApplyResult(changed=False)
-        old_config = json.loads(original)
-        ports = [endpoint for endpoint in inbound_listen_endpoints(config)
-                 if endpoint[0] in {"127.0.0.1", "::1"}]
-        old_ports = [endpoint for endpoint in inbound_listen_endpoints(old_config)
-                     if endpoint[0] in {"127.0.0.1", "::1"}]
+        json.loads(original)  # Отказ до записи, если исходный файл не пригоден для отката.
+        ports = _local_ports(config)
         backup_path = _backup_path(path)
         fs.replace_file(backup_path, original, prepare=_permissions)
         backup = backup_path
@@ -108,9 +179,7 @@ def apply_config(config: dict, *, restart: bool = True,
                 if unchanged:
                     raise
             try:
-                fs.replace_file(path, original, prepare=_permissions)
-                if restart:
-                    systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=old_ports)
+                _restore(original, restart=restart, verify_timeout=verify_timeout)
             except BaseException as rollback_error:
                 raise ApplyConfigError(label, stage="rollback", backup=backup,
                                        detail="Применение: " + _detail(error, 6)

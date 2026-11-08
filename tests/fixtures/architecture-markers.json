@@ -183,13 +183,6 @@
   },
   {
     "module": "commands.backup",
-    "scope": "test_and_restart",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 1
-  },
-  {
-    "module": "commands.backup",
     "scope": "xray_version",
     "category": "/usr/local/",
     "ast": "Constant(value='/usr/local/bin/xray')",
@@ -232,21 +225,7 @@
   },
   {
     "module": "commands.client",
-    "scope": "cmd_route",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
     "scope": "query_user_stats",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "restart_xray_with_config_test",
     "category": "/usr/local/",
     "ast": "Constant(value='/usr/local/bin/xray')",
     "count": 1
@@ -743,20 +722,6 @@
   },
   {
     "module": "commands.menu_xray_actions",
-    "scope": "apply_config",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_xray_actions",
-    "scope": "check_config",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_xray_actions",
     "scope": "run",
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
@@ -1180,13 +1145,6 @@
     "scope": "run",
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.update",
-    "scope": "run_diagnostics",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/sbin/xray-test')",
     "count": 1
   },
   {

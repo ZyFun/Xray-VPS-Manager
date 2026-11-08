@@ -53,6 +53,7 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
     def setUp(self) -> None:
         self.box = self.enterContext(Sandbox())
         self.enterContext(mock.patch.object(systemd, "time", FakeClock()))
+        self.enterContext(mock.patch("socket.create_connection", return_value=mock.MagicMock()))
         self.before = self.stored_config()
         self.restore_restarts = 0
         self.restart_error = None
@@ -69,7 +70,7 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
             return ok
 
         self.box.processes.script({
-            ("/usr/local/bin/xray", "run", "-test", "-config", str(self.box.paths.config)): ok,
+            (str(self.box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(self.box.paths.config.with_suffix('.json.tmp'))): ok,
             ("systemctl", "stop", "xray"): ok,
             ("systemctl", "reset-failed", "xray"): ok,
             ("systemctl", "restart", "xray"): restart,
@@ -173,9 +174,10 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
         self.assertIsInstance(result, SystemExit)
         self.assertEqual(result.code, 1)
         lines = stderr.splitlines()
-        self.assertEqual(len(lines), 1, stderr)
+        # VIREI-124: каноническая ошибка отката сохраняет detail отдельными строками.
         self.assertTrue(lines[0].startswith("ERROR: New config failed: Client has no UUID: bob. "), stderr)
-        self.assertIn("also failed: xray did not start after restart", lines[0])
+        self.assertIn("also failed:", lines[0])
+        self.assertIn("xray did not start after restart", stderr)
         self.assertEqual(self.restore_restarts, 1)
 
     def test_success_keeps_new_config_without_restore(self) -> None:

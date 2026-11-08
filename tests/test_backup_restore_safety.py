@@ -254,6 +254,18 @@ class RestoreExecStopTests(unittest.TestCase):
         with tarfile.open(sandbox.pre_backups[0]) as tar:
             return {name: tar.extractfile(name).read().decode() for name in CURRENT}
 
+    def test_cancelled_restore_returns_pre_restore_set_and_preserves_cancel(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            active = ("xray-traffic-sync.timer",)
+            sandbox = self.sandbox(tmp_dir, active=active, restart_outcomes=[KeyboardInterrupt()])
+            archive, archived = self.archive(sandbox)
+            with self.assertRaises(KeyboardInterrupt):
+                sandbox.restore(archive)
+            self.assertEqual(sandbox.files(), self.pre_backup_files(sandbox))
+            self.assertTrue(sandbox.xray_running)
+            self.assertEqual(sandbox.restarted, [active])
+            self.assertEqual(list(sandbox.config_dir.glob("config.json.*")), [])
+
     def test_exec_stop_writes_current_database_before_backup_and_preserves_archive(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             sandbox = self.sandbox(tmp_dir)

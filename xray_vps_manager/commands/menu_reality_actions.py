@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -17,12 +16,14 @@ from xray_vps_manager.clients.settings import (
     save_server_env_values,
     server_env_values,
 )
-from xray_vps_manager.core.errors import LockTimeout
+from xray_vps_manager.core.errors import ApplyConfigError, LockTimeout
+from xray_vps_manager.commands.presenters import apply_error_text, backup_text
 from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
-from xray_vps_manager.core.process import restart_systemd_unit, tcp_port_in_use
+from xray_vps_manager.core.paths import CONFIG_PATH
+from xray_vps_manager.core.process import tcp_port_in_use
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import caddy as xray_caddy
+from xray_vps_manager.xray import apply as xray_apply
 from xray_vps_manager.xray.config import (
     DEFAULT_TROJAN_TLS_LOCAL_PORT,
     DEFAULT_TROJAN_TLS_MAX_VERSION,
@@ -42,7 +43,6 @@ from xray_vps_manager.xray.config import (
     default_xhttp_packet_up_extra,
     find_inbound,
     find_inbound_by_tag,
-    inbound_listen_endpoints,
     inbound_tag,
     load_config as load_xray_config,
     managed_connection_inbounds,
@@ -55,7 +55,6 @@ from xray_vps_manager.xray.config import (
     normalize_xhttp_path,
     reality_dest,
     reality_inbounds,
-    save_config,
     xhttp_extra_json,
 )
 
@@ -360,18 +359,13 @@ def write_server_env(
     save_server_env_values(values)
 
 
-def apply_config(config: dict) -> Path:
-    backup = save_config(config)
+def apply_config(config: dict) -> Path | None:
     try:
-        run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_systemd_unit("xray", ports=inbound_listen_endpoints(config))
-    except subprocess.CalledProcessError as exc:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
-        die(f"New config failed: {exc}. Restored backup: {backup}")
-    return backup
+        return xray_apply.apply_config(config).backup
+    except ApplyConfigError as exc:
+        if exc.exit_code == 130:
+            raise KeyboardInterrupt from exc
+        die(apply_error_text(exc))
 
 
 def refresh_initial_link() -> None:
@@ -872,7 +866,7 @@ def update_port() -> None:
     refresh_initial_link()
     print(f"PORT обновлён: {port}")
     print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
 
 
 def update_sni() -> None:
@@ -903,7 +897,7 @@ def update_sni() -> None:
     refresh_initial_link()
     print(f"REALITY_SNI обновлён: {sni}")
     print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
 
 
 def update_port_and_sni() -> None:
@@ -947,7 +941,7 @@ def update_port_and_sni() -> None:
     print(f"PORT обновлён: {port}")
     print(f"REALITY_SNI обновлён: {sni}")
     print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup}")
+    print(f"Backup: {backup_text(backup)}")
 
 
 def choose_fingerprint(default: str) -> str:

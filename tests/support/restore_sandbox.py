@@ -183,7 +183,7 @@ class RestoreSandbox:
 
     def patches(self):
         with contextlib.ExitStack() as stack:
-            stack.enter_context(Sandbox())
+            stack.enter_context(Sandbox(existing_config_dir=self.config_dir))
             stack.enter_context(process.fake(self.systemctl))
             backup_files = [(arcname, path, True) for arcname, path in self.targets.items()]
             for name, value in (
