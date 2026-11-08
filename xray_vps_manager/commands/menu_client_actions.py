@@ -6,6 +6,7 @@ import os
 import re
 from collections.abc import Callable
 
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.listing import client_rows as build_client_rows
 from xray_vps_manager.clients.repository import db_clients, load_db_sql
@@ -346,12 +347,12 @@ def remove_client_from_menu(call: CommandRunner, confirm: ConfirmCallback) -> No
 def client_route_rows_for_selection(name: str) -> list[dict]:
     config = load_config()
     db = load_db_sql()
-    client_routes.sync_routes_from_config(config, db)
+    client_route_service.sync_routes_from_config(config, db)
     entry = db_clients(db).get(name, {})
     current_tag = client_routes.selected_route_tag(entry)
     active_tag = cascade_config.active_cascade_tag(config)
     rows = []
-    for index, item in enumerate(client_routes.route_options(db, config), start=1):
+    for index, item in enumerate(client_route_service.route_options(db, config), start=1):
         tag = str(item["tag"])
         rows.append(
             {

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.core import clock
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock, telegram_poller_lock
@@ -20,7 +21,6 @@ from xray_vps_manager.telegram import poller as telegram_poller
 from xray_vps_manager.telegram import setup as telegram_setup
 from xray_vps_manager.telegram import settings as telegram_settings
 from xray_vps_manager.telegram import subscriptions as telegram_subscriptions
-from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
 
 from xray_vps_manager.runner import command_entry, error_exit, fail as _fail, require_root as _require_root
@@ -118,13 +118,13 @@ def load_country_routes():
         config = xray_config.load_config()
     except Exception:
         return db, {}
-    client_routes.sync_route_metadata_from_config(config, db)
+    client_route_service.sync_route_metadata_from_config(config, db)
     return db, config
 
 
 def load_client_db():
     db, config = load_country_routes()
-    client_routes.assign_default_client_routes(config, db)
+    client_route_service.assign_default_client_routes(config, db)
     return db
 
 

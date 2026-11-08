@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.connections import ensure_connections
 from xray_vps_manager.clients.models import db_entry_from_client, split_email
 from xray_vps_manager.clients.payments import payment_type_label
 from xray_vps_manager.clients.repository import db_clients, db_managed_connections
-from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import clients, default_connection_tag, inbound_tag, managed_connection_inbounds
 
 
@@ -33,7 +33,7 @@ def client_rows(
                 db_clients(db)[name] = entry
 
     if resolve_countries:
-        client_routes.sync_routes_from_config(config, db)
+        client_route_service.sync_routes_from_config(config, db)
 
     for name, entry in db_clients(db).items():
         credentials = client_credentials.normalize_entry_credentials(entry)
@@ -51,7 +51,7 @@ def client_rows(
                 "paymentType": payment_type_label(entry),
                 "expiresAt": entry.get("expiresAt", ""),
                 "connection": entry.get("connection") or default_connection_tag(config),
-                "cascade": client_routes.selected_route_label(db, entry),
+                "cascade": client_route_service.selected_route_label(db, entry),
                 "credentialsActive": active,
                 "credentialsTotal": total,
             }

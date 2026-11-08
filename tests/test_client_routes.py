@@ -1,6 +1,9 @@
 import unittest
 from types import SimpleNamespace
 
+from tests.support.sandbox import Sandbox
+from xray_vps_manager.clients import routes as client_route_service
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.xray import client_routes
 
 
@@ -34,7 +37,7 @@ class ClientRouteTests(unittest.TestCase):
             }
         }
 
-        self.assertTrue(client_routes.sync_routes_from_config(config, db))
+        self.assertTrue(client_route_service.sync_routes_from_config(config, db))
 
         self.assertEqual(db["cascadeRoutes"]["cascade-de"]["country"], "Германия")
         self.assertEqual(db["cascadeRoutes"]["cascade-us"]["country"], "США")
@@ -47,7 +50,7 @@ class ClientRouteTests(unittest.TestCase):
             "clients": {},
         }
 
-        client_routes.sync_routes_from_config(config, db)
+        client_route_service.sync_routes_from_config(config, db)
 
         self.assertEqual(db["cascadeRoutes"]["cascade-de"]["country"], "Deutschland")
 
@@ -59,7 +62,7 @@ class ClientRouteTests(unittest.TestCase):
             "client": {"email": "alice|created=2026-06-12T08:00:00Z"},
         }
 
-        self.assertTrue(client_routes.ensure_client_route_config(config, "alice", entry))
+        self.assertTrue(client_route_service.ensure_client_route_config(config, "alice", entry))
 
         self.assertIn("RoutingService", config["api"]["services"])
         balancer_tag = client_routes.client_balancer_tag("alice", entry)
@@ -89,7 +92,7 @@ class ClientRouteTests(unittest.TestCase):
             }
         ]
 
-        self.assertTrue(client_routes.ensure_client_route_config(config, "alice", entry))
+        self.assertTrue(client_route_service.ensure_client_route_config(config, "alice", entry))
 
         self.assertEqual(config["routing"]["balancers"], [{"tag": balancer_tag, "selector": ["cascade-us"]}])
 
@@ -100,7 +103,7 @@ class ClientRouteTests(unittest.TestCase):
             calls.append(command)
             return SimpleNamespace(returncode=0 if len(calls) == 2 else 2, stdout="", stderr="bad flags")
 
-        ok, detail = client_routes.apply_runtime_override(
+        ok, detail = client_route_service.apply_runtime_override(
             "alice",
             {"id": "00000000-0000-0000-0000-000000000001"},
             "cascade-de",
@@ -121,7 +124,7 @@ class ClientRouteTests(unittest.TestCase):
         config["routing"]["balancers"] = [{"tag": "client-route-old", "selector": ["cascade-de"], "fallbackTag": "cascade-de"}]
         db = {"clients": {}, "cascadeRoutes": {}}
 
-        self.assertTrue(client_routes.ensure_all_client_route_config(config, db))
+        self.assertTrue(client_route_service.ensure_all_client_route_config(config, db))
 
         self.assertFalse(any(rule.get("balancerTag") == "client-route-old" for rule in config["routing"]["rules"]))
         self.assertFalse(any(balancer.get("tag") == "client-route-old" for balancer in config["routing"]["balancers"]))
@@ -146,6 +149,78 @@ class ClientRouteTests(unittest.TestCase):
 
         self.assertFalse(any(rule.get("balancerTag") == "client-route-alice" for rule in config["routing"]["rules"]))
         self.assertEqual(config["routing"]["balancers"], [])
+
+
+class ClientRouteBoundaryTests(unittest.TestCase):
+    def test_credential_emails_keep_sorted_order_deduplication_and_fallbacks(self):
+        entry = {"id": "uuid", "created": "entry-stamp", "credentials": {
+            "z": {"connection": "z", "client": {"email": " shared "}},
+            "a": {"connection": "a", "created": "credential-stamp", "client": {}},
+            "b": {"connection": "b", "client": {"email": "shared"}},
+        }}
+        self.assertEqual(client_credentials.client_emails("alice", entry), [
+            "alice|created=credential-stamp|connection=a", "shared",
+        ])
+        self.assertEqual(entry["connection"], "a")
+        self.assertEqual(client_credentials.client_email("alice", {"id": "uuid", "created": "stamp"}),
+                         "alice|created=stamp")
+        with self.assertRaisesRegex(ValueError, "Client has no UUID in database: alice"):
+            client_credentials.client_emails("alice", {})
+
+    def test_pure_config_uses_supplied_emails_without_normalizing_credentials(self):
+        config = route_config()
+        entry = {"id": "uuid", "credentials": "not-a-dict"}
+        emails = ["alice|custom=value", "alice|connection=second"]
+        self.assertTrue(client_routes.ensure_client_route_config(config, "alice", entry, emails=emails))
+        rule = next(rule for rule in config["routing"]["rules"] if "user" in rule)
+        self.assertEqual(rule["user"], emails)
+        self.assertEqual(entry, {"id": "uuid", "credentials": "not-a-dict", "selectedCascadeTag": "cascade-de"})
+
+    def test_skipped_routes_do_not_resolve_credentials(self):
+        for selected, catchall in (("missing", "cascade-de"), ("cascade-de", "warp-out")):
+            with self.subTest(selected=selected, catchall=catchall):
+                config = route_config()
+                config["routing"]["rules"][-1]["outboundTag"] = catchall
+                entry = {"selectedCascadeTag": selected}
+                self.assertFalse(client_route_service.ensure_client_route_config(config, "alice", entry))
+                self.assertEqual(entry, {"selectedCascadeTag": selected})
+
+    def test_credential_failure_preserves_preparation_order(self):
+        config = route_config()
+        entry = {"selectedCascadeTag": "cascade-us"}
+        tag = client_routes.client_balancer_tag("alice", entry)
+        config["routing"]["rules"].insert(0, {"user": ["old"], "balancerTag": tag})
+        with self.assertRaisesRegex(ValueError, "Client has no UUID in database: alice"):
+            client_route_service.ensure_client_route_config(config, "alice", entry)
+        self.assertIn("RoutingService", config["api"]["services"])
+        self.assertEqual(config["routing"]["balancers"], [{"tag": tag, "selector": ["cascade-us"]}])
+        self.assertFalse(any(rule.get("balancerTag") == tag for rule in config["routing"]["rules"]))
+        self.assertEqual(entry["selectedCascadeTag"], "cascade-us")
+
+    def test_snapshot_operations_do_not_open_or_create_database(self):
+        with Sandbox(db=None) as box:
+            box.paths.manager_db.unlink()
+            config = route_config()
+            db = {"clients": {"alice": {"id": "uuid", "created": "stamp"}}}
+            self.assertTrue(client_route_service.ensure_all_client_route_config(config, db))
+            self.assertEqual(client_route_service.selected_route_label(db, db["clients"]["alice"]), "Германия")
+            self.assertEqual(len(client_route_service.route_options(db, config)), 2)
+            self.assertFalse(box.paths.manager_db.exists())
+            self.assertEqual(box.processes.calls, [])
+
+    def test_runtime_override_preserves_fallback_errors_and_timeout(self):
+        with Sandbox(db=None) as box:
+            entry = {"id": "uuid"}
+            commands = client_routes.runtime_override_commands("alice", entry, "cascade-us")
+            box.processes.script({tuple(commands[0]): OSError("unavailable"),
+                                  tuple(commands[1]): box.processes.result(2, stdout=" old flags \n")})
+            self.assertEqual(client_route_service.apply_runtime_override(
+                "alice", entry, "cascade-us",
+                lambda command, **kwargs: box.processes.run(command, capture_output=True, text=True, **kwargs),
+                timeout=11,
+            ), (False, "unavailable; old flags"))
+            self.assertEqual(box.processes.calls, [tuple(command) for command in commands])
+            self.assertEqual([request[1]["timeout"] for request in box.processes.requests], [11, 11])
 
 
 if __name__ == "__main__":

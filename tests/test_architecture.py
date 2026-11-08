@@ -18,11 +18,6 @@ AREA_ORDER = (
 # Исходный список R1.0; следующие задачи только удаляют устранённые пары.
 # Идентичность исключения — модуль-источник и модуль-цель, без номеров строк.
 ALLOWED_IMPORTS = frozenset({
-    # Чтение клиентских данных и разбор email ещё не перенесены из xray.
-    ("xray.client_routes", "clients.credentials"),
-    ("xray.client_routes", "clients.models"),
-    ("xray.client_routes", "clients.repository"),
-    ("xray.config", "clients.models"),
     # Клиентские операции пока читают трафик до его отдельного шага миграции.
     ("clients.crud", "traffic.repository"),
     ("clients.limits", "traffic.formatting"),
