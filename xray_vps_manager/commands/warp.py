@@ -17,6 +17,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.core.http import http_json as _http_json
 from xray_vps_manager.commands.set_cascade import load_client_db_optional, save_client_db_optional
 from xray_vps_manager.core.errors import ManagerError
@@ -566,7 +567,7 @@ def disable_warp_route(config, db=None):
         changed = True
     if db is not None:
         # Client rules were removed while warp-out was the catch-all; selectedCascadeTag restores them.
-        changed = client_routes.ensure_all_client_route_config(config, db) or changed
+        changed = client_route_service.ensure_all_client_route_config(config, db) or changed
     return changed
 
 

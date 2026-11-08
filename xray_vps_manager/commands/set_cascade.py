@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
@@ -349,7 +350,7 @@ def cascade_rows(config):
     active = cascade_config.active_cascade_tag(config)
     db = load_client_db_optional()
     if db is not None:
-        client_routes.sync_routes_from_config(config, db)
+        client_route_service.sync_routes_from_config(config, db)
     rows = []
     for index, outbound in enumerate(cascade_config.cascade_outbounds(config), start=1):
         tag = outbound.get("tag", "")
@@ -488,11 +489,11 @@ def cmd_add(args):
         before = copy.deepcopy(config)
         db = load_client_db_optional()
         if db is not None:
-            client_routes.sync_routes_from_config(config, db)
+            client_route_service.sync_routes_from_config(config, db)
         configure_cascade(config, outbound)
         if db is not None:
-            client_routes.upsert_route_country(db, tag, country, label=name)
-            client_routes.ensure_all_client_route_config(config, db)
+            client_route_service.upsert_route_country(db, tag, country, label=name)
+            client_route_service.ensure_all_client_route_config(config, db)
         backup = apply_config(config, before)
         save_client_db_optional(db)
 
@@ -517,13 +518,13 @@ def cmd_use(args):
         before = copy.deepcopy(config)
         db = load_client_db_optional()
         if db is not None:
-            client_routes.sync_route_metadata_from_config(config, db)
+            client_route_service.sync_route_metadata_from_config(config, db)
         try:
             set_active_cascade(config, tag)
         except ValueError as exc:
             die(str(exc))
         if db is not None:
-            client_routes.ensure_all_client_route_config(config, db)
+            client_route_service.ensure_all_client_route_config(config, db)
         backup = apply_config(config, before)
         save_client_db_optional(db)
     print(f"Active cascade: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
@@ -542,8 +543,8 @@ def cmd_country(args):
         db = load_client_db_optional()
         if db is None:
             die("Client database is unavailable.")
-        client_routes.sync_routes_from_config(config, db)
-        client_routes.upsert_route_country(db, tag, country, label=cascade_config.cascade_name_from_tag(tag) or tag)
+        client_route_service.sync_routes_from_config(config, db)
+        client_route_service.upsert_route_country(db, tag, country, label=cascade_config.cascade_name_from_tag(tag) or tag)
         save_client_db_optional(db)
     print(f"Cascade: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Country: {country or 'not specified'}")
@@ -570,12 +571,12 @@ def cmd_remove(args):
         backup = apply_config(config, before)
         db = load_client_db_optional()
         if db is not None:
-            client_routes.sync_route_metadata_from_config(before, db)
+            client_route_service.sync_route_metadata_from_config(before, db)
             client_repository.db_cascade_routes(db).pop(tag, None)
             for entry in client_repository.db_clients(db).values():
                 if isinstance(entry, dict) and entry.get("selectedCascadeTag") == tag:
                     entry["selectedCascadeTag"] = cascade_config.active_cascade_tag(config)
-            client_routes.assign_default_client_routes(config, db)
+            client_route_service.assign_default_client_routes(config, db)
             save_client_db_optional(db, deletions=client_repository.Deletions(routes=(tag,)))
     print(f"Cascade removed: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Current catch-all route: {current_route_label(config)}")

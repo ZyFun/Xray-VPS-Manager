@@ -11,6 +11,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.core.clock import parse_time
 from xray_vps_manager.core.errors import LockTimeout, StateError
 from xray_vps_manager.db import database
@@ -240,19 +241,19 @@ def send_client_activity_exceptions_menu(ctx: PollerContext, db, chat_id, text=N
 
 def send_client_country_menu(ctx: PollerContext, db, chat_id, text=None):
     client_db, config = ctx.load_country_routes()
-    client_routes.assign_default_client_routes(config, client_db)
+    client_route_service.assign_default_client_routes(config, client_db)
     _name, entry, error = subscriptions.subscription_entry_for_chat(db, chat_id, client_db)
     if error:
         send_client_menu(ctx, db, chat_id, error)
         return
-    options = client_routes.route_options(client_db, config)
+    options = client_route_service.route_options(client_db, config)
     if not options:
         send_client_menu(
             ctx, db, chat_id, "Сейчас нет доступных для выбора стран. Попробуй позже или обратись к администратору."
         )
         return
     current_tag = client_routes.selected_route_tag(entry)
-    current_label = client_routes.selected_route_label(client_db, entry)
+    current_label = client_route_service.selected_route_label(client_db, entry)
     response = ctx.send_chat_message(
         db,
         chat_id,
@@ -646,7 +647,7 @@ def handle_callback_query(ctx: PollerContext, db, update):
             send_client_menu(ctx, db, chat_id, error)
             return True
         tag = data[len("client:country:"):]
-        options = {item["tag"]: item for item in client_routes.route_options(client_db, config)}
+        options = {item["tag"]: item for item in client_route_service.route_options(client_db, config)}
         if tag not in options:
             ctx.answer_callback_query(db, callback_id, "Страна недоступна")
             send_client_country_menu(ctx, db, chat_id, "Эта страна сейчас недоступна. Выбери другую.")
@@ -671,7 +672,7 @@ def handle_callback_query(ctx: PollerContext, db, update):
             db,
             chat_id,
             f"Страна подключения изменена: {label}.\n\n"
-            f"Текущая страна: {client_routes.selected_route_label(updated_db, updated_entry)}\n\n"
+            f"Текущая страна: {client_route_service.selected_route_label(updated_db, updated_entry)}\n\n"
             "Переподключи VPN, чтобы новые соединения пошли через выбранный маршрут.",
         )
         return True

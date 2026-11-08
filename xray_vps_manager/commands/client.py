@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.system import unit_sync
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import connections as client_connections
@@ -207,7 +208,7 @@ def restore_config_file(backup):
 
 
 def save_config_restart_xray_and_db(config, db, *, deletions=None):
-    client_routes.ensure_all_client_route_config(config, db)
+    client_route_service.ensure_all_client_route_config(config, db)
     backup = save_config(config)
     saving_db = False
     try:
@@ -469,7 +470,7 @@ def resolve_cascade_route_tag(config, db, value):
     raw = str(value or "").strip()
     if not raw:
         die("Cascade route is required.")
-    options = client_routes.route_options(db, config)
+    options = client_route_service.route_options(db, config)
     by_tag = {item["tag"]: item for item in options}
     if raw in by_tag:
         return raw
@@ -495,7 +496,7 @@ def resolve_cascade_route_tag(config, db, value):
 def print_route_options(config, db):
     rows = []
     active = cascade_config.active_cascade_tag(config)
-    for item in client_routes.route_options(db, config):
+    for item in client_route_service.route_options(db, config):
         tag = item["tag"]
         rows.append(
             [
@@ -1267,7 +1268,7 @@ def cmd_sync_routes():
     with client_db_lock("sync-routes"):
         config = load_config()
         db = load_db()
-        changed = client_routes.ensure_all_client_route_config(config, db)
+        changed = client_route_service.ensure_all_client_route_config(config, db)
         if changed:
             backup = save_config_restart_xray_and_db(config, db)
         else:
@@ -1285,13 +1286,13 @@ def cmd_route(name, route_value=None):
     with client_db_lock("route"):
         config = load_config()
         db = load_db()
-        client_routes.sync_routes_from_config(config, db)
+        client_route_service.sync_routes_from_config(config, db)
         entry = db_entry_for_existing_client(config, db, name)
         current_tag = client_routes.selected_route_tag(entry)
 
         if route_value is None:
             print(f"Client: {name}")
-            print(f"Current country: {client_routes.selected_route_label(db, entry)}")
+            print(f"Current country: {client_route_service.selected_route_label(db, entry)}")
             print(f"Current cascade: {current_tag or '-'}")
             print_route_options(config, db)
             save_db(db)
@@ -1301,7 +1302,7 @@ def cmd_route(name, route_value=None):
         if current_tag == tag:
             save_db(db)
             print(f"Client: {name}")
-            print(f"Country already selected: {client_routes.selected_route_label(db, entry)}")
+            print(f"Country already selected: {client_route_service.selected_route_label(db, entry)}")
             print(f"Cascade: {tag}")
             return
         if not client_routes.client_routes_allowed(config):
@@ -1313,7 +1314,7 @@ def cmd_route(name, route_value=None):
 
         next_entry = dict(entry)
         next_entry["selectedCascadeTag"] = tag
-        client_routes.ensure_client_route_config(config, name, next_entry, tag)
+        client_route_service.ensure_client_route_config(config, name, next_entry, tag)
         backup = save_config(config)
         try:
             run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
@@ -1321,7 +1322,7 @@ def cmd_route(name, route_value=None):
             restore_config_file(backup)
             die(f"New route config failed. Restored backup: {backup}")
 
-        ok, detail = client_routes.apply_runtime_override(name, next_entry, tag, run_capture)
+        ok, detail = client_route_service.apply_runtime_override(name, next_entry, tag, run_capture)
         if not ok:
             restore_config_file(backup)
             die("Runtime route switch failed. Run xray-client sync-routes first and check Xray RoutingService. Detail: " + detail)
@@ -1329,7 +1330,7 @@ def cmd_route(name, route_value=None):
         client_repository.db_clients(db)[name] = next_entry
         save_db(db)
     print(f"Client: {name}")
-    print(f"Selected country: {client_routes.selected_route_label(db, next_entry)}")
+    print(f"Selected country: {client_route_service.selected_route_label(db, next_entry)}")
     print(f"Cascade: {tag}")
     print(f"Backup: {backup}")
     print("Runtime route updated without Xray restart.")

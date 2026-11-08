@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from xray_vps_manager.clients.models import client_name
+from xray_vps_manager.xray.email import client_name
 from xray_vps_manager.core.paths import CONFIG_PATH
 
 INBOUND_TAG = "vless-reality"
