@@ -133,6 +133,41 @@ def record_hit(connection: sqlite3.Connection, blocklist_id: int, client_name: s
         )
 
 
+def snapshot_block(connection, value_or_id, *, by_value=False):
+    """Снимок одной записи и её hit-строк для компенсации удаления."""
+    item = get_block_by_value(connection, value_or_id) if by_value else get_block(connection, value_or_id)
+    if item is None:
+        return None
+    row = connection.execute("SELECT * FROM activity_blocklist WHERE id = ?", (item["id"],)).fetchone()
+    hits = connection.execute("SELECT * FROM activity_blocklist_hits WHERE blocklist_id = ?", (item["id"],)).fetchall()
+    return dict(row), [dict(hit) for hit in hits]
+
+
+def restore_block(connection, snapshot, value, *, restore_hits=False):
+    """Вернуть только затронутый блок; существующие счётчики обновления не трогать."""
+    with database.transaction(connection):
+        if snapshot is None:
+            item = get_block_by_value(connection, value)
+            if item is not None:
+                delete_block(connection, str(item["id"]))
+            return
+        row, hits = snapshot
+        columns = tuple(row)
+        names = ", ".join(columns)
+        assignments = ", ".join(f"{key} = excluded.{key}" for key in columns if key != "id")
+        connection.execute(
+            f"INSERT INTO activity_blocklist ({names}) VALUES ({', '.join('?' for _ in columns)}) "
+            f"ON CONFLICT(id) DO UPDATE SET {assignments}", tuple(row.values()),
+        )
+        if restore_hits:
+            for hit in hits:
+                connection.execute(
+                    "INSERT INTO activity_blocklist_hits(blocklist_id, client_name, hits, first_seen_at, last_seen_at) "
+                    "VALUES (?, ?, ?, ?, ?) ON CONFLICT(blocklist_id, client_name) DO NOTHING",
+                    (hit["blocklist_id"], hit["client_name"], hit["hits"], hit["first_seen_at"], hit["last_seen_at"]),
+                )
+
+
 def list_hit_stats(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     block_rows = connection.execute(
         """

@@ -249,17 +249,18 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
                 self.assertIsNone(client_repository.get_route(conn, "cascade-" + name))
                 self.assertEqual(client_repository.get_client(conn, "alice")["selectedCascadeTag"], expected)
 
-    def test_route_delete_failure_warns_and_rolls_back_sql_batch(self):
+    def test_route_delete_failure_restores_config_and_sql_batch(self):
         self.seed_routes()
         before = client_repository.load_db()
+        original_config = self.box.paths.config.read_bytes()
         with database.write_session() as conn:
             conn.execute("CREATE TRIGGER veto BEFORE DELETE ON cascade_routes "
                          "BEGIN SELECT RAISE(ABORT, 'route refused'); END")
         result = self.box.run_cli("cascade", "remove", "old")
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("WARN: client route DB save skipped: route refused", result.stderr)
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("route refused", result.stderr)
         self.assertEqual(client_repository.load_db(), before)
-        self.assertNotIn("cascade-old", {outbound["tag"] for outbound in self.box.config()["outbounds"]})
+        self.assertEqual(self.box.paths.config.read_bytes(), original_config)
 
 
 class MenuDeleteConnectionWarningTest(unittest.TestCase):

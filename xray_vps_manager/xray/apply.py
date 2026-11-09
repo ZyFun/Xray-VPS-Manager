@@ -1,6 +1,7 @@
 """Применение кандидата config.json с проверкой старта и атомарным откатом."""
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -103,6 +104,75 @@ def _restore(data: bytes, *, restart: bool, verify_timeout: float) -> None:
         systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=ports)
 
 
+def _test_candidate(data: bytes) -> None:
+    """Проверить временный файл и убрать его до изменения рабочего конфига."""
+    candidate = paths.paths().config.with_suffix(".json.tmp")
+    try:
+        fs.replace_file(candidate, data, prepare=_permissions)
+        test_config_file(candidate, json_format=True)
+    except BaseException as error:
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            raise ApplyConfigError("Не удалось проверить конфигурацию Xray", stage="test",
+                                   detail=_detail(error, 6) + "\nОчистка кандидата: "
+                                   + _detail(cleanup_error, 6)) from cleanup_error
+        raise
+    candidate.unlink(missing_ok=True)
+
+
+@contextmanager
+def temporary_config(config: dict, *, verify_timeout: float = systemd.DEFAULT_VERIFY_TIMEOUT):
+    """Установить конфиг пробы и обязательно вернуть C0 без технического бэкапа.
+
+    Сценарий держит manager.lock всё время пробы. Диагностика не нормализует
+    старый конфиг и не требует инвариантов постоянного apply. Даже совпавший
+    кандидат запускается заново. Ошибка возврата всегда фатальна.
+    """
+    path = paths.paths().config
+    stage = "test"
+    installed = False
+    original = None
+    error = None
+    try:
+        data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        _test_candidate(data)
+        stage = "write"
+        original = path.read_bytes()
+        json.loads(original)
+        ports = _local_ports(config)
+        # Отмена после rename также должна вернуть исходные байты.
+        installed = True
+        fs.replace_file(path, data, prepare=_permissions)
+        stage = "restart"
+        systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=ports)
+        stage = "probe"
+        yield
+    except BaseException as exc:
+        error = exc
+    finally:
+        if installed:
+            try:
+                _restore(original, restart=True, verify_timeout=verify_timeout)
+            except BaseException as rollback_error:
+                raise ApplyConfigError(
+                    "Не удалось восстановить Xray после временной пробы", stage="rollback",
+                    detail=("Проба: " + _detail(error, 6) + "\n" if error else "")
+                    + "Возврат: " + _detail(rollback_error, 6),
+                ) from rollback_error
+    if error is not None:
+        if stage == "probe":
+            raise error
+        failure = ApplyConfigError(
+            "Не удалось запустить временную конфигурацию Xray",
+            stage="verify" if isinstance(error, systemd.SystemdUnitStartError) else stage,
+            restored=installed, detail=_detail(error),
+        )
+        if isinstance(error, KeyboardInterrupt):
+            failure.exit_code = 130
+        raise failure from error
+
+
 def restore_config_backup(backup: Path | None, *, restart: bool = True,
                           verify_timeout: float = systemd.DEFAULT_VERIFY_TIMEOUT) -> None:
     """Компенсировать успешный apply после ошибки следующего шага БД/Caddy.
@@ -131,7 +201,6 @@ def apply_config(config: dict, *, restart: bool = True,
     from xray_vps_manager.xray import invariants
 
     path = paths.paths().config
-    candidate = path.with_suffix(".json.tmp")
     backup = None
     stage = "invariants"
     label = "Не удалось применить конфигурацию Xray" + (f" ({reason})" if reason else "")
@@ -139,18 +208,7 @@ def apply_config(config: dict, *, restart: bool = True,
         invariants.validate(config)
         stage = "test"
         data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        try:
-            fs.replace_file(candidate, data, prepare=_permissions)
-            test_config_file(candidate, json_format=True)
-        except BaseException as error:
-            try:
-                candidate.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                raise ApplyConfigError(label, stage="test", detail=_detail(error, 6)
-                                       + "\nОчистка кандидата: " + _detail(cleanup_error, 6)) from cleanup_error
-            raise
-        # Ошибка удаления кандидата тоже останавливает применение до изменения рабочего файла.
-        candidate.unlink(missing_ok=True)
+        _test_candidate(data)
         stage = "write"
         original = path.read_bytes()
         if data == original:

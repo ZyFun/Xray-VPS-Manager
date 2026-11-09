@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
 import socket
-import subprocess
 import time
 from datetime import datetime, timezone
 
 from xray_vps_manager.activity import repository as activity_repository
+from xray_vps_manager.core.compensation import compensate
 from xray_vps_manager.core.errors import ConflictError
+from xray_vps_manager.xray import apply as xray_apply
 from xray_vps_manager.core.locks import manager_lock, telegram_poller_lock
-from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
-from xray_vps_manager.core.process import run_capture
+from xray_vps_manager.core.paths import CONFIG_PATH
 from xray_vps_manager.telegram import api, bot_commands, poller, settings
 from xray_vps_manager.xray import cascade as cascade_config
+from xray_vps_manager.xray.config import ensure_api_rule_first
 
 TELEGRAM_SOCKS_TAG = "telegram-bot-socks"
 TELEGRAM_SOCKS_HOST = api.TELEGRAM_SOCKS_HOST
@@ -36,43 +35,10 @@ def load_config():
     return json.loads(CONFIG_PATH.read_text())
 
 
-def save_config(config):
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.telegram.{timestamp}")
-    shutil.copy2(CONFIG_PATH, backup)
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    settings.chown_xray(tmp)
-    os.chmod(tmp, 0o640)
-    tmp.replace(CONFIG_PATH)
-    return backup
-
-
-def restart_xray():
-    result = run_capture(["systemctl", "restart", "xray"], timeout=30)
-    if result.returncode == 0:
-        return
-    run_capture(["systemctl", "reset-failed", "xray"], timeout=10)
-    time.sleep(1.0)
-    retry = run_capture(["systemctl", "restart", "xray"], timeout=30)
-    if retry.returncode == 0:
-        return
-    detail = (retry.stderr or retry.stdout or result.stderr or result.stdout or "systemctl restart failed").strip()
-    raise subprocess.CalledProcessError(retry.returncode, retry.args, retry.stdout, detail)
-
-
 def apply_config(config):
-    backup = save_config(config)
-    try:
-        subprocess.run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)], check=True, text=True)
-        restart_xray()
-    except subprocess.CalledProcessError as exc:
-        shutil.copy2(backup, CONFIG_PATH)
-        settings.chown_xray(CONFIG_PATH)
-        os.chmod(CONFIG_PATH, 0o640)
-        restart_xray()
-        raise RuntimeError(f"New config failed. Restored backup: {backup}") from exc
-    return backup
+    with manager_lock(purpose="Telegram config"):
+        ensure_api_rule_first(config)
+        return xray_apply.apply_config(config).backup
 
 
 def rule_values(rule, key):
@@ -121,7 +87,7 @@ def ensure_telegram_proxy_config(config):
         }
     )
     routing_rules(config).insert(
-        0,
+        1,
         {
             "type": "field",
             "inboundTag": [TELEGRAM_SOCKS_TAG],
@@ -142,37 +108,38 @@ def wait_for_tcp(host, port, timeout=8.0):
     return False
 
 
-def set_route_mode(mode):
+def apply_route_mode(mode):
     if mode not in ("direct", "cascade"):
         raise ValueError("Route mode must be direct or cascade.")
     with manager_lock(MANAGER_LOCK_TIMEOUT, purpose=f"mode {mode}"):
         db = settings.load_db_sql()
         previous_mode = db.get("routeMode", "direct")
         config = load_config()
-        if mode == "cascade":
+        cascade_tag = ensure_telegram_proxy_config(config) if mode == "cascade" else ""
+        changed = True if mode == "cascade" else remove_telegram_proxy_config(config)
+        changed = ensure_api_rule_first(config) or changed
+        try:
             db["routeMode"] = mode
             settings.save_db_sections(db, ("routeMode",))
-            cascade_tag = ensure_telegram_proxy_config(config)
-            try:
-                backup = apply_config(config)
-            except Exception:
-                db["routeMode"] = previous_mode
-                settings.save_db_sections(db, ("routeMode",))
-                raise
-            if not wait_for_tcp(TELEGRAM_SOCKS_HOST, TELEGRAM_SOCKS_PORT):
-                raise RuntimeError(f"Telegram SOCKS inbound did not open: {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}")
-            print(f"Telegram Bot API traffic will use {cascade_tag} through SOCKS {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}.")
-            print(f"Backup: {backup}")
-        else:
-            changed = remove_telegram_proxy_config(config)
-            if changed:
-                backup = apply_config(config)
-                print("Telegram Bot API traffic will use direct server internet route.")
-                print(f"Backup: {backup}")
-            else:
-                print("Telegram Bot API traffic already uses direct server internet route.")
-        db["routeMode"] = mode
-        settings.save_db_sections(db, ("routeMode",))
+            applied = xray_apply.apply_config(config) if changed else xray_apply.ApplyResult(False)
+        except BaseException as error:
+            # Только routeMode: привязка owner, token и текущие offsets не меняются.
+            compensate(error, [("Маршрут Telegram", lambda: settings.save_db_sections(
+                {"routeMode": previous_mode}, ("routeMode",)))])
+        return cascade_tag, changed, applied
+
+
+def set_route_mode(mode):
+    cascade_tag, changed, applied = apply_route_mode(mode)
+    backup = applied.backup
+    if mode == "cascade":
+        print(f"Telegram Bot API traffic will use {cascade_tag} through SOCKS {TELEGRAM_SOCKS_HOST}:{TELEGRAM_SOCKS_PORT}.")
+        print(f"Backup: {backup}")
+    elif changed:
+        print("Telegram Bot API traffic will use direct server internet route.")
+        print(f"Backup: {backup}")
+    else:
+        print("Telegram Bot API traffic already uses direct server internet route.")
 
 
 def private_chats_from_updates(updates):

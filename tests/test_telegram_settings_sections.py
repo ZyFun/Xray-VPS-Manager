@@ -15,6 +15,9 @@ import unittest
 from unittest import mock
 
 from tests import test_telegram_manager_lock as lock_tests
+from tests.support.sandbox import Sandbox
+from tests.test_routing_apply_compensation import runtime
+from xray_vps_manager.core.errors import ApplyConfigError
 from xray_vps_manager.commands import telegram as telegram_command
 from xray_vps_manager.telegram import settings as telegram_settings
 from xray_vps_manager.telegram import setup as telegram_setup
@@ -180,27 +183,25 @@ class TelegramSettingsSectionsTests(unittest.TestCase):
         self.assertEqual(stored["routeMode"], "direct")
 
     def test_set_route_mode_cascade_keeps_poller_writes_made_during_restart(self) -> None:
-        def apply_config(_config):
-            self.poller.inject()
-            return "config.json.bak"
-
-        with self.patches(), \
-            mock.patch.object(telegram_setup, "apply_config", side_effect=apply_config), \
-            mock.patch.object(telegram_setup, "wait_for_tcp", return_value=True):
+        with Sandbox(existing_config_dir=self.root) as box, runtime(box), self.patches():
+            def restart(argv, **kwargs):
+                self.poller.inject()
+                return box.processes.ok()
+            box.processes.script({'systemctl restart xray': restart})
             telegram_setup.set_route_mode("cascade")
-
         stored = self.assert_poller_writes_kept()
         self.assertEqual(stored["routeMode"], "cascade")
 
     def test_set_route_mode_cascade_rollback_keeps_poller_writes(self) -> None:
-        def apply_config(_config):
-            self.poller.inject()
-            raise RuntimeError("New config failed.")
-
-        with self.patches(), mock.patch.object(telegram_setup, "apply_config", side_effect=apply_config):
-            with self.assertRaises(RuntimeError):
+        with Sandbox(existing_config_dir=self.root) as box, runtime(box), self.patches():
+            attempts = []
+            def restart(argv, **kwargs):
+                self.poller.inject()
+                attempts.append(True)
+                return box.processes.result(1 if len(attempts) < 3 else 0)
+            box.processes.script({'systemctl restart xray': restart})
+            with self.assertRaises(ApplyConfigError):
                 telegram_setup.set_route_mode("cascade")
-
         stored = self.assert_poller_writes_kept()
         self.assertEqual(stored["routeMode"], "direct")
 

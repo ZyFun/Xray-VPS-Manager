@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from xray_vps_manager.routing import bypass as bypass_routing
 import copy
 import json
-import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -14,11 +13,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from xray_vps_manager.activity.constants import ACCESS_LOG_PATH
+from xray_vps_manager.routing.route_test import probe_config
+from xray_vps_manager.routing.cascade import apply_route_config
 from xray_vps_manager.activity import parser as activity_parser
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
-from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env, write_env as write_server_env
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
@@ -92,18 +92,8 @@ def run_capture(command: list[str], timeout: int = 20):
     )
 
 
-def apply_config(config: dict, before: dict) -> Path:
-    backup = xray_config.save_config(config, CONFIG_PATH)
-    try:
-        run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_systemd_unit("xray", ports=xray_config.inbound_listen_endpoints(config))
-    except subprocess.CalledProcessError as exc:
-        CONFIG_PATH.write_text(json.dumps(before, indent=2, ensure_ascii=False) + "\n")
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        restart_systemd_unit("xray", ports=xray_config.inbound_listen_endpoints(before))
-        die(f"New config failed validation: {exc}. Restored previous config. Backup: {backup}")
-    return backup
+def apply_config(config, before=None, *, db=None, deletions=None):
+    return apply_route_config(config, db, deletions=deletions).backup
 
 
 def region_label_for_code(code: str) -> str:
@@ -499,10 +489,7 @@ def cmd_add(args: list[str]) -> None:
                 confirmed_tag=confirmed_tag,
                 env_values=env_values,
             )
-            backup = apply_config(config, before)
-            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
-                save_route(writer, record, conflict)
-            write_server_env_values(env_values)
+            backup = bypass_routing.apply_route(config, record, env_values, conflict=conflict).backup
 
     print(f"GeoIP bypass configured: {name} ({tag})")
     print(f"Region: {region} / {region_label}")
@@ -594,12 +581,9 @@ def cmd_enable(args: list[str]) -> None:
                 confirmed_tag=confirmed_tag,
                 env_values=env_values,
             )
-            backup = apply_config(config, before)
             record["enabled"] = True
             record["updated"] = utc_stamp()
-            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
-                save_route(writer, record, conflict)
-            write_server_env_values(env_values)
+            backup = bypass_routing.apply_route(config if record["enabled"] else None, record, env_values, conflict=conflict).backup
     print(f"GeoIP bypass enabled: {tag}")
     print(f"Region: {record.get('regionCode')} / {record.get('regionLabel') or '-'}")
     if record_test_target(record):
@@ -624,9 +608,14 @@ def cmd_region(args: list[str]) -> None:
         confirmed_tag = ""
         if record and record.get("enabled"):
             confirmed_tag = confirm_region_conflict(connection, tag, region, replace=bool(options["replace"]))
+        initial_record = copy.deepcopy(record)
+        test_target = (read_test_target(str(options["test_target"] or ""), record_test_target(record or {}))
+                       if options["test_target"] else None)
         with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="region"):
             config = load_config()
             record = sqlite_bypass.get_route(connection, tag)
+            if record != initial_record:
+                die(f"GeoIP bypass route {tag} was changed by another operation. Run the command again.")
             old_region = str(record.get("regionCode") or "") if record else ""
             if record is None:
                 outbound = bypass_config.bypass_outbound(config, tag)
@@ -659,17 +648,14 @@ def cmd_region(args: list[str]) -> None:
                     confirmed_tag=confirmed_tag,
                     env_values=env_values,
                 )
-                backup = apply_config(config, before)
             else:
                 record["regionCode"] = region
                 record["regionLabel"] = region_label
                 backup = None
-            if options["test_target"]:
-                set_record_test_target(record, read_test_target(str(options["test_target"] or ""), record_test_target(record)))
+            if test_target is not None:
+                set_record_test_target(record, test_target)
             record["updated"] = utc_stamp()
-            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
-                save_route(writer, record, conflict)
-            write_server_env_values(env_values)
+            backup = bypass_routing.apply_route(config if record["enabled"] else None, record, env_values, conflict=conflict).backup
     print(f"GeoIP bypass region updated: {tag}")
     print(f"Region: {region} / {region_label}")
     if record_test_target(record):
@@ -720,12 +706,9 @@ def cmd_disable(args: list[str]) -> None:
             before = copy.deepcopy(config)
             env_values = read_server_env()
             bypass_config.disable_bypass_route(config, tag, str(record.get("regionCode") or ""), env_values=env_values)
-            backup = apply_config(config, before)
             record["enabled"] = False
             record["updated"] = utc_stamp()
-            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
-                save_route(writer, record)
-            write_server_env_values(env_values)
+            backup = bypass_routing.apply_route(config, record, env_values).backup
     print(f"GeoIP bypass disabled: {tag}")
     print(f"Backup: {backup}")
     notify_config_event("disabled", record)
@@ -759,10 +742,7 @@ def cmd_remove(args: list[str]) -> None:
                 remove_outbound=True,
                 env_values=env_values,
             )
-            backup = apply_config(config, before)
-            with sqlite_database.write_session(sqlite_database.database_path()) as writer:
-                sqlite_bypass.delete_route(writer, tag)
-            write_server_env_values(env_values)
+            backup = bypass_routing.apply_route(config, record, env_values, delete=True).backup
     print(f"GeoIP bypass removed: {tag}")
     print(f"Backup: {backup}")
     notify_config_event("removed", record)
@@ -909,14 +889,6 @@ def active_region_for_tag(config: dict, routes: dict[str, dict], tag: str) -> st
     return ""
 
 
-def install_config_without_backup(config: dict) -> None:
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(CONFIG_PATH)
-
-
 def curl_probe(proxy: str, url: str, *, capture_body: bool = False):
     command = [
         "curl",
@@ -1003,20 +975,11 @@ def test_bypass(tag: str, region: str = "", test_target: str = "") -> None:
     config = json.loads(original_text)
     clean_config = copy.deepcopy(config)
     remove_test_artifacts(clean_config)
-    restore_text = (
-        json.dumps(clean_config, indent=2, ensure_ascii=False) + "\n"
-        if clean_config != config
-        else original_text
-    )
     if not bypass_config.bypass_outbound(config, tag):
         die(f"Bypass outbound is not configured: {tag}")
     test_config = copy.deepcopy(clean_config)
     add_test_inbounds(test_config, tag)
-    try:
-        install_config_without_backup(test_config)
-        run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-
+    with probe_config(test_config):
         print(f"Temporary SOCKS inbound: {TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}")
         if not wait_for_tcp(TEST_SOCKS_HOST, TEST_SOCKS_PORT):
             die("Temporary SOCKS inbound did not become ready.")
@@ -1028,16 +991,7 @@ def test_bypass(tag: str, region: str = "", test_target: str = "") -> None:
         route_ok = test_route_split(region, test_target)
         if not forced_ok or not route_ok:
             die("GeoIP bypass test failed.")
-    finally:
-        CONFIG_PATH.write_text(restore_text)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        try:
-            run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
-            run(["systemctl", "restart", "xray"])
-        except subprocess.CalledProcessError as exc:
-            print(f"ERROR: Failed to restore Xray after test: {exc}", file=sys.stderr)
-            raise
+
     print("Test finished. Original config restored.")
 
 

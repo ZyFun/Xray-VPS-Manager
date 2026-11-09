@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import ipaddress
-import os
 import re
-import shutil
-import subprocess
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -19,14 +16,10 @@ from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.activity.constants import EXCEPTION_VALUE_RE
 from xray_vps_manager.activity.parser import parse_target
 from xray_vps_manager.core.errors import NotFoundError
-from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import activity_blocklist as sqlite_blocklist
 from xray_vps_manager.db.repositories import clients as sqlite_clients
-from xray_vps_manager.xray import blocklist as xray_blocklist
-from xray_vps_manager.xray.config import load_config as load_xray_config
-from xray_vps_manager.xray.config import save_config
 
 FOREVER_DURATION_VALUES = {"", "0", "forever", "unlimited", "never", "none", "бессрочно"}
 
@@ -291,39 +284,3 @@ def block_candidate_rows(client_name: str, days_value: str = "7", region: str = 
 def block_stats_rows(*, db_path: str | Path | None = None) -> list[dict]:
     with _ready_session(db_path) as connection:
         return sqlite_blocklist.list_hit_stats(connection)
-
-
-def apply_config(config: dict) -> Path:
-    backup = save_config(config)
-    try:
-        subprocess.run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)], check=True)
-        subprocess.run(["systemctl", "restart", "xray"], check=True)
-    except subprocess.CalledProcessError as exc:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        subprocess.run(["systemctl", "restart", "xray"], check=False)
-        raise RuntimeError(f"New config failed. Restored backup: {backup}") from exc
-    return backup
-
-
-def reconcile_xray_config(
-    *,
-    removed_items: list[dict] | None = None,
-    db_path: str | Path | None = None,
-) -> Path | None:
-    with _ready_session(db_path) as connection:
-        now_iso = activity_time.utc_stamp()
-        known_items = sqlite_blocklist.list_blocks(connection)
-        active_items = sqlite_blocklist.active_blocks(connection, now_iso)
-
-    config = load_xray_config()
-    changed = xray_blocklist.sync_blocklist_rules(
-        config,
-        active_items,
-        known_items=known_items,
-        removed_items=removed_items,
-    )
-    if not changed:
-        return None
-    return apply_config(config)

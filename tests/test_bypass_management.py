@@ -9,6 +9,7 @@ from unittest import mock
 from xray_vps_manager.commands import set_bypass
 from xray_vps_manager.db import database
 from tests.support.sandbox import Sandbox
+from tests.test_apply_characterization import running_xray
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import outbound_links
@@ -168,9 +169,13 @@ class BypassManagementTests(unittest.TestCase):
             set_bypass.normalize_test_target("example.com:bad")
 
     def configure_sandbox(self, box, config):
+        config["api"] = box.config()["api"]
+        config["inbounds"] = box.config()["inbounds"]
+        config["routing"]["balancers"] = [{"tag": "client-route-alice", "selector": ["cascade-main"]}]
         box.paths.config.write_text(json.dumps(config))
+        self.enterContext(running_xray(box))
         box.processes.script({
-            (str(box.paths.xray_bin), "run", "-test", "-config", str(box.paths.config)): box.processes.ok(),
+            (str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(box.paths.config.with_suffix(".json.tmp"))): box.processes.ok(),
             "systemctl stop xray": box.processes.ok(),
             "systemctl reset-failed xray": box.processes.ok(),
             "systemctl restart xray": box.processes.ok(),

@@ -14,20 +14,6 @@
     "count": 1
   },
   {
-    "module": "activity.blocklist",
-    "scope": "<module>",
-    "category": "subprocess",
-    "ast": "Import(names=[alias(name='subprocess')])",
-    "count": 1
-  },
-  {
-    "module": "activity.blocklist",
-    "scope": "apply_config",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 3
-  },
-  {
     "module": "activity.cleanup",
     "scope": "<module>",
     "category": "subprocess",
@@ -778,13 +764,6 @@
   },
   {
     "module": "commands.set_cascade",
-    "scope": "apply_config",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 1
-  },
-  {
-    "module": "commands.set_cascade",
     "scope": "run",
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
@@ -803,13 +782,6 @@
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
     "count": 1
-  },
-  {
-    "module": "commands.set_cascade",
-    "scope": "test_cascade",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 2
   },
   {
     "module": "commands.telegram",
@@ -1191,27 +1163,6 @@
   },
   {
     "module": "commands.warp",
-    "scope": "apply_config",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 1
-  },
-  {
-    "module": "commands.warp",
-    "scope": "probe_warp_disabled",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 2
-  },
-  {
-    "module": "commands.warp",
-    "scope": "probe_warp_endpoint",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 2
-  },
-  {
-    "module": "commands.warp",
     "scope": "run",
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
@@ -1244,13 +1195,6 @@
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
     "count": 1
-  },
-  {
-    "module": "commands.warp",
-    "scope": "test_warp",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 2
   },
   {
     "module": "system.units",
@@ -1559,20 +1503,6 @@
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
     "count": 2
-  },
-  {
-    "module": "telegram.setup",
-    "scope": "<module>",
-    "category": "subprocess",
-    "ast": "Import(names=[alias(name='subprocess')])",
-    "count": 1
-  },
-  {
-    "module": "telegram.setup",
-    "scope": "apply_config",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
   },
   {
     "module": "telegram.setup",

@@ -28,6 +28,7 @@ CASCADE_LINK = "vless://22222222-2222-2222-2222-222222222222@cascade.example.com
 def install_config() -> dict:
     """Стартовый config.json из install.sh: direct, blocked и правила api/bittorrent/private без catch-all."""
     return {
+        "api": {"tag": "api", "services": ["StatsService"]},
         "inbounds": [
             {"tag": "api", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"}},
         ],
