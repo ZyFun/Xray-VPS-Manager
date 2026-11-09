@@ -10,6 +10,31 @@ from typing import Any
 from xray_vps_manager.xray.email import client_name
 from xray_vps_manager.core.paths import CONFIG_PATH
 
+
+def ensure_api_rule_first(config: dict) -> bool:
+    """Подготовить постоянный кандидат из старого конфига с Telegram перед api.
+
+    Перемещается только существующее правило api, остальные правила сохраняют
+    порядок. Отсутствующие или некорректные данные проверяет общий валидатор.
+    Временные диагностические пробы эту подготовку не выполняют.
+    """
+    api = config.get("api")
+    routing = config.get("routing")
+    if not isinstance(api, dict) or not isinstance(routing, dict):
+        return False
+    tag = api.get("tag")
+    rules = routing.get("rules")
+    if not isinstance(tag, str) or not tag or not isinstance(rules, list):
+        return False
+    for index, rule in enumerate(rules):
+        if isinstance(rule, dict) and rule.get("inboundTag") == [tag] and rule.get("outboundTag") == tag:
+            if index:
+                rules.insert(0, rules.pop(index))
+                return True
+            break
+    return False
+
+
 INBOUND_TAG = "vless-reality"
 TLS_INBOUND_TAG = "vless-tls"
 TROJAN_INBOUND_TAG = "trojan-tls"

@@ -38,8 +38,6 @@ TESTS = Path(__file__).resolve().parents[1]
 # полноту реестра с загруженными модулями; при переносах записи удаляются.
 LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.activity.backfill', 'ACCESS_LOG_PATH'),
-    ('xray_vps_manager.activity.blocklist', 'CONFIG_PATH'),
-    ('xray_vps_manager.activity.blocklist', 'XRAY_BIN'),
     ('xray_vps_manager.activity.bypass', 'CONFIG_PATH'),
     ('xray_vps_manager.activity.cleanup', 'MANAGER_DB_PATH'),
     ('xray_vps_manager.activity.constants', 'CONFIG_PATH'),
@@ -87,8 +85,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.commands.manager_update', 'MANAGER_LIB_DIR'),
     ('xray_vps_manager.commands.manager_update', 'MANAGER_PACKAGE_DIR'),
     ('xray_vps_manager.commands.manager_update', 'BACKUP_DIR'),
-    ('xray_vps_manager.commands.menu_activity_actions', 'CONFIG_PATH'),
-    ('xray_vps_manager.commands.menu_activity_actions', 'XRAY_BIN'),
     ('xray_vps_manager.commands.menu_reality_actions', 'CONFIG_PATH'),
     ('xray_vps_manager.commands.menu_reality_actions', 'CLIENT_LINK_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_CONFIG_PATH'),
@@ -136,7 +132,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PATH'),
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PACKAGES_PATH'),
     ('xray_vps_manager.telegram.setup', 'CONFIG_PATH'),
-    ('xray_vps_manager.telegram.setup', 'XRAY_BIN'),
     ('xray_vps_manager.xray.caddy', 'CADDYFILE_PATH'),
     ('xray_vps_manager.xray.caddy', 'CADDY_CONF_DIR'),
     ('xray_vps_manager.xray.caddy', 'CADDY_BACKUP_DIR'),

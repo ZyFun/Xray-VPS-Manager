@@ -10,6 +10,8 @@ from unittest import mock
 from xray_vps_manager.core import process, systemd
 from tests.test_restart_verification import FakeClock, FakeSocket, completed, config_with_port, show_output
 from tests.support.sandbox import Sandbox
+from tests.test_restart_verification import valid_config_with_port
+from xray_vps_manager.core.errors import ApplyConfigError
 from xray_vps_manager.commands import set_cascade
 
 
@@ -206,7 +208,7 @@ class UnloadedRestartTests(unittest.TestCase):
     def test_failure_after_unloaded_recovery_reaches_config_rollback(self):
         """Настоящий сценарий через Sandbox: два отказа запуска → прежний конфиг и успешный откат."""
         ctl = UnloadedSystemctl(restart_codes=(1, 1, 0))
-        before = config_with_port(443)
+        before = valid_config_with_port(443)
         with Sandbox() as box, mock.patch.object(systemd, "time", FakeClock()), \
                 mock.patch.object(process.socket, "create_connection", return_value=FakeSocket()), \
                 contextlib.redirect_stderr(io.StringIO()) as stderr:
@@ -217,12 +219,12 @@ class UnloadedRestartTests(unittest.TestCase):
                                "LoadState,ActiveState,SubState,NRestarts,MainPID,ControlPID,Job"):
                 args = ("--all",) if "LoadState" in properties else ()
                 box.processes.script({("systemctl", "show", "--property=" + properties, *args, "xray"): ctl.run})
-            box.processes.script({("/usr/local/bin/xray", "run", "-test", "-config", str(box.paths.config)):
+            box.processes.script({(str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(box.paths.config.with_suffix(".json.tmp"))):
                                   box.processes.ok()})
-            with self.assertRaises(SystemExit):
-                set_cascade.apply_config(config_with_port(2443), before)
+            with self.assertRaises(ApplyConfigError) as caught:
+                set_cascade.apply_config(valid_config_with_port(2443), before)
             self.assertEqual(json.loads(box.paths.config.read_text()), before)
-            self.assertIn("Restored previous config", stderr.getvalue())
+            self.assertTrue(caught.exception.restored)
         self.assertEqual([cmd[1] for cmd in ctl.commands].count("restart"), 3)
 
 

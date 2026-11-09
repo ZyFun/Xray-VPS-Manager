@@ -396,29 +396,19 @@ class ClientDbWriteCommandTests(unittest.TestCase):
         config, db = self.stored()
         self.assertEqual(client_outbounds(config, db), {"alice": "cascade-main", "bob": "cascade-backup", "carol": "cascade-backup"})
 
-    def test_warp_disable_without_client_db_still_disables_warp(self) -> None:
-        """manager.db недоступна: WARP выключается, клиентские правила вернёт `xray-client sync-routes`."""
+    def test_warp_disable_without_client_db_preserves_enabled_config(self) -> None:
+        """VIREI-125: необходимая БД недоступна — отказ до записи, без WARN-успеха."""
         with self.commands():
             self.add_client("alice")
             warp.cmd_enable()
-
-        stderr = StringIO()
+        before = (self.root / "config.json").read_bytes()
         missing = SQLiteReadUnavailable("SQLite manager database is missing.")
-        with self.commands(), \
-            mock.patch.object(client_repository, "load_db_sql", side_effect=missing), \
-            redirect_stderr(stderr):
-            warp.cmd_disable()
-
+        with self.commands(), mock.patch.object(client_repository, "load_db_sql", side_effect=missing):
+            with self.assertRaises(SQLiteReadUnavailable):
+                warp.cmd_disable()
+        self.assertEqual((self.root / "config.json").read_bytes(), before)
         config, db = self.stored()
-        self.assertEqual(cascade_config.current_catchall_tag(config), "cascade-main")
-        self.assertEqual(client_rule_tags(config), [])
-        self.assertIn("WARN: client route DB sync skipped: SQLite manager database is missing.", stderr.getvalue().splitlines())
-
-        with self.commands():
-            client_command.cmd_sync_routes()
-
-        config, db = self.stored()
-        self.assertEqual(client_outbounds(config, db), {"alice": "cascade-main"})
+        self.assertEqual(cascade_config.current_catchall_tag(config), "warp-out")
 
     def leave_client_rule_under_warp(self) -> None:
         """config.json прежней версии: WARP включён, а правило клиента осталось перед catch-all warp-out."""

@@ -10,7 +10,7 @@ from pathlib import Path
 from xray_vps_manager.core.paths import CONFIG_PATH, paths
 from xray_vps_manager.core.systemd import MANAGER_UNITS
 from xray_vps_manager.core.terminal import green, red
-from xray_vps_manager.commands.presenters import apply_error_text, backup_text
+from xray_vps_manager.commands.presenters import apply_error_text, backup_text, menu_error_boundary
 from xray_vps_manager.core.errors import ApplyConfigError
 from xray_vps_manager.routing import torrent as torrent_service
 from xray_vps_manager.xray import apply as xray_apply
@@ -74,7 +74,9 @@ def show_xray_status(call: CommandRunner) -> None:
 
 
 def restart_xray(call: CommandRunner) -> None:
-    call(["systemctl", "restart", "xray"])
+    from xray_vps_manager.system.xray_restart import restart
+    with menu_error_boundary():
+        restart()
     call(["systemctl", "is-active", "xray"])
 
 

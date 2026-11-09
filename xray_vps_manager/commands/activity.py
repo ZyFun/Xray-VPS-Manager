@@ -9,6 +9,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from xray_vps_manager.system import unit_sync
+from xray_vps_manager.system import activity_sync as activity_pipeline
+from xray_vps_manager.routing import blocklist as routing_blocklist
 from xray_vps_manager.activity.constants import (
     DETAIL_MODE_ALL,
     DETAIL_MODE_OFF,
@@ -62,7 +64,7 @@ def parse_date(value, label="DATE"):
 
 
 def sync_activity():
-    return activity_sync.sync_activity(log)
+    return activity_pipeline.sync(log)
 
 
 def print_backfill_stats(stats, applied=False):
@@ -572,7 +574,7 @@ def add_block(value, source_client="", duration="forever", comment="", source_ev
         except ValueError:
             die("Activity event id is too long.")
     try:
-        item = activity_blocklist.add_block(
+        item, backup = routing_blocklist.add_block(
             value,
             source_client=source_client,
             duration=duration,
@@ -580,7 +582,6 @@ def add_block(value, source_client="", duration="forever", comment="", source_ev
             source_event_id=event_id,
             source="geoip-menu" if source_client else "manual",
         )
-        backup = activity_blocklist.reconcile_xray_config()
     except (ConflictError, NotFoundError, ValueError, RuntimeError) as exc:
         die(str(exc))
     print(f"Added activity block: {item['value']}")
@@ -592,8 +593,7 @@ def add_block(value, source_client="", duration="forever", comment="", source_ev
 
 def delete_block(value_or_id):
     try:
-        item = activity_blocklist.delete_block(value_or_id)
-        backup = activity_blocklist.reconcile_xray_config(removed_items=[item])
+        item, backup = routing_blocklist.delete_block(value_or_id)
     except KeyError:
         die(f"Activity blocklist entry not found: {value_or_id}")
     except RuntimeError as exc:
@@ -603,10 +603,7 @@ def delete_block(value_or_id):
 
 
 def sync_blocklist():
-    try:
-        backup = activity_blocklist.reconcile_xray_config()
-    except RuntimeError as exc:
-        die(str(exc))
+    backup = routing_blocklist.reconcile_xray_config()
     print(f"Backup: {backup}" if backup else "Activity blocklist routing already up to date.")
 
 
@@ -1072,6 +1069,17 @@ def usage():
 def main():
     args = [arg for arg in sys.argv[1:] if arg != "--quiet"]
     command = args[0] if args else "status"
+    if command == "sync":
+        sys.exit(sync_activity())
+    if command == "block-add" and len(args) in (5, 6):
+        add_block(args[1], args[2], args[3], args[4], args[5] if len(args) == 6 else "")
+        return
+    if command == "block-delete" and len(args) == 2:
+        delete_block(args[1])
+        return
+    if command == "block-sync" and len(args) == 1:
+        sync_blocklist()
+        return
     with LOCK_PATH.open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if command == "status":
@@ -1084,8 +1092,6 @@ def main():
             detail_mode(args[1] if len(args) == 2 else None)
         elif command == "detail-clients" and len(args) >= 1:
             detail_clients(args[1:])
-        elif command == "sync":
-            sys.exit(sync_activity())
         elif command == "backfill" and len(args) in (5, 6):
             backfill_activity(args[1], args[2], args[3], args[4:])
         elif command == "alerts" and len(args) in (1, 2, 3):
@@ -1174,12 +1180,6 @@ def main():
                 values[2] if len(values) >= 3 else "RU",
                 plain=plain,
             )
-        elif command == "block-add" and len(args) in (5, 6):
-            add_block(args[1], args[2], args[3], args[4], args[5] if len(args) == 6 else "")
-        elif command == "block-delete" and len(args) == 2:
-            delete_block(args[1])
-        elif command == "block-sync" and len(args) == 1:
-            sync_blocklist()
         elif command == "block-stats" and len(args) in (1, 2):
             if len(args) == 2 and args[1] != "--plain":
                 usage()

@@ -38,6 +38,7 @@ class RoutingApplyTests(unittest.TestCase):
         processes.script({
             ("/usr/local/bin/xray", *test_args): ok,
             (str(self.box.paths.xray_bin), *test_args): ok,
+            (str(self.box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(self.path.with_suffix(".json.tmp"))): ok,
             "systemctl stop xray": ok,
             "systemctl reset-failed xray": ok,
             "systemctl restart xray": record_restart,

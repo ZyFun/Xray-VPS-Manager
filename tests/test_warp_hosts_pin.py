@@ -10,10 +10,13 @@ from contextlib import contextmanager, redirect_stdout
 from io import StringIO
 from pathlib import Path
 import sys
+import json
 import tempfile
 import unittest
 from unittest import mock
 
+from tests.support.sandbox import Sandbox
+from tests.test_routing_apply_compensation import runtime
 from xray_vps_manager.commands import warp
 from xray_vps_manager.routing import warp as warp_routing
 
@@ -201,15 +204,20 @@ class PinWithConsentTests(HostsFileTestCase):
 
 
 class RemoveUnpinTests(HostsFileTestCase):
+    def setUp(self):
+        self.box = self.enterContext(Sandbox())
+        self.enterContext(runtime(self.box))
+        self.hosts = warp.HOSTS_PATH
+        self.dir = self.hosts.parent
+        self.dir.mkdir(parents=True, exist_ok=True)
+
     @contextmanager
     def remove_env(self, changed: bool):
-        with mock.patch.object(warp, "manager_lock", mock.MagicMock()), \
-                mock.patch.object(warp, "load_config", return_value={}), \
-                mock.patch.object(warp, "load_client_db_optional", return_value=None), \
-                mock.patch.object(warp, "save_client_db_optional"), \
-                mock.patch.object(warp, "remove_warp", return_value=changed), \
-                mock.patch.object(warp, "apply_config", return_value=Path("/tmp/backup.json")), \
-                redirect_stdout(StringIO()):
+        if changed:
+            config = self.box.config()
+            config["outbounds"].append({"tag": "warp-out", "protocol": "wireguard", "settings": {}})
+            self.box.paths.config.write_text(json.dumps(config))
+        with redirect_stdout(StringIO()):
             yield
 
     def test_remove_drops_only_managed_line(self) -> None:

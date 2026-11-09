@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 import copy
-import os
 import re
-import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from xray_vps_manager.core.paths import CONFIG_PATH, XRAY_BIN
+from xray_vps_manager.commands.presenters import menu_error_boundary
 from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, read_env as read_server_env, write_env as write_server_env
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import load_config as load_xray_config
-from xray_vps_manager.xray.config import save_config
+from xray_vps_manager.routing import geoip_warning
+from xray_vps_manager.routing.cascade import apply_route_config
 
 WARP_OUTBOUND_TAG = "warp-out"
 DIRECT_OUTBOUND_TAG = "direct"
@@ -295,18 +294,9 @@ def load_config() -> dict:
         die(str(exc))
 
 
-def apply_config(config: dict) -> Path:
-    backup = save_config(config)
-    try:
-        run([str(XRAY_BIN), "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-    except subprocess.CalledProcessError:
-        shutil.copy2(backup, CONFIG_PATH)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        run(["systemctl", "restart", "xray"])
-        die(f"New config failed. Restored backup: {backup}")
-    return backup
+def apply_config(config: dict) -> Path | None:
+    with menu_error_boundary():
+        return apply_route_config(config).backup
 
 
 def write_server_env_values(values: dict[str, str]) -> None:
@@ -580,16 +570,8 @@ def set_xray_geoip_routing_region() -> None:
     if not code:
         print("Действие отменено.")
         return
-    config = load_config()
-    values = read_server_env()
-    previous_code = values.get("ACTIVITY_XRAY_GEOIP_WARNING_CODE", "")
-    if previous_code and previous_code.upper() != code.upper() and not bypass_config.configured_bypass_for_warning(config, previous_code):
-        bypass_config.remove_geoip_warning_route(config, previous_code)
-    bypass_config.ensure_geoip_domain_strategy(config, values)
-    apply_xray_geoip_warning_config(config, code)
-    backup = apply_config(config)
-    values["ACTIVITY_XRAY_GEOIP_WARNING_CODE"] = code
-    write_server_env_values(values)
+    with menu_error_boundary():
+        backup = geoip_warning.set_region(code, required_env_keys=MENU_ENV_REQUIRED_KEYS).backup
     print(f"Xray routing GeoIP-предупреждения включены для региона: {code}")
     print(f"Outbound tag: {xray_geoip_warning_tag(code)}")
     print("Routing domainStrategy: IPOnDemand")
@@ -597,16 +579,7 @@ def set_xray_geoip_routing_region() -> None:
 
 
 def disable_xray_geoip_routing_region() -> None:
-    config = load_config()
-    values = read_server_env()
-    code = values.get("ACTIVITY_XRAY_GEOIP_WARNING_CODE", "")
-    if code and not bypass_config.configured_bypass_for_warning(config, code):
-        bypass_config.remove_geoip_warning_route(config, code)
-    elif not code:
-        remove_xray_geoip_warning_config(config)
-    restore_xray_geoip_domain_strategy(config, values)
-    backup = apply_config(config)
-    values["ACTIVITY_XRAY_GEOIP_WARNING_CODE"] = ""
-    write_server_env_values(values)
+    with menu_error_boundary():
+        backup = geoip_warning.set_region("", required_env_keys=MENU_ENV_REQUIRED_KEYS).backup
     print("Xray routing GeoIP-предупреждения отключены.")
     print(f"Backup: {backup}")
