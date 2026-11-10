@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from copy import deepcopy
+from datetime import timedelta
 from itertools import count
 import json
 import os
@@ -12,7 +13,7 @@ import unittest
 from unittest import mock
 
 from tests.support.sandbox import Sandbox
-from xray_vps_manager.core import fs, systemd
+from xray_vps_manager.core import clock, fs, systemd
 from xray_vps_manager.core.errors import ApplyConfigError, ConfigInvariantError
 from xray_vps_manager.xray import apply as apply_module
 from xray_vps_manager.xray.apply import apply_config
@@ -170,18 +171,24 @@ class ApplyTests(unittest.TestCase):
         config["inbounds"][1]["port"] = 8443
         return config
 
-    def script_test(self, box, *, result=None):
+    def script_candidate_test(self, box, response):
+        candidate = box.paths.config.with_suffix(".json.tmp")
+        box.processes.script({
+            (str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(candidate)): response,
+        })
+
+    def script_test(self, box, *, result=None, existing_backups=()):
         original = box.paths.config.read_bytes()
         candidate = box.paths.config.with_suffix(".json.tmp")
 
         def test(argv, **kwargs):
             self.assertEqual(argv[argv.index("-format") + 1], "json")
             self.assertEqual(box.paths.config.read_bytes(), original)
-            self.assertEqual(list(box.paths.config.parent.glob("config.json.bak.*")), [])
+            self.assertEqual(set(box.paths.config_dir.glob("config.json.bak.*")), set(existing_backups))
             self.assertEqual(candidate.stat().st_mode & 0o777, 0o640)
             return result or box.processes.ok()
 
-        box.processes.script({(str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(candidate)): test})
+        self.script_candidate_test(box, test)
         return original
 
     def assert_clean(self, box):
@@ -207,6 +214,79 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual([c.args[0] for c in connect.call_args_list], [("127.0.0.1", 10085), ("127.0.0.1", 8443)])
             box.assert_restarted(times=1)
             self.assert_clean(box)
+
+    def test_twenty_five_changes_keep_twenty_most_recent_backups(self):
+        with Sandbox() as box:
+            self.script_candidate_test(box, box.processes.ok())
+            backups = []
+            for index in range(25):
+                candidate = box.config()
+                candidate["inbounds"][1]["port"] = 8443 + index
+                original = box.paths.config.read_bytes()
+                with clock.frozen(box.now + timedelta(seconds=index)):
+                    result = apply_config(candidate, restart=False)
+                backups.append(result.backup)
+                self.assertEqual(result.backup.read_bytes(), original)
+            self.assertEqual(set(box.paths.config_dir.glob("config.json.bak.*")), set(backups[-20:]))
+            box.assert_restarted(times=0)
+
+    def test_rotation_combines_old_telegram_and_standard_names_by_utc_stamp(self):
+        with Sandbox() as box:
+            config_dir = box.paths.config_dir
+            anchors = {config_dir / f"config.json.bak.20261005120000{index:06d}" for index in range(18)}
+            old = {
+                config_dir / "config.json.bak.20261003120000999999",
+                config_dir / "config.json.bak.telegram.20261004115959999999",
+            }
+            install_copy = config_dir / "config.json.bak.20261004120000"
+            for copy in anchors | old | {install_copy}:
+                copy.write_bytes(b"historical config")
+            unrelated = (
+                config_dir / "config.json.bak.telegram.20260101000000.extra",
+                config_dir / "config.json.bak.other.20260101000000",
+                config_dir / "config.json.bak.1",
+                config_dir / "config.json.bak.telegram.42",
+                config_dir / "config.json.bak.telegram.20260101000000",
+                config_dir / "other.json.bak.20260101000000",
+            )
+            for entry in unrelated:
+                entry.write_bytes(b"unrelated")
+            directory = config_dir / "config.json.bak.telegram.20260101000000000000"
+            directory.mkdir()
+            linked = config_dir / "config.json.bak.20260101000000"
+            linked.symlink_to(unrelated[-1])
+            self.script_candidate_test(box, box.processes.ok())
+            result = apply_config(self.candidate(box), restart=False)
+            self.assertEqual(set(config_dir.glob("config.json.bak.*")),
+                             anchors | {install_copy, result.backup, *unrelated[:-1], directory, linked})
+            self.assertTrue(directory.is_dir())
+            self.assertTrue(linked.is_symlink())
+            self.assertEqual([entry.read_bytes() for entry in unrelated], [b"unrelated"] * len(unrelated))
+
+    def test_rotation_preserves_current_rollback_with_clock_reversal_and_name_collisions(self):
+        with Sandbox(now="2026-10-06T12:00:59.999999Z") as box:
+            config_dir = box.paths.config_dir
+            original = box.paths.config.read_bytes()
+            future = [config_dir / f"config.json.bak.20261007120000{index:06d}" for index in range(20)]
+            for copy in future:
+                copy.write_bytes(b"newer timestamp")
+            dangling = config_dir / "config.json.bak.20261006120059999999"
+            dangling.symlink_to(config_dir / "missing")
+            collision = config_dir / "config.json.bak.20261006120100000000"
+            collision.mkdir()
+            self.script_candidate_test(box, box.processes.ok())
+            with service(box):
+                result = apply_config(self.candidate(box))
+                self.assertEqual(result.backup, config_dir / "config.json.bak.20261006120100000001")
+                self.assertEqual(result.backup.read_bytes(), original)
+                # Компенсация позднего сбоя читает копию с диска, как вызывающий сценарий.
+                apply_module.restore_config_backup(result.backup)
+            self.assertTrue(dangling.is_symlink())
+            self.assertTrue(collision.is_dir())
+            self.assertFalse(future[0].exists())
+            self.assertTrue(all(copy.exists() for copy in future[1:]))
+            self.assertEqual(box.paths.config.read_bytes(), original)
+            box.assert_restarted(times=2)
 
     def test_late_failure_after_restart_zero_restores_exact_file_and_old_ports(self):
         with Sandbox() as box:
@@ -294,13 +374,17 @@ class ApplyTests(unittest.TestCase):
         with Sandbox() as box:
             config = box.config()
             box.paths.config.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-            self.script_test(box)
+            backups = {box.paths.config_dir / f"config.json.bak.20261005120000{index:06d}" for index in range(21)}
+            for backup in backups:
+                backup.write_bytes(b"historical config")
+            self.script_test(box, existing_backups=backups)
             result = apply_config(config)
             self.assertFalse(result.changed)
             self.assertIsNone(result.backup)
             self.assertFalse(result.restarted)
             self.assertEqual(result.verified_ports, ())
             self.assertEqual(len(box.processes.calls), 1)
+            self.assertEqual(set(box.paths.config_dir.glob("config.json.bak.*")), backups)
             self.assert_clean(box)
 
     def test_restart_false_writes_without_systemd(self):

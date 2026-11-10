@@ -1,4 +1,4 @@
-"""T3. Старые пути и явные исключения VIREI-124/125 (вариант В, 08.11.2026)."""
+"""T3. Контракты VIREI-124/125 (вариант В) и ротация VIREI-126."""
 
 from contextlib import contextmanager, redirect_stderr
 from copy import deepcopy
@@ -88,7 +88,7 @@ WRITERS = (
 
 class ApplyCharacterizationTests(unittest.TestCase):
     def test_config_writers(self):
-        """VIREI-124/125: общий кандидат до записи, проверенный рестарт и точный возврат C0."""
+        """Общий apply проверяет кандидат и возвращает C0; VIREI-126 ротирует только при создании копии."""
         for module, error, attempts in WRITERS:
             for failure in (None, "test", "restart"):
                 with self.subTest(module=module.__name__, failure=failure), Sandbox(now="2026-10-06T12:34:56.789123Z") as box:
@@ -155,7 +155,8 @@ class ApplyCharacterizationTests(unittest.TestCase):
 
         copies = set(path.parent.glob("config.json.bak.*"))
         created = not (module in MIGRATED and failure == "test")
-        self.assertEqual(copies, older | ({new_copy} if created else set()))
+        expected_copies = set(sorted(older)[-19:]) | {new_copy} if created else older
+        self.assertEqual(copies, expected_copies)
         self.assertEqual(copies_at_test, [None if module in MIGRATED else original])
         test_args = ("run", "-test", "-format", "json", "-config", str(path.with_suffix('.json.tmp'))) if module in MIGRATED else ("run", "-test", "-config", str(path))
         self.assertEqual(box.processes.calls[0][1:], test_args)
