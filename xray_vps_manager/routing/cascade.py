@@ -31,13 +31,13 @@ def _restore_route_records(before, desired, deletions):
     repository.save_db(undo, deletions=repository.Deletions(routes=tuple(removed_new_routes)))
 
 
-def apply_route_config(config, db=None, *, deletions=None):
+def apply_route_config(config, db=None, *, deletions=None, apply=None):
     """Временный порядок config → БД по решению VIREI-125 от 08.11.2026."""
     with manager_lock(purpose="apply route"):
         previous = deepcopy(db.original) if db is not None else None
         desired = deepcopy(dict(db)) if db is not None else None
         ensure_api_rule_first(config)
-        applied = apply_config(config)
+        applied = (apply_config if apply is None else apply)(config)
         try:
             if db is not None:
                 repository.save_db(db, deletions=deletions)

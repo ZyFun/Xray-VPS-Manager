@@ -111,11 +111,7 @@ class CascadeManagementTests(unittest.TestCase):
         set_cascade.configure_cascade(config, cascade_outbound("main"))
         add_client_route(config)
 
-        def add_warp_outbound(config, endpoint_override=None):
-            config.setdefault("outbounds", []).append({"tag": "warp-out", "protocol": "wireguard", "settings": {}})
-
-        with mock.patch.object(warp, "upsert_warp_outbound", side_effect=add_warp_outbound):
-            warp.enable_warp_route(config)
+        warp.enable_warp_route(config, outbound={"tag": "warp-out", "protocol": "wireguard", "settings": {}})
 
         self.assertEqual(cascade_config.current_catchall_tag(config), "warp-out")
         self.assertFalse(any(rule.get("balancerTag") == "client-route-alice" for rule in config["routing"]["rules"]))
@@ -129,11 +125,7 @@ class CascadeManagementTests(unittest.TestCase):
             {"type": "field", "inboundTag": ["warp-test-socks"], "outboundTag": "warp-out"},
         )
 
-        def add_warp_outbound(config, endpoint_override=None):
-            config.setdefault("outbounds", []).append({"tag": "warp-out", "protocol": "wireguard", "settings": {}})
-
-        with mock.patch.object(warp, "upsert_warp_outbound", side_effect=add_warp_outbound):
-            warp.enable_warp_route(config)
+        warp.enable_warp_route(config, outbound={"tag": "warp-out", "protocol": "wireguard", "settings": {}})
 
         self.assertFalse(any(inbound.get("tag") == "warp-test-socks" for inbound in config.get("inbounds", [])))
         self.assertFalse(any("warp-test-socks" in cascade_config.rule_values(rule, "inboundTag") for rule in config["routing"]["rules"]))

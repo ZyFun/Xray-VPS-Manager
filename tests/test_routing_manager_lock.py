@@ -166,6 +166,7 @@ def routing_patches(root: Path, *, restart=None, record=None):
         enter(mock.patch.object(systemd, "time", FakeClock()))
         enter(mock.patch("socket.create_connection", return_value=FakeSocket()))
         enter(mock.patch("socket.getaddrinfo", return_value=[]))
+        enter(mock.patch("xray_vps_manager.core.process.tcp_port_in_use", return_value=False))
         enter(mock.patch.object(core_paths, "MANAGER_LOCK_PATH", root / "manager.lock"))
         enter(mock.patch.object(database, "MANAGER_DB_PATH", root / "manager.db"))
         enter(mock.patch("shutil.chown", side_effect=chown))
@@ -239,7 +240,7 @@ def reality_port(root: Path, tag: str = "vless-reality") -> int:
 RACE_SCENARIOS = {
     # Сценарий без вопросов: снимок config/client-DB загружен, второй писатель приходит во время рестарта Xray.
     "cascade-use": (lambda: set_cascade.cmd_use(["backup"]), "restart", []),
-    # Первый рестарт — проба endpoint, которая подменяет config.json и затем возвращает исходный текст.
+    # Первый рестарт — временная проба; следующий загружает чистый итоговый конфиг.
     "warp-enable": (warp.cmd_enable, "restart", []),
     # Интерактивные сценарии: второй писатель приходит, пока админ отвечает на последний вопрос.
     "bypass-disable": (lambda: set_bypass.cmd_disable([]), "input", ["1"]),
@@ -774,12 +775,13 @@ class ExecStopTrafficSyncTests(RoutingLockTestCase):
                 {
                     "apply_config",
                     "save_client_db_optional",
-                    "choose_working_endpoint",
+                    "apply_endpoint_route",
+                    "apply_disabled_route",
                     "probe_warp_disabled",
                     "test_warp",
                     "install_config_without_backup",
                 },
-                ("probe_warp_endpoint", "probe_warp_disabled", "test_warp"),
+                ("probe_warp_disabled", "test_warp"),
             ),
             "menu_reality_actions.py": ({"apply_config", "update_connection_db", "write_server_env"}, ("apply_config",)),
         }
