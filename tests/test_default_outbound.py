@@ -331,29 +331,32 @@ class WarpProbeOrderTests(unittest.TestCase):
         (root / "config.json").write_text(json.dumps(live))
         probe_configs = []
 
-        def restart() -> None:
-            config = json.loads((root / "config.json").read_text())
-            if any(inbound.get("tag") == warp.TEST_INBOUND_TAG for inbound in config.get("inbounds", [])):
-                probe_configs.append(config)
-
-        probes = {
-            "probe_warp_endpoint": lambda: warp.probe_warp_endpoint(routing_lock_tests.WARP_ENDPOINT),
-            "xray-warp test": warp.test_warp,
-        }
-        for title, probe in probes.items():
-            with self.subTest(title):
+        probes = (
+            (warp.cmd_enable, "warp-test-1-socks", "warp-test-1"),
+            (warp.test_warp, warp.TEST_INBOUND_TAG, warp.WARP_OUTBOUND_TAG),
+        )
+        for probe, inbound_tag, outbound_tag in probes:
+            with self.subTest(probe=probe.__name__):
                 probe_configs.clear()
+                (root / "config.json").write_text(json.dumps(live))
+
+                def restart() -> None:
+                    config = json.loads((root / "config.json").read_text())
+                    if any(inbound.get("tag") == inbound_tag for inbound in config.get("inbounds", [])):
+                        probe_configs.append(config)
+
                 with routing_lock_tests.routing_patches(root, restart=restart), redirect_stdout(StringIO()):
                     probe()
 
                 self.assertEqual(len(probe_configs), 1)
                 config = probe_configs[0]
-                self.assertEqual(outbound_tags(config), [*outbound_tags(live), warp.WARP_OUTBOUND_TAG])
+                original_tags = outbound_tags(live)
+                self.assertEqual(outbound_tags(config)[:len(original_tags) + 1], [*original_tags, outbound_tag])
                 self.assertEqual(effective_default(config), "bypass-ru")
                 test_rule = config["routing"]["rules"][0]
-                self.assertEqual(test_rule["inboundTag"], [warp.TEST_INBOUND_TAG])
-                self.assertEqual(test_rule["outboundTag"], warp.WARP_OUTBOUND_TAG)
-                self.assertEqual(json.loads((root / "config.json").read_text()), live)
+                self.assertEqual(test_rule["inboundTag"], [inbound_tag])
+                self.assertEqual(test_rule["outboundTag"], outbound_tag)
+                self.assertNotIn(inbound_tag, (root / "config.json").read_text())
 
 
 class EnsureDirectFirstTests(unittest.TestCase):

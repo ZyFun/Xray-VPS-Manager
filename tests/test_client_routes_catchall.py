@@ -335,6 +335,7 @@ class ClientDbWriteCommandTests(unittest.TestCase):
         })
         self.enterContext(running_xray(self.box))
         self.enterContext(mock.patch("socket.getaddrinfo", return_value=[]))
+        self.enterContext(mock.patch("xray_vps_manager.core.process.tcp_port_in_use", return_value=False))
 
     @contextmanager
     def commands(self):

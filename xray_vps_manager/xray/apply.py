@@ -1,5 +1,6 @@
 """Применение кандидата config.json с проверкой старта и атомарным откатом."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import timedelta
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+from subprocess import CalledProcessError, TimeoutExpired
 
 from xray_vps_manager.core import clock, fs, paths, process, systemd
 from xray_vps_manager.core.errors import ApplyConfigError
@@ -213,20 +215,76 @@ def apply_config(config: dict, *, restart: bool = True,
     Перед заменой остаётся до 20 технических копий, включая копию для отката.
     reason — контекст ошибки без вывода.
     """
+    return _apply_config(lambda: config, restart=restart, verify_timeout=verify_timeout, reason=reason)
+
+
+def apply_config_after_probe(probe: dict, final_config: Callable[[], dict], *,
+                             on_probe_start_failure: Callable[[ApplyConfigError], dict] | None = None,
+                             verify_timeout: float = systemd.DEFAULT_VERIFY_TIMEOUT,
+                             reason: str = "") -> ApplyResult:
+    """Под manager.lock запустить пробу, затем сразу применить чистый итоговый конфиг.
+
+    final_config вызывается при работающей пробе. Исходные байты до пробы
+    служат для сравнения, технической копии и единственного отката. Если итог
+    совпал с исходным, второй рестарт только убирает пробу, без бэкапа.
+    Для disable итог известен заранее: после отказа Xray проверить или
+    запустить пробу on_probe_start_failure может вернуть чистый конфиг.
+    Ошибки записи и отмена не запускают этот переход.
+    """
+    return _apply_config(final_config, restart=True, verify_timeout=verify_timeout, reason=reason,
+                         probe=probe, on_probe_start_failure=on_probe_start_failure)
+
+
+def _apply_config(final_config: Callable[[], dict], *, restart: bool,
+                  verify_timeout: float, reason: str, probe: dict | None = None,
+                  on_probe_start_failure: Callable[[ApplyConfigError], dict] | None = None) -> ApplyResult:
     from xray_vps_manager.xray import invariants
 
     path = paths.paths().config
     backup = None
-    stage = "invariants"
+    original = None
+    probe_installed = False
+    writing_final = False
+    stage = "test" if probe is not None else "invariants"
     label = "Не удалось применить конфигурацию Xray" + (f" ({reason})" if reason else "")
     try:
+        try:
+            if probe is not None:
+                probe_data = (json.dumps(probe, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+                _test_candidate(probe_data)
+                stage = "write"
+                original = path.read_bytes()
+                json.loads(original)
+                ports = _local_ports(probe)
+                probe_installed = True  # Отмена возможна сразу после rename.
+                fs.replace_file(path, probe_data, prepare=_permissions)
+                stage = "restart"
+                systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=ports)
+        except (CalledProcessError, TimeoutExpired) as error:
+            if on_probe_start_failure is None or stage not in ("test", "restart"):
+                raise
+            probe_failure = ApplyConfigError(
+                "Не удалось запустить временную конфигурацию Xray",
+                stage="verify" if isinstance(error, systemd.SystemdUnitStartError) else stage,
+                detail=_detail(error),
+            )
+            stage = "probe"
+            config = on_probe_start_failure(probe_failure)
+        else:
+            stage = "probe"
+            config = final_config()
+        stage = "invariants"
         invariants.validate(config)
         stage = "test"
         data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         _test_candidate(data)
         stage = "write"
-        original = path.read_bytes()
+        if original is None:
+            original = path.read_bytes()
         if data == original:
+            if probe_installed:
+                stage = "rollback"
+                _restore(original, restart=True, verify_timeout=verify_timeout)
             return ApplyResult(changed=False)
         json.loads(original)  # Отказ до записи, если исходный файл не пригоден для отката.
         ports = _local_ports(config)
@@ -235,39 +293,36 @@ def apply_config(config: dict, *, restart: bool = True,
         backup = backup_path
         fs.prune_backups(path, keep=CONFIG_BACKUP_KEEP, protect=(backup,),
                          legacy_tags=("telegram",), timestamp_key=_backup_stamp_key)
-        try:
-            fs.replace_file(path, data, prepare=_permissions)
-            if restart:
-                stage = "restart"
-                systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=ports)
-            return ApplyResult(True, backup, restart,
-                               tuple(port for _, port in ports) if restart and verify_timeout > 0 else ())
-        except BaseException as error:
-            failed_stage = "verify" if isinstance(error, systemd.SystemdUnitStartError) else stage
-            if stage == "write":
-                # Отмена может прийти уже после rename. Ошибка чтения не доказывает,
-                # что рабочий файл сохранился, поэтому в этом случае нужен откат.
-                try:
-                    unchanged = path.read_bytes() == original
-                except BaseException:
-                    unchanged = False
-                if unchanged:
-                    raise
+        writing_final = True
+        fs.replace_file(path, data, prepare=_permissions)
+        if restart:
+            stage = "restart"
+            systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=ports)
+        return ApplyResult(True, backup, restart,
+                           tuple(port for _, port in ports) if restart and verify_timeout > 0 else ())
+    except BaseException as error:
+        needs_restore = stage != "rollback" and (probe_installed or writing_final)
+        if needs_restore and not probe_installed and stage == "write":
+            # Отмена может прийти уже после rename. Ошибка чтения не доказывает,
+            # что рабочий файл сохранился, поэтому в этом случае нужен откат.
+            try:
+                needs_restore = path.read_bytes() != original
+            except BaseException:
+                pass
+        if needs_restore:
             try:
                 _restore(original, restart=restart, verify_timeout=verify_timeout)
             except BaseException as rollback_error:
                 raise ApplyConfigError(label, stage="rollback", backup=backup,
                                        detail="Применение: " + _detail(error, 6)
                                        + "\nОткат: " + _detail(rollback_error, 6)) from rollback_error
-            failure = ApplyConfigError(label, stage=failed_stage, backup=backup, restored=restart,
-                                       detail=_detail(error))
-            if isinstance(error, KeyboardInterrupt):
-                failure.exit_code = 130
-            raise failure from error
-    except ApplyConfigError:
-        raise
-    except BaseException as error:
-        failure = ApplyConfigError(label, stage=stage, backup=backup, detail=_detail(error))
+        if stage == "probe" or isinstance(error, ApplyConfigError):
+            if needs_restore and isinstance(error, ApplyConfigError):
+                error.restored = restart
+            raise
+        failed_stage = "verify" if stage == "restart" and isinstance(error, systemd.SystemdUnitStartError) else stage
+        failure = ApplyConfigError(label, stage=failed_stage, backup=backup,
+                                   restored=needs_restore and restart, detail=_detail(error))
         if isinstance(error, KeyboardInterrupt):
             failure.exit_code = 130
         raise failure from error

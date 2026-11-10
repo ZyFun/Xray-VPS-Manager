@@ -633,24 +633,28 @@ class WarpProbeStartFailureTests(unittest.TestCase):
         stack.enter_context(mock.patch('time.sleep'))
         stack.enter_context(mock.patch('socket.create_connection', side_effect=open_socket))
         stack.enter_context(mock.patch('socket.getaddrinfo', return_value=[(None, None, None, None, ('162.159.192.1', 2408))]))
+        stack.enter_context(mock.patch("xray_vps_manager.core.process.tcp_port_in_use", return_value=False))
         return stack.enter_context(mock.patch('sys.stderr', io.StringIO()))
 
-    def test_domain_start_failure_falls_back_to_ipv4(self) -> None:
+    def test_batch_start_failure_restores_original_without_applying_warp(self) -> None:
+        """VIREI-127: ошибка запуска общего конфига не является отказом отдельного endpoint."""
         with ExitStack() as stack:
-            self.patches(stack, [self.start_failure(), None, None, None])
-            stdout = stack.enter_context(mock.patch("sys.stdout", io.StringIO()))
-            chosen = warp.choose_working_endpoint(required=True)
-        self.assertEqual(chosen, self.IPV4)
-        self.assertIn(f"FAIL {self.DOMAIN}", stdout.getvalue())
-        self.assertIn("did not start", stdout.getvalue())
-        self.assertEqual(len(self.restarts), 4)
+            self.patches(stack, [self.start_failure(), None])
+            with self.assertRaises(ApplyConfigError) as caught:
+                warp.cmd_enable()
+        self.assertEqual(caught.exception.stage, "verify")
+        self.assertTrue(caught.exception.restored)
+        self.assertIn("did not start", caught.exception.detail)
+        self.assertIn(self.DOMAIN, self.restarts[0])
+        self.assertIn(self.IPV4, self.restarts[0])
+        self.assertEqual(self.restarts[1:], [self.original])
         self.assertEqual(self.config_path.read_text(), self.original)
 
     def test_restore_failure_after_probe_stays_fatal(self) -> None:
         with ExitStack() as stack:
             self.patches(stack, [self.start_failure(), self.start_failure()])
             with self.assertRaises(ApplyConfigError) as caught:
-                warp.probe_warp_endpoint(self.DOMAIN)
+                warp.cmd_enable()
             self.assertEqual(caught.exception.stage, "rollback")
         self.assertEqual(self.config_path.read_text(), self.original)
 
