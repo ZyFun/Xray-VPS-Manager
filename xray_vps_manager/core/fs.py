@@ -6,6 +6,7 @@ import os
 import pwd
 import re
 import shutil
+import stat
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -87,21 +88,27 @@ def remove_path(path: Path) -> None:
     _remove_tree(path)
 
 
-def prune_backups(path: Path, *, keep: int, protect: Iterable[Optional[Path]] = ()) -> list[Path]:
+def prune_backups(path: Path, *, keep: int, protect: Iterable[Optional[Path]] = (),
+                  legacy_tags: tuple[str, ...] = (),
+                  timestamp_key: Callable[[str, str | None], str | None] | None = None) -> list[Path]:
     """Keep the ``keep`` newest ``<name>.bak.<digits>`` copies of ``path`` and remove the older ones.
 
     Only regular files in ``path.parent`` whose name is exactly ``<path.name>.bak.<digits>`` count
-    as copies; copies of other files, other suffixes (``.bak.telegram.*``) and directories are left
-    alone. Copies are ordered by the numeric timestamp, so the newest stay. Copies in ``protect``
-    (the ones the caller has just made; ``None`` is ignored) are never removed and count towards
-    ``keep``, so they survive even when the clock went back and older-named copies look newer.
+    by default; ``legacy_tags`` also accepts ``<name>.bak.<tag>.<digits>`` for the given literal tags.
+    Other names, symlinks and directories are left alone. Copies are ordered by the numeric
+    timestamp; ``timestamp_key(stamp, tag)`` can normalize the timestamp or return ``None`` to
+    leave the file alone. The tag is ``None`` for the standard name.
+    Copies in ``protect`` (the ones the caller has just made; ``None`` is ignored) are never
+    removed and count towards ``keep``, so they survive even when the clock went back.
     Rotation is best effort: a missing directory or a copy that cannot be removed is skipped.
     Returns the removed copies, oldest first. ``keep`` must be at least 1.
     """
     if keep < 1:
         raise ValueError("keep must be at least 1")
     protected = {Path(item).name for item in protect if item is not None}
-    pattern = re.compile(re.escape(path.name) + r"\.bak\.([0-9]+)")
+    tags = "|".join(map(re.escape, legacy_tags))
+    legacy = rf"(?:(?P<tag>{tags})\.)?" if tags else ""
+    pattern = re.compile(re.escape(path.name) + r"\.bak\." + legacy + r"(?P<stamp>[0-9]+)")
     try:
         entries = list(path.parent.iterdir())
     except OSError:
@@ -109,8 +116,19 @@ def prune_backups(path: Path, *, keep: int, protect: Iterable[Optional[Path]] = 
     copies = []
     for entry in entries:
         match = pattern.fullmatch(entry.name)
-        if match and entry.is_file() and not entry.is_symlink():
-            copies.append((len(match.group(1)), match.group(1), entry))
+        if not match:
+            continue
+        stamp = match["stamp"]
+        tag = match["tag"] if tags else None
+        key = timestamp_key(stamp, tag) if timestamp_key is not None else stamp
+        if key is None:
+            continue
+        try:
+            if not stat.S_ISREG(entry.lstat().st_mode):
+                continue
+        except OSError:
+            continue
+        copies.append((len(key), key, entry))
     copies.sort()
     kept_protected = sum(1 for _, _, entry in copies if entry.name in protected)
     candidates = [entry for _, _, entry in copies if entry.name not in protected]

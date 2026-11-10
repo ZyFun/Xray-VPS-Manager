@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from contextlib import contextmanager
+from datetime import timedelta
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,8 @@ import shutil
 
 from xray_vps_manager.core import clock, fs, paths, process, systemd
 from xray_vps_manager.core.errors import ApplyConfigError
+
+CONFIG_BACKUP_KEEP = 20
 
 
 @dataclass(frozen=True)
@@ -25,13 +28,24 @@ def _permissions(path: Path) -> None:
 
 
 def _backup_path(path: Path) -> Path:
-    stamp = clock.now().strftime("%Y%m%d%H%M%S%f")
-    backup = path.with_name(f"{path.name}.bak.{stamp}")
+    moment = clock.now()
     # Повторное применение в одну микросекунду не должно затирать прежнюю копию.
-    while backup.exists():
-        stamp = str(int(stamp) + 1)
+    while True:
+        stamp = moment.strftime("%Y%m%d%H%M%S%f")
         backup = path.with_name(f"{path.name}.bak.{stamp}")
-    return backup
+        if not os.path.lexists(backup):
+            return backup
+        moment += timedelta(microseconds=1)
+
+
+def _backup_stamp_key(stamp: str, legacy_tag: str | None) -> str | None:
+    # install.sh пишет обычные копии с UTC до секунд; Python-пути, включая старый
+    # Telegram, — до микросекунд. Иные числовые суффиксы не участвуют в ротации.
+    if len(stamp) == 20:
+        return stamp
+    if legacy_tag is None and len(stamp) == 14:
+        return stamp + "000000"
+    return None
 
 
 def _detail(error: BaseException, limit: int = 12) -> str:
@@ -196,7 +210,8 @@ def apply_config(config: dict, *, restart: bool = True,
 
     БД и server.env принадлежат сценарию. При ошибке старый файл восстанавливается
     байт-в-байт; restored=True означает также успешную проверку рестарта отката.
-    Ротация копий вводится отдельно в VIREI-126. reason — контекст ошибки без вывода.
+    Перед заменой остаётся до 20 технических копий, включая копию для отката.
+    reason — контекст ошибки без вывода.
     """
     from xray_vps_manager.xray import invariants
 
@@ -218,6 +233,8 @@ def apply_config(config: dict, *, restart: bool = True,
         backup_path = _backup_path(path)
         fs.replace_file(backup_path, original, prepare=_permissions)
         backup = backup_path
+        fs.prune_backups(path, keep=CONFIG_BACKUP_KEEP, protect=(backup,),
+                         legacy_tags=("telegram",), timestamp_key=_backup_stamp_key)
         try:
             fs.replace_file(path, data, prepare=_permissions)
             if restart:
