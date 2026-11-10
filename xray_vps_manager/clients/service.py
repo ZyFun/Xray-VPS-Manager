@@ -4,6 +4,7 @@ from xray_vps_manager.clients import repository, routes
 from xray_vps_manager.core.errors import StateError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.xray.apply import apply_config, restore_config_backup
+from xray_vps_manager.xray.config import ensure_api_rule_first
 
 
 def apply_config_and_save_db(config: dict, db: dict, *, deletions=None):
@@ -15,6 +16,7 @@ def apply_config_and_save_db(config: dict, db: dict, *, deletions=None):
     """
     with manager_lock(purpose="apply client config"):
         routes.ensure_all_client_route_config(config, db)
+        ensure_api_rule_first(config)
         applied = apply_config(config)
         try:
             repository.save_db(db, deletions=deletions)

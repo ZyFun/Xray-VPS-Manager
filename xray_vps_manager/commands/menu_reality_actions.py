@@ -41,6 +41,7 @@ from xray_vps_manager.xray.config import (
     connection_settings_from_inbound,
     default_xhttp_advanced_extra,
     default_xhttp_packet_up_extra,
+    ensure_api_rule_first,
     find_inbound,
     find_inbound_by_tag,
     inbound_tag,
@@ -361,6 +362,7 @@ def write_server_env(
 
 def apply_config(config: dict) -> Path | None:
     try:
+        ensure_api_rule_first(config)
         return xray_apply.apply_config(config).backup
     except ApplyConfigError as exc:
         if exc.exit_code == 130:

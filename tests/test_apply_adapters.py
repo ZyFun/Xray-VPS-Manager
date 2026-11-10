@@ -1,6 +1,7 @@
 """VIREI-124, вариант В: no-op писателей и обязательный restart установленного комплекта."""
 
 from contextlib import contextmanager, redirect_stdout
+from copy import deepcopy
 from io import StringIO
 import hashlib
 import json
@@ -14,6 +15,7 @@ import zipfile
 from tests.support.sandbox import Sandbox
 from tests.test_client_manager_lock import foreign_lock_holder, lock_is_free, script_apply
 from tests.test_restart_verification import FakeClock, FakeSocket
+from tests.test_routing_apply_compensation import legacy_telegram_config
 from xray_vps_manager.clients import repository, routes, service
 from xray_vps_manager.commands import backup, client, menu_reality_actions, menu_xray_actions, update
 from xray_vps_manager.core import fs, systemd
@@ -137,6 +139,97 @@ class WriterAdaptersTests(unittest.TestCase):
                 torrent.set_blocked(False)
             self.assertEqual(box.paths.config.read_bytes(), original)
             self.assertEqual(box.processes.calls, [])
+
+
+class LegacyTelegramWriterTests(unittest.TestCase):
+    """R01: обновление с Telegram перед api не блокирует постоянных писателей."""
+
+    def assert_applied(self, box, original, other_rules):
+        rules = box.config()["routing"]["rules"]
+        self.assertEqual(rules[0]["outboundTag"], "api")
+        self.assertEqual(rules[1:], other_rules)
+        backups = list(box.paths.config_dir.glob("config.json.bak.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), original)
+        box.assert_restarted(times=1)
+
+    def test_client_add_disable_and_expire_accept_legacy_telegram_order(self):
+        for operation in ("add", "disable", "expire-due"):
+            with self.subTest(operation=operation), Sandbox() as box, live(box):
+                config = legacy_telegram_config(box)
+                if operation == "expire-due":
+                    db = repository.load_db()
+                    db["clients"]["alice"]["expiresAt"] = "2020-01-01T00:00:00Z"
+                    repository.save_db(db)
+                original = box.paths.config.read_bytes()
+                others = deepcopy([rule for rule in config["routing"]["rules"]
+                                   if rule.get("outboundTag") != "api"])
+                box.processes.script({"/usr/local/bin/xray uuid": box.processes.ok(
+                    "22222222-2222-4222-8222-222222222222\n")})
+                args = ("add", "bob", "1") if operation == "add" else (
+                    ("disable", "alice") if operation == "disable" else ("expire-due",))
+                result = box.run_cli("client", *args)
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                db = repository.load_db()
+                if operation == "add":
+                    self.assertIn("bob", db["clients"])
+                else:
+                    self.assertFalse(db["clients"]["alice"]["enabled"])
+                self.assert_applied(box, original, others)
+
+    def test_reality_writer_preserves_telegram_route_and_other_rules(self):
+        with Sandbox() as box, live(box):
+            config = legacy_telegram_config(box)
+            original = box.paths.config.read_bytes()
+            others = deepcopy([rule for rule in config["routing"]["rules"]
+                               if rule.get("outboundTag") != "api"])
+            config["log"]["loglevel"] = "debug"
+            menu_reality_actions.apply_config(config)
+            self.assert_applied(box, original, others)
+
+    def test_torrent_toggle_accepts_legacy_telegram_order(self):
+        for blocked in (False, True):
+            with self.subTest(blocked=blocked), Sandbox() as box, live(box):
+                config = legacy_telegram_config(box)
+                if blocked:
+                    config["routing"]["rules"] = [rule for rule in config["routing"]["rules"]
+                                                   if "bittorrent" not in rule.get("protocol", [])]
+                    box.paths.config.write_text("  " + json.dumps(config) + "\n\n")
+                original = box.paths.config.read_bytes()
+                telegram_rule = deepcopy(config["routing"]["rules"][0])
+                result = torrent.set_blocked(blocked)
+                self.assertTrue(result.changed)
+                rules = box.config()["routing"]["rules"]
+                self.assertEqual(rules[0]["outboundTag"], "api")
+                self.assertIn(telegram_rule, rules)
+                self.assertEqual(any("bittorrent" in rule.get("protocol", []) for rule in rules), blocked)
+                self.assertEqual(result.backup.read_bytes(), original)
+                box.assert_restarted(times=1)
+
+    def test_failed_writers_restore_legacy_bytes_and_client_database(self):
+        for writer in ("client", "reality", "torrent"):
+            with self.subTest(writer=writer), Sandbox() as box, live(box):
+                config = legacy_telegram_config(box)
+                original = box.paths.config.read_bytes()
+                old_db = repository.load_db()
+                box.processes.script({"systemctl restart xray": [
+                    box.processes.result(1), box.processes.result(1), box.processes.ok()]})
+                if writer == "client":
+                    result = box.run_cli("client", "disable", "alice")
+                    self.assertEqual(result.exit_code, 1)
+                    self.assertIn("Restored backup", result.stderr)
+                elif writer == "reality":
+                    config["log"]["loglevel"] = "debug"
+                    with self.assertRaises(SystemExit) as raised:
+                        menu_reality_actions.apply_config(config)
+                    self.assertIn("Restored backup", str(raised.exception))
+                else:
+                    with self.assertRaises(ApplyConfigError) as raised:
+                        torrent.set_blocked(False)
+                    self.assertTrue(raised.exception.restored)
+                self.assertEqual(box.paths.config.read_bytes(), original)
+                self.assertEqual(repository.load_db(), old_db)
+                box.assert_restarted(times=3)
 
 
 class InstalledConfigTests(unittest.TestCase):
