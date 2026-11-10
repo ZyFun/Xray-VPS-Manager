@@ -110,7 +110,6 @@ class ActivitySyncTests(unittest.TestCase):
                 mock.patch.object(activity_sync.repository, "prune_activity", return_value=0),
                 mock.patch.object(activity_sync.repository, "prune_alerts_for_write", return_value=0),
                 mock.patch.object(activity_sync.repository, "prune_xray_errors_for_write", return_value=0),
-                mock.patch.object(activity_sync.activity_blocklist, "reconcile_xray_config", return_value=None),
                 mock.patch.object(
                     activity_sync.repository,
                     "record_pipeline_event_for_write",
@@ -141,7 +140,6 @@ class ActivitySyncTests(unittest.TestCase):
             mock.patch.object(activity_sync.repository, "prune_alerts_for_write", return_value=2) as prune_alerts,
             mock.patch.object(activity_sync.raw_logs, "sync_error_log", return_value=0) as sync_error_log,
             mock.patch.object(activity_sync.repository, "prune_xray_errors_for_write", return_value=3) as prune_errors,
-            mock.patch.object(activity_sync.activity_blocklist, "reconcile_xray_config", return_value=None) as reconcile,
         ):
             result = activity_sync.sync_activity(messages.append)
 
@@ -149,7 +147,6 @@ class ActivitySyncTests(unittest.TestCase):
         prune_alerts.assert_called_once()
         sync_error_log.assert_called_once_with(messages.append)
         prune_errors.assert_called_once()
-        reconcile.assert_called_once_with()
         self.assertTrue(any("No clients found" in message for message in messages))
         self.assertTrue(any("2 alerts pruned" in message for message in messages))
         self.assertTrue(any("3 errors pruned" in message for message in messages))
@@ -168,7 +165,6 @@ class ActivitySyncTests(unittest.TestCase):
                 mock.patch.object(activity_sync.repository, "prune_alerts_for_write", return_value=0) as prune_alerts,
                 mock.patch.object(activity_sync.raw_logs, "sync_error_log", return_value=0) as sync_error_log,
                 mock.patch.object(activity_sync.repository, "prune_xray_errors_for_write", return_value=0) as prune_errors,
-                mock.patch.object(activity_sync.activity_blocklist, "reconcile_xray_config", return_value=None) as reconcile,
             ):
                 result = activity_sync.sync_activity(messages.append)
 
@@ -176,7 +172,6 @@ class ActivitySyncTests(unittest.TestCase):
         prune_alerts.assert_called_once()
         sync_error_log.assert_called_once_with(messages.append)
         prune_errors.assert_called_once()
-        reconcile.assert_called_once_with()
         self.assertTrue(any("Access log not found" in message for message in messages))
 
     def test_sync_does_not_advance_offset_when_pipeline_write_fails(self) -> None:

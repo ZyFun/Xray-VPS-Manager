@@ -3,15 +3,37 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from xray_vps_manager.clients.models import client_name
+from xray_vps_manager.xray.email import client_name
 from xray_vps_manager.core.paths import CONFIG_PATH
+
+
+def ensure_api_rule_first(config: dict) -> bool:
+    """Подготовить постоянный кандидат из старого конфига с Telegram перед api.
+
+    Перемещается только существующее правило api, остальные правила сохраняют
+    порядок. Отсутствующие или некорректные данные проверяет общий валидатор.
+    Временные диагностические пробы эту подготовку не выполняют.
+    """
+    api = config.get("api")
+    routing = config.get("routing")
+    if not isinstance(api, dict) or not isinstance(routing, dict):
+        return False
+    tag = api.get("tag")
+    rules = routing.get("rules")
+    if not isinstance(tag, str) or not tag or not isinstance(rules, list):
+        return False
+    for index, rule in enumerate(rules):
+        if isinstance(rule, dict) and rule.get("inboundTag") == [tag] and rule.get("outboundTag") == tag:
+            if index:
+                rules.insert(0, rules.pop(index))
+                return True
+            break
+    return False
+
 
 INBOUND_TAG = "vless-reality"
 TLS_INBOUND_TAG = "vless-tls"
@@ -97,15 +119,9 @@ def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any], path: Path = CONFIG_PATH) -> Path:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    backup = path.with_name(f"{path.name}.bak.{timestamp}")
-    shutil.copy2(path, backup)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(path)
-    return backup
+    """Совместимый путь старых адаптеров до VIREI-124/125."""
+    from xray_vps_manager.xray.apply import save_config as save
+    return save(config, path)
 
 
 def reality_inbounds(config: dict[str, Any]) -> list[dict[str, Any]]:

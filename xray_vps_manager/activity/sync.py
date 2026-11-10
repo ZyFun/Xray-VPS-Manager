@@ -69,24 +69,15 @@ def run_independent_maintenance(log: LogFunc) -> dict[str, int]:
     removed_alerts = repository.prune_alerts_for_write(retention_cutoff(settings.alert_retention_days()))
     error_sync_result = raw_logs.sync_error_log(log)
     removed_errors = repository.prune_xray_errors_for_write(retention_cutoff(settings.xray_error_event_retention_days()))
-    blocklist_result = 0
-    try:
-        backup = activity_blocklist.reconcile_xray_config()
-        if backup:
-            log(f"Activity blocklist routing synced. Backup: {backup}")
-    except Exception as exc:
-        log(f"Activity blocklist routing sync failed: {exc}")
-        blocklist_result = 1
     return {
         "removed_alerts": removed_alerts,
         "error_sync_result": error_sync_result,
         "removed_errors": removed_errors,
-        "blocklist_result": blocklist_result,
     }
 
 
 def maintenance_exit_code(result: dict[str, int]) -> int:
-    return 1 if result.get("error_sync_result") or result.get("blocklist_result") else 0
+    return 1 if result.get("error_sync_result") else 0
 
 
 def log_maintenance_result(log: LogFunc, result: dict[str, int]) -> None:

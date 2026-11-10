@@ -1,6 +1,7 @@
 """Регрессия XR-REV-001: каскады, bypass, WARP и меню подключений пишут config.json и client-DB под manager.lock."""
 
 import ast
+import base64
 import fcntl
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
@@ -17,6 +18,11 @@ import unittest
 from unittest import mock
 
 from tests import test_client_manager_lock as client_lock_tests
+from tests.support.sandbox import Sandbox
+from tests.test_restart_verification import FakeClock, FakeSocket
+from xray_vps_manager.core import systemd
+
+WORKER_POPEN = subprocess.Popen
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.commands import client as client_command
@@ -90,7 +96,11 @@ def make_routing_sandbox(root: Path) -> None:
     config["outbounds"].append(warp_outbound())
     (root / "config.json").write_text(json.dumps(config))
     write_server_env(env_values, root / "server.env", ORDERED_ENV_KEYS)
-    (root / "wgcf-profile.conf").write_text("[Interface]\n")
+    profile_dir = root / "warp"
+    profile_dir.mkdir(exist_ok=True)
+    key = base64.b64encode(bytes(range(32))).decode()
+    (profile_dir / "wgcf-profile.conf").write_text(f"[Interface]\nPrivateKey={key}\nAddress=192.0.2.1/32\n[Peer]\nPublicKey={key}\nEndpoint={WARP_ENDPOINT}\n")
+    (profile_dir / "wgcf-account.toml").write_text("test account")
     connection = database.initialize(root / "manager.db")
     try:
         sqlite_bypass.upsert_route(connection, "bypass-ru", bypass_record())
@@ -112,6 +122,7 @@ def routing_patches(root: Path, *, restart=None, record=None):
 
     record(kind, detail) получает каждую запись файла (chown), внешнюю команду и запись manager.db.
     """
+    root = root.resolve()
     config_path = root / "config.json"
     env_path = root / "server.env"
     record = record or (lambda _kind, _detail="": None)
@@ -132,7 +143,8 @@ def routing_patches(root: Path, *, restart=None, record=None):
         return subprocess.CompletedProcess(command, 0, stdout=f"ip=192.0.2.1\nwarp={warp_state}\n", stderr="")
 
     def chown(path, *_args, **_kwargs):
-        record("write", Path(path).name)
+        if Path(path).name not in {"warp", "wgcf-account.toml", "wgcf-profile.conf"}:
+            record("write", Path(path).name)
 
     def save_db(db, *args, **kwargs):
         record("db", "clients")
@@ -149,46 +161,49 @@ def routing_patches(root: Path, *, restart=None, record=None):
 
     with ExitStack() as stack:
         enter = stack.enter_context
+        box = enter(Sandbox(existing_config_dir=root))
+        client_lock_tests.script_apply(box, restart=restart, record=record)
+        enter(mock.patch.object(systemd, "time", FakeClock()))
+        enter(mock.patch("socket.create_connection", return_value=FakeSocket()))
+        enter(mock.patch("socket.getaddrinfo", return_value=[]))
+        enter(mock.patch("xray_vps_manager.core.process.tcp_port_in_use", return_value=False))
         enter(mock.patch.object(core_paths, "MANAGER_LOCK_PATH", root / "manager.lock"))
         enter(mock.patch.object(database, "MANAGER_DB_PATH", root / "manager.db"))
         enter(mock.patch("shutil.chown", side_effect=chown))
         enter(mock.patch.object(client_repository, "save_db", side_effect=save_db))
         for name in ("upsert_route", "set_enabled", "delete_route"):
             enter(mock.patch.object(sqlite_bypass, name, side_effect=bypass_write(name)))
-        for module in (set_cascade, set_bypass, warp):
-            enter(mock.patch.object(module, "CONFIG_PATH", config_path))
-            enter(mock.patch.object(module, "run", side_effect=run))
-            enter(mock.patch.object(module, "restart_systemd_unit", side_effect=restart_xray))
-            enter(mock.patch.object(module, "run_capture", side_effect=run_capture))
-            enter(mock.patch.object(module, "wait_for_tcp", return_value=True))
-            enter(mock.patch.object(module, "time", no_sleep_time()))
-        enter(mock.patch.object(set_bypass, "read_server_env", side_effect=lambda: read_server_env(env_path)))
-        enter(
-            mock.patch.object(
-                set_bypass,
-                "write_server_env_values",
-                side_effect=lambda values: write_server_env(values, env_path, ORDERED_ENV_KEYS),
-            )
-        )
-        enter(mock.patch.object(set_bypass, "notify_config_event"))
-        enter(mock.patch.object(warp, "WGCF_PROFILE", root / "wgcf-profile.conf"))
-        enter(mock.patch.object(warp, "restart_xray", side_effect=restart_xray))
-        enter(mock.patch.object(warp, "ensure_warp_profile"))
-        enter(mock.patch.object(warp, "profile_endpoint", return_value=WARP_ENDPOINT))
-        enter(mock.patch.object(warp, "warp_outbound_from_profile", side_effect=warp_outbound))
-        enter(mock.patch.object(menu_reality_actions, "CONFIG_PATH", config_path))
-        enter(mock.patch.object(menu_reality_actions, "run", side_effect=run))
-        enter(mock.patch.object(menu_reality_actions, "restart_systemd_unit", side_effect=restart_xray))
+        # Настоящие адаптеры вызывают только подставленные внешние процессы.
+        from tests.test_routing_apply_characterization import curl, TRACE
+        from xray_vps_manager.telegram import bypass_notifications
+        enter(mock.patch.object(bypass_notifications, "notify_config_event"))
+        enter(mock.patch("time.sleep"))
+        enter(mock.patch("ssl.create_default_context"))
+        wgcf = box.paths.xray_bin.parent / "wgcf"
+        wgcf.parent.mkdir(parents=True, exist_ok=True)
+        wgcf.write_text("fixture")
+        wgcf.chmod(0o755)
+        box.processes.script({(str(wgcf), "generate"): box.processes.ok()})
+        for port in (10808, 10809, 10819):
+            for url in (TRACE, "https://ifconfig.me/ip", "https://icanhazip.com", "https://checkip.amazonaws.com"):
+                state = "off" if port == 10819 else "on"
+                box.processes.script({curl(port, url): box.processes.ok(f"ip=192.0.2.1\nwarp={state}\n"),
+                                      curl(port, url, bypass=True): box.processes.ok("192.0.2.1")})
+        def route_response(argv, **kwargs):
+            from urllib.parse import urlsplit
+            host = urlsplit(argv[-1]).hostname
+            route = "direct" if host == "example.com" else next(
+                rule["outboundTag"] for rule in json.loads(config_path.read_text())["routing"]["rules"]
+                if str(rule.get("outboundTag", "")).startswith("geoip-warning-"))
+            with box.paths.access_log.open("a") as log:
+                log.write(f"tcp:{host}:443 [bypass-route-test-socks -> {route}]\n")
+            return box.processes.ok("200")
+        for url in ("https://ya.ru/", "https://example.org/", "https://example.com/"):
+            command = (*curl(18109, url, bypass=True)[:-1], "-o", "/dev/null", "-w", "%{http_code}", url)
+            box.processes.script({command: route_response})
         # Пробный bind нового PORT не должен зависеть от портов машины, на которой идут тесты.
         enter(mock.patch.object(menu_reality_actions, "tcp_port_in_use", return_value=False))
         enter(mock.patch.object(menu_reality_actions, "load_xray_config", side_effect=lambda: xray_config.load_config(config_path)))
-        enter(
-            mock.patch.object(
-                menu_reality_actions,
-                "save_config",
-                side_effect=lambda config: xray_config.save_config(config, config_path),
-            )
-        )
         enter(mock.patch.object(menu_reality_actions, "save_db", side_effect=save_db))
         enter(mock.patch.object(menu_reality_actions, "server_env_values", side_effect=lambda: read_server_env(env_path)))
         enter(
@@ -225,7 +240,7 @@ def reality_port(root: Path, tag: str = "vless-reality") -> int:
 RACE_SCENARIOS = {
     # Сценарий без вопросов: снимок config/client-DB загружен, второй писатель приходит во время рестарта Xray.
     "cascade-use": (lambda: set_cascade.cmd_use(["backup"]), "restart", []),
-    # Первый рестарт — проба endpoint, которая подменяет config.json и затем возвращает исходный текст.
+    # Первый рестарт — временная проба; следующий загружает чистый итоговый конфиг.
     "warp-enable": (warp.cmd_enable, "restart", []),
     # Интерактивные сценарии: второй писатель приходит, пока админ отвечает на последний вопрос.
     "bypass-disable": (lambda: set_bypass.cmd_disable([]), "input", ["1"]),
@@ -295,7 +310,7 @@ def start_worker(function: str, *args: str) -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
     code = f"import sys; from tests import test_routing_manager_lock as t; sys.exit(t.{function}(sys.argv[1:]))"
-    return subprocess.Popen(
+    return WORKER_POPEN(
         [sys.executable, "-c", code, *args],
         cwd=str(REPO_ROOT),
         env=env,
@@ -310,7 +325,7 @@ def start_client_add_worker(root: Path, name: str) -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO_ROOT)
     code = "import sys; from tests import test_client_manager_lock as t; sys.exit(t.add_worker(sys.argv[1:]))"
-    return subprocess.Popen(
+    return WORKER_POPEN(
         [sys.executable, "-c", code, str(root), name, "fast"],
         cwd=str(REPO_ROOT),
         env=env,
@@ -760,14 +775,15 @@ class ExecStopTrafficSyncTests(RoutingLockTestCase):
                 {
                     "apply_config",
                     "save_client_db_optional",
-                    "choose_working_endpoint",
+                    "apply_endpoint_route",
+                    "apply_disabled_route",
                     "probe_warp_disabled",
                     "test_warp",
                     "install_config_without_backup",
                 },
-                ("probe_warp_endpoint", "probe_warp_disabled", "test_warp"),
+                ("probe_warp_disabled", "test_warp"),
             ),
-            "menu_reality_actions.py": ({"apply_config", "update_connection_db", "write_server_env"}, ()),
+            "menu_reality_actions.py": ({"apply_config", "update_connection_db", "write_server_env"}, ("apply_config",)),
         }
         for name, (calls, skip_functions) in checks.items():
             with self.subTest(name):

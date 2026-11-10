@@ -149,7 +149,6 @@ class AlertWindowSyncCase(unittest.TestCase):
             mock.patch.object(activity_repository, "prune_alerts_for_write", return_value=0),
             mock.patch.object(activity_repository, "prune_xray_errors_for_write", return_value=0),
             mock.patch.object(raw_logs, "sync_error_log", return_value=0),
-            mock.patch.object(activity_blocklist, "reconcile_xray_config", return_value=None),
         )
         for patch in patches:
             stack.enter_context(patch)

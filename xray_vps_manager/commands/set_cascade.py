@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 import copy
 import json
-import os
-import shutil
 import socket
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
+from xray_vps_manager.routing.route_test import probe_config
+from xray_vps_manager.routing.cascade import apply_route_config, load_route_db
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.process import restart_systemd_unit
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import client_routes
-from xray_vps_manager.xray.config import inbound_listen_endpoints
 from xray_vps_manager.xray import outbound_links
 
 from xray_vps_manager.runner import command_entry, error_exit, fail as _fail
@@ -65,20 +63,11 @@ def outbound_by_tag(config, tag):
 
 
 def load_client_db_optional():
-    try:
-        return client_repository.load_db_sql()
-    except Exception as exc:
-        print(f"WARN: client route DB sync skipped: {exc}", file=sys.stderr)
-        return None
+    return load_route_db()
 
 
 def save_client_db_optional(db, *, deletions=None):
-    if db is None:
-        return
-    try:
-        client_repository.save_db(db, deletions=deletions)
-    except Exception as exc:
-        print(f"WARN: client route DB save skipped: {exc}", file=sys.stderr)
+    client_repository.save_db(db, deletions=deletions)
 
 
 def load_enabled_bypass_routes_optional():
@@ -211,43 +200,8 @@ def remove_cascade(config, tag):
         sync_geoip_warning_outbounds(config)
 
 
-def write_config(config):
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-    backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.bak.{timestamp}")
-    shutil.copy2(CONFIG_PATH, backup)
-
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(CONFIG_PATH)
-    return backup
-
-
-def restore_config(before):
-    CONFIG_PATH.write_text(json.dumps(before, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(CONFIG_PATH, user="root", group="xray")
-    os.chmod(CONFIG_PATH, 0o640)
-
-
-def apply_config(config, before):
-    backup = write_config(config)
-    try:
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        restart_systemd_unit("xray", ports=inbound_listen_endpoints(config))
-    except subprocess.CalledProcessError as exc:
-        restore_config(before)
-        restart_systemd_unit("xray", ports=inbound_listen_endpoints(before))
-        die(f"New config failed validation: {exc}. Restored previous config. Backup: {backup}")
-    return backup
-
-
-def install_config_without_backup(config):
-    tmp = CONFIG_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n")
-    shutil.chown(tmp, user="root", group="xray")
-    os.chmod(tmp, 0o640)
-    tmp.replace(CONFIG_PATH)
+def apply_config(config, before=None, *, db=None, deletions=None):
+    return apply_route_config(config, db, deletions=deletions).backup
 
 
 def run(command):
@@ -349,7 +303,7 @@ def cascade_rows(config):
     active = cascade_config.active_cascade_tag(config)
     db = load_client_db_optional()
     if db is not None:
-        client_routes.sync_routes_from_config(config, db)
+        client_route_service.sync_routes_from_config(config, db)
     rows = []
     for index, outbound in enumerate(cascade_config.cascade_outbounds(config), start=1):
         tag = outbound.get("tag", "")
@@ -488,13 +442,12 @@ def cmd_add(args):
         before = copy.deepcopy(config)
         db = load_client_db_optional()
         if db is not None:
-            client_routes.sync_routes_from_config(config, db)
+            client_route_service.sync_routes_from_config(config, db)
         configure_cascade(config, outbound)
         if db is not None:
-            client_routes.upsert_route_country(db, tag, country, label=name)
-            client_routes.ensure_all_client_route_config(config, db)
-        backup = apply_config(config, before)
-        save_client_db_optional(db)
+            client_route_service.upsert_route_country(db, tag, country, label=name)
+            client_route_service.ensure_all_client_route_config(config, db)
+        backup = apply_config(config, before, db=db)
 
     print(f"Cascade configured: {name} ({tag})")
     print(f"Country: {country or 'not specified'}")
@@ -517,15 +470,14 @@ def cmd_use(args):
         before = copy.deepcopy(config)
         db = load_client_db_optional()
         if db is not None:
-            client_routes.sync_route_metadata_from_config(config, db)
+            client_route_service.sync_route_metadata_from_config(config, db)
         try:
             set_active_cascade(config, tag)
         except ValueError as exc:
             die(str(exc))
         if db is not None:
-            client_routes.ensure_all_client_route_config(config, db)
-        backup = apply_config(config, before)
-        save_client_db_optional(db)
+            client_route_service.ensure_all_client_route_config(config, db)
+        backup = apply_config(config, before, db=db)
     print(f"Active cascade: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Backup: {backup}")
 
@@ -542,8 +494,8 @@ def cmd_country(args):
         db = load_client_db_optional()
         if db is None:
             die("Client database is unavailable.")
-        client_routes.sync_routes_from_config(config, db)
-        client_routes.upsert_route_country(db, tag, country, label=cascade_config.cascade_name_from_tag(tag) or tag)
+        client_route_service.sync_routes_from_config(config, db)
+        client_route_service.upsert_route_country(db, tag, country, label=cascade_config.cascade_name_from_tag(tag) or tag)
         save_client_db_optional(db)
     print(f"Cascade: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Country: {country or 'not specified'}")
@@ -567,16 +519,15 @@ def cmd_remove(args):
             remove_cascade(config, tag)
         except ValueError as exc:
             die(str(exc))
-        backup = apply_config(config, before)
         db = load_client_db_optional()
         if db is not None:
-            client_routes.sync_route_metadata_from_config(before, db)
+            client_route_service.sync_route_metadata_from_config(before, db)
             client_repository.db_cascade_routes(db).pop(tag, None)
             for entry in client_repository.db_clients(db).values():
                 if isinstance(entry, dict) and entry.get("selectedCascadeTag") == tag:
                     entry["selectedCascadeTag"] = cascade_config.active_cascade_tag(config)
-            client_routes.assign_default_client_routes(config, db)
-            save_client_db_optional(db, deletions=client_repository.Deletions(routes=(tag,)))
+            client_route_service.assign_default_client_routes(config, db)
+        backup = apply_config(config, before, db=db, deletions=client_repository.Deletions(routes=(tag,)))
     print(f"Cascade removed: {cascade_config.cascade_name_from_tag(tag)} ({tag})")
     print(f"Current catch-all route: {current_route_label(config)}")
     print(f"Backup: {backup}")
@@ -611,11 +562,7 @@ def test_cascade(tag=None):
     test_config = copy.deepcopy(config)
     add_test_inbound(test_config, selected_tag)
 
-    try:
-        install_config_without_backup(test_config)
-        run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-        run(["systemctl", "restart", "xray"])
-
+    with probe_config(test_config):
         proxy = f"socks5h://{TEST_SOCKS_HOST}:{TEST_SOCKS_PORT}"
         urls = [
             "https://ifconfig.me/ip",
@@ -656,16 +603,6 @@ def test_cascade(tag=None):
 
         if not ok:
             die("No test endpoint succeeded through cascade.")
-    finally:
-        CONFIG_PATH.write_text(original_text)
-        shutil.chown(CONFIG_PATH, user="root", group="xray")
-        os.chmod(CONFIG_PATH, 0o640)
-        try:
-            run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-            run(["systemctl", "restart", "xray"])
-        except subprocess.CalledProcessError as exc:
-            print(f"ERROR: Failed to restore Xray after test: {exc}", file=sys.stderr)
-            raise
 
     print("Test finished. Original config restored.")
 

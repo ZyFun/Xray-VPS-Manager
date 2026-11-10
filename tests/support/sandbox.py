@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, closing, redirect_stdout, redirect_stderr
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import date, datetime, timezone
 from importlib import import_module
 import inspect
@@ -38,8 +38,6 @@ TESTS = Path(__file__).resolve().parents[1]
 # полноту реестра с загруженными модулями; при переносах записи удаляются.
 LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.activity.backfill', 'ACCESS_LOG_PATH'),
-    ('xray_vps_manager.activity.blocklist', 'CONFIG_PATH'),
-    ('xray_vps_manager.activity.blocklist', 'XRAY_BIN'),
     ('xray_vps_manager.activity.bypass', 'CONFIG_PATH'),
     ('xray_vps_manager.activity.cleanup', 'MANAGER_DB_PATH'),
     ('xray_vps_manager.activity.constants', 'CONFIG_PATH'),
@@ -87,10 +85,7 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.commands.manager_update', 'MANAGER_LIB_DIR'),
     ('xray_vps_manager.commands.manager_update', 'MANAGER_PACKAGE_DIR'),
     ('xray_vps_manager.commands.manager_update', 'BACKUP_DIR'),
-    ('xray_vps_manager.commands.menu_activity_actions', 'CONFIG_PATH'),
-    ('xray_vps_manager.commands.menu_activity_actions', 'XRAY_BIN'),
     ('xray_vps_manager.commands.menu_reality_actions', 'CONFIG_PATH'),
-    ('xray_vps_manager.commands.menu_reality_actions', 'XRAY_BIN'),
     ('xray_vps_manager.commands.menu_reality_actions', 'CLIENT_LINK_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_CONFIG_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_DROPIN_PATH'),
@@ -137,7 +132,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PATH'),
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PACKAGES_PATH'),
     ('xray_vps_manager.telegram.setup', 'CONFIG_PATH'),
-    ('xray_vps_manager.telegram.setup', 'XRAY_BIN'),
     ('xray_vps_manager.xray.caddy', 'CADDYFILE_PATH'),
     ('xray_vps_manager.xray.caddy', 'CADDY_CONF_DIR'),
     ('xray_vps_manager.xray.caddy', 'CADDY_BACKUP_DIR'),
@@ -321,7 +315,7 @@ def _contains_path(value):
 class Sandbox:
     def __init__(self, *, config='fixtures/config/reality-single.json',
                  env='fixtures/env/default.env', db='fixtures/db/one-client.sql',
-                 now='2026-10-06T12:00:00Z', tz='Europe/Moscow'):
+                 now='2026-10-06T12:00:00Z', tz='Europe/Moscow', existing_config_dir=None):
         self._config, self._env, self._db = config, env, db
         self.now = datetime.fromisoformat(now.replace('Z', '+00:00'))
         if self.now.tzinfo is None:
@@ -330,6 +324,9 @@ class Sandbox:
         self.processes = FakeProcesses()
         self.http = FakeHTTP()
         self._stack = None
+        # Межпроцессные регрессии подключаются к уже подготовленному серверу.
+        # Его файлы не пересоздаются и не удаляются при выходе.
+        self._existing_config_dir = existing_config_dir
 
     def _patch(self, obj, name, value):
         self._stack.enter_context(mock.patch.object(obj, name, value))
@@ -338,8 +335,12 @@ class Sandbox:
         if isinstance(value, Path) and value.is_absolute():
             # Вложенный Sandbox получает значения внешнего, но сохраняет
             # семантический серверный путь, не наращивая два tmp-префикса.
-            if self._outer_root is not None and value.is_relative_to(self._outer_root):
+            if self._outer_config_dir != path_module.Paths.default().config_dir and value.is_relative_to(self._outer_config_dir):
+                value = path_module.Paths.default().config_dir / value.relative_to(self._outer_config_dir)
+            elif self._outer_root is not None and value.is_relative_to(self._outer_root):
                 value = Path('/') / value.relative_to(self._outer_root)
+            if self._existing_config_dir is not None and value.is_relative_to(path_module.Paths.default().config_dir):
+                return self.paths.config_dir / value.relative_to(path_module.Paths.default().config_dir)
             return self.root / value.relative_to('/')
         if isinstance(value, (list, tuple, set, frozenset)):
             return type(value)(self._relocate(item) for item in value)
@@ -350,16 +351,24 @@ class Sandbox:
             raise RuntimeError('Повторный вход в тот же Sandbox')
         self._stack = ExitStack()
         try:
-            self.root = Path(self._stack.enter_context(tempfile.TemporaryDirectory(prefix='xray-sandbox-'))).resolve()
+            self.root = (Path(self._existing_config_dir).resolve() if self._existing_config_dir is not None
+                         else Path(self._stack.enter_context(tempfile.TemporaryDirectory(prefix='xray-sandbox-'))).resolve())
             self.paths = path_module.Paths.under(self.root)
+            if self._existing_config_dir is not None:
+                default = path_module.Paths.default()
+                self.paths = replace(self.paths, **{
+                    field.name: self.root / getattr(default, field.name).relative_to(default.config_dir)
+                    for field in fields(default) if getattr(default, field.name).is_relative_to(default.config_dir)
+                })
             # Импорт до подмены: захваченные defaults остаются известны фасаду.
             self._modules = _modules()
             for module_name, attribute in LEGACY_CACHE_ATTRS:
                 owner, name = _legacy_owner(module_name, attribute)
                 self._patch(owner, name, None)
-            old_config = path_module.paths().config
-            suffix = path_module.Paths.default().config.relative_to('/')
-            self._outer_root = old_config.parents[len(suffix.parts)-1] if old_config != Path('/')/suffix else None
+            self._outer_config_dir = path_module.paths().config_dir
+            old_binary = path_module.paths().xray_bin
+            suffix = path_module.Paths.default().xray_bin.relative_to('/')
+            self._outer_root = old_binary.parents[len(suffix.parts)-1] if old_binary != Path('/')/suffix else None
             self._assert_inventory()
             self._stack.enter_context(path_module.use(self.paths))
             for module_name, attribute in LEGACY_PATH_ATTRS:
@@ -378,6 +387,8 @@ class Sandbox:
             self._install_clock()
             self._install_sqlite_clock()
             self._stack.enter_context(mock.patch.dict(os.environ, {'NO_COLOR':'1', 'TZ':str(self.tz)}))
+            if self._existing_config_dir is not None:
+                return self
             self.paths.config_dir.mkdir(parents=True)
             config = json.loads(self._fixture(self._config).read_text())
             for name in ('access', 'error'):

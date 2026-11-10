@@ -8,8 +8,8 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
+from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.clients import credentials as client_credentials
-from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray.config import xhttp_extra_json
 
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -239,7 +239,7 @@ def client_access_summary(entry, format_access_until, client_db=None):
         status = "отключён: лимит трафика"
     lines = [f"Статус: {status}"]
     if isinstance(client_db, dict):
-        lines.append(f"Страна: {client_routes.selected_route_label(client_db, entry)}")
+        lines.append(f"Страна: {client_route_service.selected_route_label(client_db, entry)}")
     lines.append(f"Доступ до: {format_access_until(entry.get('expiresAt', ''))}")
     return "\n".join(lines)
 

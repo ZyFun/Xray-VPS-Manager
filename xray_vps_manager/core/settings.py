@@ -197,6 +197,30 @@ def env_value(key: str, default: str = "", path: Path | None = None) -> str:
     return read_env(path).get(_env_key(key)) or os.environ.get(key, default)
 
 
+def env_bytes() -> bytes | None:
+    """Исходные байты для компенсации сценария под manager.lock."""
+    try:
+        return paths().server_env.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def restore_env(data: bytes | None) -> None:
+    """Атомарно вернуть server.env после поздней ошибки сценария."""
+    from xray_vps_manager.core.fs import replace_file
+
+    path = paths().server_env
+    if data is None:
+        path.unlink(missing_ok=True)
+        return
+
+    def prepare(candidate):
+        chown_server_env(candidate)
+        candidate.chmod(0o640)
+
+    replace_file(path, data, prepare=prepare)
+
+
 def update_env(
     changes: Mapping[str, str],
     *,

@@ -65,9 +65,6 @@ class ConfigOnlyClientTests(unittest.TestCase):
         stack.enter_context(
             mock.patch.object(activity_repository, "manager_timezone", return_value=(timezone.utc, "UTC"))
         )
-        stack.enter_context(
-            mock.patch.object(activity_sync.activity_blocklist, "reconcile_xray_config", return_value=None)
-        )
 
     @staticmethod
     def config() -> dict:

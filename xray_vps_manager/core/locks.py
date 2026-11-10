@@ -106,6 +106,13 @@ def manager_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "", path: P
             _held_manager_locks.remove(key)
 
 
+@contextmanager
+def activity_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "") -> Iterator[None]:
+    """Короткая блокировка парсера; не удерживается во время применения Xray."""
+    with hold_file_lock(paths.paths().activity_lock, timeout, purpose):
+        yield
+
+
 def _check_waiting_owner(entry: int, message: str) -> None:
     try:
         os.lockf(entry, os.F_TEST, 0)

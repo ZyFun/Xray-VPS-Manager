@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from xray_vps_manager.clients.models import client_name, email_for_client
+from xray_vps_manager.clients.models import client_from_db_entry
+from xray_vps_manager.xray.email import client_name, email_for_client
 from xray_vps_manager.xray.config import (
     apply_client_transport,
     clients,
@@ -276,3 +277,22 @@ def remove_active_credential(config: dict[str, Any], name: str, connection_tag: 
 
     set_clients(inbound, after)
     return True, item
+
+
+def client_email(name: str, entry: dict[str, Any]) -> str:
+    client = entry.get("client") if isinstance(entry.get("client"), dict) else {}
+    email = str(client.get("email") or "").strip()
+    if email:
+        return email
+    return client_from_db_entry(name, entry).get("email", name)
+
+
+def client_emails(name: str, entry: dict[str, Any]) -> list[str]:
+    emails: list[str] = []
+    for credential in sorted_credentials(entry):
+        email = credential_email(name, entry, credential)
+        if email and email not in emails:
+            emails.append(email)
+    if emails:
+        return emails
+    return [client_email(name, entry)]

@@ -18,7 +18,6 @@ from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, env_text as server_
 from xray_vps_manager.core.process import (
     WRITER_RESTART_UNITS,
     active_units,
-    restart_systemd_unit,
     restart_units,
     stop_systemd_unit,
     stop_writer_units,
@@ -26,7 +25,7 @@ from xray_vps_manager.core.process import (
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
 from xray_vps_manager.xray import caddy as xray_caddy
-from xray_vps_manager.xray.config import inbound_listen_endpoints
+from xray_vps_manager.xray import apply as xray_apply
 
 from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
 
@@ -768,9 +767,7 @@ def backup_manager_db_before_restore():
 
 
 def test_and_restart():
-    run(["/usr/local/bin/xray", "run", "-test", "-config", str(CONFIG_PATH)])
-    # Проверка старта и портов inbound внутри helper'а: ошибка старта → откат restore (XR-REV-010).
-    restart_systemd_unit("xray", ports=inbound_listen_endpoints(json.loads(CONFIG_PATH.read_text())))
+    return xray_apply.restart_installed_config(reason="restore")
 
 
 def rollback_restore(pre_backup):
@@ -793,8 +790,8 @@ def rollback_restore(pre_backup):
 def restore_failure_text(exc):
     if isinstance(exc, SystemExit):
         return f"exit code {exc.code}"
-    if isinstance(exc, ManagerError) and exc.hint:
-        return f"{exc.message.rstrip('.')}. {exc.hint}"
+    if isinstance(exc, ManagerError):
+        return "\n".join(part for part in (exc.message, exc.hint, exc.detail) if part)
     return str(exc) or type(exc).__name__
 
 
@@ -879,6 +876,8 @@ def restore_backup(value):
     if failure is not None:
         if units_error is not None:
             print(f"ERROR: {restore_failure_text(units_error)}", file=sys.stderr)
+        if isinstance(failure, KeyboardInterrupt) or getattr(failure, "exit_code", None) == 130:
+            raise KeyboardInterrupt from failure
         die(f"Restore failed: {restore_failure_text(failure)}")
     print(f"Restored from: {archive}")
     print("Restored files:")

@@ -1,4 +1,4 @@
-"""T3. Применение config.json до переноса девяти писателей в xray/apply.py."""
+"""T3. Контракты VIREI-124/125 (вариант В) и ротация VIREI-126."""
 
 from contextlib import contextmanager, redirect_stderr
 from copy import deepcopy
@@ -11,13 +11,16 @@ import unittest
 from unittest import mock
 
 from tests.support.sandbox import Sandbox
-from xray_vps_manager.activity import blocklist
+from xray_vps_manager.routing import blocklist
 from xray_vps_manager.clients import repository
 from xray_vps_manager.commands import (
     backup, client, menu_activity_actions, menu_reality_actions, menu_xray_actions,
     set_bypass, set_cascade, update, warp,
 )
 from xray_vps_manager.telegram import setup
+from xray_vps_manager.core.errors import ApplyConfigError
+
+MIGRATED = (client, menu_reality_actions, menu_xray_actions, blocklist, setup, warp, set_cascade, set_bypass, menu_activity_actions)
 
 
 @contextmanager
@@ -47,6 +50,7 @@ class CommandJournal:
         box.processes.script({
             ("/usr/local/bin/xray", *test_args): self.test_config,
             (str(box.paths.xray_bin), *test_args): self.test_config,
+            (str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(self.path.with_suffix('.json.tmp'))): self.test_config,
             "systemctl stop xray": box.processes.ok(),
             "systemctl reset-failed xray": box.processes.ok(),
             "systemctl restart xray": self.restart,
@@ -71,20 +75,20 @@ class CommandJournal:
 # Число попыток для отказавшего systemctl restart, до перехода в откат.
 WRITERS = (
     (client, SystemExit, 2),
-    (blocklist, RuntimeError, 1),
-    (setup, RuntimeError, 2),
+    (blocklist, ApplyConfigError, 2),
+    (setup, ApplyConfigError, 2),
     (menu_reality_actions, SystemExit, 2),
-    (warp, SystemExit, 2),
-    (set_cascade, SystemExit, 2),
-    (set_bypass, SystemExit, 2),
-    (menu_activity_actions, SystemExit, 1),
-    (menu_xray_actions, SystemExit, 1),
+    (warp, ApplyConfigError, 2),
+    (set_cascade, ApplyConfigError, 2),
+    (set_bypass, ApplyConfigError, 2),
+    (menu_activity_actions, SystemExit, 2),
+    (menu_xray_actions, SystemExit, 2),
 )
 
 
 class ApplyCharacterizationTests(unittest.TestCase):
     def test_config_writers(self):
-        """Текущее поведение, баг XR-REV-020: предыдущие технические копии остаются."""
+        """Общий apply проверяет кандидат и возвращает C0; VIREI-126 ротирует только при создании копии."""
         for module, error, attempts in WRITERS:
             for failure in (None, "test", "restart"):
                 with self.subTest(module=module.__name__, failure=failure), Sandbox(now="2026-10-06T12:34:56.789123Z") as box:
@@ -103,7 +107,7 @@ class ApplyCharacterizationTests(unittest.TestCase):
         expected_candidate = deepcopy(candidate)
         if module is client:
             expected_candidate["routing"]["balancers"] = []
-        prefix = "config.json.bak.telegram." if module is setup else "config.json.bak."
+        prefix = "config.json.bak."
         new_copy = path.with_name(prefix + "20261006123456789123")
         # В шаге 3 порог ротации — 20 копий.
         older = {path.with_name(prefix + f"20010101{index:012d}") for index in range(25)}
@@ -140,30 +144,37 @@ class ApplyCharacterizationTests(unittest.TestCase):
                 if error is SystemExit:
                     if module in (menu_reality_actions, menu_activity_actions, menu_xray_actions):
                         self.assertIsInstance(raised.exception.code, str)
-                        self.assertIn("Restored backup:", raised.exception.code)
+                        if module in MIGRATED:
+                            self.assertIn("New config failed:", raised.exception.code)
+                        if module not in MIGRATED or failure != "test":
+                            self.assertIn("Restored backup:", raised.exception.code)
                     else:
                         self.assertEqual(raised.exception.code, 1)
             else:
                 returned = apply()
 
         copies = set(path.parent.glob("config.json.bak.*"))
-        self.assertEqual(copies, older | {new_copy})
-        self.assertEqual(copies_at_test, [original])
-        self.assertEqual(box.processes.calls[0][1:], ("run", "-test", "-config", str(path)))
-        self.assertEqual(new_copy.read_bytes(), original)
+        created = not (module in MIGRATED and failure == "test")
+        expected_copies = set(sorted(older)[-19:]) | {new_copy} if created else older
+        self.assertEqual(copies, expected_copies)
+        self.assertEqual(copies_at_test, [None if module in MIGRATED else original])
+        test_args = ("run", "-test", "-format", "json", "-config", str(path.with_suffix('.json.tmp'))) if module in MIGRATED else ("run", "-test", "-config", str(path))
+        self.assertEqual(box.processes.calls[0][1:], test_args)
+        if created:
+            self.assertEqual(new_copy.read_bytes(), original)
         expected = ["test"]
         if failure != "test":
             expected.extend(["restart"] * (attempts if failure == "restart" else 1))
-        if failure:
+        if failure and created:
             expected.append("restart")
         if module is client:
             self.assertEqual(payment_at_command, ["free"] * len(expected))
             self.assertEqual(repository.load_db()["clients"]["alice"]["paymentType"], "free" if failure else "paid")
         self.assertEqual([kind for kind, _ in journal.entries], expected)
-        verified = module in (client, set_cascade, set_bypass, menu_reality_actions, warp)
+        verified = module in MIGRATED
         service_calls = [cmd[1] for cmd in box.processes.calls if cmd[0] == "systemctl"]
         if verified:
-            expected_service = ["stop", "reset-failed", "restart"] * expected.count("restart") + ["show"]
+            expected_service = ["stop", "reset-failed", "restart"] * expected.count("restart") + (["show"] if expected.count("restart") else [])
         elif module is setup and failure == "restart":
             expected_service = ["restart", "reset-failed", "restart", "restart"]
         else:
@@ -172,17 +183,18 @@ class ApplyCharacterizationTests(unittest.TestCase):
         endpoints = [call.args[0] for call in connect.call_args_list]
         port = 8443
         if failure:
-            port = 2443 if restore_dict else 443
-        self.assertEqual(endpoints, [("127.0.0.1", 10085), ("127.0.0.1", port)] if verified and module is not client else [])
-        candidate_entries = journal.entries[:-1] if failure else journal.entries
+            port = 443
+        self.assertEqual(endpoints, [("127.0.0.1", 10085), ("127.0.0.1", port)] if verified and expected.count("restart") else [])
+        entries = journal.entries
+        if module in MIGRATED:
+            self.assertEqual(entries[0][1], original)
+            entries = entries[1:]
+        candidate_entries = entries[:-1] if failure else entries
         for _, snapshot in candidate_entries:
             self.assertEqual(json.loads(snapshot), expected_candidate)
         if failure:
             self.assertEqual(journal.entries[-1][1], path.read_bytes())
-            if restore_dict:
-                self.assertEqual(json.loads(path.read_bytes()), expected_before)
-            else:
-                self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(path.read_bytes(), original)
         else:
             self.assertEqual(returned, new_copy)
             self.assertEqual(json.loads(path.read_bytes()), expected_candidate)
@@ -214,8 +226,7 @@ class ApplyCharacterizationTests(unittest.TestCase):
                         action = backup.test_and_restart
                     with running_xray(box) as connect:
                         if failure:
-                            error = RuntimeError if module is update and failure == "test" else subprocess.CalledProcessError
-                            with self.assertRaises(error):
+                            with self.assertRaises(ApplyConfigError):
                                 action()
                         else:
                             action()

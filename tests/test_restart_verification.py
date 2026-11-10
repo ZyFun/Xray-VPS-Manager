@@ -12,6 +12,7 @@ from unittest import mock
 
 from xray_vps_manager.commands import backup, menu_reality_actions, set_cascade, update, warp
 from xray_vps_manager.core import process, systemd
+from xray_vps_manager.core.errors import ApplyConfigError
 from xray_vps_manager.xray import config as xray_config
 from tests.support.sandbox import Sandbox
 
@@ -476,6 +477,15 @@ def config_with_port(port):
     return {"inbounds": [{"tag": "vless-reality", "listen": "0.0.0.0", "port": port, "protocol": "vless"}]}
 
 
+def valid_config_with_port(port):
+    config = config_with_port(port)
+    config.update(api={"tag": "api", "services": ["StatsService"]},
+                  outbounds=[{"tag": "direct", "protocol": "freedom"}, {"tag": "blocked", "protocol": "blackhole"}],
+                  routing={"rules": [{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}]})
+    config["inbounds"].append({"tag": "api", "protocol": "dokodemo-door"})
+    return config
+
+
 class ApplyConfigRollbackTests(unittest.TestCase):
     """Проверка старта из helper'а через существующие except откатывает конфиг на прежний."""
 
@@ -495,50 +505,37 @@ class ApplyConfigRollbackTests(unittest.TestCase):
         return restart
 
     def test_menu_reality_apply_config_restores_backup_when_xray_does_not_start(self) -> None:
-        calls = []
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch.object(menu_reality_actions, "CONFIG_PATH", self.config_path))
-            stack.enter_context(mock.patch.object(menu_reality_actions, "save_config",
-                                                  side_effect=lambda config: xray_config.save_config(config, self.config_path)))
-            stack.enter_context(mock.patch.object(menu_reality_actions, "run"))
-            stack.enter_context(mock.patch.object(menu_reality_actions, "restart_systemd_unit", side_effect=self.failing_restart(calls)))
-            stack.enter_context(mock.patch("shutil.chown"))
+        systemctl = SequencedSystemctl([[('failed', 'failed', 0)], [('active', 'running', 0)]])
+        with self.rollback_sandbox(systemctl, FakeClock()):
             with self.assertRaises(SystemExit) as caught:
-                menu_reality_actions.apply_config(config_with_port(2443))
-        self.assertIn("Restored backup", str(caught.exception))
-        self.assertIn("ActiveState=failed", str(caught.exception))
-        self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
-        self.assertEqual(calls[0][1]["ports"], [("127.0.0.1", 2443)])
-        self.assertEqual(calls[1][1]["ports"], [("127.0.0.1", 443)])
+                menu_reality_actions.apply_config(valid_config_with_port(2443))
+            self.assertIn("Restored backup", str(caught.exception))
+            self.assertIn("ActiveState=failed", str(caught.exception))
+            self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
+            self.assertEqual([item[1] for item in systemctl.commands].count("restart"), 2)
 
     def test_set_cascade_apply_config_restores_previous_config_when_xray_does_not_start(self) -> None:
-        calls = []
-        before = config_with_port(443)
-        with ExitStack() as stack:
-            stack.enter_context(mock.patch.object(set_cascade, "CONFIG_PATH", self.config_path))
-            stack.enter_context(mock.patch.object(set_cascade, "run"))
-            stack.enter_context(mock.patch.object(set_cascade, "restart_systemd_unit", side_effect=self.failing_restart(calls)))
-            stack.enter_context(mock.patch("shutil.chown"))
-            stderr = stack.enter_context(mock.patch.object(set_cascade.sys, "stderr", io.StringIO()))
-            with self.assertRaises(SystemExit) as caught:
-                set_cascade.apply_config(config_with_port(2443), before)
-        self.assertEqual(caught.exception.code, 1)
-        self.assertIn("Restored previous config", stderr.getvalue())
-        self.assertIn("ActiveState=failed", stderr.getvalue())
-        self.assertEqual(json.loads(self.config_path.read_text()), before)
-        self.assertEqual(calls[0][1]["ports"], [("127.0.0.1", 2443)])
-        self.assertEqual(calls[1][1]["ports"], [("127.0.0.1", 443)])
+        systemctl = SequencedSystemctl([[('failed', 'failed', 0)], [('active', 'running', 0)]])
+        with self.rollback_sandbox(systemctl, FakeClock()):
+            original = self.config_path.read_bytes()
+            with self.assertRaises(ApplyConfigError) as caught:
+                set_cascade.apply_config(valid_config_with_port(2443), config_with_port(9443))
+            self.assertTrue(caught.exception.restored)
+            self.assertIn("ActiveState=failed", caught.exception.detail)
+            self.assertEqual(self.config_path.read_bytes(), original)
+            self.assertEqual([item[1] for item in systemctl.commands].count("restart"), 2)
 
     def rollback_sandbox(self, systemctl, clock):
         with ExitStack() as stack:
             box = stack.enter_context(Sandbox())
             self.config_path = box.paths.config
-            self.config_path.write_text(json.dumps(config_with_port(443)))
+            self.config_path.write_text(json.dumps(valid_config_with_port(443)))
             box.processes.script({
                 ('systemctl', action, 'xray'): systemctl for action in ('stop', 'reset-failed', 'restart')})
             box.processes.script({
                 ('systemctl', 'show', '--property=ActiveState,SubState,NRestarts', 'xray'): systemctl,
-                (str(menu_reality_actions.XRAY_BIN), 'run', '-test', '-config', str(box.paths.config)): box.processes.ok()})
+                (str(box.paths.xray_bin), 'run', '-test', '-format', 'json', '-config', str(box.paths.config.with_suffix('.json.tmp'))): box.processes.ok(),
+                (str(box.paths.xray_bin), 'run', '-test', '-config', str(box.paths.config)): box.processes.ok()})
             stack.enter_context(mock.patch.object(systemd, 'time', clock))
             stack.enter_context(mock.patch.object(process.socket, 'create_connection', side_effect=open_socket))
             return stack.pop_all()
@@ -551,7 +548,7 @@ class ApplyConfigRollbackTests(unittest.TestCase):
         ])
         with self.rollback_sandbox(systemctl, FakeClock()):
             with self.assertRaises(SystemExit) as caught:
-                menu_reality_actions.apply_config(config_with_port(2443))
+                menu_reality_actions.apply_config(valid_config_with_port(2443))
             self.assertIn("Restored backup", str(caught.exception))
             self.assertIn("ActiveState=failed", str(caught.exception))
             self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
@@ -562,27 +559,32 @@ class ApplyConfigRollbackTests(unittest.TestCase):
         systemctl = HangingShowSystemctl()
         with self.rollback_sandbox(systemctl, FakeClock()):
             with self.assertRaises(SystemExit) as caught:
-                menu_reality_actions.apply_config(config_with_port(2443))
+                menu_reality_actions.apply_config(valid_config_with_port(2443))
             self.assertIn("Restored backup", str(caught.exception))
             self.assertIn("timed out", str(caught.exception))
             self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
             self.assertEqual(systemctl.restarts, 2)
 
     def test_backup_test_and_restart_passes_inbound_ports(self) -> None:
-        calls = []
-        with mock.patch.object(backup, "CONFIG_PATH", self.config_path), \
-            mock.patch.object(backup, "run"), \
-            mock.patch.object(backup, "restart_systemd_unit", side_effect=lambda unit, **kw: calls.append((unit, kw))):
-            backup.test_and_restart()
-        self.assertEqual(calls, [("xray", {"ports": [("127.0.0.1", 443)]})])
+        systemctl = SequencedSystemctl([[('active', 'running', 0)]])
+        with self.rollback_sandbox(systemctl, FakeClock()), \
+                mock.patch("socket.create_connection", return_value=FakeSocket()) as connect:
+            before = self.config_path.read_bytes()
+            result = backup.test_and_restart()
+            self.assertEqual(result.verified_ports, (443,))
+            self.assertEqual(connect.call_args.args[0], ("127.0.0.1", 443))
+            self.assertEqual(self.config_path.read_bytes(), before)
+            self.assertIsNone(result.backup)
 
     def test_update_restart_xray_passes_inbound_ports_and_propagates_failure(self) -> None:
-        calls = []
-        with mock.patch.object(update, "CONFIG_PATH", self.config_path), \
-            mock.patch.object(update, "restart_systemd_unit", side_effect=self.failing_restart(calls)):
-            with self.assertRaises(subprocess.CalledProcessError):
+        systemctl = SequencedSystemctl([[('active', 'running', 0)]])
+        with self.rollback_sandbox(systemctl, FakeClock()), \
+                mock.patch("socket.create_connection", side_effect=ConnectionRefusedError) as connect:
+            with self.assertRaises(ApplyConfigError) as caught:
                 update.restart_xray()
-        self.assertEqual(calls, [("xray", {"ports": [("127.0.0.1", 443)]})])
+            self.assertEqual(caught.exception.stage, "verify")
+            self.assertEqual(connect.call_args.args[0], ("127.0.0.1", 443))
+            self.assertEqual([item[1] for item in systemctl.commands].count("restart"), 1)
 
 
 class WarpProbeStartFailureTests(unittest.TestCase):
@@ -603,46 +605,57 @@ class WarpProbeStartFailureTests(unittest.TestCase):
         return process.SystemdUnitStartError("xray", "xray ActiveState=failed SubState=failed NRestarts=0")
 
     def patches(self, stack, restart_effects):
+        import base64
+        box = self.enterContext(Sandbox())
+        self.config_path = box.paths.config
+        self.original = self.config_path.read_text()
+        profile = box.paths.config.parent / "warp" / "wgcf-profile.conf"
+        profile.parent.mkdir()
+        key = base64.b64encode(bytes(range(32))).decode()
+        profile.write_text(f"[Interface]\nPrivateKey={key}\nAddress=192.0.2.1/32\n[Peer]\nPublicKey={key}\nEndpoint={self.DOMAIN}\n")
         effects = list(restart_effects)
-
-        def restart_xray():
+        state = [False]
+        def restart(command, **kwargs):
             self.restarts.append(self.config_path.read_text())
-            effect = effects.pop(0)
-            if effect is not None:
-                raise effect
+            state[0] = effects.pop(0) is not None
+            return box.processes.ok()
+        def show(command, **kwargs):
+            return box.processes.ok(show_output('failed', 'failed') if state[0] else show_output())
+        box.processes.script({
+            (str(box.paths.xray_bin), 'run', '-test', '-format', 'json', '-config', str(box.paths.config.with_suffix('.json.tmp'))): box.processes.ok(),
+            'systemctl stop xray': box.processes.ok(),
+            'systemctl reset-failed xray': box.processes.ok(),
+            'systemctl restart xray': restart,
+            'systemctl show --property=ActiveState,SubState,NRestarts xray': show,
+            ('curl', '-4', '--proxy', 'socks5h://127.0.0.1:10809', '--connect-timeout', '8', '--max-time', '20', '-sS', 'https://www.cloudflare.com/cdn-cgi/trace'): box.processes.ok('ip=192.0.2.1\nwarp=on\n'),
+        })
+        stack.enter_context(mock.patch.object(systemd, 'time', FakeClock()))
+        stack.enter_context(mock.patch('time.sleep'))
+        stack.enter_context(mock.patch('socket.create_connection', side_effect=open_socket))
+        stack.enter_context(mock.patch('socket.getaddrinfo', return_value=[(None, None, None, None, ('162.159.192.1', 2408))]))
+        stack.enter_context(mock.patch("xray_vps_manager.core.process.tcp_port_in_use", return_value=False))
+        return stack.enter_context(mock.patch('sys.stderr', io.StringIO()))
 
-        trace = subprocess.CompletedProcess(["curl"], 0, stdout="ip=192.0.2.1\nwarp=on\n", stderr="")
-        stack.enter_context(mock.patch.object(warp, "CONFIG_PATH", self.config_path))
-        stack.enter_context(mock.patch.object(warp, "restart_xray", side_effect=restart_xray))
-        stack.enter_context(mock.patch.object(warp, "run"))
-        stack.enter_context(mock.patch.object(warp, "install_config_without_backup",
-                                              side_effect=lambda config: self.config_path.write_text(json.dumps(config))))
-        stack.enter_context(mock.patch.object(warp, "upsert_warp_outbound"))
-        stack.enter_context(mock.patch.object(warp, "wait_for_tcp", return_value=True))
-        stack.enter_context(mock.patch.object(warp, "cloudflare_trace_via_proxy", return_value=trace))
-        stack.enter_context(mock.patch.object(warp, "time", SimpleClock()))
-        stack.enter_context(mock.patch.object(warp, "manager_lock", lambda *_a, **_k: contextlib.nullcontext()))
-        stack.enter_context(mock.patch("shutil.chown"))
-        return stack.enter_context(mock.patch.object(warp.sys, "stderr", io.StringIO()))
-
-    def test_domain_start_failure_falls_back_to_ipv4(self) -> None:
+    def test_batch_start_failure_restores_original_without_applying_warp(self) -> None:
+        """VIREI-127: ошибка запуска общего конфига не является отказом отдельного endpoint."""
         with ExitStack() as stack:
-            self.patches(stack, [self.start_failure(), None, None, None])
-            stack.enter_context(mock.patch.object(warp, "profile_endpoint", return_value=self.DOMAIN))
-            stack.enter_context(mock.patch.object(warp, "ipv4_endpoint_candidates", return_value=[self.IPV4]))
-            stdout = stack.enter_context(mock.patch("sys.stdout", io.StringIO()))
-            chosen = warp.choose_working_endpoint(required=True)
-        self.assertEqual(chosen, self.IPV4)
-        self.assertIn(f"FAIL {self.DOMAIN}", stdout.getvalue())
-        self.assertIn("did not start", stdout.getvalue())
-        self.assertEqual(len(self.restarts), 4)
+            self.patches(stack, [self.start_failure(), None])
+            with self.assertRaises(ApplyConfigError) as caught:
+                warp.cmd_enable()
+        self.assertEqual(caught.exception.stage, "verify")
+        self.assertTrue(caught.exception.restored)
+        self.assertIn("did not start", caught.exception.detail)
+        self.assertIn(self.DOMAIN, self.restarts[0])
+        self.assertIn(self.IPV4, self.restarts[0])
+        self.assertEqual(self.restarts[1:], [self.original])
         self.assertEqual(self.config_path.read_text(), self.original)
 
     def test_restore_failure_after_probe_stays_fatal(self) -> None:
         with ExitStack() as stack:
             self.patches(stack, [self.start_failure(), self.start_failure()])
-            with self.assertRaises(process.SystemdUnitStartError):
-                warp.probe_warp_endpoint(self.DOMAIN)
+            with self.assertRaises(ApplyConfigError) as caught:
+                warp.cmd_enable()
+            self.assertEqual(caught.exception.stage, "rollback")
         self.assertEqual(self.config_path.read_text(), self.original)
 
     def test_verify_disabled_reports_start_failure(self) -> None:
@@ -657,14 +670,13 @@ class WarpProbeStartFailureTests(unittest.TestCase):
 
     def test_warp_test_reports_start_failure(self) -> None:
         with ExitStack() as stack:
-            stderr = self.patches(stack, [self.start_failure(), None])
-            stack.enter_context(mock.patch("sys.stdout", io.StringIO()))
-            with self.assertRaises(SystemExit) as caught:
+            self.patches(stack, [self.start_failure(), None])
+            with self.assertRaises(ApplyConfigError) as caught:
                 warp.test_warp()
-        self.assertEqual(caught.exception.code, 1)
-        self.assertIn("did not start", stderr.getvalue())
-        self.assertEqual(len(self.restarts), 2)
-        self.assertEqual(self.config_path.read_text(), self.original)
+            self.assertEqual(caught.exception.stage, "verify")
+            self.assertTrue(caught.exception.restored)
+            self.assertEqual(len(self.restarts), 2)
+            self.assertEqual(self.config_path.read_text(), self.original)
 
 
 if __name__ == "__main__":

@@ -9,15 +9,21 @@
 
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
+import base64
 import json
+from itertools import count
+import uuid
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
 from unittest import mock
 
-from tests import test_client_manager_lock as client_lock_tests
+from tests.support.sandbox import Sandbox
+from tests.test_apply_characterization import running_xray
+from tests.test_routing_apply_characterization import curl, TRACE
 from tests import test_routing_manager_lock as routing_lock_tests
+from xray_vps_manager.clients import routes as client_route_service
+from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.commands import set_cascade
@@ -76,9 +82,18 @@ def warp_outbound(endpoint_override=None) -> dict:
     return {"tag": warp.WARP_OUTBOUND_TAG, "protocol": "wireguard", "settings": {}}
 
 
+def write_warp_profile(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    private = base64.b64encode(bytes(range(32))).decode("ascii")
+    public = base64.b64encode(bytes(range(32, 64))).decode("ascii")
+    path.write_text(f"[Interface]\nPrivateKey={private}\nAddress=192.0.2.1/32\n"
+                    f"[Peer]\nPublicKey={public}\nEndpoint=profile.example:2408\n")
+
+
 def enable_warp(config: dict) -> None:
-    """`xray-warp enable` без профиля wgcf и пробы endpoint."""
-    with mock.patch.object(warp, "warp_outbound_from_profile", side_effect=warp_outbound):
+    """Реальное построение WARP-маршрута с профилем временного сервера."""
+    with Sandbox(db=None) as box:
+        write_warp_profile(box.paths.config_dir / "warp/wgcf-profile.conf")
         warp.enable_warp_route(config)
 
 
@@ -97,7 +112,7 @@ def client_outbound(config: dict, email: str) -> str:
 
 def client_outbounds(config: dict, db: dict) -> dict:
     return {
-        name: client_outbound(config, client_routes.client_emails(name, entry)[0])
+        name: client_outbound(config, client_credentials.client_emails(name, entry)[0])
         for name, entry in db["clients"].items()
     }
 
@@ -121,20 +136,16 @@ def clients_on_cascades() -> tuple:
     add_cascade(config, "de")
     add_cascade(config, "nl")
     set_cascade.set_active_cascade(config, "cascade-nl")
-    client_routes.ensure_all_client_route_config(config, db)
+    client_route_service.ensure_all_client_route_config(config, db)
     db["clients"]["alice"]["selectedCascadeTag"] = "cascade-de"
-    client_routes.ensure_all_client_route_config(config, db)
+    client_route_service.ensure_all_client_route_config(config, db)
     return config, db
 
 
 def warp_status_lines(root: Path) -> list:
     """`xray-warp status` по config.json из root, без профиля wgcf."""
     stdout = StringIO()
-    with mock.patch.object(warp, "CONFIG_PATH", root / "config.json"), \
-        mock.patch.object(warp, "WGCF_BIN", root / "wgcf"), \
-        mock.patch.object(warp, "WGCF_ACCOUNT", root / "wgcf-account.toml"), \
-        mock.patch.object(warp, "WGCF_PROFILE", root / "wgcf-profile.conf"), \
-        redirect_stdout(stdout):
+    with Sandbox(config=root / "config.json", db=None), redirect_stdout(stdout):
         warp.print_status()
     return stdout.getvalue().splitlines()
 
@@ -162,7 +173,7 @@ class ClientRoutesUnderWarpTests(unittest.TestCase):
         self.assertEqual(client_outbounds(config, db), {"alice": "warp-out", "bob": "warp-out"})
 
         # То же делает save_config_restart_xray_and_db при каждой записи client-DB (таймер, xray-client, xray-set-cascade add).
-        changed = client_routes.ensure_all_client_route_config(config, db)
+        changed = client_route_service.ensure_all_client_route_config(config, db)
 
         self.assertFalse(changed)
         self.assertEqual(client_outbounds(config, db), {"alice": "warp-out", "bob": "warp-out"})
@@ -174,7 +185,7 @@ class ClientRoutesUnderWarpTests(unittest.TestCase):
         config, db = warp_config_with_stale_client_rules()
         self.assertEqual(client_outbounds(config, db), {"alice": "cascade-de", "bob": "cascade-nl"})
 
-        self.assertTrue(client_routes.ensure_all_client_route_config(config, db))
+        self.assertTrue(client_route_service.ensure_all_client_route_config(config, db))
 
         self.assertEqual(client_outbounds(config, db), {"alice": "warp-out", "bob": "warp-out"})
         self.assertEqual(client_rule_tags(config), [])
@@ -186,9 +197,9 @@ class ClientRoutesUnderWarpTests(unittest.TestCase):
         config, db = warp_config_with_stale_client_rules()
         alice = dict(db["clients"]["alice"], selectedCascadeTag="cascade-nl")
 
-        self.assertTrue(client_routes.ensure_client_route_config(config, "alice", alice, "cascade-nl"))
+        self.assertTrue(client_route_service.ensure_client_route_config(config, "alice", alice, "cascade-nl"))
 
-        self.assertEqual(client_outbound(config, client_routes.client_emails("alice", alice)[0]), "warp-out")
+        self.assertEqual(client_outbound(config, client_credentials.client_emails("alice", alice)[0]), "warp-out")
         self.assertNotIn(client_routes.client_balancer_tag("alice", alice), client_rule_tags(config))
         self.assertEqual(client_outbounds(config, db)["bob"], "cascade-nl")
         self.assertEqual(alice["selectedCascadeTag"], "cascade-nl")
@@ -197,7 +208,7 @@ class ClientRoutesUnderWarpTests(unittest.TestCase):
         """Репро P2_019, часть 2: `xray-warp disable` возвращает клиентов в каскады их стран."""
         config, db = clients_on_cascades()
         enable_warp(config)
-        client_routes.ensure_all_client_route_config(config, db)
+        client_route_service.ensure_all_client_route_config(config, db)
 
         self.assertTrue(warp.disable_warp_route(config, db))
 
@@ -217,7 +228,7 @@ class ClientRoutesUnderWarpTests(unittest.TestCase):
         config, db = clients_on_cascades()
         enable_warp(config)
         db["clients"]["carol"] = client_entry("3", "carol")
-        client_routes.ensure_all_client_route_config(config, db)
+        client_route_service.ensure_all_client_route_config(config, db)
         self.assertEqual(db["clients"]["carol"].get("selectedCascadeTag", ""), "")
 
         warp.disable_warp_route(config, db)
@@ -243,7 +254,7 @@ class ClientRoutesWithoutCatchallTests(unittest.TestCase):
         config, db = clients_on_cascades()
         set_cascade.disable_cascade(config)
 
-        changed = client_routes.ensure_all_client_route_config(config, db)
+        changed = client_route_service.ensure_all_client_route_config(config, db)
 
         self.assertFalse(changed)
         self.assertEqual(client_outbounds(config, db), {"alice": "direct", "bob": "direct"})
@@ -253,11 +264,11 @@ class ClientRoutesWithoutCatchallTests(unittest.TestCase):
     def test_cascade_use_restores_client_routes_after_disable(self) -> None:
         config, db = clients_on_cascades()
         set_cascade.disable_cascade(config)
-        client_routes.ensure_all_client_route_config(config, db)
+        client_route_service.ensure_all_client_route_config(config, db)
 
         # Изменения config.json и client-DB из `xray-set-cascade use de`.
         set_cascade.set_active_cascade(config, "cascade-de")
-        client_routes.ensure_all_client_route_config(config, db)
+        client_route_service.ensure_all_client_route_config(config, db)
 
         self.assertEqual(client_outbounds(config, db), {"alice": "cascade-de", "bob": "cascade-nl"})
 
@@ -282,7 +293,7 @@ class WarpStatusTests(unittest.TestCase):
 
     def test_status_has_no_warning_without_stale_client_rules(self) -> None:
         cases = {
-            "WARP без клиентских правил": lambda config, db: (enable_warp(config), client_routes.ensure_all_client_route_config(config, db)),
+            "WARP без клиентских правил": lambda config, db: (enable_warp(config), client_route_service.ensure_all_client_route_config(config, db)),
             "каскад с клиентскими правилами": lambda config, db: None,
         }
         for title, prepare in cases.items():
@@ -299,17 +310,36 @@ class ClientDbWriteCommandTests(unittest.TestCase):
     """Те же сценарии командами: xray-warp, xray-set-cascade и запись client-DB командой xray-client."""
 
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        # Каскады main (общий маршрут) и backup, bypass-ru, outbound warp-out без маршрута.
-        routing_lock_tests.make_routing_sandbox(self.root)
+        tmp = self.enterContext(tempfile.TemporaryDirectory())
+        fixture = Path(tmp)
+        routing_lock_tests.make_routing_sandbox(fixture)
+        self.box = self.enterContext(Sandbox(config=fixture / "config.json", db=None))
+        self.root = self.box.paths.config_dir
+        self.box.paths.manager_db.write_bytes((fixture / "manager.db").read_bytes())
+        write_warp_profile(self.root / "warp/wgcf-profile.conf")
+        processes = self.box.processes
+        ok = processes.ok()
+        test_args = ("run", "-test", "-config", str(self.box.paths.config))
+        identifiers = count(1)
+        processes.script({
+            ("/usr/local/bin/xray", *test_args): ok,
+            (str(self.box.paths.xray_bin), *test_args): ok,
+            (str(self.box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(self.box.paths.config.with_suffix(".json.tmp"))): ok,
+            "systemctl restart xray": ok,
+            "systemctl stop xray": ok,
+            "systemctl reset-failed xray": ok,
+            ("/usr/local/bin/xray", "uuid"): lambda *_a, **_kw: processes.ok(str(uuid.UUID(int=next(identifiers) << 96))),
+            ("/usr/local/bin/xray", "x25519", "-i", "test-private-key"): processes.ok("Public key: " + "A" * 43),
+            curl(10809, TRACE): processes.ok("ip=192.0.2.1\nwarp=on\n"),
+            curl(10819, TRACE): processes.ok("ip=192.0.2.1\nwarp=off\n"),
+        })
+        self.enterContext(running_xray(self.box))
+        self.enterContext(mock.patch("socket.getaddrinfo", return_value=[]))
+        self.enterContext(mock.patch("xray_vps_manager.core.process.tcp_port_in_use", return_value=False))
 
     @contextmanager
     def commands(self):
-        with routing_lock_tests.routing_patches(self.root), \
-            client_lock_tests.sandbox_patches(self.root), \
-            redirect_stdout(StringIO()):
+        with redirect_stdout(StringIO()):
             yield
 
     def add_client(self, name: str) -> None:
@@ -367,29 +397,19 @@ class ClientDbWriteCommandTests(unittest.TestCase):
         config, db = self.stored()
         self.assertEqual(client_outbounds(config, db), {"alice": "cascade-main", "bob": "cascade-backup", "carol": "cascade-backup"})
 
-    def test_warp_disable_without_client_db_still_disables_warp(self) -> None:
-        """manager.db недоступна: WARP выключается, клиентские правила вернёт `xray-client sync-routes`."""
+    def test_warp_disable_without_client_db_preserves_enabled_config(self) -> None:
+        """VIREI-125: необходимая БД недоступна — отказ до записи, без WARN-успеха."""
         with self.commands():
             self.add_client("alice")
             warp.cmd_enable()
-
-        stderr = StringIO()
+        before = (self.root / "config.json").read_bytes()
         missing = SQLiteReadUnavailable("SQLite manager database is missing.")
-        with self.commands(), \
-            mock.patch.object(client_repository, "load_db_sql", side_effect=missing), \
-            redirect_stderr(stderr):
-            warp.cmd_disable()
-
+        with self.commands(), mock.patch.object(client_repository, "load_db_sql", side_effect=missing):
+            with self.assertRaises(SQLiteReadUnavailable):
+                warp.cmd_disable()
+        self.assertEqual((self.root / "config.json").read_bytes(), before)
         config, db = self.stored()
-        self.assertEqual(cascade_config.current_catchall_tag(config), "cascade-main")
-        self.assertEqual(client_rule_tags(config), [])
-        self.assertIn("WARN: client route DB sync skipped: SQLite manager database is missing.", stderr.getvalue().splitlines())
-
-        with self.commands():
-            client_command.cmd_sync_routes()
-
-        config, db = self.stored()
-        self.assertEqual(client_outbounds(config, db), {"alice": "cascade-main"})
+        self.assertEqual(cascade_config.current_catchall_tag(config), "warp-out")
 
     def leave_client_rule_under_warp(self) -> None:
         """config.json прежней версии: WARP включён, а правило клиента осталось перед catch-all warp-out."""
@@ -400,19 +420,12 @@ class ClientDbWriteCommandTests(unittest.TestCase):
 
     def choose_country_refused(self, name: str, tag: str) -> tuple:
         """`xray-client route`, когда работающий Xray ещё держит balancer клиента: `api bo` прошёл бы успешно."""
-        commands = []
-
-        def xray_command(command, **_kwargs):
-            commands.append(" ".join(str(item) for item in command[1:3]))
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
+        start = len(self.box.processes.calls)
         stderr = StringIO()
-        with self.commands(), \
-            mock.patch.object(client_command, "run", side_effect=xray_command), \
-            mock.patch.object(client_command, "run_capture", side_effect=xray_command), \
-            redirect_stderr(stderr):
+        with self.commands(), redirect_stderr(stderr):
             with self.assertRaises(SystemExit) as raised:
                 client_command.cmd_route(name, tag)
+        commands = [" ".join(command[1:3]) for command in self.box.processes.calls[start:]]
         return raised.exception.code, stderr.getvalue().splitlines(), commands
 
     def test_country_choice_under_warp_keeps_leftover_rule_for_sync_routes(self) -> None:
@@ -434,9 +447,10 @@ class ClientDbWriteCommandTests(unittest.TestCase):
         self.assertEqual(warp_status_lines(self.root)[-1], WARP_STALE_RULES_WARN.format(count=1))
 
         restarts = []
-        with routing_lock_tests.routing_patches(self.root), \
-            client_lock_tests.sandbox_patches(self.root, restart=lambda: restarts.append("restart")), \
-            redirect_stdout(StringIO()):
+        self.box.processes.script({"systemctl restart xray": lambda *_a, **_kw: (
+            restarts.append("restart") or self.box.processes.ok()
+        )})
+        with self.commands():
             client_command.cmd_sync_routes()
 
         config, db = self.stored()

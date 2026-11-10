@@ -4,6 +4,7 @@ from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from xray_vps_manager.activity import blocklist as activity_blocklist
+from xray_vps_manager.routing import blocklist as routing_blocklist
 from xray_vps_manager.core.errors import ConflictError, NotFoundError
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
@@ -30,7 +31,7 @@ class ActivityBlocklistTests(unittest.TestCase):
                     with self.assertRaises(NotFoundError) as caught:
                         activity_blocklist.add_block("example.com", source_client=client, source_event_id=missing_id)
                     self.assertEqual(str(caught.exception), message)
-                    with mock.patch.object(activity_blocklist, "reconcile_xray_config") as reconcile:
+                    with mock.patch.object(routing_blocklist, "reconcile_xray_config") as reconcile:
                         result = box.run_cli("activity", "block-add", "example.com", client, "forever", "", str(missing_id))
                     self.assertEqual((result.exit_code, result.stderr, result.stdout), (1, f"ERROR: {message}\n", ""))
                     reconcile.assert_not_called()
@@ -44,7 +45,7 @@ class ActivityBlocklistTests(unittest.TestCase):
             with database.write_session() as connection:
                 connection.execute("UPDATE activity_blocklist SET enabled = 0 WHERE value = 'example.com'")
             before = activity_blocklist.block_items()
-            with mock.patch.object(activity_blocklist, "reconcile_xray_config") as reconcile:
+            with mock.patch.object(routing_blocklist, "reconcile_xray_config") as reconcile:
                 for value, message in (("-1", "Unknown activity event id: -1"),
                                        ("bad", "Activity event id must be an integer.")):
                     with self.subTest(value=value):
@@ -64,7 +65,7 @@ class ActivityBlocklistTests(unittest.TestCase):
             with self.assertRaises(ConflictError) as caught:
                 activity_blocklist.add_block("other.example")
             self.assertEqual(caught.exception.__cause__.sqlite_errorcode, sqlite3.SQLITE_CONSTRAINT_UNIQUE)
-            with mock.patch.object(activity_blocklist, "reconcile_xray_config") as reconcile:
+            with mock.patch.object(routing_blocklist, "reconcile_xray_config") as reconcile:
                 result = box.run_cli("activity", "block-add", "other.example", "", "forever", "")
             self.assertEqual(result.exit_code, 1)
             self.assertEqual(result.stderr, "ERROR: Activity block conflicts with an existing entry: other.example\n")

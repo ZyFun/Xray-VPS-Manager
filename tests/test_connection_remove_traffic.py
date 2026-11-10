@@ -43,9 +43,11 @@ def reality_inbound(tag: str, port: int) -> dict:
 
 def base_config() -> dict:
     return {
-        "inbounds": [reality_inbound(KEPT_TAG, 443), reality_inbound(REMOVED_TAG, 8443)],
+        "inbounds": [reality_inbound(KEPT_TAG, 443), reality_inbound(REMOVED_TAG, 8443),
+                     {"tag": "api", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1", "clients": []}}],
         "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "blocked", "protocol": "blackhole"}],
-        "routing": {"rules": []},
+        "api": {"tag": "api", "services": ["StatsService"]},
+        "routing": {"rules": [{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}]},
     }
 
 
@@ -89,9 +91,11 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
         self.box = self.enterContext(Sandbox(db=None))
         self.db_path = self.box.paths.manager_db
         self.enterContext(mock.patch.object(systemd, "time", FakeClock()))
+        self.enterContext(mock.patch("socket.create_connection", return_value=FakeSocket()))
         ok = self.box.processes.ok()
         self.box.processes.script({
             ("/usr/local/bin/xray", "run", "-test", "-config", str(self.box.paths.config)): ok,
+            (str(self.box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(self.box.paths.config.with_suffix(".json.tmp"))): ok,
             ("systemctl", "stop", "xray"): ok,
             ("systemctl", "reset-failed", "xray"): ok,
             ("systemctl", "restart", "xray"): ok,
@@ -245,17 +249,18 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
                 self.assertIsNone(client_repository.get_route(conn, "cascade-" + name))
                 self.assertEqual(client_repository.get_client(conn, "alice")["selectedCascadeTag"], expected)
 
-    def test_route_delete_failure_warns_and_rolls_back_sql_batch(self):
+    def test_route_delete_failure_restores_config_and_sql_batch(self):
         self.seed_routes()
         before = client_repository.load_db()
+        original_config = self.box.paths.config.read_bytes()
         with database.write_session() as conn:
             conn.execute("CREATE TRIGGER veto BEFORE DELETE ON cascade_routes "
                          "BEGIN SELECT RAISE(ABORT, 'route refused'); END")
         result = self.box.run_cli("cascade", "remove", "old")
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("WARN: client route DB save skipped: route refused", result.stderr)
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("route refused", result.stderr)
         self.assertEqual(client_repository.load_db(), before)
-        self.assertNotIn("cascade-old", {outbound["tag"] for outbound in self.box.config()["outbounds"]})
+        self.assertEqual(self.box.paths.config.read_bytes(), original_config)
 
 
 class MenuDeleteConnectionWarningTest(unittest.TestCase):
