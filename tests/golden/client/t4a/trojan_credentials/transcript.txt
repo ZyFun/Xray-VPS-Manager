@@ -1,0 +1,297 @@
+
+["add-trojan-connection", "Trojan", "9443", "trojan.example", "--no-caddy"]
+exit: 0
+stdout:
+Added Trojan connection: Trojan
+Tag: trojan-tls
+PROTOCOL: trojan
+SECURITY: tls
+TLS_DOMAIN: trojan.example
+FINGERPRINT: chrome
+TRANSPORT: ws
+PUBLIC_PORT: 443
+LOCAL_PORT: 9443
+WS_PATH: /trojan
+TLS_MIN_VERSION: tls1.2
+TLS_MAX_VERSION: tls1.3
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6,2 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["trojan-tls", "Trojan", 443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":false,\"wsPath\":\"/trojan\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -48,0 +49,24 @@
++    },
++    {
++      "listen": "127.0.0.1",
++      "port": 9443,
++      "protocol": "trojan",
++      "settings": {
++        "clients": []
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "ws",
++        "security": "none",
++        "wsSettings": {
++          "path": "/trojan"
++        }
++      },
++      "tag": "trojan-tls"
+@@ -74,0 +99 @@
++    "balancers": [],
+
+["add", "bob", "4", "--protocol", "trojan"]
+exit: 0
+stdout:
+Added client: bob
+Connection: Trojan (trojan-tls)
+Payment type: free
+Created: 2026-10-06T12:00:00Z
+Access until: 2026-10-10 00:00
+Access key: vpn-key:00000000-0000-4000-8000-000000000002
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
+trojan://X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "uuid"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2,0 +3 @@
++["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls", "trojan-tls", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-10T00:00:00+03:00", 4, null, "free", "{\"password\":\"X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{\"protocol\":\"trojan\"}", null]
+@@ -4,0 +6 @@
++["bob", "trojan-tls", "00000000-0000-4000-8000-000000000002", "trojan", "none", "ws", 1, "2026-10-06T12:00:00Z", "{\"password\":\"X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -1,0 +2 @@
++config.json.bak.20261006120000000001
+--- before/config.json
++++ after/config.json
+@@ -55 +55,7 @@
+-        "clients": []
++        "clients": [
++          {
++            "email": "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls",
++            "level": 0,
++            "password": "X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs"
++          }
++        ]
+
+["trojan-password-check"]
+exit: 0
+stdout:
++--------+------------+--------+--------+
+| CLIENT | CONNECTION | STATUS | ISSUES |
++--------+------------+--------+--------+
+| bob    | trojan-tls | OK     | -      |
++--------+------------+--------+--------+
+
+stderr:
+
+processes:
+state:
+
+["link", "bob", "--connection", "trojan-tls"]
+exit: 0
+stdout:
+trojan://X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
+
+stderr:
+
+processes:
+state:
+
+["key", "bob"]
+exit: 0
+stdout:
+vpn-key:00000000-0000-4000-8000-000000000002
+
+stderr:
+
+processes:
+state:
+
+["trojan-password-check"]
+exit: 1
+stdout:
++--------+------------+--------+--------------------------------------------+
+| CLIENT | CONNECTION | STATUS | ISSUES                                     |
++--------+------------+--------+--------------------------------------------+
+| bob    | trojan-tls | FAIL   | active config password differs from SQLite |
++--------+------------+--------+--------------------------------------------+
+
+stderr:
+ERROR: Trojan password policy check failed.
+
+processes:
+state:
+
+["rotate-trojan-password", "bob", "--connection", "trojan-tls"]
+exit: 0
+stdout:
+Trojan password rotated.
+Client: bob
+Connection: Trojan (trojan-tls)
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000002
+Client must reimport this Trojan link:
+trojan://5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -3 +3 @@
+-["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls", "trojan-tls", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-10T00:00:00+03:00", 4, null, "free", "{\"password\":\"X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{\"protocol\":\"trojan\"}", null]
++["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls", "trojan-tls", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-10T00:00:00+03:00", 4, null, "free", "{\"password\":\"5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{\"protocol\":\"trojan\"}", null]
+@@ -6 +6 @@
+-["bob", "trojan-tls", "00000000-0000-4000-8000-000000000002", "trojan", "none", "ws", 1, "2026-10-06T12:00:00Z", "{\"password\":\"X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{}", "{}"]
++["bob", "trojan-tls", "00000000-0000-4000-8000-000000000002", "trojan", "none", "ws", 1, "2026-10-06T12:00:00Z", "{\"password\":\"5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -2,0 +3 @@
++config.json.bak.20261006120000000002
+--- before/config.json
++++ after/config.json
+@@ -59 +59 @@
+-            "password": "changed-in-config"
++            "password": "5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-"
+
+["trojan-password-check"]
+exit: 0
+stdout:
++--------+------------+--------+--------+
+| CLIENT | CONNECTION | STATUS | ISSUES |
++--------+------------+--------+--------+
+| bob    | trojan-tls | OK     | -      |
++--------+------------+--------+--------+
+
+stderr:
+
+processes:
+state:
+
+["key", "bob"]
+exit: 0
+stdout:
+vpn-key:00000000-0000-4000-8000-000000000002
+
+stderr:
+
+processes:
+state:
+
+["disable", "bob", "--connection", "trojan-tls"]
+exit: 0
+stdout:
+Disabled client: bob
+Disabled credentials: trojan-tls
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000003
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -3 +3 @@
+-["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls", "trojan-tls", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-10T00:00:00+03:00", 4, null, "free", "{\"password\":\"5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{\"protocol\":\"trojan\"}", null]
++["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls", "trojan-tls", "2026-10-06T12:00:00Z", 0, null, "2026-10-06T12:00:00Z", "2026-10-10T00:00:00+03:00", 4, null, "free", "{\"password\":\"5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{\"protocol\":\"trojan\"}", null]
+@@ -6 +6 @@
+-["bob", "trojan-tls", "00000000-0000-4000-8000-000000000002", "trojan", "none", "ws", 1, "2026-10-06T12:00:00Z", "{\"password\":\"5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{}", "{}"]
++["bob", "trojan-tls", "00000000-0000-4000-8000-000000000002", "trojan", "none", "ws", 0, "2026-10-06T12:00:00Z", "{\"password\":\"5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -3,0 +4 @@
++config.json.bak.20261006120000000003
+--- before/config.json
++++ after/config.json
+@@ -55,7 +55 @@
+-        "clients": [
+-          {
+-            "email": "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls",
+-            "level": 0,
+-            "password": "5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-"
+-          }
+-        ]
++        "clients": []
+
+["rotate-trojan-password", "bob"]
+exit: 0
+stdout:
+Trojan password rotated.
+Client: bob
+Connection: Trojan (trojan-tls)
+Backup: not created; credential is not active in config.
+Client must reimport this Trojan link:
+trojan://QyFcIoCVvQ2hmsCfjdpypYlVoecyxp9Ahc2mHiCjMS3@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
+
+stderr:
+
+processes:
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -3 +3 @@
+-["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls", "trojan-tls", "2026-10-06T12:00:00Z", 0, null, "2026-10-06T12:00:00Z", "2026-10-10T00:00:00+03:00", 4, null, "free", "{\"password\":\"5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{\"protocol\":\"trojan\"}", null]
++["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=trojan-tls", "trojan-tls", "2026-10-06T12:00:00Z", 0, null, "2026-10-06T12:00:00Z", "2026-10-10T00:00:00+03:00", 4, null, "free", "{\"password\":\"QyFcIoCVvQ2hmsCfjdpypYlVoecyxp9Ahc2mHiCjMS3\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{\"protocol\":\"trojan\"}", null]
+@@ -6 +6 @@
+-["bob", "trojan-tls", "00000000-0000-4000-8000-000000000002", "trojan", "none", "ws", 0, "2026-10-06T12:00:00Z", "{\"password\":\"5lkO-nMLpQAK4lXOELxyxeH8ilqtekYJEB1J5_TkPo-\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{}", "{}"]
++["bob", "trojan-tls", "00000000-0000-4000-8000-000000000002", "trojan", "none", "ws", 0, "2026-10-06T12:00:00Z", "{\"password\":\"QyFcIoCVvQ2hmsCfjdpypYlVoecyxp9Ahc2mHiCjMS3\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=trojan-tls\",\"id\":\"00000000-0000-4000-8000-000000000002\",\"protocol\":\"trojan\"}", "{}", "{}"]
+
+["trojan-password-check"]
+exit: 0
+stdout:
++--------+------------+--------+--------+
+| CLIENT | CONNECTION | STATUS | ISSUES |
++--------+------------+--------+--------+
+| bob    | trojan-tls | OK     | -      |
++--------+------------+--------+--------+
+
+stderr:
+
+processes:
+state:

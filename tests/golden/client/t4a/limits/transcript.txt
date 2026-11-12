@@ -1,0 +1,129 @@
+
+["set-limit", "alice", "daily", "8"]
+exit: 0
+stdout:
+Client: alice
+Traffic limit: 8.00GB/day
+Current usage: 3.00GB
+Remaining: 5.00GB
+Reset: 2026-10-07T00:00+03:00
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/sbin/xray-traffic-sync", "--quiet"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -6 +6 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+@@ -8,0 +9 @@
++["alice", "daily", 8589934592, "2026-10-06T12:00:00Z"]
+
+["limit-list"]
+exit: 0
+stdout:
++-------+---------+------------+------------+--------+-----------+------------------------+
+| NAME  | STATUS  | CONNECTION | LIMIT      | USED   | REMAINING | RESET                  |
++-------+---------+------------+------------+--------+-----------+------------------------+
+| alice | enabled | Reality    | 8.00GB/day | 3.00GB | 5.00GB    | 2026-10-07T00:00+03:00 |
++-------+---------+------------+------------+--------+-----------+------------------------+
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/sbin/xray-traffic-sync", "--quiet"]
+state:
+
+["enforce-limits", "--quiet"]
+exit: 0
+stdout:
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 0, "traffic-limit", "2026-10-06T12:00:00Z", null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -4 +4 @@
+-["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
++["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 0, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
+@@ -10,0 +11 @@
++["alice", "2026-10-06T12:00:00Z", "2026-10-06", 3221234688, "2026-10-07T00:00+03:00"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -23,7 +23 @@
+-        "clients": [
+-          {
+-            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality",
+-            "flow": "xtls-rprx-vision",
+-            "id": "00000000-0000-4000-8000-000000000001"
+-          }
+-        ],
++        "clients": [],
+@@ -74,0 +69 @@
++    "balancers": [],
+
+["limit-list"]
+exit: 0
+stdout:
++-------+----------+------------+------------+--------+-----------+------------------------+
+| NAME  | STATUS   | CONNECTION | LIMIT      | USED   | REMAINING | RESET                  |
++-------+----------+------------+------------+--------+-----------+------------------------+
+| alice | disabled | Reality    | 1.00GB/day | 3.00GB | 0.00KB    | 2026-10-07T00:00+03:00 |
++-------+----------+------------+------------+--------+-----------+------------------------+
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/sbin/xray-traffic-sync", "--quiet"]
+state:
+
+["clear-limit", "alice"]
+exit: 0
+stdout:
+Client: alice
+Traffic limit: без лимита
+Status: disabled by previous traffic limit. Use xray-client enable NAME if the client should be enabled now.
+
+stderr:
+
+processes:
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 0, "traffic-limit", "2026-10-06T12:00:00Z", null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 0, null, "2026-10-06T12:00:00Z", null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -9 +8,0 @@
+-["alice", "daily", 1073741824, "2026-10-06T12:00:00Z"]
+@@ -11 +10 @@
+-["alice", "2026-10-06T12:00:00Z", "2026-10-06", 3221234688, "2026-10-07T00:00+03:00"]
++["alice", null, null, 0, "2026-10-07T00:00+03:00"]
+
+["enforce-limits", "--sync"]
+exit: 0
+stdout:
+No traffic limits exceeded or reset.
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/sbin/xray-traffic-sync", "--quiet"]
+state:
