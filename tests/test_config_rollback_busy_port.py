@@ -188,19 +188,17 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
         self.assertEqual(json.loads(self.stored_config())["inbounds"][1]["port"], 9443)
         self.assertEqual(self.restore_restarts, 0)
 
-    def test_disable_trojan_client_only_in_config_restores_config(self) -> None:
-        """Сценарий XR-REV-059: disable Trojan-клиента без записи в SQLite падает в save_db — конфиг возвращается."""
+    def test_disable_trojan_client_only_in_config_stops_before_apply(self) -> None:
+        """XR-REV-059: запись Trojan-клиента без UUID отклоняется до применения."""
         trojan_config_only_client(self.box.paths.config.parent)
         self.before = self.stored_config()
         result = self.box.run_cli("client", "disable", "bob")
 
         self.assertEqual(result.exit_code, 1)
-        self.assertTrue(
-            result.stderr.startswith("ERROR: New config failed: Client has no UUID: bob. Restored backup: "),
-            result.stderr,
-        )
+        self.assertEqual(result.stderr, "ERROR: Client has no UUID: bob\n")
         self.assertEqual(self.stored_config(), self.before)
-        self.assertEqual(self.restore_restarts, 1)
+        self.box.assert_restarted(times=0)
+        self.assertEqual(self.restore_restarts, 0)
         self.assertNotIn("bob", client_repository.load_db()["clients"])
 
 

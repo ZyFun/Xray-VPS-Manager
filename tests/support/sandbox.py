@@ -77,7 +77,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.commands.backup', 'CADDY_CONFIG_DIRS'),
     ('xray_vps_manager.commands.client', 'CONFIG_PATH'),
     ('xray_vps_manager.commands.client', 'SERVER_ENV_PATH'),
-    ('xray_vps_manager.commands.client', 'TRAFFIC_SYNC'),
     ('xray_vps_manager.commands.client', 'XRAY_TELEGRAM'),
     ('xray_vps_manager.commands.manager_update', 'SERVER_ENV_PATH'),
     ('xray_vps_manager.commands.manager_update', 'SOURCE_DIR'),

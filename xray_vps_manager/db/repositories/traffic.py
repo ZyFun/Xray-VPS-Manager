@@ -109,6 +109,14 @@ def upsert_credential_traffic_totals(
 
 
 def get_traffic_entry(connection: sqlite3.Connection, name: str) -> dict[str, Any]:
+    return _get_traffic_entry(connection, name, include_history=True)
+
+
+def get_traffic_totals(connection: sqlite3.Connection, name: str) -> dict[str, Any]:
+    return _get_traffic_entry(connection, name, include_history=False)
+
+
+def _get_traffic_entry(connection, name, *, include_history):
     row = connection.execute("SELECT * FROM traffic_totals WHERE client_name = ?", (name,)).fetchone()
     if row is None:
         return {}
@@ -120,7 +128,6 @@ def get_traffic_entry(connection: sqlite3.Connection, name: str) -> dict[str, An
             "uplink": int(row["last_runtime_uplink"] or 0),
             "downlink": int(row["last_runtime_downlink"] or 0),
         },
-        "history": history_for_client(connection, name),
     }
     for db_key, json_key in (
         ("last_online_at", "lastOnline"),
@@ -130,10 +137,13 @@ def get_traffic_entry(connection: sqlite3.Connection, name: str) -> dict[str, An
     ):
         if row[db_key]:
             entry[json_key] = row[db_key]
+    if include_history:
+        entry["history"] = history_for_client(connection, name)
     return entry
 
 
-def _traffic_entry_from_row(connection: sqlite3.Connection, row, *, credential: bool = False) -> dict[str, Any]:
+def _traffic_entry_from_row(connection: sqlite3.Connection, row, *, credential: bool = False,
+                            include_history: bool = True) -> dict[str, Any]:
     name = row["client_name"]
     connection_tag = row["connection_tag"] if credential else ""
     entry = {
@@ -144,12 +154,13 @@ def _traffic_entry_from_row(connection: sqlite3.Connection, row, *, credential: 
             "uplink": int(row["last_runtime_uplink"] or 0),
             "downlink": int(row["last_runtime_downlink"] or 0),
         },
-        "history": (
+    }
+    if include_history:
+        entry["history"] = (
             credential_history_for_client(connection, name, connection_tag)
             if credential
             else history_for_client(connection, name)
-        ),
-    }
+        )
     for db_key, json_key in (
         ("last_online_at", "lastOnline"),
         ("last_online_source", "lastOnlineSource"),
@@ -176,6 +187,14 @@ def list_traffic_entries(connection: sqlite3.Connection) -> dict[str, dict[str, 
 
 
 def get_credential_traffic_entry(connection: sqlite3.Connection, name: str, connection_tag: str) -> dict[str, Any]:
+    return _get_credential_traffic_entry(connection, name, connection_tag, include_history=True)
+
+
+def get_credential_traffic_totals(connection, name, connection_tag):
+    return _get_credential_traffic_entry(connection, name, connection_tag, include_history=False)
+
+
+def _get_credential_traffic_entry(connection, name, connection_tag, *, include_history):
     row = connection.execute(
         """
         SELECT *
@@ -186,7 +205,7 @@ def get_credential_traffic_entry(connection: sqlite3.Connection, name: str, conn
     ).fetchone()
     if row is None:
         return {}
-    return _traffic_entry_from_row(connection, row, credential=True)
+    return _traffic_entry_from_row(connection, row, credential=True, include_history=include_history)
 
 
 def list_credential_traffic_entries(connection: sqlite3.Connection) -> dict[str, dict[str, dict[str, Any]]]:

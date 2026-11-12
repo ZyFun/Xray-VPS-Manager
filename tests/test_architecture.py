@@ -19,7 +19,6 @@ AREA_ORDER = (
 # Идентичность исключения — модуль-источник и модуль-цель, без номеров строк.
 ALLOWED_IMPORTS = frozenset({
     # Клиентские операции пока читают трафик до его отдельного шага миграции.
-    ("clients.crud", "traffic.repository"),
     ("clients.limits", "traffic.formatting"),
     ("clients.limits", "traffic.repository"),
     ("clients.runtime", "traffic.repository"),

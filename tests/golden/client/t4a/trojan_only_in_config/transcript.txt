@@ -142,20 +142,7 @@ exit: 1
 stdout:
 
 stderr:
-ERROR: New config failed: Client has no UUID: bob. Restored backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
+ERROR: Client has no UUID: bob
 
 processes:
-["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
-["systemctl", "stop", "xray"]
-["systemctl", "reset-failed", "xray"]
-["systemctl", "restart", "xray"]
-["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
-["systemctl", "stop", "xray"]
-["systemctl", "reset-failed", "xray"]
-["systemctl", "restart", "xray"]
-["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
 state:
---- before/config backups
-+++ after/config backups
-@@ -1,0 +2 @@
-+config.json.bak.20261006120000000001

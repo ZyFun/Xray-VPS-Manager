@@ -7,6 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from tests.support.sandbox import Sandbox
+from tests.test_apply_characterization import running_xray
+from tests.test_client_characterization import ALICE_KEY, script_processes
 from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.core import paths as core_paths
 
@@ -51,46 +54,16 @@ class ClientCommandReadTests(unittest.TestCase):
             client_command.parse_add_args(["alice", "--connection", "trojan-tls", "--protocol", "trojan"])
 
     def test_cmd_add_prints_access_key_with_connection_link(self) -> None:
-        config = {"inbounds": []}
-        db = {"connections": {}, "clients": {}}
-        client_id = "00000000-0000-0000-0000-000000000001"
-        credential_id = "00000000-0000-0000-0000-000000000002"
-        result = client_command.client_crud.AddClientResult(
-            name="alice",
-            client_id=client_id,
-            credential_id=credential_id,
-            created="2026-06-24T10:00:00Z",
-            connection_tag="trojan-tls",
-            entry={
-                "id": client_id,
-                "created": "2026-06-24T10:00:00Z",
-                "paymentType": "free",
-                "credentials": {},
-            },
-            added_client=True,
-        )
-        output = StringIO()
+        with Sandbox() as box, running_xray(box):
+            script_processes(box)
+            setup = box.run_cli("client", "add-trojan-connection", "Trojan", "9443", "vpn.example.com", "--no-caddy")
+            self.assertEqual(setup.exit_code, 0, setup.stderr)
+            result = box.run_cli("client", "add", "alice", "30", "--connection", "trojan-tls")
 
-        with mock.patch.object(client_command, "load_config", return_value=config), \
-            mock.patch.object(client_command, "load_db", return_value=db), \
-            mock.patch.object(client_command.client_crud, "client_exists", return_value=False), \
-            mock.patch.object(client_command.client_crud, "prepare_add_client", return_value="trojan-tls"), \
-            mock.patch.object(client_command.client_crud, "add_client", return_value=result), \
-            mock.patch.object(client_command, "save_config_restart_xray_and_db", return_value="/tmp/config.bak"), \
-            mock.patch.object(client_command, "connection_display_name", return_value="Trojan"), \
-            mock.patch.object(client_command, "print_payment_summary"), \
-            mock.patch.object(client_command, "link_for", return_value="trojan://secret@vpn.example.com:443?type=ws#Xray"), \
-            redirect_stdout(output):
-            client_command.cmd_add(
-                "alice",
-                access_days=30,
-                prompt_for_access=False,
-                connection_tag="trojan-tls",
-            )
-
-        text = output.getvalue()
-        self.assertIn(f"Access key: vpn-key:{client_id}", text)
-        self.assertIn("trojan://secret@vpn.example.com:443?type=ws#Xray", text)
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertIn(f"Access key: vpn-key:{ALICE_KEY}", result.stdout)
+        self.assertRegex(result.stdout, r"trojan://[^@]+@vpn\.example\.com:443\?")
+        self.assertNotIn("vpn-key:00000000-0000-4000-8000-000000000002", result.stdout)
 
     def test_trojan_password_check_prints_policy_rows(self) -> None:
         output = StringIO()

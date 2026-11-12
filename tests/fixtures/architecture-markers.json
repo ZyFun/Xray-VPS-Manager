@@ -198,13 +198,6 @@
   {
     "module": "commands.client",
     "scope": "<module>",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/sbin/xray-traffic-sync')",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "<module>",
     "category": "subprocess",
     "ast": "Import(names=[alias(name='subprocess')])",
     "count": 1
