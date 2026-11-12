@@ -1,0 +1,139 @@
+
+["set-days", "alice", "3"]
+exit: 0
+stdout:
+Client: alice
+Access until: 2026-10-09 00:00
+Status: enabled
+
+stderr:
+
+processes:
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00:00+03:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -6 +6 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+
+["timezone"]
+exit: 0
+stdout:
+MANAGER_TIMEZONE: Europe/Moscow
+Current time: 2026-10-06 15:00:00 MSK
+
+stderr:
+
+processes:
+state:
+
+["set-timezone", "America/New_York"]
+exit: 0
+stdout:
+MANAGER_TIMEZONE: America/New_York
+Current time: 2026-10-06 08:00:00 EDT
+Normalized access deadlines: 1
+Raw log rotation timer: *-*-* 03:00:00 America/New_York
+
+stderr:
+
+processes:
+["systemctl", "daemon-reload"]
+["systemctl", "enable", "--now", "xray-raw-log-rotate.timer"]
+["systemctl", "restart", "xray-raw-log-rotate.timer"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00:00+03:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00-04:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+--- before/etc/systemd/system/xray-raw-log-rotate.service
++++ after/etc/systemd/system/xray-raw-log-rotate.service
+@@ -0,0 +1,8 @@
++[Unit]
++Description=Rotate raw Xray access/error logs
++After=xray.service
++ConditionPathExists=/usr/local/etc/xray/config.json
++
++[Service]
++Type=oneshot
++ExecStart=/usr/local/sbin/xray-activity rotate-raw-logs --due
+--- before/etc/systemd/system/xray-raw-log-rotate.timer
++++ after/etc/systemd/system/xray-raw-log-rotate.timer
+@@ -0,0 +1,11 @@
++[Unit]
++Description=Rotate raw Xray access/error logs
++
++[Timer]
++OnCalendar=*-*-* 03:00:00 America/New_York
++Persistent=true
++AccuracySec=1min
++Unit=xray-raw-log-rotate.service
++
++[Install]
++WantedBy=timers.target
+--- before/server.env
++++ after/server.env
+@@ -7,0 +8,4 @@
++GRPC_SERVICE_NAME=
++XHTTP_PATH=
++XHTTP_MODE=
++MANAGER_TIMEZONE=America/New_York
+@@ -9 +12,0 @@
+-MANAGER_TIMEZONE=Europe/Moscow
+
+["timezone"]
+exit: 0
+stdout:
+MANAGER_TIMEZONE: America/New_York
+Current time: 2026-10-06 08:00:00 EDT
+
+stderr:
+
+processes:
+state:
+
+["set-timezone", "server"]
+exit: 0
+stdout:
+MANAGER_TIMEZONE: server local time
+Current time: 2026-10-06 15:00:00 MSK
+Normalized access deadlines: 1
+Raw log rotation timer: *-*-* 03:00:00
+
+stderr:
+
+processes:
+["systemctl", "daemon-reload"]
+["systemctl", "enable", "--now", "xray-raw-log-rotate.timer"]
+["systemctl", "restart", "xray-raw-log-rotate.timer"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00-04:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00+03:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+--- before/etc/systemd/system/xray-raw-log-rotate.timer
++++ after/etc/systemd/system/xray-raw-log-rotate.timer
+@@ -5 +5 @@
+-OnCalendar=*-*-* 03:00:00 America/New_York
++OnCalendar=*-*-* 03:00:00
+--- before/server.env
++++ after/server.env
+@@ -11 +11 @@
+-MANAGER_TIMEZONE=America/New_York
++MANAGER_TIMEZONE=
+
+["timezone"]
+exit: 0
+stdout:
+MANAGER_TIMEZONE: server local time
+Current time: 2026-10-06 15:00:00 MSK
+
+stderr:
+
+processes:
+state:

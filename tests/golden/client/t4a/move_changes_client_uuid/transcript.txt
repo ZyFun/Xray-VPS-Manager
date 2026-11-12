@@ -1,0 +1,357 @@
+
+["add-connection", "Second", "8443", "cdn.example", "firefox", "tcp"]
+exit: 0
+stdout:
+Added connection: Second
+Tag: vless-reality-2
+SECURITY: reality
+PORT: 8443
+REALITY_SNI: cdn.example
+REALITY_DEST: cdn.example:443
+FINGERPRINT: firefox
+TRANSPORT: tcp
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "x25519"]
+["openssl", "rand", "-hex", "8"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6,2 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
++["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -48,0 +49,34 @@
++    },
++    {
++      "listen": "0.0.0.0",
++      "port": 8443,
++      "protocol": "vless",
++      "settings": {
++        "clients": [],
++        "decryption": "none"
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "tcp",
++        "realitySettings": {
++          "dest": "cdn.example:443",
++          "privateKey": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
++          "serverNames": [
++            "cdn.example"
++          ],
++          "shortIds": [
++            "fedcba9876543210"
++          ],
++          "show": false,
++          "xver": 0
++        },
++        "security": "reality"
++      },
++      "tag": "vless-reality-2"
+@@ -74,0 +109 @@
++    "balancers": [],
+
+["add-connection", "Third", "8444", "cdn.example", "firefox", "tcp"]
+exit: 0
+stdout:
+Added connection: Third
+Tag: vless-reality-3
+SECURITY: reality
+PORT: 8444
+REALITY_SNI: cdn.example
+REALITY_DEST: cdn.example:443
+FINGERPRINT: firefox
+TRANSPORT: tcp
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "x25519"]
+["openssl", "rand", "-hex", "8"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -7 +7,2 @@
+-["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
++["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
++["vless-reality-3", "Third", 8444, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -1,0 +2 @@
++config.json.bak.20261006120000000001
+--- before/config.json
++++ after/config.json
+@@ -82,0 +83,34 @@
++    },
++    {
++      "listen": "0.0.0.0",
++      "port": 8444,
++      "protocol": "vless",
++      "settings": {
++        "clients": [],
++        "decryption": "none"
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "tcp",
++        "realitySettings": {
++          "dest": "cdn.example:443",
++          "privateKey": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
++          "serverNames": [
++            "cdn.example"
++          ],
++          "shortIds": [
++            "fedcba9876543210"
++          ],
++          "show": false,
++          "xver": 0
++        },
++        "security": "reality"
++      },
++      "tag": "vless-reality-3"
+
+["add", "alice", "--connection", "vless-reality-2"]
+exit: 0
+stdout:
+Added credential for client: alice
+Connection: Second (vless-reality-2)
+Payment type: free
+Created: 2026-10-06T12:00:00Z
+Access until: бессрочно
+Access key: vpn-key:00000000-0000-4000-8000-000000000001
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000002
+vless://00000000-0000-4000-8000-000000000002@server.example:8443?security=reality&encryption=none&pbk=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB&fp=firefox&type=tcp&sni=cdn.example&sid=fedcba9876543210&spx=%2F&flow=xtls-rprx-vision#fixture
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "uuid"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -4,0 +5 @@
++["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+@@ -8 +9 @@
+-["vless-reality-3", "Third", 8444, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
++["vless-reality-3", "Third", 8444, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -2,0 +3 @@
++config.json.bak.20261006120000000002
+--- before/config.json
++++ after/config.json
+@@ -55 +55,8 @@
+-        "clients": [],
++        "clients": [
++          {
++            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2",
++            "flow": "xtls-rprx-vision",
++            "id": "00000000-0000-4000-8000-000000000002",
++            "level": 0
++          }
++        ],
+
+["remove-connection", "vless-reality"]
+exit: 0
+stdout:
+Removed connection: Reality
+Tag: vless-reality
+Removed clients: none
+Kept clients with other connections: alice
+server.env switched to connection: Second (vless-reality-2)
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000003
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2", "vless-reality-2", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
+@@ -4 +3,0 @@
+-["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
+@@ -7 +5,0 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+--- before/config backups
++++ after/config backups
+@@ -3,0 +4 @@
++config.json.bak.20261006120000000003
+--- before/config.json
++++ after/config.json
+@@ -17,32 +16,0 @@
+-    },
+-    {
+-      "listen": "0.0.0.0",
+-      "port": 443,
+-      "protocol": "vless",
+-      "settings": {
+-        "clients": [
+-          {
+-            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality",
+-            "flow": "xtls-rprx-vision",
+-            "id": "00000000-0000-4000-8000-000000000001"
+-          }
+-        ],
+-        "decryption": "none"
+-      },
+-      "streamSettings": {
+-        "network": "tcp",
+-        "realitySettings": {
+-          "dest": "www.example.com:443",
+-          "privateKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+-          "serverNames": [
+-            "www.example.com"
+-          ],
+-          "shortIds": [
+-            "0123456789abcdef"
+-          ],
+-          "show": false,
+-          "xver": 0
+-        },
+-        "security": "reality"
+-      },
+-      "tag": "vless-reality"
+--- before/server.env
++++ after/server.env
+@@ -3,4 +3,4 @@
+-PORT=443
+-REALITY_SNI=www.example.com
+-REALITY_DEST=www.example.com:443
+-FINGERPRINT=chrome
++PORT=8443
++REALITY_SNI=cdn.example
++REALITY_DEST=cdn.example:443
++FINGERPRINT=firefox
+@@ -7,0 +8,4 @@
++GRPC_SERVICE_NAME=
++XHTTP_PATH=
++XHTTP_MODE=
++MANAGER_TIMEZONE=Europe/Moscow
+@@ -9 +12,0 @@
+-MANAGER_TIMEZONE=Europe/Moscow
+
+["key", "alice"]
+exit: 0
+stdout:
+vpn-key:00000000-0000-4000-8000-000000000001
+
+stderr:
+
+processes:
+state:
+
+["move-connection", "alice", "Third"]
+exit: 0
+stdout:
+Moved client: alice
+From: Second (vless-reality-2)
+To: Third (vless-reality-3)
+Status: enabled
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000004
+New link:
+vless://00000000-0000-4000-8000-000000000002@server.example:8444?security=reality&encryption=none&pbk=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB&fp=firefox&type=tcp&sni=cdn.example&sid=fedcba9876543210&spx=%2F&flow=xtls-rprx-vision#fixture
+Выдай клиенту новую ссылку: после переноса параметры подключения меняются.
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2", "vless-reality-2", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000002", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3", "vless-reality-3", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
+@@ -4 +4 @@
+-["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
++["alice", "vless-reality-3", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -4,0 +5 @@
++config.json.bak.20261006120000000004
+--- before/config.json
++++ after/config.json
+@@ -23,8 +23 @@
+-        "clients": [
+-          {
+-            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2",
+-            "flow": "xtls-rprx-vision",
+-            "id": "00000000-0000-4000-8000-000000000002",
+-            "level": 0
+-          }
+-        ],
++        "clients": [],
+@@ -64 +57,8 @@
+-        "clients": [],
++        "clients": [
++          {
++            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3",
++            "flow": "xtls-rprx-vision",
++            "id": "00000000-0000-4000-8000-000000000002",
++            "level": 0
++          }
++        ],
+
+["key", "alice"]
+exit: 0
+stdout:
+vpn-key:00000000-0000-4000-8000-000000000002
+
+stderr:
+
+processes:
+state:

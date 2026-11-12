@@ -1,0 +1,605 @@
+
+["connection-list"]
+exit: 0
+stdout:
++---------+---------------+----------+----------+------+-----------------+-----------+-------------+----------------------+
+| NAME    | TAG           | PROTOCOL | SECURITY | PORT | SNI             | TRANSPORT | FINGERPRINT | CREATED              |
++---------+---------------+----------+----------+------+-----------------+-----------+-------------+----------------------+
+| Reality | vless-reality | vless    | reality  | 443  | www.example.com | tcp       | chrome      | 2026-10-06T12:00:00Z |
++---------+---------------+----------+----------+------+-----------------+-----------+-------------+----------------------+
+
+stderr:
+
+processes:
+state:
+
+["add-connection", "Second", "8443", "cdn.example", "firefox", "tcp"]
+exit: 0
+stdout:
+Added connection: Second
+Tag: vless-reality-2
+SECURITY: reality
+PORT: 8443
+REALITY_SNI: cdn.example
+REALITY_DEST: cdn.example:443
+FINGERPRINT: firefox
+TRANSPORT: tcp
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "x25519"]
+["openssl", "rand", "-hex", "8"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6,2 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
++["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -48,0 +49,34 @@
++    },
++    {
++      "listen": "0.0.0.0",
++      "port": 8443,
++      "protocol": "vless",
++      "settings": {
++        "clients": [],
++        "decryption": "none"
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "tcp",
++        "realitySettings": {
++          "dest": "cdn.example:443",
++          "privateKey": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
++          "serverNames": [
++            "cdn.example"
++          ],
++          "shortIds": [
++            "fedcba9876543210"
++          ],
++          "show": false,
++          "xver": 0
++        },
++        "security": "reality"
++      },
++      "tag": "vless-reality-2"
+@@ -74,0 +109 @@
++    "balancers": [],
+
+["connection-transport", "Second", "xhttp", "--xhttp-path", "/alternate", "--xhttp-mode", "packet-up"]
+exit: 0
+stdout:
+Connection: Second (vless-reality-2)
+TRANSPORT: xhttp
+XHTTP_PATH: /alternate
+XHTTP_MODE: packet-up
+XHTTP_EXTRA: default
+Updated clients: none
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
+Выведи клиентам новые ссылки через xray-client link NAME.
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -7 +7 @@
+-["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
++["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
+--- before/config backups
++++ after/config backups
+@@ -1,0 +2 @@
++config.json.bak.20261006120000000001
+--- before/config.json
++++ after/config.json
+@@ -67 +67 @@
+-        "network": "tcp",
++        "network": "xhttp",
+@@ -80 +80,5 @@
+-        "security": "reality"
++        "security": "reality",
++        "xhttpSettings": {
++          "mode": "packet-up",
++          "path": "/alternate"
++        }
+
+["connection-xhttp-extra", "Second", "--xhttp-extra-json", "{\"xPaddingBytes\":\"100-200\"}"]
+exit: 0
+stdout:
+Connection: Second (vless-reality-2)
+XHTTP_EXTRA: {"xPaddingBytes":"100-200"}
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000002
+Выведи клиентам новые ссылки через xray-client link NAME.
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -7 +7 @@
+-["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
++["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"xhttpExtra\":{\"xPaddingBytes\":\"100-200\"},\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
+--- before/config backups
++++ after/config backups
+@@ -2,0 +3 @@
++config.json.bak.20261006120000000002
+--- before/config.json
++++ after/config.json
+@@ -81,0 +82,3 @@
++          "extra": {
++            "xPaddingBytes": "100-200"
++          },
+
+["connection-xhttp-extra", "Second", "--clear-xhttp-extra"]
+exit: 0
+stdout:
+Connection: Second (vless-reality-2)
+XHTTP_EXTRA: default
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000003
+Выведи клиентам новые ссылки через xray-client link NAME.
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -7 +7 @@
+-["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"xhttpExtra\":{\"xPaddingBytes\":\"100-200\"},\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
++["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
+--- before/config backups
++++ after/config backups
+@@ -3,0 +4 @@
++config.json.bak.20261006120000000003
+--- before/config.json
++++ after/config.json
+@@ -82,3 +81,0 @@
+-          "extra": {
+-            "xPaddingBytes": "100-200"
+-          },
+
+["connection-rename", "Second", "Alternate"]
+exit: 0
+stdout:
+Connection renamed: Second -> Alternate
+Tag: vless-reality-2
+Xray restart is not required.
+
+stderr:
+
+processes:
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -7 +7 @@
+-["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
++["vless-reality-2", "Alternate", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
+
+["add-connection", "TLS", "18080", "tls.example", "--security", "tls", "--transport", "xhttp", "--xhttp-path", "/secure", "--public-port", "1443", "--install-caddy"]
+exit: 0
+stdout:
+Added connection: TLS
+Tag: vless-tls
+SECURITY: tls
+PUBLIC_HOST: tls.example
+PUBLIC_PORT: 1443
+LOCAL_PORT: 18080
+FINGERPRINT: chrome
+TLS_MIN_VERSION: tls1.2
+TLS_MAX_VERSION: tls1.2
+CADDY_SITE: <ROOT>/etc/caddy/conf.d/tls.example.caddy
+TRANSPORT: xhttp
+XHTTP_PATH: /secure
+XHTTP_MODE: auto
+XHTTP_EXTRA: default
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000004
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -7,0 +8 @@
++["vless-tls", "TLS", 1443, "tls.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"security\":\"tls\",\"publicPort\":1443,\"localPort\":18080,\"publicHost\":\"tls.example\",\"caddy\":true,\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\",\"transport\":\"xhttp\",\"xhttpPath\":\"/secure\",\"xhttpMode\":\"auto\"}"]
+--- before/config backups
++++ after/config backups
+@@ -4,0 +5 @@
++config.json.bak.20261006120000000004
+--- before/config.json
++++ after/config.json
+@@ -86,0 +87,26 @@
++    },
++    {
++      "listen": "127.0.0.1",
++      "port": 18080,
++      "protocol": "vless",
++      "settings": {
++        "clients": [],
++        "decryption": "none"
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "xhttp",
++        "security": "none",
++        "xhttpSettings": {
++          "mode": "auto",
++          "path": "/secure"
++        }
++      },
++      "tag": "vless-tls"
+--- before/etc/caddy/Caddyfile
++++ after/etc/caddy/Caddyfile
+@@ -0,0 +1 @@
++import <ROOT>/etc/caddy/conf.d/*.caddy
+--- before/etc/caddy/conf.d/tls.example.caddy
++++ after/etc/caddy/conf.d/tls.example.caddy
+@@ -0,0 +1,7 @@
++tls.example {
++    tls {
++        protocols tls1.2 tls1.2
++    }
++
++    reverse_proxy h2c://127.0.0.1:18080
++}
+
+["add-trojan-connection", "Trojan", "9443", "trojan.example", "--ws-path", "/tunnel", "--public-port", "1443"]
+exit: 0
+stdout:
+Added Trojan connection: Trojan
+Tag: trojan-tls
+PROTOCOL: trojan
+SECURITY: tls
+TLS_DOMAIN: trojan.example
+FINGERPRINT: chrome
+TRANSPORT: ws
+PUBLIC_PORT: 1443
+LOCAL_PORT: 9443
+WS_PATH: /tunnel
+TLS_MIN_VERSION: tls1.2
+TLS_MAX_VERSION: tls1.3
+CADDY_SITE: <ROOT>/etc/caddy/conf.d/trojan.example.caddy
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000005
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -5,0 +6 @@
++["trojan-tls", "Trojan", 1443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":1443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/tunnel\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
+--- before/config backups
++++ after/config backups
+@@ -5,0 +6 @@
++config.json.bak.20261006120000000005
+--- before/config.json
++++ after/config.json
+@@ -112,0 +113,24 @@
++    },
++    {
++      "listen": "127.0.0.1",
++      "port": 9443,
++      "protocol": "trojan",
++      "settings": {
++        "clients": []
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "ws",
++        "security": "none",
++        "wsSettings": {
++          "path": "/tunnel"
++        }
++      },
++      "tag": "trojan-tls"
+--- before/etc/caddy/conf.d/trojan.example.caddy
++++ after/etc/caddy/conf.d/trojan.example.caddy
+@@ -0,0 +1,20 @@
++trojan.example {
++    tls {
++        protocols tls1.2 tls1.3
++    }
++
++    @xray_path {
++        path /tunnel
++        header Connection *Upgrade*
++        header Upgrade websocket
++    }
++    handle @xray_path {
++        reverse_proxy 127.0.0.1:9443
++    }
++
++    handle {
++        root * /usr/share/caddy
++        try_files {path} /index.html
++        file_server
++    }
++}
+
+["update-trojan-connection", "Trojan", "--ws-path", "/new", "--fingerprint", "firefox"]
+exit: 0
+stdout:
+Trojan connection updated: Trojan
+Tag: trojan-tls
+TLS_DOMAIN: trojan.example
+PUBLIC_PORT: 1443
+LOCAL_PORT: 9443
+WS_PATH: /new
+FINGERPRINT: firefox
+TLS_MIN_VERSION: tls1.2
+TLS_MAX_VERSION: tls1.3
+CADDY_SITE: <ROOT>/etc/caddy/conf.d/trojan.example.caddy
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000006
+Выведи клиентам новые Trojan-ссылки через xray-client link NAME: параметры подключения изменились.
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6 @@
+-["trojan-tls", "Trojan", 1443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":1443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/tunnel\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
++["trojan-tls", "Trojan", 1443, "trojan.example", "", "firefox", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":1443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/new\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
+--- before/config backups
++++ after/config backups
+@@ -6,0 +7 @@
++config.json.bak.20261006120000000006
+--- before/config.json
++++ after/config.json
+@@ -133 +133 @@
+-          "path": "/tunnel"
++          "path": "/new"
+--- before/etc/caddy/conf.d/trojan.example.caddy
++++ after/etc/caddy/conf.d/trojan.example.caddy
+@@ -7 +7 @@
+-        path /tunnel
++        path /new
+
+["add-trojan-connection", "TCP", "10443", "tcp.example", "/fixture/cert.pem", "/fixture/key.pem", "safari"]
+exit: 0
+stdout:
+Added Trojan connection: TCP
+Tag: trojan-tls-2
+PROTOCOL: trojan
+SECURITY: tls
+TLS_DOMAIN: tcp.example
+FINGERPRINT: safari
+TRANSPORT: tcp
+PORT: 10443
+CERT_FILE: /fixture/cert.pem
+KEY_FILE: /fixture/key.pem
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000007
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6,0 +7 @@
++["trojan-tls-2", "TCP", 10443, "tcp.example", "", "safari", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"tcp\",\"certFile\":\"/fixture/cert.pem\",\"keyFile\":\"/fixture/key.pem\"}"]
+--- before/config backups
++++ after/config backups
+@@ -7,0 +8 @@
++config.json.bak.20261006120000000007
+--- before/config.json
++++ after/config.json
+@@ -136,0 +137,29 @@
++    },
++    {
++      "listen": "0.0.0.0",
++      "port": 10443,
++      "protocol": "trojan",
++      "settings": {
++        "clients": []
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "tcp",
++        "security": "tls",
++        "tlsSettings": {
++          "certificates": [
++            {
++              "certificateFile": "/fixture/cert.pem",
++              "keyFile": "/fixture/key.pem"
++            }
++          ]
++        }
++      },
++      "tag": "trojan-tls-2"
+
+["connection-list"]
+exit: 0
+stdout:
++-----------+-----------------+----------+----------+-------+-----------------+-----------+-------------+----------------------+
+| NAME      | TAG             | PROTOCOL | SECURITY | PORT  | SNI             | TRANSPORT | FINGERPRINT | CREATED              |
++-----------+-----------------+----------+----------+-------+-----------------+-----------+-------------+----------------------+
+| Trojan    | trojan-tls      | trojan   | tls      | 1443  | trojan.example  | ws        | firefox     | 2026-10-06T12:00:00Z |
+| TCP       | trojan-tls-2    | trojan   | tls      | 10443 | tcp.example     | tcp       | safari      | 2026-10-06T12:00:00Z |
+| Reality   | vless-reality   | vless    | reality  | 443   | www.example.com | tcp       | chrome      | 2026-10-06T12:00:00Z |
+| Alternate | vless-reality-2 | vless    | reality  | 8443  | cdn.example     | xhttp     | firefox     | 2026-10-06T12:00:00Z |
+| TLS       | vless-tls       | vless    | tls      | 1443  | tls.example     | xhttp     | chrome      | 2026-10-06T12:00:00Z |
++-----------+-----------------+----------+----------+-------+-----------------+-----------+-------------+----------------------+
+
+stderr:
+
+processes:
+state:
+
+["remove-connection", "vless-reality"]
+exit: 0
+stdout:
+Removed connection: Reality
+Tag: vless-reality
+Removed clients: alice
+Removed traffic history for deleted clients.
+server.env switched to connection: Alternate (vless-reality-2)
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000008
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +1,0 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
+@@ -4 +2,0 @@
+-["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
+@@ -7,2 +5 @@
+-["trojan-tls-2", "TCP", 10443, "tcp.example", "", "safari", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"tcp\",\"certFile\":\"/fixture/cert.pem\",\"keyFile\":\"/fixture/key.pem\"}"]
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
++["trojan-tls-2", "TCP", 10443, "tcp.example", "", "safari", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"tcp\",\"certFile\":\"/fixture/cert.pem\",\"keyFile\":\"/fixture/key.pem\",\"publicPort\":10443,\"publicHost\":\"tcp.example\",\"caddy\":false}"]
+--- before/config backups
++++ after/config backups
+@@ -8,0 +9 @@
++config.json.bak.20261006120000000008
+--- before/config.json
++++ after/config.json
+@@ -17,32 +16,0 @@
+-    },
+-    {
+-      "listen": "0.0.0.0",
+-      "port": 443,
+-      "protocol": "vless",
+-      "settings": {
+-        "clients": [
+-          {
+-            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality",
+-            "flow": "xtls-rprx-vision",
+-            "id": "00000000-0000-4000-8000-000000000001"
+-          }
+-        ],
+-        "decryption": "none"
+-      },
+-      "streamSettings": {
+-        "network": "tcp",
+-        "realitySettings": {
+-          "dest": "www.example.com:443",
+-          "privateKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+-          "serverNames": [
+-            "www.example.com"
+-          ],
+-          "shortIds": [
+-            "0123456789abcdef"
+-          ],
+-          "show": false,
+-          "xver": 0
+-        },
+-        "security": "reality"
+-      },
+-      "tag": "vless-reality"
+--- before/server.env
++++ after/server.env
+@@ -3,5 +3,9 @@
+-PORT=443
+-REALITY_SNI=www.example.com
+-REALITY_DEST=www.example.com:443
+-FINGERPRINT=chrome
+-REALITY_TRANSPORT=tcp
++PORT=8443
++REALITY_SNI=cdn.example
++REALITY_DEST=cdn.example:443
++FINGERPRINT=firefox
++REALITY_TRANSPORT=xhttp
++GRPC_SERVICE_NAME=
++XHTTP_PATH=/alternate
++XHTTP_MODE=packet-up
++MANAGER_TIMEZONE=Europe/Moscow
+@@ -9 +12,0 @@
+-MANAGER_TIMEZONE=Europe/Moscow
