@@ -108,9 +108,28 @@ def manager_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "", path: P
 
 @contextmanager
 def activity_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "") -> Iterator[None]:
-    """Короткая блокировка парсера; не удерживается во время применения Xray."""
+    """Блокировка парсера. Вложенность при удалении клиента: manager → activity."""
     with hold_file_lock(paths.paths().activity_lock, timeout, purpose):
         yield
+
+
+@contextmanager
+def traffic_lock(timeout: float = DEFAULT_TIMEOUT, *, purpose: str = "") -> Iterator[None]:
+    with hold_file_lock(paths.paths().traffic_lock, timeout, purpose):
+        yield
+
+
+def current_manager_operation() -> str:
+    """Прочитать владельца без захвата manager.lock из ExecStop."""
+    try:
+        holder = paths.paths().manager_lock.read_text().strip()
+        pid = int(holder.split(" ", 1)[0].removeprefix("pid="))
+        if pid > 0:
+            os.kill(pid, 0)
+            return holder
+    except (OSError, ValueError):
+        pass
+    return ""
 
 
 def _check_waiting_owner(entry: int, message: str) -> None:

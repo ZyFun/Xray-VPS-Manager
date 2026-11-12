@@ -20,8 +20,8 @@ from xray_vps_manager.clients.models import (
     split_email,
 )
 from xray_vps_manager.clients.repository import db_clients, db_managed_connections
+from xray_vps_manager.core.errors import ValidationError
 from xray_vps_manager.core.time import utc_stamp
-from xray_vps_manager.traffic.repository import traffic_entry
 from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import (
     active_client_any,
@@ -35,7 +35,7 @@ from xray_vps_manager.xray.config import (
 )
 
 
-class EnableTrafficLimitExceeded(ValueError):
+class EnableTrafficLimitExceeded(ValidationError):
     def __init__(self, traffic_status: dict[str, Any]) -> None:
         super().__init__("Traffic limit is exhausted for the current period.")
         self.traffic_status = traffic_status
@@ -367,7 +367,7 @@ def disable_client(
 def enable_client(
     config: dict[str, Any],
     db: dict[str, Any],
-    traffic_db: dict[str, Any],
+    traffic: dict[str, Any],
     name: str,
     connection_tag: str | None = None,
 ) -> EnableClientResult:
@@ -378,7 +378,7 @@ def enable_client(
     if access.access_expired(entry):
         raise ValueError(f"Access expired for client: {name}. Extend it first: xray-client extend-days {name} DAYS")
 
-    traffic_status = client_limits.traffic_limit_status(entry, traffic_entry(traffic_db, name))
+    traffic_status = client_limits.traffic_limit_status(entry, traffic)
     if traffic_status and traffic_status["exceeded"]:
         raise EnableTrafficLimitExceeded(traffic_status)
 

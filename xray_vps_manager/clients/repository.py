@@ -16,6 +16,8 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import cascades as sqlite_cascades
 from xray_vps_manager.db.repositories import connections as sqlite_connections
+from xray_vps_manager.db.repositories import traffic as sqlite_traffic
+from xray_vps_manager.db.repositories.client_undo import ClientUndo
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
 
 
@@ -75,6 +77,7 @@ get_route = sqlite_cascades.get_route
 save_route = sqlite_cascades.upsert_route
 list_routes = sqlite_cascades.list_routes
 delete_route = sqlite_cascades.delete_route
+get_traffic_entry = sqlite_traffic.get_traffic_entry
 
 
 def get_credential(conn, name, tag):
@@ -218,6 +221,34 @@ def _write_records(conn, db, deletions):
             save_record(conn, str(key), record)
     if deletions:
         deletions.apply(conn)
+
+
+def write_client_change(conn, db, previous, *, deletions=None, prepare_undo=True):
+    """Записать изменённые строки и подготовить их компенсацию в той же сессии."""
+    changes = _Snapshot(db, original=previous)
+    if not prepare_undo:
+        _write_records(conn, changes, deletions)
+        return None
+
+    def changed_keys(section):
+        return {key for key, record in db[section].items() if record != previous[section].get(key)}
+
+    changed_clients = changed_keys("clients")
+    removed_clients = deletions.clients if deletions else ()
+    removed_credentials = deletions.credentials if deletions else ()
+    changed_clients.update(removed_clients)
+    changed_clients.update(name for name, _ in removed_credentials)
+    undo = ClientUndo.capture(
+        conn,
+        clients=changed_clients,
+        connections=changed_keys("connections"),
+        routes=changed_keys("cascadeRoutes"),
+        removed_client=next(iter(removed_clients), None),
+        removed_credentials=removed_credentials,
+    )
+    _write_records(conn, changes, deletions)
+    undo.record_written(conn)
+    return undo
 
 
 def write_db_to_sqlite_for_write(

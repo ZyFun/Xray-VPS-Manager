@@ -120,7 +120,7 @@ class TrafficSyncTests(unittest.TestCase):
                 result = traffic_sync.sync_locked()
 
         self.assertEqual(result, 0)
-        load_for_read.assert_called_once_with()
+        load_for_read.assert_called_once_with(include_client_handoff=True)
         saved = save_traffic.call_args.args[0]
         entry = saved["clients"]["alice"]
         self.assertEqual(entry["incoming"], 105)
