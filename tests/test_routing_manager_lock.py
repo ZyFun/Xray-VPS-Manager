@@ -89,7 +89,7 @@ def make_routing_sandbox(root: Path) -> None:
     for name in ("main", "backup"):
         tag = cascade_config.cascade_tag(name)
         set_cascade.configure_cascade(config, outbound_links.parse_vless_outbound(VLESS_LINK, tag)[0])
-    env_values = {}
+    env_values = {"SERVER_ADDR": "vpn.example.com"}
     bypass_config.upsert_bypass_outbound(config, outbound_links.parse_vless_outbound(VLESS_LINK, "bypass-ru")[0])
     bypass_config.ensure_geoip_domain_strategy(config, env_values)
     bypass_config.apply_bypass_route(config, "bypass-ru", "RU")

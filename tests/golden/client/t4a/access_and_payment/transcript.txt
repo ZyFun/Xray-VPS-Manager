@@ -1,0 +1,193 @@
+
+["set-days", "alice", "3"]
+exit: 0
+stdout:
+Client: alice
+Access until: 2026-10-09 00:00
+Status: enabled
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/sbin/xray-telegram", "notify-access", "alice", "--quiet"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00:00+03:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -6 +6 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+
+["extend-days", "alice", "2"]
+exit: 0
+stdout:
+Client: alice
+Access until: 2026-10-11 00:00
+Status: enabled
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/sbin/xray-telegram", "notify-access", "alice", "--quiet"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00:00+03:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-11T00:00:00+03:00", 5, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+
+["set-payment", "alice", "paid"]
+exit: 0
+stdout:
+Client: alice
+Payment type: paid
+Payment amount: 42
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/sbin/xray-telegram", "payment-amount"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-11T00:00:00+03:00", 5, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-11T00:00:00+03:00", 5, null, "paid", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+
+["expire-due"]
+exit: 0
+stdout:
+No expired clients.
+
+stderr:
+
+processes:
+state:
+
+["expire-due"]
+exit: 0
+stdout:
+Disabled expired clients: alice
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-05T21:00:00Z", 5, null, "paid", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 0, "expired", "2026-10-06T12:00:00Z", "2026-10-05T21:00:00Z", 5, "2026-10-06T12:00:00Z", "paid", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -4 +4 @@
+-["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
++["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 0, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -23,7 +23 @@
+-        "clients": [
+-          {
+-            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality",
+-            "flow": "xtls-rprx-vision",
+-            "id": "00000000-0000-4000-8000-000000000001"
+-          }
+-        ],
++        "clients": [],
+@@ -74,0 +69 @@
++    "balancers": [],
+
+["add", "bob", "1"]
+exit: 0
+stdout:
+Added client: bob
+Connection: Reality (vless-reality)
+Payment type: free
+Created: 2026-10-06T12:00:00Z
+Access until: 2026-10-07 00:00
+Access key: vpn-key:00000000-0000-4000-8000-000000000002
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
+Payment amount: 42
+vless://00000000-0000-4000-8000-000000000002@server.example:443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "uuid"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["<ROOT>/usr/local/sbin/xray-telegram", "payment-amount"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2,0 +3 @@
++["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-07T00:00:00+03:00", 1, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=vless-reality\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
+@@ -4,0 +6 @@
++["bob", "vless-reality", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=vless-reality\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -1,0 +2 @@
++config.json.bak.20261006120000000001
+--- before/config.json
++++ after/config.json
+@@ -23 +23,8 @@
+-        "clients": [],
++        "clients": [
++          {
++            "email": "bob|created=2026-10-06T12:00:00Z|connection=vless-reality",
++            "flow": "xtls-rprx-vision",
++            "id": "00000000-0000-4000-8000-000000000002",
++            "level": 0
++          }
++        ],
+
+["expire-due", "--quiet"]
+exit: 0
+stdout:
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -3 +3 @@
+-["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-05T21:00:00Z", 1, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=vless-reality\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
++["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 0, "expired", "2026-10-06T12:00:00Z", "2026-10-05T21:00:00Z", 1, "2026-10-06T12:00:00Z", "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=vless-reality\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
+@@ -6 +6 @@
+-["bob", "vless-reality", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=vless-reality\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
++["bob", "vless-reality", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 0, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=vless-reality\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -2,0 +3 @@
++config.json.bak.20261006120000000002
+--- before/config.json
++++ after/config.json
+@@ -23,8 +23 @@
+-        "clients": [
+-          {
+-            "email": "bob|created=2026-10-06T12:00:00Z|connection=vless-reality",
+-            "flow": "xtls-rprx-vision",
+-            "id": "00000000-0000-4000-8000-000000000002",
+-            "level": 0
+-          }
+-        ],
++        "clients": [],

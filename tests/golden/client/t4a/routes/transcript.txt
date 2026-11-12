@@ -1,0 +1,129 @@
+
+["sync-routes"]
+exit: 0
+stdout:
+Client cascade routes synchronized.
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
++----------+-------------+---------------+
+| COUNTRY  | TAG         | GLOBAL ACTIVE |
++----------+-------------+---------------+
+| Германия | cascade-old | yes           |
+| США      | cascade-new | -             |
++----------+-------------+---------------+
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", "cascade-old"]
+@@ -7,0 +8,2 @@
++["cascade-new", "США", "new", "2026-10-06T12:00:00Z", "2026-10-06T12:00:00Z", "{}"]
++["cascade-old", "Германия", "old", "2026-10-06T12:00:00Z", "2026-10-06T12:00:00Z", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -4 +4,2 @@
+-      "StatsService"
++      "StatsService",
++      "RoutingService"
+@@ -98,0 +100,8 @@
++    "balancers": [
++      {
++        "selector": [
++          "cascade-old"
++        ],
++        "tag": "client-route-000000000000400080000000"
++      }
++    ],
+@@ -115,0 +125,7 @@
++        "balancerTag": "client-route-000000000000400080000000",
++        "type": "field",
++        "user": [
++          "alice|created=2026-10-06T12:00:00Z|connection=vless-reality"
++        ]
++      },
++      {
+
+["route", "alice"]
+exit: 0
+stdout:
+Client: alice
+Current country: Германия
+Current cascade: cascade-old
++----------+-------------+---------------+
+| COUNTRY  | TAG         | GLOBAL ACTIVE |
++----------+-------------+---------------+
+| Германия | cascade-old | yes           |
+| США      | cascade-new | -             |
++----------+-------------+---------------+
+
+stderr:
+
+processes:
+state:
+
+["route", "alice", "cascade-new"]
+exit: 0
+stdout:
+Client: alice
+Selected country: США
+Cascade: cascade-new
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+Runtime route updated without Xray restart.
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-config", "<ROOT>/usr/local/etc/xray/config.json"]
+["/usr/local/bin/xray", "api", "bo", "--server=127.0.0.1:10085", "-b", "client-route-000000000000400080000000", "cascade-new"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", "cascade-old"]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", "cascade-new"]
+--- before/config.json
++++ after/config.json
+@@ -103 +103 @@
+-          "cascade-old"
++          "cascade-new"
+
+["route", "alice", "cascade-new"]
+exit: 0
+stdout:
+Client: alice
+Country already selected: США
+Cascade: cascade-new
+
+stderr:
+
+processes:
+state:
+
+["sync-routes"]
+exit: 0
+stdout:
+Client cascade routes are already synchronized.
++----------+-------------+---------------+
+| COUNTRY  | TAG         | GLOBAL ACTIVE |
++----------+-------------+---------------+
+| Германия | cascade-old | yes           |
+| США      | cascade-new | -             |
++----------+-------------+---------------+
+
+stderr:
+
+processes:
+state:

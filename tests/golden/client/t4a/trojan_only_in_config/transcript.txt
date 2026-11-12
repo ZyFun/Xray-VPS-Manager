@@ -1,0 +1,148 @@
+
+["add-trojan-connection", "Trojan", "9443", "trojan.example", "--no-caddy"]
+exit: 0
+stdout:
+Added Trojan connection: Trojan
+Tag: trojan-tls
+PROTOCOL: trojan
+SECURITY: tls
+TLS_DOMAIN: trojan.example
+FINGERPRINT: chrome
+TRANSPORT: ws
+PUBLIC_PORT: 443
+LOCAL_PORT: 9443
+WS_PATH: /trojan
+TLS_MIN_VERSION: tls1.2
+TLS_MAX_VERSION: tls1.3
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6,2 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["trojan-tls", "Trojan", 443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":false,\"wsPath\":\"/trojan\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -48,0 +49,24 @@
++    },
++    {
++      "listen": "127.0.0.1",
++      "port": 9443,
++      "protocol": "trojan",
++      "settings": {
++        "clients": []
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "ws",
++        "security": "none",
++        "wsSettings": {
++          "path": "/trojan"
++        }
++      },
++      "tag": "trojan-tls"
+@@ -74,0 +99 @@
++    "balancers": [],
+
+["list"]
+exit: 0
+stdout:
+
+Clients
++-------+---------+---------+------------+---------+-------------+--------+------------+-----------------+--------------+-------+
+| NAME  | STATUS  | PAYMENT | COUNTRY    | ONLINE  | LAST ONLINE | TOTAL  | LIMIT      | TRAFFIC UPDATED | ACCESS UNTIL | CREDS |
++-------+---------+---------+------------+---------+-------------+--------+------------+-----------------+--------------+-------+
+| alice | enabled | [92mfree   [0m | не выбрана | offline | never       | 0.00KB | без лимита | never           | бессрочно    | 1/1   |
+| bob   | enabled | [92mfree   [0m | не выбрана | offline | never       | 0.00KB | без лимита | never           | бессрочно    | 1/1   |
++-------+---------+---------+------------+---------+-------------+--------+------------+-----------------+--------------+-------+
+
+Credentials
++--------+----------+----------+-----------+---------------+---------+---------+---------+-----------------+-------------+
+| CLIENT | PROTOCOL | SECURITY | TRANSPORT | CONNECTION    | STATUS  | ONLINE  | TRAFFIC | TRAFFIC UPDATED | LAST ONLINE |
++--------+----------+----------+-----------+---------------+---------+---------+---------+-----------------+-------------+
+| alice  | vless    | reality  | tcp       | vless-reality | enabled | offline | 0.00KB  | never           | never       |
+| bob    | trojan   | tls      | ws        | trojan-tls    | enabled | offline | 0.00KB  | never           | never       |
++--------+----------+----------+-----------+---------------+---------+---------+---------+-----------------+-------------+
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>"]
+state:
+
+["link", "bob"]
+exit: 1
+stdout:
+
+stderr:
+ERROR: Trojan password not found for client: bob
+
+processes:
+state:
+
+["set-days", "bob", "3"]
+exception: ValueError: Client has no UUID: bob
+stdout:
+
+stderr:
+
+processes:
+state:
+
+["extend-days", "bob", "3"]
+exception: ValueError: Client has no UUID: bob
+stdout:
+
+stderr:
+
+processes:
+state:
+
+["set-payment", "bob", "paid"]
+exception: ValueError: Client has no UUID: bob
+stdout:
+
+stderr:
+
+processes:
+state:
+
+["set-limit", "bob", "daily", "1"]
+exception: ValueError: Client has no UUID: bob
+stdout:
+
+stderr:
+
+processes:
+state:
+
+["disable", "bob"]
+exit: 1
+stdout:
+
+stderr:
+ERROR: Client has no UUID: bob
+
+processes:
+state:

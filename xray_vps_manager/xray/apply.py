@@ -207,15 +207,17 @@ def restore_config_backup(backup: Path | None, *, restart: bool = True,
 
 def apply_config(config: dict, *, restart: bool = True,
                  verify_timeout: float = systemd.DEFAULT_VERIFY_TIMEOUT,
-                 reason: str = "") -> ApplyResult:
+                 reason: str = "", on_applied: Callable[[ApplyResult], None] | None = None) -> ApplyResult:
     """Проверить кандидат, записать и применить; manager.lock берёт вызывающий сценарий.
 
     БД и server.env принадлежат сценарию. При ошибке старый файл восстанавливается
     байт-в-байт; restored=True означает также успешную проверку рестарта отката.
     Перед заменой остаётся до 20 технических копий, включая копию для отката.
-    reason — контекст ошибки без вывода.
+    reason — контекст ошибки без вывода. on_applied передаёт результат до
+    возврата управления сценарию, которому может понадобиться отменить запись.
     """
-    return _apply_config(lambda: config, restart=restart, verify_timeout=verify_timeout, reason=reason)
+    return _apply_config(lambda: config, restart=restart, verify_timeout=verify_timeout,
+                         reason=reason, on_applied=on_applied)
 
 
 def apply_config_after_probe(probe: dict, final_config: Callable[[], dict], *,
@@ -237,7 +239,8 @@ def apply_config_after_probe(probe: dict, final_config: Callable[[], dict], *,
 
 def _apply_config(final_config: Callable[[], dict], *, restart: bool,
                   verify_timeout: float, reason: str, probe: dict | None = None,
-                  on_probe_start_failure: Callable[[ApplyConfigError], dict] | None = None) -> ApplyResult:
+                  on_probe_start_failure: Callable[[ApplyConfigError], dict] | None = None,
+                  on_applied: Callable[[ApplyResult], None] | None = None) -> ApplyResult:
     from xray_vps_manager.xray import invariants
 
     path = paths.paths().config
@@ -298,8 +301,11 @@ def _apply_config(final_config: Callable[[], dict], *, restart: bool,
         if restart:
             stage = "restart"
             systemd.restart_unit("xray", verify_timeout=verify_timeout, ports=ports)
-        return ApplyResult(True, backup, restart,
-                           tuple(port for _, port in ports) if restart and verify_timeout > 0 else ())
+        result = ApplyResult(True, backup, restart,
+                             tuple(port for _, port in ports) if restart and verify_timeout > 0 else ())
+        if on_applied is not None:
+            on_applied(result)
+        return result
     except BaseException as error:
         needs_restore = stage != "rollback" and (probe_installed or writing_final)
         if needs_restore and not probe_installed and stage == "write":

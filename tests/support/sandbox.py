@@ -77,7 +77,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.commands.backup', 'CADDY_CONFIG_DIRS'),
     ('xray_vps_manager.commands.client', 'CONFIG_PATH'),
     ('xray_vps_manager.commands.client', 'SERVER_ENV_PATH'),
-    ('xray_vps_manager.commands.client', 'TRAFFIC_SYNC'),
     ('xray_vps_manager.commands.client', 'XRAY_TELEGRAM'),
     ('xray_vps_manager.commands.manager_update', 'SERVER_ENV_PATH'),
     ('xray_vps_manager.commands.manager_update', 'SOURCE_DIR'),
@@ -287,7 +286,8 @@ class FakeHTTP:
 class CliResult:
     stdout: str
     stderr: str
-    exit_code: int
+    exit_code: int | None
+    exception: Exception | None = None
 
 
 def _modules():
@@ -570,10 +570,13 @@ class Sandbox:
         from xray_vps_manager.xray import crypto
         self._patch(crypto.secrets, 'token_urlsafe', lambda n=32: ''.join(rng.choice('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_') for _ in range((n*8+5)//6)))
 
-    def run_cli(self, command, *argv, stdin=''):
+    def run_cli(self, command, *argv, stdin='', capture_exceptions=()):
+        """Запускает CLI. Указанные исключения возвращаются вместе с выводом."""
         stdout, stderr = io.StringIO(), io.StringIO()
+        stream = io.StringIO(stdin) if isinstance(stdin, str) else stdin
         code = 0
-        with mock.patch.object(sys, 'argv', ['xray-'+command, *argv]), mock.patch.object(sys, 'stdin', io.StringIO(stdin)), redirect_stdout(stdout), redirect_stderr(stderr):
+        error = None
+        with mock.patch.object(sys, 'argv', ['xray-'+command, *argv]), mock.patch.object(sys, 'stdin', stream), redirect_stdout(stdout), redirect_stderr(stderr):
             try:
                 returned = run_command(command)
                 if isinstance(returned, int):
@@ -582,7 +585,10 @@ class Sandbox:
                 code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
                 if exc.code is not None and not isinstance(exc.code, int):
                     print(exc.code, file=sys.stderr)
-        return CliResult(stdout.getvalue(), stderr.getvalue(), code)
+            except capture_exceptions as exc:
+                code = None
+                error = exc
+        return CliResult(stdout.getvalue(), stderr.getvalue(), code, error)
 
     def run_menu(self, answers):
         return self.run_cli('menu', stdin='\n'.join(answers)+'\n')

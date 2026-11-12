@@ -1,0 +1,267 @@
+
+["set-days", "alice", "3"]
+exit: 0
+stdout:
+Client: alice
+Access until: 2026-10-09 00:00
+Status: enabled
+
+stderr:
+
+processes:
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00:00+03:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -6 +6 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+
+["add-connection", "Second", "8443", "cdn.example", "firefox", "tcp"]
+exit: 0
+stdout:
+Added connection: Second
+Tag: vless-reality-2
+SECURITY: reality
+PORT: 8443
+REALITY_SNI: cdn.example
+REALITY_DEST: cdn.example:443
+FINGERPRINT: firefox
+TRANSPORT: tcp
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "x25519"]
+["openssl", "rand", "-hex", "8"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6,0 +7 @@
++["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -48,0 +49,34 @@
++    },
++    {
++      "listen": "0.0.0.0",
++      "port": 8443,
++      "protocol": "vless",
++      "settings": {
++        "clients": [],
++        "decryption": "none"
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "tcp",
++        "realitySettings": {
++          "dest": "cdn.example:443",
++          "privateKey": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
++          "serverNames": [
++            "cdn.example"
++          ],
++          "shortIds": [
++            "fedcba9876543210"
++          ],
++          "show": false,
++          "xver": 0
++        },
++        "security": "reality"
++      },
++      "tag": "vless-reality-2"
+@@ -74,0 +109 @@
++    "balancers": [],
+
+["add", "alice", "90", "--connection", "vless-reality-2"]
+exit: 0
+stdout:
+Added credential for client: alice
+Connection: Second (vless-reality-2)
+Payment type: free
+Created: 2026-10-06T12:00:00Z
+Access until: 2026-10-09 00:00
+Access key: vpn-key:00000000-0000-4000-8000-000000000001
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
+vless://00000000-0000-4000-8000-000000000002@server.example:8443?security=reality&encryption=none&pbk=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB&fp=firefox&type=tcp&sni=cdn.example&sid=fedcba9876543210&spx=%2F&flow=xtls-rprx-vision#fixture
+
+stderr:
+
+processes:
+["/usr/local/bin/xray", "uuid"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -4,0 +5 @@
++["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+@@ -7 +8 @@
+-["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
++["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -1,0 +2 @@
++config.json.bak.20261006120000000001
+--- before/config.json
++++ after/config.json
+@@ -55 +55,8 @@
+-        "clients": [],
++        "clients": [
++          {
++            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2",
++            "flow": "xtls-rprx-vision",
++            "id": "00000000-0000-4000-8000-000000000002",
++            "level": 0
++          }
++        ],
+
+["disable", "alice", "--connection", "vless-reality-2"]
+exit: 0
+stdout:
+Disabled client: alice
+Disabled credentials: vless-reality-2
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000002
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -5 +5 @@
+-["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
++["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 0, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -2,0 +3 @@
++config.json.bak.20261006120000000002
+--- before/config.json
++++ after/config.json
+@@ -55,8 +55 @@
+-        "clients": [
+-          {
+-            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2",
+-            "flow": "xtls-rprx-vision",
+-            "id": "00000000-0000-4000-8000-000000000002",
+-            "level": 0
+-          }
+-        ],
++        "clients": [],
+
+["disable", "alice", "--connection", "vless-reality-2"]
+exit: 1
+stdout:
+
+stderr:
+ERROR: Enabled client not found: alice
+
+processes:
+state:
+
+["enable", "alice", "--connection", "vless-reality"]
+exit: 1
+stdout:
+
+stderr:
+ERROR: Client already enabled: alice
+
+processes:
+state:
+
+["set-days", "alice", "+5"]
+exit: 1
+stdout:
+
+stderr:
+ERROR: Access days must be a positive number. Empty or 0 means unlimited access.
+
+processes:
+state:
+
+["extend-days", "alice", "+5"]
+exit: 0
+stdout:
+Client: alice
+Access until: 2026-10-14 00:00
+Status: enabled
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000003
+
+stderr:
+
+processes:
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00:00+03:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-14T00:00:00+03:00", 8, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -5 +5 @@
+-["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 0, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
++["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -3,0 +4 @@
++config.json.bak.20261006120000000003
+--- before/config.json
++++ after/config.json
+@@ -55 +55,8 @@
+-        "clients": [],
++        "clients": [
++          {
++            "email": "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2",
++            "flow": "xtls-rprx-vision",
++            "id": "00000000-0000-4000-8000-000000000002",
++            "level": 0
++          }
++        ],
+
+["enable", "orphan"]
+exit: 1
+stdout:
+
+stderr:
+ERROR: Client not found: orphan
+
+processes:
+state:
+
+["link", "alice", "--connection", "vless-reality"]
+exception: IndexError: list index out of range
+stdout:
+
+stderr:
+
+processes:
+state:

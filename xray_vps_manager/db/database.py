@@ -119,12 +119,12 @@ def enable_wal(connection: sqlite3.Connection) -> str:
 
 
 @contextmanager
-def report_errors(*, detail: str = "") -> Iterator[None]:
+def report_errors(*, detail: str = "", message: str = "SQLite manager database") -> Iterator[None]:
     """Перевести ошибки SQLite и файлов в ошибку сценария на границе администрирования."""
     try:
         yield
     except (sqlite3.Error, OSError) as exc:
-        raise StateError(f"SQLite manager database: {exc}", detail=detail) from exc
+        raise StateError(f"{message}: {exc}", detail=detail) from exc
 
 
 def _open(

@@ -1,0 +1,41 @@
+stdout:
+Usage:
+  xray-client list
+  xray-client connection-list
+  xray-client add-connection NAME PORT SNI [FINGERPRINT] [TRANSPORT] [--transport tcp|grpc|xhttp] [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
+  xray-client add-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] --security tls --transport xhttp [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON] [--public-port PORT] [--install-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-trojan-connection NAME LOCAL_PORT DOMAIN [FINGERPRINT] [--ws-path PATH] [--public-port PORT] [--no-caddy] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client add-trojan-connection NAME PORT DOMAIN CERT_FILE KEY_FILE [FINGERPRINT] [--transport tcp]
+  xray-client update-trojan-connection NAME_OR_TAG [--domain DOMAIN] [--local-port PORT] [--public-port PORT] [--ws-path PATH] [--fingerprint FINGERPRINT] [--tls-min-version tls1.2|tls1.3|default] [--tls-max-version tls1.2|tls1.3|default]
+  xray-client connection-rename NAME_OR_TAG NEW_NAME
+  xray-client connection-transport NAME_OR_TAG tcp|grpc|xhttp [--grpc-service-name NAME] [--xhttp-path PATH] [--xhttp-mode MODE] [--xhttp-extra-json JSON]
+  xray-client connection-xhttp-extra NAME_OR_TAG --xhttp-extra-json JSON|--clear-xhttp-extra
+  xray-client remove-connection NAME_OR_TAG
+  xray-client add NAME [DAYS] [--connection TAG|--protocol vless|trojan] [--payment paid|free]
+  xray-client disable NAME [--connection TAG]
+  xray-client enable NAME [--connection TAG]
+  xray-client move-connection NAME CONNECTION_NAME_OR_TAG
+  xray-client remove NAME
+  xray-client link NAME [--connection TAG]
+  xray-client key NAME
+  xray-client trojan-password-check
+  xray-client rotate-trojan-password NAME [--connection TAG]
+  xray-client set-days NAME DAYS
+  xray-client extend-days NAME DAYS
+  xray-client set-payment NAME paid|free
+  xray-client sync-routes
+  xray-client route NAME [COUNTRY_OR_TAG]
+  xray-client expire-due [--quiet]
+  xray-client traffic-summary [YYYY-MM]
+  xray-client traffic-day NAME [YYYY-MM-DD]
+  xray-client traffic-week NAME [START_DATE]
+  xray-client traffic-month NAME [YYYY-MM]
+  xray-client traffic-period NAME START_DATE END_DATE
+  xray-client limit-list
+  xray-client set-limit NAME daily|monthly LIMIT_GB
+  xray-client clear-limit NAME
+  xray-client enforce-limits [--quiet] [--sync]
+  xray-client timezone
+  xray-client set-timezone TIMEZONE|server
+
+exit: 0

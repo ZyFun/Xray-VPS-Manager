@@ -16,6 +16,7 @@ from xray_vps_manager.core.time import parse_time, xray_access_time_to_iso
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.models import split_email as split_client_email
 from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.db.repositories.client_traffic_handoff import DB_FIELD
 from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.traffic import history as traffic_history
 from xray_vps_manager.traffic import repository as traffic_repository
@@ -301,13 +302,14 @@ def copy_entry_state(source):
     return copied
 
 
-def ensure_credential_entry(db, name, connection_tag, email):
+def ensure_credential_entry(db, name, connection_tag, email, *, seed_from_aggregate=True):
     credential_entries = db.setdefault("credentials", {})
     entry = traffic_repository.ensure_credential_entry(credential_entries, name, connection_tag, email)
     aggregate = db.setdefault("clients", {}).get(name, {})
     credential_count = len(db.get("credentials", {}).get(name, {}))
     if (
-        not entry.get("incoming")
+        seed_from_aggregate
+        and not entry.get("incoming")
         and not entry.get("outgoing")
         and not entry.get("last")
         and isinstance(aggregate, dict)
@@ -341,7 +343,7 @@ def prune_history(db, bucket_time):
                 del history[date_key]
 
 
-def sync_access_log(db, credentials, stamp):
+def sync_access_log(db, credentials, stamp, *, retired=None, new_credential=None):
     if not ACCESS_LOG_PATH.exists():
         return set()
 
@@ -380,12 +382,18 @@ def sync_access_log(db, credentials, stamp):
             continue
         name, connection_tag = match_key
         event_time = access_time_to_iso(match.group(1))
-        entry = ensure_entry(entries, name, credentials[match_key])
-        credential_entry = ensure_credential_entry(db, name, connection_tag, credentials[match_key])
-        set_last_online(entry, event_time, "access-log", stamp)
-        set_last_online(credential_entry, event_time, "access-log", stamp)
-        entry["lastAccepted"] = max_time(entry.get("lastAccepted", ""), event_time)
-        credential_entry["lastAccepted"] = max_time(credential_entry.get("lastAccepted", ""), event_time)
+        if retired and match_key in retired:
+            targets = (retired[match_key],)
+        else:
+            targets = (
+                ensure_entry(entries, name, credentials[match_key]),
+                ensure_credential_entry(
+                    db, name, connection_tag, credentials[match_key], seed_from_aggregate=match_key != new_credential,
+                ),
+            )
+        for entry in targets:
+            set_last_online(entry, event_time, "access-log", stamp)
+            entry["lastAccepted"] = max_time(entry.get("lastAccepted", ""), event_time)
         seen.add(match_key)
 
     access_state.update({
@@ -397,11 +405,50 @@ def sync_access_log(db, credentials, stamp):
     return seen
 
 
+def record_runtime_sample(entry, runtime, email, bucket_time):
+    current = {direction: counter(runtime, email, direction) for direction in ("uplink", "downlink")}
+    last = entry.setdefault("last", {})
+    incoming = counter_delta(current["uplink"], last, "uplink")
+    outgoing = counter_delta(current["downlink"], last, "downlink")
+    entry["last"] = current
+    entry["incoming"] = int(entry.get("incoming", 0)) + incoming
+    entry["outgoing"] = int(entry.get("outgoing", 0)) + outgoing
+    add_history_delta(entry, bucket_time, incoming, outgoing)
+    return incoming, outgoing
+
+
+def sync_retired_credentials(retired, runtime, bucket_time, stamp, access_seen, *, aggregate, history_changes):
+    for key, entry in retired.items():
+        incoming, outgoing = record_runtime_sample(entry, runtime, entry["email"], bucket_time)
+        entry["sampled"] = True
+        if incoming or outgoing:
+            if key not in access_seen:
+                set_last_online(entry, stamp, "traffic", stamp)
+            entry["updated"] = stamp
+        if aggregate is not None:
+            # Клиент переноса уже есть в SQLite. Его дельту фиксируем в этом
+            # прогоне, даже если команда переноса аварийно завершится.
+            aggregate["incoming"] += incoming
+            aggregate["outgoing"] += outgoing
+            add_history_delta(aggregate, bucket_time, incoming, outgoing)
+            history_changes.add_client(key[0], bucket_time, incoming, outgoing)
+            online = entry.get("lastOnline", "")
+            if online and max_time(aggregate.get("lastOnline", ""), online) == online:
+                set_last_online(aggregate, online, entry["lastOnlineSource"], stamp)
+            if entry.get("lastAccepted"):
+                aggregate["lastAccepted"] = max_time(aggregate.get("lastAccepted", ""), entry["lastAccepted"])
+            if incoming or outgoing:
+                aggregate["updated"] = stamp
+
+
 def sync_locked():
     credentials = known_credentials()
+    db = None
     if not credentials:
-        log("No clients found.")
-        return 0
+        db = traffic_repository.load_traffic_db_for_read(include_client_handoff=True)
+        if not db.get(DB_FIELD):
+            log("No clients found.")
+            return 0
 
     try:
         runtime = query_runtime_stats()
@@ -409,28 +456,37 @@ def sync_locked():
         log(f"Traffic sync skipped: {exc}")
         return 1
 
+    if db is None:
+        db = traffic_repository.load_traffic_db_for_read(include_client_handoff=True)
+    handoff = db.pop(DB_FIELD, {})
+    retired = {}
+    new_credential = None
+    if handoff:
+        name = handoff["name"]
+        retired = {(name, tag): entry for tag, entry in handoff["credentials"].items()}
+        for key in retired:
+            credentials.pop(key, None)
+        if handoff.get("target"):
+            new_credential = name, handoff["target"]
     stamp = now()
     bucket_time = local_bucket_time()
     history_cutoff = subtract_months(bucket_time.date(), HISTORY_RETENTION_MONTHS)
     history_changes = traffic_history.HistoryChanges(history_cutoff)
-    db = traffic_repository.load_traffic_db_for_read()
     db["version"] = 2
     db["historyRetentionMonths"] = HISTORY_RETENTION_MONTHS
     entries = db.setdefault("clients", {})
     db.setdefault("credentials", {})
-    access_seen = sync_access_log(db, credentials, stamp)
+    access_seen = sync_access_log(
+        db, credentials | {key: entry["email"] for key, entry in retired.items()}, stamp,
+        retired=retired, new_credential=new_credential,
+    )
 
     for (name, connection_tag), email in credentials.items():
         entry = ensure_entry(entries, name, email)
-        credential_entry = ensure_credential_entry(db, name, connection_tag, email)
-        last = credential_entry.setdefault("last", {})
-        current_up = counter(runtime, email, "uplink")
-        current_down = counter(runtime, email, "downlink")
-        delta_up = counter_delta(current_up, last, "uplink")
-        delta_down = counter_delta(current_down, last, "downlink")
-        credential_entry["incoming"] = int(credential_entry.get("incoming", 0)) + delta_up
-        credential_entry["outgoing"] = int(credential_entry.get("outgoing", 0)) + delta_down
-        add_history_delta(credential_entry, bucket_time, delta_up, delta_down)
+        credential_entry = ensure_credential_entry(
+            db, name, connection_tag, email, seed_from_aggregate=(name, connection_tag) != new_credential,
+        )
+        delta_up, delta_down = record_runtime_sample(credential_entry, runtime, email, bucket_time)
         history_changes.add_credential(name, connection_tag, bucket_time, delta_up, delta_down)
         entry["incoming"] = int(entry.get("incoming", 0)) + delta_up
         entry["outgoing"] = int(entry.get("outgoing", 0)) + delta_down
@@ -443,10 +499,6 @@ def sync_locked():
         if traffic_changed:
             credential_entry["updated"] = stamp
             entry["updated"] = stamp
-        credential_entry["last"] = {
-            "uplink": current_up,
-            "downlink": current_down,
-        }
         entry["last"] = {
             "uplink": sum(
                 int(item.get("last", {}).get("uplink", 0) or 0)
@@ -462,6 +514,12 @@ def sync_locked():
         normalize_future_last_online(credential_entry, stamp)
         normalize_future_last_online(entry, stamp)
 
+    if retired:
+        aggregate = entries.get(handoff["name"]) if new_credential is not None else None
+        sync_retired_credentials(
+            retired, runtime, bucket_time, stamp, access_seen, aggregate=aggregate, history_changes=history_changes,
+        )
+        db[DB_FIELD] = handoff
     prune_history(db, bucket_time)
     try:
         client_db = client_repository.load_db_sql()
@@ -478,6 +536,9 @@ def sync_locked():
         if repaired:
             log(f"Repaired retained traffic history gaps for clients: {', '.join(gap.name for gap in repaired)}")
     db["updated"] = stamp
+    if new_credential is not None:
+        name, tag = new_credential
+        db["credentials"].get(name, {}).pop(tag, None)
     save_traffic(db, history_changes)
     log(f"Traffic stats saved: {MANAGER_DB_PATH}")
     return 0

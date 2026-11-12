@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from xray_vps_manager.core.locks import current_manager_operation
 from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import client_traffic_handoff
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
@@ -23,10 +25,17 @@ def load_traffic_db(*, db_path: str | Path | None = None) -> dict[str, Any]:
 def load_traffic_db_for_read(
     *,
     db_path: str | Path | None = None,
+    include_client_handoff: bool = False,
 ) -> dict[str, Any]:
     try:
         with database.session(database.database_path(db_path), read_snapshot=True) as connection:
-            return load_traffic_db_from_sqlite(connection)
+            db = load_traffic_db_from_sqlite(connection)
+            if include_client_handoff:
+                handoff = client_traffic_handoff.load(connection)
+                owner = current_manager_operation() if handoff else ""
+                if owner and handoff.get("owner") == owner:
+                    db[client_traffic_handoff.DB_FIELD] = handoff
+            return db
     except SQLiteReadUnavailable:
         raise
     except Exception as exc:
@@ -193,6 +202,9 @@ def write_traffic_db_to_sqlite_for_write(
                             outgoing,
                         )
             sqlite_traffic.upsert_access_log_state(connection, db.get("accessLog"))
+            handoff = db.get(client_traffic_handoff.DB_FIELD)
+            if handoff is not None:
+                client_traffic_handoff.save(connection, handoff)
         return True
     except Exception:
         if strict:

@@ -37,7 +37,6 @@ CLIENT_DB_WRITES = {
     "save_server_env_values",
 }
 WORKER_TIMEOUT = 30
-REAL_ADD_CLIENT = client_command.client_crud.add_client
 REAL_ADD_CONNECTION = client_command.client_connections.add_connection
 # Сколько медленный писатель держит окно между load_db и save_db, ожидая второго писателя.
 SLOW_WRITER_WINDOW = "2.0"
@@ -73,6 +72,7 @@ def make_sandbox(root: Path) -> None:
     config["inbounds"].append({"tag": "api", "listen": "127.0.0.1", "port": 10085,
                                "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1", "clients": []}})
     (root / "config.json").write_text(json.dumps(config))
+    (root / "server.env").write_text("SERVER_ADDR=vpn.example.com\nMANAGER_TIMEZONE=UTC\n")
     database.initialize(root / "manager.db").close()
 
 
@@ -84,22 +84,14 @@ def write_config(root: Path, config: dict, suffix: str = "") -> Path:
     return backup
 
 
-def add_client_without_xray(*args, **kwargs):
-    return REAL_ADD_CLIENT(*args, uuid_factory=lambda: str(uuid.uuid4()), **kwargs)
-
-
 @contextmanager
 def sandbox_patches(root: Path, *, restart=None, config_suffix: str = ""):
     root = root.resolve()
     with Sandbox(existing_config_dir=root) as box, \
         mock.patch.object(systemd, "time", FakeClock()), \
-        mock.patch("socket.create_connection", return_value=FakeSocket()), \
-        mock.patch.object(client_command, "link_for", return_value="vless://test"), \
-        mock.patch.object(client_command, "print_payment_summary"), \
-        mock.patch.object(client_command.client_connections, "server_env_values", return_value={}), \
-        mock.patch.object(client_command.client_crud, "add_client", side_effect=add_client_without_xray):
+        mock.patch("socket.create_connection", return_value=FakeSocket()):
         script_apply(box, restart=restart)
-        yield
+        yield box
 
 
 def script_apply(box, *, restart=None, record=None):
@@ -110,6 +102,8 @@ def script_apply(box, *, restart=None, record=None):
             restart()
         return box.processes.ok(show_output() if "show" in argv else "")
     box.processes.script({
+        ("/usr/local/bin/xray", "uuid"): lambda *_args, **_kwargs: box.processes.ok(str(uuid.uuid4())),
+        ("/usr/local/bin/xray", "x25519", "-i", "test-private-key"): box.processes.ok("PublicKey: " + "A" * 43),
         (str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(box.paths.config.with_suffix(".json.tmp"))): response,
         (str(box.paths.xray_bin), "run", "-test", "-config", str(box.paths.config)): response,
         "openssl rand -hex 8": box.processes.ok("0123456789abcdef"),
@@ -313,25 +307,27 @@ class ClientWritersLockTests(unittest.TestCase):
     def test_add_asks_access_days_before_taking_lock(self) -> None:
         lock_path = self.root / "manager.lock"
         events = []
-        real_load_db = client_command.load_db
+        real_load_db = client_repository.load_db_from_sqlite
 
         def fake_input(_prompt: str) -> str:
             events.append(("input", lock_is_free(lock_path)))
             return "30"
 
-        def spy_load_db():
+        def spy_load_db(conn):
             events.append(("load_db", lock_is_free(lock_path)))
-            return real_load_db()
+            return real_load_db(conn)
 
-        with sandbox_patches(self.root), \
-            mock.patch.object(client_command.sys.stdin, "isatty", return_value=True), \
+        with sandbox_patches(self.root) as box, \
             mock.patch("builtins.input", side_effect=fake_input), \
-            mock.patch.object(client_command, "load_db", side_effect=spy_load_db), \
-            mock.patch.object(client_command.client_settings, "manager_timezone_label", return_value="UTC"), \
-            redirect_stdout(StringIO()):
-            client_command.cmd_add("alice", connection_tag="vless-reality")
+            mock.patch.object(client_repository, "load_db_from_sqlite", side_effect=spy_load_db):
+            from tests.test_client_characterization import TerminalInput
 
-        self.assertEqual(events, [("input", True), ("load_db", False)])
+            result = box.run_cli("client", "add", "alice", "--connection", "vless-reality", stdin=TerminalInput())
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(events[0:2], [("load_db", True), ("input", True)])
+        self.assertTrue(events[2:])
+        self.assertTrue(all(event == ("load_db", False) for event in events[2:]))
         self.assertTrue(lock_is_free(lock_path))
         entry = client_repository.load_db_sql(db_path=self.root / "manager.db")["clients"]["alice"]
         self.assertTrue(entry.get("expiresAt"))
@@ -456,8 +452,15 @@ class ClientWritersLockTests(unittest.TestCase):
         for purpose, (command, timeouts, exit_code, stderr_lines) in commands.items():
             with self.subTest(purpose):
                 stderr = StringIO()
+                acquire_flock = core_locks.acquire_flock
+                requested_timeout = 0.2 if purpose == "add" else None
+
+                def acquire(fd, timeout):
+                    acquire_flock(fd, requested_timeout if requested_timeout is not None else timeout)
+
                 with sandbox_patches(self.root), \
                     mock.patch.multiple(client_command, **timeouts), \
+                    mock.patch.object(core_locks, "acquire_flock", side_effect=acquire), \
                     foreign_lock_holder(self.root / "manager.lock", holder), \
                     redirect_stdout(StringIO()), \
                     redirect_stderr(stderr):

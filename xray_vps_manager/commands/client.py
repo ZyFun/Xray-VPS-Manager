@@ -10,6 +10,7 @@ from pathlib import Path
 
 from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.clients import service as client_service
+from xray_vps_manager.clients.service import sync_traffic
 from xray_vps_manager.commands.presenters import apply_error_text, backup_text
 from xray_vps_manager.system import unit_sync
 from xray_vps_manager.clients import access as client_access
@@ -44,9 +45,7 @@ SERVER_ENV_PATH = Path("/usr/local/etc/xray/server.env")
 STATS_SERVER = "127.0.0.1:10085"
 MANAGER_LOCK_TIMEOUT = 60
 TIMER_MANAGER_LOCK_TIMEOUT = 30
-TRAFFIC_SYNC = Path("/usr/local/sbin/xray-traffic-sync")
 XRAY_TELEGRAM = Path("/usr/local/sbin/xray-telegram")
-CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 CONNECTION_NAME_RE = re.compile(r"^[^\r\n|]{1,64}$")
 FINGERPRINTS = {
     "chrome",
@@ -265,8 +264,10 @@ def connection_rows(config, db):
 
 
 def validate_name(name):
-    if not CLIENT_NAME_RE.match(name):
-        die("Client name must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
+    try:
+        client_service.validate_name(name)
+    except ManagerError as exc:
+        error_exit(exc)
 
 
 def validate_connection_name(name):
@@ -417,11 +418,6 @@ def query_user_stats():
     for name, value in re.findall(r'name:\s*"([^"]+)".*?value:\s*([0-9]+)', result.stdout, re.S):
         stats[name] = int(value)
     return stats
-
-
-def sync_traffic():
-    if TRAFFIC_SYNC.exists():
-        run_capture([str(TRAFFIC_SYNC), "--quiet"], timeout=8)
 
 
 def notify_access_updated(name):
@@ -1188,34 +1184,40 @@ def db_entry_for_existing_client(config, db, name):
         die(str(exc))
 
 
+@contextmanager
+def client_change_errors():
+    try:
+        yield
+    except client_crud.EnableTrafficLimitExceeded as exc:
+        status = exc.traffic_status
+        die(
+            "Traffic limit is exhausted for the current "
+            f"{client_limits.traffic_limit_period_label(status['period'])}. "
+            f"Used {format_traffic(status['usedBytes'])} of {format_traffic(status['limitBytes'])}. "
+            f"Can be enabled after reset: {status['resetAt']}"
+        )
+    except ManagerError as exc:
+        if exc.exit_code == 130:
+            raise KeyboardInterrupt from exc
+        if isinstance(exc, ApplyConfigError):
+            die(apply_error_text(exc))
+        error_exit(exc)
+
+
 def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, protocol="", payment_type="free"):
-    validate_name(name)
-    payment_type = normalize_payment_type(payment_type) if payment_type else ""
-    if prompt_for_access:
-        # ACCESS_DAYS is asked from a read-only snapshot, before manager.lock is taken.
-        config = load_config()
-        db = load_db_readonly()
-        existing_client = client_crud.client_exists(config, db, name)
-        try:
-            client_crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
-        except ValueError as exc:
-            die(str(exc))
-        if not existing_client:
-            access_days = prompt_access_days()
-
-    with client_db_lock("add"):
-        config = load_config()
-        db = load_db()
-        if prompt_for_access and client_crud.client_exists(config, db, name) != existing_client:
-            # ACCESS_DAYS was asked or skipped for a client state that changed while waiting.
-            die(f"Client {name} was added or removed by another operation. Run the command again.")
-        try:
-            connection_tag = client_crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
-            result = client_crud.add_client(config, db, name, access_days, connection_tag, payment_type)
-        except ValueError as exc:
-            die(str(exc))
-
-        backup = save_config_restart_xray_and_db(config, db)
+    with client_change_errors():
+        existing = None
+        if prompt_for_access:
+            existing = client_service.prepare_add_client(
+                name, connection_tag=connection_tag, protocol=protocol, payment_type=payment_type,
+            )
+            if not existing:
+                access_days = prompt_access_days()
+        change = client_service.add_client(
+            name, access_days, connection_tag=connection_tag, protocol=protocol,
+            payment_type=payment_type, expected_existing=existing,
+        )
+    result, config, db = change.result, change.config, change.db
 
     print(("Added client: " if result.added_client else "Added credential for client: ") + name)
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
@@ -1223,7 +1225,7 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
     print(f"Created: {result.created}")
     print(f"Access until: {client_access.format_access_until(result.entry.get('expiresAt', ''))}")
     print(f"Access key: {access_key_for_client_id(result.client_id)}")
-    print(f"Backup: {backup_text(backup)}")
+    print(f"Backup: {backup_text(change.backup)}")
     print_payment_summary()
     print(link_for(config, result.credential_id, name, result.connection_tag, db))
 
@@ -1315,89 +1317,44 @@ def cmd_route(name, route_value=None):
 
 
 def cmd_remove(name):
-    validate_name(name)
-    with client_db_lock("remove"):
-        config = load_config()
-        db = load_db()
-        try:
-            result = client_crud.remove_client(config, db, name)
-        except ValueError as exc:
-            die(str(exc))
+    with client_change_errors():
+        change = client_service.remove_client(name)
 
-        deletions = client_repository.Deletions(clients=(result.name,))
-        backup = save_config_restart_xray_and_db(config, db, deletions=deletions)
-
-    print(f"Removed client: {result.name}")
+    print(f"Removed client: {change.result.name}")
     print("Removed traffic history.")
-    print(f"Backup: {backup_text(backup)}")
+    print(f"Backup: {backup_text(change.backup)}")
 
 
 def cmd_disable(name, connection_tag=None):
-    validate_name(name)
-    with client_db_lock("disable"):
-        config = load_config()
-        db = load_db()
-        try:
-            result = client_crud.disable_client(config, db, name, connection_tag=connection_tag)
-        except ValueError as exc:
-            die(str(exc))
-
-        backup = save_config_restart_xray_and_db(config, db)
+    with client_change_errors():
+        change = client_service.disable_client(name, connection_tag)
+    result = change.result
 
     print(f"Disabled client: {result.name}")
     if result.connection_tags:
         print("Disabled credentials: " + ", ".join(result.connection_tags))
-    print(f"Backup: {backup_text(backup)}")
+    print(f"Backup: {backup_text(change.backup)}")
 
 
 def cmd_enable(name, connection_tag=None):
-    validate_name(name)
-    sync_traffic()
-    with client_db_lock("enable"):
-        config = load_config()
-        db = load_db()
-        traffic_db = load_traffic_db()
-        try:
-            result = client_crud.enable_client(config, db, traffic_db, name, connection_tag=connection_tag)
-        except client_crud.EnableTrafficLimitExceeded as exc:
-            traffic_status = exc.traffic_status
-            die(
-                "Traffic limit is exhausted for the current "
-                f"{client_limits.traffic_limit_period_label(traffic_status['period'])}. "
-                f"Used {format_traffic(traffic_status['usedBytes'])} of {format_traffic(traffic_status['limitBytes'])}. "
-                f"Can be enabled after reset: {traffic_status['resetAt']}"
-            )
-        except ValueError as exc:
-            die(str(exc))
-
-        backup = save_config_restart_xray_and_db(config, db)
+    with client_change_errors():
+        change = client_service.enable_client(name, connection_tag)
+    result, config, db = change.result, change.config, change.db
 
     print(f"Enabled client: {result.name}")
     if result.connection_tags:
         print("Enabled credentials: " + ", ".join(result.connection_tags))
     if result.connection_tag:
         print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
-    print(f"Backup: {backup_text(backup)}")
+    print(f"Backup: {backup_text(change.backup)}")
     if result.connection_tag:
         print(link_for(config, result.credential_id, result.name, result.connection_tag, db))
 
 
 def cmd_move_connection(name, target_connection_identifier):
-    validate_name(name)
-    with client_db_lock("move-connection"):
-        config = load_config()
-        db = load_db()
-        try:
-            result = client_crud.move_client_to_connection(config, db, name, target_connection_identifier)
-        except ValueError as exc:
-            die(str(exc))
-
-        deletions = client_repository.Deletions(credentials=((name, result.source_connection_tag),))
-        backup = None
-        if result.config_changed:
-            backup = save_config_restart_xray_and_db(config, db, deletions=deletions)
-        else:
-            save_db(db, deletions=deletions)
+    with client_change_errors():
+        change = client_service.move_client(name, target_connection_identifier)
+    result, config, db = change.result, change.config, change.db
 
     print(f"Moved client: {result.name}")
     print(
@@ -1409,8 +1366,8 @@ def cmd_move_connection(name, target_connection_identifier):
         f"{connection_display_name(config, db, result.target_connection_tag)} ({result.target_connection_tag})"
     )
     print("Status: " + ("enabled" if result.enabled else "disabled"))
-    if backup:
-        print(f"Backup: {backup_text(backup)}")
+    if change.backup:
+        print(f"Backup: {backup_text(change.backup)}")
     else:
         print("Xray restart is not required for disabled client.")
     print("New link:")
