@@ -9,7 +9,6 @@ from typing import Callable
 from xray_vps_manager.clients import access
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients import connections
-from xray_vps_manager.clients import limits as client_limits
 from xray_vps_manager.clients import status as client_status
 from xray_vps_manager.clients.models import (
     client_from_db_entry,
@@ -370,6 +369,8 @@ def enable_client(
     traffic: dict[str, Any],
     name: str,
     connection_tag: str | None = None,
+    *,
+    limit_status: Callable,
 ) -> EnableClientResult:
     connections.ensure_connections(config, db)
     entry = db_clients(db).get(name)
@@ -378,7 +379,7 @@ def enable_client(
     if access.access_expired(entry):
         raise ValueError(f"Access expired for client: {name}. Extend it first: xray-client extend-days {name} DAYS")
 
-    traffic_status = client_limits.traffic_limit_status(entry, traffic)
+    traffic_status = limit_status(entry, traffic)
     if traffic_status and traffic_status["exceeded"]:
         raise EnableTrafficLimitExceeded(traffic_status)
 

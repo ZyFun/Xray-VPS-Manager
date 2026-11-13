@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from xray_vps_manager.clients import access
 from xray_vps_manager.clients.status import expire_due_clients, reconcile_client_access_status
+from xray_vps_manager.traffic.limits import traffic_limit_status
 
 
 def client_item(name: str) -> dict:
@@ -108,10 +109,11 @@ class ClientAccessTests(unittest.TestCase):
         entry, changed, status, traffic_status = reconcile_client_access_status(
             config,
             db,
-            traffic_db,
+            traffic_db["clients"]["alice"],
             "alice",
             db["clients"]["alice"],
             now=datetime(2026, 6, 12, 12, tzinfo=timezone.utc),
+            limit_status=traffic_limit_status,
         )
 
         self.assertTrue(changed)

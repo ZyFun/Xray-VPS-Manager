@@ -1,10 +1,10 @@
 """Синхронизация клиентских маршрутов и применение runtime override."""
 
-from collections.abc import Callable
 from typing import Any
 
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients import repository as client_repository
+from xray_vps_manager.core.errors import ValidationError
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import client_routes
@@ -121,27 +121,31 @@ def ensure_all_client_route_config(config: dict[str, Any], db: dict[str, Any]) -
     return changed
 
 
-def apply_runtime_override(
-    name: str,
-    entry: dict[str, Any],
-    outbound_tag: str,
-    run_capture: Callable[..., Any],
-    *,
-    timeout: int = 8,
-) -> tuple[bool, str]:
-    errors = []
-    for command in client_routes.runtime_override_commands(name, entry, outbound_tag):
-        try:
-            result = run_capture(command, timeout=timeout)
-        except Exception as exc:  # pragma: no cover - defensive wrapper around system command
-            errors.append(str(exc))
-            continue
-        if getattr(result, "returncode", 1) == 0:
-            return True, ""
-        detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or f"exit {getattr(result, 'returncode', '?')}").strip()
-        if detail:
-            errors.append(detail)
-    return False, "; ".join(errors[-2:]) or "xray api bo failed"
+def resolve_route_tag(config, db, value):
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValidationError("Cascade route is required.")
+    options = route_options(db, config)
+    by_tag = {item["tag"] for item in options}
+    if raw in by_tag:
+        return raw
+    try:
+        tag = cascade_config.cascade_tag(raw)
+    except ValueError:
+        tag = ""
+    if tag in by_tag:
+        return tag
+    country_matches = [
+        item["tag"]
+        for item in options
+        if str(item.get("country") or "").casefold() == raw.casefold()
+        or str(item.get("display") or "").casefold() == raw.casefold()
+    ]
+    if len(country_matches) == 1:
+        return country_matches[0]
+    if len(country_matches) > 1:
+        raise ValidationError("Country matches more than one cascade route. Use cascade tag.")
+    raise ValidationError(f"Cascade route not found: {raw}")
 
 
 def ensure_client_route_config(

@@ -9,12 +9,11 @@ from typing import Any
 
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients import connections
-from xray_vps_manager.clients.access import access_expired, extend_entry_expiry, local_now, set_entry_expiry
-from xray_vps_manager.clients.limits import traffic_limit_status
+from xray_vps_manager.clients.access import access_expired, local_now
 from xray_vps_manager.clients.models import client_from_db_entry, client_name, db_entry_from_client, split_email
 from xray_vps_manager.clients.repository import db_clients
 from xray_vps_manager.core.time import utc_stamp
-from xray_vps_manager.traffic.repository import traffic_entry
+from xray_vps_manager.db.traffic_snapshot import traffic_entry
 from xray_vps_manager.xray.config import (
     active_client_any,
     apply_client_transport,
@@ -136,14 +135,16 @@ def disabled_entry_for_policy(
 def reconcile_client_access_status(
     config: dict[str, Any],
     db: dict[str, Any],
-    traffic_db: dict[str, Any],
+    traffic_entry: dict[str, Any],
     name: str,
     entry: dict[str, Any],
     now: datetime | None = None,
+    *,
+    limit_status: Callable,
 ):
     now = now or local_now()
     stamp = utc_stamp()
-    status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
+    status = limit_status(entry, traffic_entry, now)
 
     if status and status["exceeded"]:
         disabled, changed = disabled_entry_for_policy(config, name, entry)
@@ -176,9 +177,11 @@ def reconcile_client_access_status(
 def apply_access_update(
     config: dict[str, Any],
     db: dict[str, Any],
-    traffic_db: dict[str, Any],
+    traffic_entry: dict[str, Any],
     name: str,
     update_entry: Callable[[dict[str, Any]], None],
+    *,
+    limit_status: Callable,
 ) -> AccessUpdateResult:
     connections.ensure_connections(config, db)
     entry = db_clients(db).get(name)
@@ -192,7 +195,9 @@ def apply_access_update(
         entry["connection"] = inbound_tag(inbound)
 
     update_entry(entry)
-    entry, config_changed, status, traffic_status = reconcile_client_access_status(config, db, traffic_db, name, entry)
+    entry, config_changed, status, traffic_status = reconcile_client_access_status(
+        config, db, traffic_entry, name, entry, limit_status=limit_status,
+    )
     return AccessUpdateResult(
         entry=entry,
         config_changed=config_changed,
@@ -201,32 +206,14 @@ def apply_access_update(
     )
 
 
-def set_access_days(
-    config: dict[str, Any],
-    db: dict[str, Any],
-    traffic_db: dict[str, Any],
-    name: str,
-    days: int | None,
-) -> AccessUpdateResult:
-    return apply_access_update(config, db, traffic_db, name, lambda entry: set_entry_expiry(entry, days))
-
-
-def extend_access_days(
-    config: dict[str, Any],
-    db: dict[str, Any],
-    traffic_db: dict[str, Any],
-    name: str,
-    days: int,
-) -> AccessUpdateResult:
-    return apply_access_update(config, db, traffic_db, name, lambda entry: extend_entry_expiry(entry, days))
-
-
 def enforce_traffic_limits(
     config: dict[str, Any],
     db: dict[str, Any],
     traffic_db: dict[str, Any],
     now: datetime | None = None,
     stamp: str | None = None,
+    *,
+    limit_status: Callable,
 ) -> TrafficLimitEnforcementResult:
     now = now or local_now()
     stamp = stamp or utc_stamp()
@@ -238,7 +225,7 @@ def enforce_traffic_limits(
     for name, entry in db_clients(db).items():
         if entry.get("enabled") is not False or entry.get("disabledReason") != "traffic-limit":
             continue
-        status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
+        status = limit_status(entry, traffic_entry(traffic_db, name), now)
         if not status or status["exceeded"]:
             continue
         exceeded_period = entry.get("trafficLimitExceededPeriod", "")
@@ -259,7 +246,7 @@ def enforce_traffic_limits(
             if name in due_statuses:
                 continue
             entry = db_clients(db).get(name, {})
-            status = traffic_limit_status(entry, traffic_entry(traffic_db, name), now)
+            status = limit_status(entry, traffic_entry(traffic_db, name), now)
             if status and status["exceeded"]:
                 due_names.append(name)
                 due_clients[name] = (inbound_tag(inbound), item)

@@ -33,7 +33,7 @@ def live(box):
 
 
 class WriterAdaptersTests(unittest.TestCase):
-    def test_route_test_timeout_restores_file_before_runtime_or_db_update(self):
+    def test_route_test_timeout_keeps_working_file_and_compensates_db(self):
         with Sandbox() as box:
             config = box.config()
             config["outbounds"].extend({"tag": tag, "protocol": "freedom"}
@@ -46,15 +46,20 @@ class WriterAdaptersTests(unittest.TestCase):
             box.paths.config.write_text(json.dumps(config))
             original = box.paths.config.read_bytes()
             old_db = repository.load_db()
-            command = (str(box.paths.xray_bin), "run", "-test", "-config", str(box.paths.config))
+            candidate = box.paths.config.with_suffix(".json.tmp")
+            command = (str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(candidate))
+
             def timeout(argv, **kwargs):
-                self.assertNotEqual(box.paths.config.read_bytes(), original)
+                self.assertEqual(box.paths.config.read_bytes(), original)
+                self.assertFalse(list(box.paths.config_dir.glob("config.json.bak.*")))
                 self.assertEqual(kwargs["timeout"], 30)
                 raise subprocess.TimeoutExpired(argv, 30)
             box.processes.script({command: timeout})
             result = box.run_cli("client", "route", "alice", "cascade-new")
             self.assertEqual(result.exit_code, 1, result.stderr)
-            self.assertIn("New route config failed. Restored backup:", result.stderr)
+            self.assertIn("timed out", result.stderr)
+            self.assertFalse(candidate.exists())
+            self.assertFalse(list(box.paths.config_dir.glob("config.json.bak.*")))
             self.assertEqual(box.paths.config.read_bytes(), original)
             self.assertEqual(repository.load_db(), old_db)
             self.assertEqual(box.processes.calls, [command])

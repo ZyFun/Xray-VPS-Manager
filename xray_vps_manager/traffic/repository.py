@@ -10,6 +10,9 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import client_traffic_handoff
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
+from xray_vps_manager.db.traffic_snapshot import (
+    credential_traffic_entries, credential_traffic_entry, traffic_clients, traffic_credentials, traffic_entry,
+)
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
 from xray_vps_manager.traffic.history import HistoryChanges
 
@@ -60,35 +63,6 @@ def save_traffic_db(
     history_changes: HistoryChanges | None = None,
 ) -> None:
     write_traffic_db_to_sqlite_for_write(db, db_path=db_path, strict=True, history_changes=history_changes)
-
-
-def traffic_clients(db: dict | None) -> dict:
-    if not isinstance(db, dict):
-        return {}
-    clients = db.get("clients", {})
-    return clients if isinstance(clients, dict) else {}
-
-
-def traffic_entry(db: dict | None, name: str) -> dict:
-    entry = traffic_clients(db).get(name, {})
-    return entry if isinstance(entry, dict) else {}
-
-
-def traffic_credentials(db: dict | None) -> dict:
-    if not isinstance(db, dict):
-        return {}
-    credentials = db.get("credentials", {})
-    return credentials if isinstance(credentials, dict) else {}
-
-
-def credential_traffic_entries(db: dict | None, name: str) -> dict:
-    entries = traffic_credentials(db).get(name, {})
-    return entries if isinstance(entries, dict) else {}
-
-
-def credential_traffic_entry(db: dict | None, name: str, connection_tag: str) -> dict:
-    entry = credential_traffic_entries(db, name).get(connection_tag, {})
-    return entry if isinstance(entry, dict) else {}
 
 
 def ensure_entry(entries: dict, name: str, email: str) -> dict:

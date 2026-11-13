@@ -1883,13 +1883,6 @@
     "count": 1
   },
   {
-    "module": "xray.client_routes",
-    "scope": "runtime_override_commands",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 2
-  },
-  {
     "module": "xray.crypto",
     "scope": "reality_public_key",
     "category": "/usr/local/",

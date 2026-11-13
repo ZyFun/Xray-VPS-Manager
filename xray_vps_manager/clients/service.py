@@ -6,15 +6,17 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-from xray_vps_manager.clients import credentials, crud, payments, repository, routes
+from xray_vps_manager.clients import access, connections, credentials, crud, limits, payments, repository, routes, status
 from xray_vps_manager.core import process
 from xray_vps_manager.core.compensation import compensate
-from xray_vps_manager.core.errors import ConflictError, StateError, ValidationError
+from xray_vps_manager.core.errors import ApplyConfigError, ConflictError, StateError, ValidationError
 from xray_vps_manager.core.locks import activity_lock, current_manager_operation, manager_lock, traffic_lock
 from xray_vps_manager.core.paths import paths
+from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import client_traffic_handoff
 from xray_vps_manager.xray.apply import apply_config, restore_config_backup
+from xray_vps_manager.xray import client_route_runtime, client_routes
 from xray_vps_manager.xray.config import ensure_api_rule_first, load_config
 
 
@@ -34,6 +36,13 @@ class _Mutation[T]:
     result: T
     deletions: repository.Deletions | None = None
     apply: bool = True
+
+
+@dataclass(frozen=True)
+class RouteSelection:
+    tag: str
+    label: str
+    changed: bool
 
 
 def validate_name(name):
@@ -66,7 +75,7 @@ def _retire_traffic(conn, before, mutation, owner):
     return client_traffic_handoff.start(conn, owner=owner, name=name, retired=retired, target=target)
 
 
-def _change(purpose, mutate, *, retires_traffic=False, removes_client=False):
+def _change(purpose, mutate, *, retires_traffic=False, removes_client=False, legacy_write_errors=False):
     parser_guard = activity_lock(purpose=purpose) if removes_client else nullcontext()
     with manager_lock(purpose=purpose), parser_guard:
         config = _load_config()
@@ -95,10 +104,15 @@ def _change(purpose, mutate, *, retires_traffic=False, removes_client=False):
                     with database.report_errors(message="SQLite clients cannot be read"):
                         db = repository.load_db_from_sqlite(conn)
                     previous = deepcopy(db)
-                    mutation = mutate(config, db, conn)
-                    if mutation.apply:
-                        routes.ensure_all_client_route_config(config, db)
-                        ensure_api_rule_first(config)
+                    try:
+                        mutation = mutate(config, db, conn)
+                        if mutation.apply:
+                            routes.ensure_all_client_route_config(config, db)
+                            ensure_api_rule_first(config)
+                    except ValidationError:
+                        raise
+                    except ValueError as exc:
+                        raise ValidationError(str(exc)) from exc
                     if retires_traffic:
                         handoff_started = _retire_traffic(conn, previous, mutation, owner)
                     undo = repository.write_client_change(
@@ -108,6 +122,10 @@ def _change(purpose, mutate, *, retires_traffic=False, removes_client=False):
             except ValidationError:
                 raise
             except ValueError as exc:
+                if legacy_write_errors:
+                    # T4a: запись существующего только в конфиге Trojan без UUID
+                    # передаёт ValueError вызывающему коду до исправления VIREI-134.
+                    raise
                 raise ValidationError(str(exc)) from exc
             if mutation.apply:
                 # ExecStop получает traffic.lock и открывает собственную пишущую сессию.
@@ -185,14 +203,14 @@ def sync_traffic():
         process.run([str(sync), "--quiet"], timeout=8)
 
 
-def enable_client(name, connection_tag=None):
+def enable_client(name, connection_tag=None, *, limit_status):
     validate_name(name)
     sync_traffic()
 
     def mutate(config, db, conn):
         with database.report_errors(message="SQLite traffic cannot be read"):
             traffic = repository.get_traffic_entry(conn, name)
-        return _Mutation(crud.enable_client(config, db, traffic, name, connection_tag))
+        return _Mutation(crud.enable_client(config, db, traffic, name, connection_tag, limit_status=limit_status))
 
     return _change("enable", mutate)
 
@@ -206,6 +224,145 @@ def move_client(name, target_connection_identifier):
         return _Mutation(result, deletions, apply=result.config_changed)
 
     return _change("move-connection", mutate, retires_traffic=True)
+
+
+def _update_access(purpose, name, update_entry, limit_status):
+    validate_name(name)
+    sync_traffic()
+
+    def mutate(config, db, conn):
+        with database.report_errors(message="SQLite traffic cannot be read"):
+            traffic = repository.get_traffic_entry(conn, name)
+        result = status.apply_access_update(config, db, traffic, name, update_entry, limit_status=limit_status)
+        return _Mutation(result, apply=result.config_changed)
+
+    return _change(purpose, mutate, legacy_write_errors=True)
+
+
+def set_days(name, days, *, limit_status):
+    return _update_access("set-days", name, lambda entry: access.set_entry_expiry(entry, days), limit_status)
+
+
+def extend_days(name, days, *, limit_status):
+    return _update_access("extend-days", name, lambda entry: access.extend_entry_expiry(entry, days), limit_status)
+
+
+def _update_client_entry(purpose, name, update_entry):
+    validate_name(name)
+
+    def mutate(config, db, _conn):
+        connections.ensure_connections(config, db)
+        entry = crud.db_entry_for_existing_client(config, db, name)
+        result = update_entry(entry)
+        repository.db_clients(db)[name] = entry
+        return _Mutation(result, apply=False)
+
+    return _change(purpose, mutate, legacy_write_errors=True)
+
+
+def set_payment(name, payment_type):
+    def update(entry):
+        payments.set_payment_type(entry, payment_type)
+        return entry
+
+    return _update_client_entry("set-payment", name, update)
+
+
+def set_limit(name, period, limit_bytes):
+    return _update_client_entry(
+        "set-limit", name, lambda entry: limits.set_client_traffic_limit(entry, period, limit_bytes, utc_stamp),
+    )
+
+
+def clear_limit(name):
+    return _update_client_entry("clear-limit", name, lambda entry: limits.clear_client_traffic_limit(entry, utc_stamp))
+
+
+def rotate_trojan_password(name, connection_tag=None):
+    validate_name(name)
+
+    def mutate(config, db, _conn):
+        result = crud.rotate_trojan_password(config, db, name, connection_tag)
+        return _Mutation(result, apply=result.config_changed)
+
+    return _change("rotate-trojan-password", mutate, legacy_write_errors=True)
+
+
+def set_route(name, route_value=None):
+    """Синхронизировать выбор и при необходимости переключить runtime без рестарта."""
+    validate_name(name)
+    with manager_lock(purpose="route"):
+        config = _load_config()
+        undo = None
+        applied = None
+        previous_runtime = None
+        attempted_override = False
+
+        def remember_apply(result):
+            nonlocal applied
+            applied = result
+
+        def restore_db():
+            with database.report_errors(), database.write_session() as conn:
+                undo.restore(conn)
+
+        def remember_runtime():
+            nonlocal previous_runtime
+            previous_runtime = client_route_runtime.read_balancer(balancer)
+
+        def restore_runtime():
+            if attempted_override:
+                client_route_runtime.set_override(balancer, previous_runtime.override)
+            if client_route_runtime.read_balancer(balancer) != previous_runtime:
+                raise StateError("Xray API вернул другое состояние балансера после восстановления")
+
+        try:
+            with database.report_errors(), database.write_session() as conn:
+                with database.report_errors(message="SQLite clients cannot be read"):
+                    db = repository.load_db_from_sqlite(conn)
+                previous = deepcopy(db)
+                routes.sync_routes_from_config(config, db)
+                entry = crud.db_entry_for_existing_client(config, db, name)
+                current = client_routes.selected_route_tag(entry)
+                tag = current if route_value is None else routes.resolve_route_tag(config, db, route_value)
+                changed = current != tag
+                if changed:
+                    if not client_routes.client_routes_allowed(config):
+                        raise ValidationError(
+                            "Выбор страны недоступен: общий маршрут сейчас не каскад "
+                            "(включён WARP или каскадный маршрут отключён). Выбери страну после возврата каскадного маршрута."
+                        )
+                    entry["selectedCascadeTag"] = tag
+                    routes.ensure_client_route_config(config, name, entry, tag)
+                    ensure_api_rule_first(config)
+                    balancer = client_routes.client_balancer_tag(name, entry)
+                    repository.db_clients(db)[name] = entry
+                undo = repository.write_client_change(conn, db, previous)
+            if changed:
+                try:
+                    apply_config(config, restart=False, on_applied=remember_apply, before_install=remember_runtime)
+                except ApplyConfigError:
+                    applied = None  # Применение само отвечает за откат при отказе внутри apply.
+                    raise
+                attempted_override = True
+                client_route_runtime.set_override(balancer, tag)
+            result = RouteSelection(tag, routes.selected_route_label(db, entry), changed)
+            return ClientChange(result, config, db, applied.backup if applied else None)
+        except BaseException as error:
+            if undo is None:
+                if isinstance(error, ValueError):
+                    raise ValidationError(str(error)) from error
+                raise
+            actions = []
+            if applied and applied.backup:
+                actions.append(("Конфигурация Xray", lambda: restore_config_backup(applied.backup, restart=False)))
+            if previous_runtime is not None:
+                actions.append(("Балансер Xray", restore_runtime))
+            actions.append(("Клиентские данные SQLite", restore_db))
+            if isinstance(error, ApplyConfigError) and error.stage == "rollback":
+                error = StateError("Не удалось восстановить конфигурацию Xray; состояние не подтверждено",
+                                   detail=error.detail)
+            compensate(error, actions)
 
 
 def apply_config_and_save_db(config: dict, db: dict, *, deletions=None):

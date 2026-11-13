@@ -604,8 +604,8 @@ def client_menu_handlers():
             "Добавить подключение к клиенту",
             lambda: menu_client_actions.add_connection_to_client_from_menu(call),
         ),
-        "4": ("Изменить срок доступа", lambda: menu_client_actions.update_selected_client_days(call)),
-        "5": ("Изменить статус оплаты", lambda: menu_client_actions.update_selected_client_payment(call)),
+        "4": ("Изменить срок доступа", menu_client_actions.update_selected_client_days),
+        "5": ("Изменить статус оплаты", menu_client_actions.update_selected_client_payment),
         "6": (
             "Отключить клиента",
             lambda: menu_client_actions.call_client_command(call, "disable", "отключения", "enabled"),
@@ -625,15 +625,15 @@ def client_menu_handlers():
         ),
         "11": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
         "12": ("Лимиты трафика", open_client_traffic_limit_menu),
-        "13": ("Изменить страну подключения", lambda: menu_client_actions.update_selected_client_route(call)),
+        "13": ("Изменить страну подключения", menu_client_actions.update_selected_client_route),
     }
 
 
 def client_traffic_limit_menu_handlers():
     return {
         "1": ("Показать лимиты трафика", lambda: menu_client_actions.show_traffic_limits(call)),
-        "2": ("Установить лимит трафика", lambda: menu_client_actions.update_selected_client_limit(call)),
-        "3": ("Убрать лимит трафика", lambda: menu_client_actions.clear_selected_client_limit(call)),
+        "2": ("Установить лимит трафика", menu_client_actions.update_selected_client_limit),
+        "3": ("Убрать лимит трафика", menu_client_actions.clear_selected_client_limit),
         "4": ("Проверить лимиты трафика", lambda: menu_client_actions.enforce_traffic_limits(call)),
     }
 

@@ -30,11 +30,11 @@ from xray_vps_manager.core.process import tcp_port_in_use
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.traffic import formatting as traffic_formatting
+from xray_vps_manager.traffic import limits as traffic_limits
 from xray_vps_manager.traffic import reports as traffic_reports
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.xray import cascade as cascade_config
 from xray_vps_manager.xray import caddy as xray_caddy
-from xray_vps_manager.xray import client_routes
 from xray_vps_manager.xray import config as xray_config
 from xray_vps_manager.xray import apply as xray_apply
 
@@ -119,13 +119,6 @@ def normalize_payment_type(value):
         die(str(exc))
 
 
-def set_entry_payment_type(entry, value):
-    try:
-        return client_payments.set_payment_type(entry, value)
-    except ValueError as exc:
-        die(str(exc))
-
-
 def parse_limit_gb(value):
     try:
         return client_limits.parse_limit_gb(value)
@@ -136,20 +129,6 @@ def parse_limit_gb(value):
 def validate_limit_period(value):
     try:
         return client_limits.validate_limit_period(value)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def set_client_traffic_limit(entry, period, limit_bytes):
-    try:
-        return client_limits.set_client_traffic_limit(entry, period, limit_bytes, utc_stamp)
-    except ValueError as exc:
-        die(str(exc))
-
-
-def clear_client_traffic_limit(entry):
-    try:
-        return client_limits.clear_client_traffic_limit(entry, utc_stamp)
     except ValueError as exc:
         die(str(exc))
 
@@ -172,10 +151,6 @@ def load_config():
         die(str(exc))
 
 
-def save_config(config):
-    return xray_config.save_config(config, CONFIG_PATH)
-
-
 def load_db():
     try:
         return client_repository.load_db_sql()
@@ -192,10 +167,6 @@ def save_db(db, *, deletions=None):
 
 def restore_config_backup(backup):
     xray_apply.restore_config_backup(backup)
-
-
-def restore_config_file(backup):
-    xray_apply.restore_config_backup(backup, restart=False)
 
 
 def save_config_restart_xray_and_db(config, db, *, deletions=None):
@@ -440,33 +411,6 @@ def print_payment_summary():
         print(f"WARN: Payment summary unavailable: {detail}", file=sys.stderr)
 
 
-def resolve_cascade_route_tag(config, db, value):
-    raw = str(value or "").strip()
-    if not raw:
-        die("Cascade route is required.")
-    options = client_route_service.route_options(db, config)
-    by_tag = {item["tag"]: item for item in options}
-    if raw in by_tag:
-        return raw
-    try:
-        tag = cascade_config.cascade_tag(raw)
-    except ValueError:
-        tag = ""
-    if tag and tag in by_tag:
-        return tag
-    country_matches = [
-        item["tag"]
-        for item in options
-        if str(item.get("country") or "").casefold() == raw.casefold()
-        or str(item.get("display") or "").casefold() == raw.casefold()
-    ]
-    if len(country_matches) == 1:
-        return country_matches[0]
-    if len(country_matches) > 1:
-        die("Country matches more than one cascade route. Use cascade tag.")
-    die(f"Cascade route not found: {raw}")
-
-
 def print_route_options(config, db):
     rows = []
     active = cascade_config.active_cascade_tag(config)
@@ -509,13 +453,6 @@ def parse_month_value(value=None):
     if month < 1 or month > 12:
         die("MONTH must be in YYYY-MM format.")
     return f"{year:04d}-{month:02d}"
-
-
-def traffic_limit_status(db_entry, traffic_db_entry, now=None):
-    try:
-        return client_limits.traffic_limit_status(db_entry, traffic_db_entry, now)
-    except ValueError as exc:
-        die(str(exc))
 
 
 def print_client_table(rows):
@@ -1037,7 +974,7 @@ def cmd_list():
                 online,
                 last_online,
                 format_traffic(total),
-                client_limits.format_traffic_limit(db_entry),
+                traffic_limits.format_traffic_limit(db_entry),
                 traffic_updated,
                 client_access.format_access_until(row["expiresAt"]),
                 f"{row.get('credentialsActive', 0)}/{row.get('credentialsTotal', 0)}",
@@ -1110,7 +1047,7 @@ def cmd_traffic_summary(month_value=None):
         client_repository.db_clients(db),
         month_key,
         connection_label=lambda row: connection_display_name(config, db, row["connection"]),
-        limit_label=client_limits.format_traffic_limit,
+        limit_label=traffic_limits.format_traffic_limit,
         today=client_access.local_now().date(),
     )
 
@@ -1176,14 +1113,6 @@ def cmd_traffic_period(name, start_value, end_value):
     print_traffic_credential_period(config, db, traffic_db, name, start, end)
 
 
-def db_entry_for_existing_client(config, db, name):
-    validate_name(name)
-    try:
-        return client_crud.db_entry_for_existing_client(config, db, name)
-    except ValueError as exc:
-        die(str(exc))
-
-
 @contextmanager
 def client_change_errors():
     try:
@@ -1231,14 +1160,8 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
 
 
 def cmd_set_payment(name, payment_value):
-    with client_db_lock("set-payment"):
-        config = load_config()
-        db = load_db()
-        ensure_connections(config, db)
-        entry = db_entry_for_existing_client(config, db, name)
-        set_entry_payment_type(entry, payment_value)
-        client_repository.db_clients(db)[name] = entry
-        save_db(db)
+    with client_change_errors():
+        entry = client_service.set_payment(name, payment_value).result
     print(f"Client: {name}")
     print(f"Payment type: {client_payments.payment_type_label(entry)}")
     print_payment_summary()
@@ -1262,57 +1185,22 @@ def cmd_sync_routes():
 
 
 def cmd_route(name, route_value=None):
-    validate_name(name)
-    with client_db_lock("route"):
-        config = load_config()
-        db = load_db()
-        client_route_service.sync_routes_from_config(config, db)
-        entry = db_entry_for_existing_client(config, db, name)
-        current_tag = client_routes.selected_route_tag(entry)
-
-        if route_value is None:
-            print(f"Client: {name}")
-            print(f"Current country: {client_route_service.selected_route_label(db, entry)}")
-            print(f"Current cascade: {current_tag or '-'}")
-            print_route_options(config, db)
-            save_db(db)
-            return
-
-        tag = resolve_cascade_route_tag(config, db, route_value)
-        if current_tag == tag:
-            save_db(db)
-            print(f"Client: {name}")
-            print(f"Country already selected: {client_route_service.selected_route_label(db, entry)}")
-            print(f"Cascade: {tag}")
-            return
-        if not client_routes.client_routes_allowed(config):
-            # No client rule to switch; xray api bo could still move a leftover runtime balancer past WARP or direct.
-            die(
-                "Выбор страны недоступен: общий маршрут сейчас не каскад "
-                "(включён WARP или каскадный маршрут отключён). Выбери страну после возврата каскадного маршрута."
-            )
-
-        next_entry = dict(entry)
-        next_entry["selectedCascadeTag"] = tag
-        client_route_service.ensure_client_route_config(config, name, next_entry, tag)
-        backup = save_config(config)
-        try:
-            xray_apply.test_config_file(CONFIG_PATH)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            restore_config_file(backup)
-            die(f"New route config failed. Restored backup: {backup}")
-
-        ok, detail = client_route_service.apply_runtime_override(name, next_entry, tag, run_capture)
-        if not ok:
-            restore_config_file(backup)
-            die("Runtime route switch failed. Run xray-client sync-routes first and check Xray RoutingService. Detail: " + detail)
-
-        client_repository.db_clients(db)[name] = next_entry
-        save_db(db)
+    with client_change_errors():
+        change = client_service.set_route(name, route_value)
+    tag, label = change.result.tag, change.result.label
     print(f"Client: {name}")
-    print(f"Selected country: {client_route_service.selected_route_label(db, next_entry)}")
+    if route_value is None:
+        print(f"Current country: {label}")
+        print(f"Current cascade: {tag or '-'}")
+        print_route_options(change.config, change.db)
+        return
+    if not change.result.changed:
+        print(f"Country already selected: {label}")
+        print(f"Cascade: {tag}")
+        return
+    print(f"Selected country: {label}")
     print(f"Cascade: {tag}")
-    print(f"Backup: {backup_text(backup)}")
+    print(f"Backup: {backup_text(change.backup)}")
     print("Runtime route updated without Xray restart.")
 
 
@@ -1338,7 +1226,7 @@ def cmd_disable(name, connection_tag=None):
 
 def cmd_enable(name, connection_tag=None):
     with client_change_errors():
-        change = client_service.enable_client(name, connection_tag)
+        change = client_service.enable_client(name, connection_tag, limit_status=traffic_limits.traffic_limit_status)
     result, config, db = change.result, change.config, change.db
 
     print(f"Enabled client: {result.name}")
@@ -1375,25 +1263,9 @@ def cmd_move_connection(name, target_connection_identifier):
     print("Выдай клиенту новую ссылку: после переноса параметры подключения меняются.")
 
 
-def run_access_update(name, result_factory, purpose):
-    validate_name(name)
-    sync_traffic()
-    with client_db_lock(purpose):
-        config = load_config()
-        db = load_db()
-        traffic_db = load_traffic_db()
-        try:
-            result = result_factory(config, db, traffic_db)
-        except ValueError as exc:
-            die(str(exc))
-        entry = result.entry
-
-        backup = None
-        if result.config_changed:
-            backup = save_config_restart_xray_and_db(config, db)
-        else:
-            save_db(db)
-
+def print_access_update(name, change):
+    result, backup = change.result, change.backup
+    entry = result.entry
     print(f"Client: {name}")
     print(f"Access until: {client_access.format_access_until(entry.get('expiresAt', ''))}")
     if result.status == "enabled":
@@ -1414,40 +1286,32 @@ def run_access_update(name, result_factory, purpose):
 
 def enforce_traffic_limits(config, db, traffic_db):
     try:
-        return client_status.enforce_traffic_limits(config, db, traffic_db, stamp=utc_stamp())
+        return client_status.enforce_traffic_limits(
+            config, db, traffic_db, stamp=utc_stamp(), limit_status=traffic_limits.traffic_limit_status,
+        )
     except ValueError as exc:
         die(str(exc))
 
 
 def cmd_set_days(name, days_value):
     days = parse_access_days(days_value)
-    run_access_update(
-        name,
-        lambda config, db, traffic_db: client_status.set_access_days(config, db, traffic_db, name, days),
-        "set-days",
-    )
+    with client_change_errors():
+        change = client_service.set_days(name, days, limit_status=traffic_limits.traffic_limit_status)
+    print_access_update(name, change)
 
 
 def cmd_extend_days(name, days_value):
     days = parse_extend_days(days_value)
-    run_access_update(
-        name,
-        lambda config, db, traffic_db: client_status.extend_access_days(config, db, traffic_db, name, days),
-        "extend-days",
-    )
+    with client_change_errors():
+        change = client_service.extend_days(name, days, limit_status=traffic_limits.traffic_limit_status)
+    print_access_update(name, change)
 
 
 def cmd_set_limit(name, period_value, limit_gb_value):
     period = validate_limit_period(period_value)
     limit_bytes = parse_limit_gb(limit_gb_value)
-    with client_db_lock("set-limit"):
-        config = load_config()
-        db = load_db()
-        ensure_connections(config, db)
-        entry = db_entry_for_existing_client(config, db, name)
-        result = set_client_traffic_limit(entry, period, limit_bytes)
-        client_repository.db_clients(db)[name] = result.entry
-        save_db(db)
+    with client_change_errors():
+        result = client_service.set_limit(name, period, limit_bytes).result
 
     print(f"Client: {name}")
     if result.limit_bytes is None:
@@ -1456,7 +1320,7 @@ def cmd_set_limit(name, period_value, limit_gb_value):
 
     sync_traffic()
     traffic_db = load_traffic_db()
-    status = traffic_limit_status(result.entry, traffic_repository.traffic_entry(traffic_db, name))
+    status = traffic_limits.traffic_limit_status(result.entry, traffic_repository.traffic_entry(traffic_db, name))
     print(f"Traffic limit: {format_traffic(result.limit_bytes)}/{client_limits.traffic_limit_period_label(result.period)}")
     if status:
         print(f"Current usage: {format_traffic(status['usedBytes'])}")
@@ -1468,14 +1332,8 @@ def cmd_set_limit(name, period_value, limit_gb_value):
 
 
 def cmd_clear_limit(name):
-    with client_db_lock("clear-limit"):
-        config = load_config()
-        db = load_db()
-        ensure_connections(config, db)
-        entry = db_entry_for_existing_client(config, db, name)
-        result = clear_client_traffic_limit(entry)
-        client_repository.db_clients(db)[name] = result.entry
-        save_db(db)
+    with client_change_errors():
+        result = client_service.clear_limit(name).result
 
     print(f"Client: {name}")
     print("Traffic limit: без лимита")
@@ -1500,20 +1358,9 @@ def cmd_trojan_password_check():
 
 
 def cmd_rotate_trojan_password(name, connection_tag=None):
-    validate_name(name)
-    with client_db_lock("rotate-trojan-password"):
-        config = load_config()
-        db = load_db()
-        try:
-            result = client_crud.rotate_trojan_password(config, db, name, connection_tag)
-        except ValueError as exc:
-            die(str(exc))
-
-        backup = ""
-        if result.config_changed:
-            backup = save_config_restart_xray_and_db(config, db)
-        else:
-            save_db(db)
+    with client_change_errors():
+        change = client_service.rotate_trojan_password(name, connection_tag)
+    result, config, db, backup = change.result, change.config, change.db, change.backup
 
     print("Trojan password rotated.")
     print(f"Client: {name}")
@@ -1537,7 +1384,7 @@ def cmd_limit_list():
         print("No clients.")
         return
     table_rows = [
-        client_limits.traffic_limit_row(
+        traffic_limits.traffic_limit_row(
             row,
             client_repository.db_clients(db),
             traffic_db,
