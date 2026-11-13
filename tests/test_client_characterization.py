@@ -326,7 +326,9 @@ class ClientCharacterizationTests(unittest.TestCase):
         })
         write_config(box, config)
         box.processes.script({
-            (XRAY, "api", "bo", "--server=127.0.0.1:10085", "-b", "client-route-000000000000400080000000", "cascade-new"): box.processes.ok(),
+            (str(box.paths.xray_bin), "api", "bi", "--server=127.0.0.1:10085", "-json",
+             "client-route-000000000000400080000000"): box.processes.ok('{"balancer":{"override":{}}}'),
+            (str(box.paths.xray_bin), "api", "bo", "--server=127.0.0.1:10085", "-b", "client-route-000000000000400080000000", "cascade-new"): box.processes.ok(),
         })
         run("sync-routes")
         run("route", "alice")

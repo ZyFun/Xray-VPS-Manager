@@ -1080,6 +1080,11 @@ def main():
     if command == "block-sync" and len(args) == 1:
         sync_blocklist()
         return
+    if command == "rotate-raw-logs":
+        if args[1:] not in ([], ["--due"]):
+            usage()
+            sys.exit(1)
+        sys.exit(rotate_raw_logs(only_if_due=len(args) == 2))
     with LOCK_PATH.open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if command == "status":
@@ -1136,11 +1141,6 @@ def main():
                 usage()
                 sys.exit(1)
             raw_log_archives(plain=len(args) == 2)
-        elif command == "rotate-raw-logs" and len(args) in (1, 2):
-            if len(args) == 2 and args[1] != "--due":
-                usage()
-                sys.exit(1)
-            sys.exit(rotate_raw_logs(only_if_due=len(args) == 2))
         elif command == "client" and len(args) in (2, 3):
             report_client(args[1], args[2] if len(args) == 3 else "7")
         elif command == "suspicious" and len(args) in (1, 2):

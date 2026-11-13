@@ -1,10 +1,10 @@
 import unittest
-from types import SimpleNamespace
 
 from tests.support.sandbox import Sandbox
 from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.clients import credentials as client_credentials
-from xray_vps_manager.xray import client_routes
+from xray_vps_manager.core.errors import ExternalCommandError
+from xray_vps_manager.xray import client_route_runtime, client_routes
 
 
 def route_config():
@@ -96,27 +96,21 @@ class ClientRouteTests(unittest.TestCase):
 
         self.assertEqual(config["routing"]["balancers"], [{"tag": balancer_tag, "selector": ["cascade-us"]}])
 
-    def test_runtime_override_tries_api_commands_until_one_succeeds(self) -> None:
-        calls = []
+    def test_runtime_override_uses_short_server_flag_if_long_flag_is_unsupported(self):
+        with Sandbox(db=None) as box:
+            base = (str(box.paths.xray_bin), "api", "bo")
+            args = ("-b", "balancer", "cascade-de")
+            primary = (*base, "--server=127.0.0.1:10085", *args)
+            fallback = (*base, "-s", "127.0.0.1:10085", *args)
+            box.processes.script({
+                primary: box.processes.result(2, stderr="flag provided but not defined: -server"),
+                fallback: box.processes.ok(),
+            })
 
-        def run_capture(command, timeout=8):
-            calls.append(command)
-            return SimpleNamespace(returncode=0 if len(calls) == 2 else 2, stdout="", stderr="bad flags")
+            client_route_runtime.set_override("balancer", "cascade-de")
 
-        ok, detail = client_route_service.apply_runtime_override(
-            "alice",
-            {"id": "00000000-0000-0000-0000-000000000001"},
-            "cascade-de",
-            run_capture,
-        )
-
-        self.assertTrue(ok)
-        self.assertEqual(detail, "")
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(
-            calls[0][-3:],
-            ["-b", client_routes.client_balancer_tag("alice", {"id": "00000000-0000-0000-0000-000000000001"}), "cascade-de"],
-        )
+            self.assertEqual(box.processes.calls, [primary, fallback])
+            self.assertEqual([kwargs["timeout"] for _, kwargs in box.processes.requests], [8, 8])
 
     def test_ensure_all_client_route_config_removes_stale_client_balancers(self) -> None:
         config = route_config()
@@ -208,19 +202,27 @@ class ClientRouteBoundaryTests(unittest.TestCase):
             self.assertFalse(box.paths.manager_db.exists())
             self.assertEqual(box.processes.calls, [])
 
-    def test_runtime_override_preserves_fallback_errors_and_timeout(self):
+    def test_runtime_override_reports_xray_error(self):
         with Sandbox(db=None) as box:
-            entry = {"id": "uuid"}
-            commands = client_routes.runtime_override_commands("alice", entry, "cascade-us")
-            box.processes.script({tuple(commands[0]): OSError("unavailable"),
-                                  tuple(commands[1]): box.processes.result(2, stdout=" old flags \n")})
-            self.assertEqual(client_route_service.apply_runtime_override(
-                "alice", entry, "cascade-us",
-                lambda command, **kwargs: box.processes.run(command, capture_output=True, text=True, **kwargs),
-                timeout=11,
-            ), (False, "unavailable; old flags"))
-            self.assertEqual(box.processes.calls, [tuple(command) for command in commands])
-            self.assertEqual([request[1]["timeout"] for request in box.processes.requests], [11, 11])
+            command = (str(box.paths.xray_bin), "api", "bo", "--server=127.0.0.1:10085",
+                       "-b", "balancer", "cascade-us")
+            box.processes.script({command: box.processes.result(2, stderr="cannot find tag")})
+
+            with self.assertRaises(ExternalCommandError) as error:
+                client_route_runtime.set_override("balancer", "cascade-us")
+
+            self.assertEqual(error.exception.detail, "cannot find tag")
+            self.assertEqual(box.processes.calls, [command])
+
+    def test_runtime_override_restores_target_that_looks_like_an_option(self):
+        with Sandbox(db=None) as box:
+            command = (str(box.paths.xray_bin), "api", "bo", "--server=127.0.0.1:10085",
+                       "-b", "balancer", "--", "-r")
+            box.processes.script({command: box.processes.ok()})
+
+            client_route_runtime.set_override("balancer", "-r")
+
+            self.assertEqual(box.processes.calls, [command])
 
 
 if __name__ == "__main__":

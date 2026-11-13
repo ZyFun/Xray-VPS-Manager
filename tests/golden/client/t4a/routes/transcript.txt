@@ -80,20 +80,25 @@ stdout:
 Client: alice
 Selected country: США
 Cascade: cascade-new
-Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
 Runtime route updated without Xray restart.
 
 stderr:
 
 processes:
-["<ROOT>/usr/local/bin/xray", "run", "-test", "-config", "<ROOT>/usr/local/etc/xray/config.json"]
-["/usr/local/bin/xray", "api", "bo", "--server=127.0.0.1:10085", "-b", "client-route-000000000000400080000000", "cascade-new"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["<ROOT>/usr/local/bin/xray", "api", "bi", "--server=127.0.0.1:10085", "-json", "client-route-000000000000400080000000"]
+["<ROOT>/usr/local/bin/xray", "api", "bo", "--server=127.0.0.1:10085", "-b", "client-route-000000000000400080000000", "cascade-new"]
 state:
 --- before/SQLite
 +++ after/SQLite
 @@ -2 +2 @@
 -["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", "cascade-old"]
 +["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", "cascade-new"]
+--- before/config backups
++++ after/config backups
+@@ -1,0 +2 @@
++config.json.bak.20261006120000000001
 --- before/config.json
 +++ after/config.json
 @@ -103 +103 @@

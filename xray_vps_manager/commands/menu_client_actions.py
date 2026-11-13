@@ -14,6 +14,7 @@ from xray_vps_manager.commands import menu_reality_actions
 from xray_vps_manager.core.terminal import green, print_table, table_border, table_row, visible_len, yellow
 from xray_vps_manager.core.time import manager_timezone, parse_time
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
+from xray_vps_manager.runner import run_command
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.traffic.formatting import format_traffic
 from xray_vps_manager.traffic.history import all_time_total
@@ -40,6 +41,15 @@ def show_traffic_limits(call: CommandRunner) -> None:
 
 def enforce_traffic_limits(call: CommandRunner) -> None:
     call(["xray-client", "enforce-limits", "--sync"])
+
+
+def run_client_action(*args: str) -> None:
+    try:
+        run_command("client", argv=list(args))
+    except SystemExit as error:
+        if error.code == 130:
+            raise KeyboardInterrupt from error
+        # Команда уже вывела ошибку. Меню продолжает работу после её завершения.
 
 
 def die(message: str) -> None:
@@ -286,7 +296,7 @@ def choose_limit_period() -> str:
         print("Выбери 1 для дневного лимита или 2 для месячного лимита.")
 
 
-def update_selected_client_limit(call: CommandRunner) -> None:
+def update_selected_client_limit() -> None:
     name = choose_client("установки лимита трафика", "all")
     if not name:
         print("Действие отменено.")
@@ -298,15 +308,15 @@ def update_selected_client_limit(call: CommandRunner) -> None:
     if not value:
         print("Действие отменено.")
         return
-    call(["xray-client", "set-limit", name, period, value])
+    run_client_action("set-limit", name, period, value)
 
 
-def clear_selected_client_limit(call: CommandRunner) -> None:
+def clear_selected_client_limit() -> None:
     name = choose_client("снятия лимита трафика", "all")
     if not name:
         print("Действие отменено.")
         return
-    call(["xray-client", "clear-limit", name])
+    run_client_action("clear-limit", name)
 
 
 def call_client_command(call: CommandRunner, command: str, action: str, mode: str = "all") -> None:
@@ -394,7 +404,7 @@ def choose_client_route(name: str) -> str:
         print("Неизвестная страна. Выбери номер из списка или 0 для возврата.")
 
 
-def update_selected_client_route(call: CommandRunner) -> None:
+def update_selected_client_route() -> None:
     name = choose_client("изменения страны подключения", "all")
     if not name:
         print("Действие отменено.")
@@ -403,11 +413,11 @@ def update_selected_client_route(call: CommandRunner) -> None:
     if not tag:
         print("Действие отменено.")
         return
-    call(["xray-client", "route", name, tag])
+    run_client_action("route", name, tag)
     print("После смены страны переподключи VPN, чтобы новые соединения пошли через выбранный маршрут.")
 
 
-def update_selected_client_days(call: CommandRunner) -> None:
+def update_selected_client_days() -> None:
     name = choose_client("изменения срока", "all")
     if not name:
         print("Действие отменено.")
@@ -418,16 +428,16 @@ def update_selected_client_days(call: CommandRunner) -> None:
     print("3) Сделать доступ бессрочным.")
     choice = input("Действие [1-продлить]: ").strip() or "1"
     if choice == "1":
-        call(["xray-client", "extend-days", name, ask_extend_days()])
+        run_client_action("extend-days", name, ask_extend_days())
     elif choice == "2":
-        call(["xray-client", "set-days", name, ask_access_days()])
+        run_client_action("set-days", name, ask_access_days())
     elif choice == "3":
-        call(["xray-client", "set-days", name, "0"])
+        run_client_action("set-days", name, "0")
     else:
         print("Действие отменено: неизвестный выбор.")
 
 
-def update_selected_client_payment(call: CommandRunner) -> None:
+def update_selected_client_payment() -> None:
     name = choose_client("изменения статуса оплаты", "all")
     if not name:
         print("Действие отменено.")
@@ -435,7 +445,7 @@ def update_selected_client_payment(call: CommandRunner) -> None:
     payment_type = ask_payment_type()
     if not payment_type:
         return
-    call(["xray-client", "set-payment", name, payment_type])
+    run_client_action("set-payment", name, payment_type)
 
 
 def move_selected_client(call: CommandRunner) -> None:

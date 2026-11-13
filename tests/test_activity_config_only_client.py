@@ -1,6 +1,7 @@
 """Регрессия XR-REV-056 и XR-REV-018: клиент только в config.json не останавливает activity sync и ротацию raw-логов."""
 
 from contextlib import ExitStack, redirect_stderr
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import gzip
 from io import StringIO
@@ -18,6 +19,7 @@ from xray_vps_manager.activity import repository as activity_repository
 from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.activity import sync as activity_sync
 from xray_vps_manager.commands import activity as activity_command
+from xray_vps_manager.core import paths
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
 from xray_vps_manager.db.repositories import clients as sqlite_clients
@@ -61,6 +63,10 @@ class ConfigOnlyClientTests(unittest.TestCase):
             (activity_settings, "SERVER_ENV_PATH", self.root / "server.env"),
         ):
             stack.enter_context(mock.patch.object(target, name, value))
+        stack.enter_context(paths.use(replace(
+            paths.paths(), manager_db=self.db_path, manager_lock=self.root / "manager.lock",
+            activity_lock=self.root / "activity.lock",
+        )))
         stack.enter_context(mock.patch.object(activity_repository, "ensure_dirs"))
         stack.enter_context(
             mock.patch.object(activity_repository, "manager_timezone", return_value=(timezone.utc, "UTC"))
