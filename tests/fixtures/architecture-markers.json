@@ -175,69 +175,6 @@
     "count": 1
   },
   {
-    "module": "commands.client",
-    "scope": "<module>",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/etc/xray/config.json')",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "<module>",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/etc/xray/server.env')",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "<module>",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/sbin/xray-telegram')",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "<module>",
-    "category": "subprocess",
-    "ast": "Import(names=[alias(name='subprocess')])",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "query_user_stats",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/bin/xray')",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "run",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "run_capture",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
-    "count": 2
-  },
-  {
-    "module": "commands.client",
-    "scope": "run_capture",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.client",
-    "scope": "update_trojan_caddy_site",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 2
-  },
-  {
     "module": "commands.manager_update",
     "scope": "<module>",
     "category": "/usr/local/",

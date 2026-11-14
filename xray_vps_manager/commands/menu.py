@@ -623,7 +623,7 @@ def client_menu_handlers():
             "Удалить клиента",
             lambda: menu_client_actions.remove_client_from_menu(call, confirm),
         ),
-        "11": ("Проверить просроченных клиентов", lambda: menu_client_actions.expire_due(call)),
+        "11": ("Проверить просроченных клиентов", menu_client_actions.expire_due),
         "12": ("Лимиты трафика", open_client_traffic_limit_menu),
         "13": ("Изменить страну подключения", menu_client_actions.update_selected_client_route),
     }
@@ -634,7 +634,7 @@ def client_traffic_limit_menu_handlers():
         "1": ("Показать лимиты трафика", lambda: menu_client_actions.show_traffic_limits(call)),
         "2": ("Установить лимит трафика", menu_client_actions.update_selected_client_limit),
         "3": ("Убрать лимит трафика", menu_client_actions.clear_selected_client_limit),
-        "4": ("Проверить лимиты трафика", lambda: menu_client_actions.enforce_traffic_limits(call)),
+        "4": ("Проверить лимиты трафика", menu_client_actions.enforce_traffic_limits),
     }
 
 

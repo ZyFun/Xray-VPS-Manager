@@ -12,6 +12,7 @@ from unittest import mock
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
 from xray_vps_manager.commands.arguments import CLIENT
+from xray_vps_manager.core.paths import Paths
 
 
 XRAY = "/usr/local/bin/xray"
@@ -105,7 +106,12 @@ class Transcript:
             status = f"exit: {result.exit_code}"
         output = f"{status}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}\n"
         calls = box.processes.calls[offset:]
-        processes = "".join(json.dumps(call) + "\n" for call in calls)
+        # Сопоставить путь бинарника Sandbox с серверным путём в эталоне T4a.
+        processes = "".join(
+            json.dumps((str(Paths.default().xray_bin), *call[1:])
+                       if call[:3] == (str(box.paths.xray_bin), "api", "statsquery") else call) + "\n"
+            for call in calls
+        )
         after = snapshot(box)
         changes = []
         for name in sorted(before.keys() | after.keys()):
@@ -138,7 +144,7 @@ def script_processes(box):
         (XRAY, "x25519"): processes.ok(f"PrivateKey: {PRIVATE_KEY}\nPublicKey: {PUBLIC_KEY}\n"),
         (XRAY, "x25519", "-i", PRIVATE_KEY): processes.ok(f"PublicKey: {PUBLIC_KEY}\n"),
         (XRAY, "x25519", "-i", "A" * 43): processes.ok(f"PublicKey: {'A' * 43}\n"),
-        (XRAY, "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>"): processes.ok(),
+        (str(box.paths.xray_bin), "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>"): processes.ok(),
         "openssl rand -hex 8": processes.ok("fedcba9876543210\n"),
         "systemctl daemon-reload": processes.ok(),
         "systemctl enable --now xray-raw-log-rotate.timer": processes.ok(),
