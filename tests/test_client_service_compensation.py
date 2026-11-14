@@ -3,6 +3,7 @@
 from contextlib import closing, contextmanager
 import json
 import os
+from pathlib import Path
 import signal
 import sqlite3
 import subprocess
@@ -28,6 +29,7 @@ RESTART = ("systemctl", "restart", "xray")
 STOP = ("systemctl", "stop", "xray")
 STATS = ("/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
 _START_WORKER = subprocess.Popen
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def crash_policy_worker(root, command, stage):
@@ -140,6 +142,7 @@ class ClientServiceCompensationTests(unittest.TestCase):
         )
         with _START_WORKER(
             [sys.executable, "-c", worker, str(self.box.paths.config_dir), command, stage],
+            cwd=_REPO_ROOT,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         ) as child:
             try:
