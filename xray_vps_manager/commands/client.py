@@ -155,7 +155,7 @@ def cmd_move_connection(name, target_connection_identifier):
     else:
         print("Xray restart is not required for disabled client.")
     print("New link:")
-    print(link_for(config, result.client_id, result.name, result.target_connection_tag, db))
+    print(link_for(config, result.credential_id, result.name, result.target_connection_tag, db))
     print("Выдай клиенту новую ссылку: после переноса параметры подключения меняются.")
 
 

@@ -10,14 +10,17 @@ import subprocess
 import sys
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
-from tests.test_client_characterization import TABLES, script_processes
+from tests.test_client_characterization import ALICE_KEY, TABLES, add_reality, script_processes, write_config
 from tests.test_client_manager_lock import lock_is_free
+from xray_vps_manager.clients import repository, service
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import client_policy_recovery
-from xray_vps_manager.clients import service
+from xray_vps_manager.telegram import settings as telegram_settings
+from xray_vps_manager.telegram import subscriptions
 
 
 RELATED_TABLES = (
@@ -28,6 +31,7 @@ RELATED_TABLES = (
 RESTART = ("systemctl", "restart", "xray")
 STOP = ("systemctl", "stop", "xray")
 STATS = ("/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
+SECONDARY_CREDENTIAL = "11111111-1111-4111-8111-111111111111"
 _START_WORKER = subprocess.Popen
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -78,16 +82,36 @@ class ClientServiceCompensationTests(unittest.TestCase):
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(statement, parameters)
 
-    def seed_credential_traffic(self):
+    def seed_credential_traffic(self, tag="vless-reality"):
         with database.write_session() as conn:
             conn.execute(
                 "INSERT INTO credential_traffic_totals(client_name,connection_tag,incoming_bytes) "
-                "VALUES ('alice','vless-reality',123)",
+                "VALUES ('alice',?,123)",
+                (tag,),
             )
             conn.execute(
                 "INSERT INTO credential_traffic_history(client_name,connection_tag,bucket_date,bucket_hour,incoming_bytes) "
-                "VALUES ('alice','vless-reality','2026-10-06',12,123)",
+                "VALUES ('alice',?,'2026-10-06',12,123)",
+                (tag,),
             )
+
+    def prepare_move_of_secondary_credential(self):
+        add_reality(self.cli)
+        add_reality(self.cli, "Third", "8444")
+        self.processes.script({
+            ("/usr/local/bin/xray", "uuid"): self.processes.ok(f"{SECONDARY_CREDENTIAL}\n"),
+        })
+        self.cli("add", "alice", "--connection", "vless-reality-2")
+        self.cli("remove-connection", "vless-reality")
+        self.assert_move_ids("vless-reality-2")
+
+    def assert_move_ids(self, tag, *, enabled=1):
+        self.assertEqual(self.query(
+            "SELECT uuid,connection_tag,enabled FROM clients WHERE name='alice'"
+        ), [(ALICE_KEY, tag, enabled)])
+        self.assertEqual(self.query(
+            "SELECT credential_uuid,connection_tag,enabled FROM client_credentials WHERE client_name='alice'"
+        ), [(SECONDARY_CREDENTIAL, tag, enabled)])
 
     def seed_active_traffic(self):
         email, = self.query("SELECT email FROM clients WHERE name='alice'")[0]
@@ -599,22 +623,132 @@ class ClientServiceCompensationTests(unittest.TestCase):
         self.assertEqual(self.query("PRAGMA foreign_key_check"), [])
 
     def test_move_restores_source_credential_and_history_on_apply_failure(self):
-        self.cli("add-connection", "Second", "8443", "cdn.example", "firefox", "tcp")
-        self.seed_credential_traffic()
+        self.prepare_move_of_secondary_credential()
+        self.seed_credential_traffic("vless-reality-2")
         before = self.db_rows()
         original = self.box.paths.config.read_bytes()
 
         def reject(_argv, **_kwargs):
-            self.assertEqual(self.query("SELECT connection_tag FROM client_credentials"), [("vless-reality-2",)])
+            self.assert_move_ids("vless-reality-3")
             self.assertEqual(self.query("SELECT * FROM credential_traffic_history"), [])
             return self.processes.result(1, stderr="fixture test failure")
 
         self.processes.script({self.candidate_test: reject})
-        result = self.box.run_cli("client", "move-connection", "alice", "Second")
+        result = self.box.run_cli("client", "move-connection", "alice", "Third")
 
         self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertIn("fixture test failure", result.stderr)
         self.assertEqual(self.box.paths.config.read_bytes(), original)
         self.assertEqual(self.db_rows(), before)
+
+    def test_active_move_keeps_client_identity_and_uses_secondary_credential(self):
+        with database.write_session() as conn:
+            telegram_settings.save_subscription(conn, "7", {"client": "alice", "clientId": ALICE_KEY})
+        self.prepare_move_of_secondary_credential()
+        config = self.box.config()
+        config["outbounds"].append({
+            "tag": "cascade-test", "protocol": "socks",
+            "settings": {"servers": [{"address": "192.0.2.1", "port": 1080}]},
+        })
+        config["routing"]["rules"].append({
+            "type": "field", "network": "tcp,udp", "outboundTag": "cascade-test",
+        })
+        write_config(self.box, config)
+        self.cli("sync-routes")
+        before = self.box.config()["routing"]["balancers"]
+        self.assertEqual([item["tag"] for item in before], ["client-route-000000000000400080000000"])
+        offset = len(self.processes.calls)
+
+        output = self.cli("move-connection", "alice", "Third")
+
+        self.assert_move_ids("vless-reality-3")
+        config = self.box.config()
+        inbounds = {inbound["tag"]: inbound for inbound in config["inbounds"]}
+        self.assertEqual(inbounds["vless-reality-2"]["settings"]["clients"], [])
+        self.assertEqual(
+            [item["id"] for item in inbounds["vless-reality-3"]["settings"]["clients"]],
+            [SECONDARY_CREDENTIAL],
+        )
+        self.assertEqual(config["routing"]["balancers"], before)
+        self.assertEqual(self.processes.calls[offset:].count(RESTART), 1)
+        link = urlsplit(next(line for line in output.splitlines() if line.startswith("vless://")))
+        self.assertEqual((link.username, link.port), (SECONDARY_CREDENTIAL, 8444))
+        self.assertEqual(parse_qs(link.query)["sni"], ["cdn.example"])
+        self.assertEqual(self.cli("key", "alice").strip(), f"vpn-key:{ALICE_KEY}")
+        with database.session() as conn:
+            telegram_db = telegram_settings.load_db_from_sqlite(conn)
+            client_db = repository.load_db_from_sqlite(conn)
+        name, entry, error = subscriptions.subscription_entry_for_chat(telegram_db, "7", client_db)
+        self.assertEqual((name, entry, error), ("alice", client_db["clients"]["alice"], ""))
+
+    def test_move_reads_legacy_vless_credential_from_client_row(self):
+        self.prepare_move_of_secondary_credential()
+        self.write_during_apply("DELETE FROM client_credentials WHERE client_name='alice'")
+
+        self.cli("move-connection", "alice", "Third")
+
+        self.assert_move_ids("vless-reality-3")
+
+    def set_up_vless_uuid_mismatch(self):
+        self.prepare_move_of_secondary_credential()
+        self.seed_credential_traffic("vless-reality-2")
+        config = self.box.config()
+        source = next(item for item in config["inbounds"] if item["tag"] == "vless-reality-2")
+        source["settings"]["clients"][0]["id"] = "22222222-2222-4222-8222-222222222222"
+        write_config(self.box, config)
+
+    def assert_move_rejects_vless_uuid_mismatch(self, location):
+        before = self.db_rows()
+        original = self.box.paths.config.read_bytes()
+        offset = len(self.processes.calls)
+
+        result = self.box.run_cli("client", "move-connection", "alice", "Third")
+
+        self.assertEqual(result.exit_code, 1, result)
+        self.assertIn(f"VLESS credential UUID mismatch between SQLite and {location}", result.stderr)
+        self.assertIn("alice", result.stderr)
+        self.assertIn("vless-reality-2", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.db_rows(), before)
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        self.assertEqual(self.processes.calls[offset:], [])
+
+    def test_move_rejects_active_vless_uuid_mismatch_without_writes(self):
+        self.set_up_vless_uuid_mismatch()
+        self.assert_move_rejects_vless_uuid_mismatch("config.json")
+
+    def test_move_rejects_disabled_vless_uuid_mismatch_without_writes(self):
+        self.set_up_vless_uuid_mismatch()
+        self.cli("disable", "alice")
+        self.assert_move_rejects_vless_uuid_mismatch("saved Xray client data")
+
+    def test_trojan_move_preserves_password_and_both_ids(self):
+        add_reality(self.cli)
+        self.cli("add-trojan-connection", "Trojan", "9443", "trojan.example", "--no-caddy")
+        self.cli("add-trojan-connection", "Target", "10443", "target.example", "/fixture/cert.pem",
+                 "/fixture/key.pem", "safari")
+        self.processes.script({
+            ("/usr/local/bin/xray", "uuid"): self.processes.ok(f"{SECONDARY_CREDENTIAL}\n"),
+        })
+        self.cli("add", "alice", "--connection", "trojan-tls")
+        self.cli("remove-connection", "vless-reality")
+        original_link = urlsplit(self.cli("link", "alice").strip())
+
+        output = self.cli("move-connection", "alice", "Target")
+
+        tag = "trojan-tls-2"
+        self.assert_move_ids(tag)
+        entry = repository.load_db_sql()["clients"]["alice"]
+        stored = entry["credentials"][tag]["client"]
+        self.assertEqual(entry["client"], stored)
+        self.assertEqual((stored["id"], stored["protocol"], stored["password"]),
+                         (SECONDARY_CREDENTIAL, "trojan", original_link.username))
+        inbound = next(item for item in self.box.config()["inbounds"] if item["tag"] == tag)
+        item, = inbound["settings"]["clients"]
+        self.assertEqual(item["password"], stored["password"])
+        self.assertNotIn("id", item)
+        link = urlsplit(next(line for line in output.splitlines() if line.startswith("trojan://")))
+        self.assertEqual((link.username, link.hostname, link.port), (original_link.username, "target.example", 10443))
 
     def test_active_move_keeps_execstop_delta_in_client_totals_only(self):
         self.cli("add-connection", "Second", "8443", "cdn.example", "firefox", "tcp")
@@ -710,21 +844,21 @@ class ClientServiceCompensationTests(unittest.TestCase):
         self.assert_restored_xray_counts_from_new_baseline("move-connection", "alice", "Second")
 
     def test_move_disabled_client_skips_apply_and_removes_old_credential_traffic(self):
-        self.cli("add-connection", "Second", "8443", "cdn.example", "firefox", "tcp")
+        self.prepare_move_of_secondary_credential()
         self.cli("disable", "alice")
-        self.seed_credential_traffic()
+        self.seed_credential_traffic("vless-reality-2")
         original = self.box.paths.config.read_bytes()
         offset = len(self.processes.calls)
 
-        output = self.cli("move-connection", "alice", "Second")
+        output = self.cli("move-connection", "alice", "Third")
 
         self.assertIn("Status: disabled", output)
         self.assertIn("Xray restart is not required for disabled client.", output)
-        self.assertIn("vless://", output)
+        self.assertIn(f"vless://{SECONDARY_CREDENTIAL}@", output)
         self.assertNotIn(RESTART, self.processes.calls[offset:])
         self.assertNotIn(self.candidate_test, self.processes.calls[offset:])
         self.assertEqual(self.box.paths.config.read_bytes(), original)
-        self.assertEqual(self.query("SELECT connection_tag,enabled FROM client_credentials"), [("vless-reality-2", 0)])
+        self.assert_move_ids("vless-reality-3", enabled=0)
         self.assertEqual(self.query("SELECT * FROM credential_traffic_totals"), [])
         self.assertEqual(self.query("SELECT * FROM credential_traffic_history"), [])
 
