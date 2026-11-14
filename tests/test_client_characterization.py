@@ -373,7 +373,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         box.processes.script({(path, "--quiet"): box.processes.ok()})
 
     def test_move_changes_client_uuid(self):
-        """Текущее поведение, баг XR-REV-062."""
+        """XR-REV-062 исправлен: перенос сохраняет внутренний UUID клиента."""
         self.check(self.move_changes_client_uuid)
 
     def move_changes_client_uuid(self, box, run):
@@ -383,7 +383,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         run("remove-connection", "vless-reality")
         self.assertEqual(run("key", "alice").stdout.strip(), f"vpn-key:{ALICE_KEY}")
         run("move-connection", "alice", "Third")
-        self.assertEqual(run("key", "alice").stdout.strip(), "vpn-key:00000000-0000-4000-8000-000000000002")
+        self.assertEqual(run("key", "alice").stdout.strip(), f"vpn-key:{ALICE_KEY}")
 
     def test_trojan_only_in_config(self):
         """Текущее поведение, баг XR-REV-059 (остаток)."""

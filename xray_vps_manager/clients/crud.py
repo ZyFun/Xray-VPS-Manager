@@ -81,6 +81,7 @@ class EnableClientResult:
 class MoveClientResult:
     name: str
     client_id: str
+    credential_id: str
     source_connection_tag: str
     target_connection_tag: str
     enabled: bool
@@ -555,41 +556,39 @@ def move_client_to_connection(
         raise ValueError("Moving clients between VLESS and Trojan connections is not supported yet.")
 
     entry = dict(entry)
-    config_changed = False
     enabled = active_item is not None
     moved_created = entry.get("created", "")
-    if active_item is not None:
+    if enabled:
         if any(client_name(item) == name for item in clients(target_inbound)):
             raise ValueError(f"Target connection already has client: {name}")
         moved_client = dict(active_item)
-        if target_protocol == "vless":
-            apply_client_transport(moved_client, target_transport)
-        moved_client["email"] = email_for_client(name, moved_created, connection_tag=target_tag)
-        set_clients(source_inbound, [
-            item for item in clients(source_inbound) if client_name(item) != name
-        ])
-        clients(target_inbound).append(moved_client)
-        entry["enabled"] = True
-        config_changed = True
     else:
         if entry.get("enabled") is not False:
             raise ValueError(f"Enabled client config not found: {name}")
         moved_client = client_from_db_entry(name, entry)
-        if target_protocol == "vless":
-            apply_client_transport(moved_client, target_transport)
-        moved_client["email"] = email_for_client(name, moved_created, connection_tag=target_tag)
 
-    entry["id"] = moved_client.get("id") or entry.get("id", "")
-    entry["client"] = dict(moved_client)
-    if target_protocol == "trojan":
-        entry["client"]["id"] = entry["id"]
-        entry["client"]["protocol"] = "trojan"
-        entry["protocol"] = "trojan"
-    entry["connection"] = target_tag
-    credentials = client_credentials.normalize_entry_credentials(entry)
-    credential = credentials.pop(source_tag, None)
-    if credential is None:
-        credential = client_credentials.legacy_credential_from_entry(entry) or {}
+    credentials = dict(entry_credentials)
+    credential = dict(credentials.pop(source_tag, {"created": moved_created}))
+    stored_uuid = str(credential.get("id") or "")
+    # В inbound Trojan хранится пароль. UUID credential берём из сохранённой записи.
+    moved_uuid = ""
+    if target_protocol == "vless":
+        moved_uuid = str(moved_client.get("id") or "")
+        if stored_uuid and stored_uuid != moved_uuid:
+            location = "config.json" if enabled else "saved Xray client data"
+            raise ValidationError(
+                f"VLESS credential UUID mismatch between SQLite and {location}: {name} ({source_tag})."
+            )
+        apply_client_transport(moved_client, target_transport)
+    credential_id = stored_uuid or moved_uuid or str(entry.get("id") or "")
+    moved_client["email"] = email_for_client(name, moved_created, connection_tag=target_tag)
+    if enabled:
+        set_clients(source_inbound, [
+            item for item in clients(source_inbound) if client_name(item) != name
+        ])
+        clients(target_inbound).append(moved_client)
+
+    credential["id"] = credential_id
     credential["connection"] = target_tag
     credential["protocol"] = target_protocol
     credential["security"] = client_credentials.security_from_inbound(target_inbound)
@@ -597,19 +596,21 @@ def move_client_to_connection(
     credential["enabled"] = enabled
     credential["client"] = dict(moved_client)
     if target_protocol == "trojan":
-        credential["client"]["id"] = entry.get("id", "")
+        credential["client"]["id"] = credential_id
         credential["client"]["protocol"] = "trojan"
-    credential["id"] = entry.get("id") or credential.get("id") or credential["client"].get("id", "")
     credentials[target_tag] = credential
+    entry["credentials"] = credentials
+    entry["connection"] = target_tag
     client_credentials.sync_legacy_fields(entry)
     db_clients(db)[name] = entry
 
     return MoveClientResult(
         name=name,
         client_id=str(entry.get("id") or moved_client.get("id") or ""),
+        credential_id=credential_id,
         source_connection_tag=source_tag,
         target_connection_tag=target_tag,
         enabled=enabled,
-        config_changed=config_changed,
+        config_changed=enabled,
         entry=entry,
     )

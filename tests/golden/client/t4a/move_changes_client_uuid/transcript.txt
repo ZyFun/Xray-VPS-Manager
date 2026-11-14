@@ -315,7 +315,7 @@ state:
 +++ after/SQLite
 @@ -2 +2 @@
 -["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2", "vless-reality-2", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
-+["alice", "00000000-0000-4000-8000-000000000002", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3", "vless-reality-3", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3", "vless-reality-3", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
 @@ -4 +4 @@
 -["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
 +["alice", "vless-reality-3", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-3\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
@@ -349,7 +349,7 @@ state:
 ["key", "alice"]
 exit: 0
 stdout:
-vpn-key:00000000-0000-4000-8000-000000000002
+vpn-key:00000000-0000-4000-8000-000000000001
 
 stderr:
 
