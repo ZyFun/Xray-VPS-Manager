@@ -2,7 +2,12 @@
 
 from contextlib import closing, contextmanager
 import json
+import os
+from pathlib import Path
+import signal
 import sqlite3
+import subprocess
+import sys
 import unittest
 from unittest import mock
 
@@ -11,6 +16,7 @@ from tests.test_apply_characterization import running_xray
 from tests.test_client_characterization import TABLES, script_processes
 from tests.test_client_manager_lock import lock_is_free
 from xray_vps_manager.db import database
+from xray_vps_manager.db.repositories import client_policy_recovery
 from xray_vps_manager.clients import service
 
 
@@ -22,6 +28,24 @@ RELATED_TABLES = (
 RESTART = ("systemctl", "restart", "xray")
 STOP = ("systemctl", "stop", "xray")
 STATS = ("/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
+_START_WORKER = subprocess.Popen
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def crash_policy_worker(root, command, stage):
+    with Sandbox(existing_config_dir=root) as box, running_xray(box):
+        script_processes(box)
+
+        def crash(*_args, **_kwargs):
+            os.kill(os.getpid(), signal.SIGKILL)
+
+        if stage == "after-commit":
+            with mock.patch.object(service, "apply_config", side_effect=crash):
+                result = box.run_cli("client", command)
+        else:
+            box.processes.script({RESTART: crash})
+            result = box.run_cli("client", command)
+        raise SystemExit(f"Expected SIGKILL: {result}")
 
 
 class ClientServiceCompensationTests(unittest.TestCase):
@@ -103,6 +127,368 @@ class ClientServiceCompensationTests(unittest.TestCase):
             return self.processes.ok()
 
         self.processes.script({STOP: stop, STATS: self.processes.ok(json.dumps(stats))})
+
+    def prepare_policy(self, command):
+        with database.write_session() as conn:
+            if command == "expire-due":
+                conn.execute("UPDATE clients SET expires_at='2026-10-06T00:00:00+03:00' WHERE name='alice'")
+            else:
+                conn.execute("INSERT INTO client_traffic_limits(client_name,period,limit_bytes) VALUES ('alice','daily',50)")
+
+    def crash_policy(self, command, stage):
+        worker = (
+            "import sys; from tests.test_client_service_compensation import crash_policy_worker; "
+            "crash_policy_worker(*sys.argv[1:])"
+        )
+        with _START_WORKER(
+            [sys.executable, "-c", worker, str(self.box.paths.config_dir), command, stage],
+            cwd=_REPO_ROOT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ) as child:
+            try:
+                stdout, stderr = child.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate()
+                self.fail("Не дождались SIGKILL на контрольном шаге")
+            self.assertEqual(child.returncode, -signal.SIGKILL, stdout + stderr)
+
+    def pending_policy(self):
+        with database.session() as conn:
+            return client_policy_recovery.load(conn)
+
+    def prepare_limit_reset(self):
+        self.seed_active_traffic()
+        self.prepare_policy("enforce-limits")
+        self.cli("enforce-limits")
+        with database.write_session() as conn:
+            conn.execute("UPDATE client_traffic_limit_state SET exceeded_period='2026-10-05'")
+            conn.execute("UPDATE traffic_history SET bucket_date='2026-10-05'")
+
+    def test_limit_reset_retries_after_client_commit_and_sigkill(self):
+        self.prepare_limit_reset()
+        original = self.box.paths.config.read_bytes()
+        self.crash_policy("enforce-limits", "after-commit")
+
+        self.assertEqual(self.query("SELECT enabled FROM clients"), [(1,)])
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        self.assertEqual(set(self.pending_policy()), {"alice"})
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+        self.assertEqual(self.query("SELECT enabled FROM clients"), [(1,)])
+        self.assertIn(b'alice|created=', self.box.paths.config.read_bytes())
+        self.assertEqual(self.pending_policy(), {})
+        calls = list(self.processes.calls)
+        self.assertEqual(self.cli("enforce-limits"), "No traffic limits exceeded or reset.\n")
+        self.assertEqual(self.processes.calls, calls)
+
+    def test_limit_reset_after_sigkill_rechecks_fresh_traffic(self):
+        self.prepare_limit_reset()
+        original = self.box.paths.config.read_bytes()
+        self.crash_policy("enforce-limits", "after-commit")
+        self.write_during_apply(
+            "INSERT INTO traffic_history(client_name,bucket_date,bucket_hour,incoming_bytes) "
+            "VALUES ('alice','2026-10-06',15,150)"
+        )
+
+        self.assertIn("Disabled clients by traffic limit: alice", self.cli("enforce-limits"))
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "traffic-limit")])
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_history ORDER BY bucket_date"), [(100,), (150,)])
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_retry_after_config_replacement_keeps_other_changes_and_needs_no_backup(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        self.assertIn(b'alice|created=', self.box.paths.config.read_bytes())
+        for backup in self.box.paths.config_dir.glob("config.json.bak.*"):
+            backup.unlink()
+        self.cli("set-payment", "alice", "paid")
+        config = self.box.config()
+        config["log"]["loglevel"] = "debug"
+        updated = json.dumps(config).encode()
+        self.box.paths.config.write_bytes(updated)
+        restarts_before = self.processes.calls.count(RESTART)
+
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+        self.assertEqual(self.query("SELECT payment_type FROM clients"), [("paid",)])
+        self.assertEqual(self.box.paths.config.read_bytes(), updated)
+        self.box.assert_restarted(times=restarts_before + 1)
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_recovery_rejects_expired_access_before_restarting_candidate(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        self.prepare_policy("expire-due")
+
+        def check_restart(*_args, **_kwargs):
+            self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+            return self.processes.ok()
+
+        self.processes.script({RESTART: check_restart})
+        self.cli("enforce-limits")
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "expired")])
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_failed_restart_keeps_config_that_denies_expired_reactivation(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        self.prepare_policy("expire-due")
+        restarted_configs = []
+
+        def fail_restart(*_args, **_kwargs):
+            restarted_configs.append(self.box.paths.config.read_bytes())
+            return self.processes.result(1, stderr="fixture restart failure")
+
+        self.processes.script({RESTART: fail_restart})
+        result = self.box.run_cli("client", "enforce-limits")
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(len(restarted_configs), 2)
+        self.assertTrue(all(b'alice|created=' not in config for config in restarted_configs))
+        self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "expired")])
+        self.assertEqual(set(self.pending_policy()), {"alice"})
+
+        self.processes.script({RESTART: self.processes.ok()})
+        self.cli("enforce-limits")
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "expired")])
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_cancel_inside_apply_after_callback_compensates_expired_reactivation(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        self.prepare_policy("expire-due")
+        config_before = self.box.paths.config.read_bytes()
+        db_before = self.db_rows()
+        pending_before = self.pending_policy()
+        apply_config = service.apply_config
+
+        def interrupt_in_callback(config, *, on_applied, **kwargs):
+            def cancel(result):
+                on_applied(result)
+                self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+                raise KeyboardInterrupt
+
+            return apply_config(config, on_applied=cancel, **kwargs)
+
+        with mock.patch.object(service, "apply_config", side_effect=interrupt_in_callback):
+            result = self.box.run_cli("client", "enforce-limits")
+
+        self.assertEqual(result.exit_code, 130, result.stderr)
+        self.assertEqual(self.box.paths.config.read_bytes(), config_before)
+        self.assertEqual(self.db_rows(), db_before)
+        self.assertEqual(self.pending_policy(), pending_before)
+        self.cli("enforce-limits")
+        self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_pending_reactivation_does_not_override_later_disable(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "after-commit")
+        self.cli("disable", "alice")
+        self.cli("add", "bob", "0")
+        self.write_during_apply("INSERT INTO traffic_totals(client_name) VALUES ('bob')")
+        self.write_during_apply(
+            "INSERT INTO traffic_history(client_name,bucket_date,bucket_hour,incoming_bytes) "
+            "VALUES ('bob','2026-10-06',15,150)"
+        )
+        self.write_during_apply(
+            "INSERT INTO client_traffic_limits(client_name,period,limit_bytes) VALUES ('bob','daily',50)"
+        )
+
+        self.assertIn("Disabled clients by traffic limit: bob", self.cli("enforce-limits"))
+        self.assertEqual(self.query("SELECT name,enabled FROM clients ORDER BY name"), [("alice", 0), ("bob", 0)])
+        self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_pending_reactivation_preserves_targeted_disable_and_recovers_other_credential(self):
+        self.cli("add-trojan-connection", "Trojan", "10443", "trojan.example", "--no-caddy")
+        self.cli("add", "alice", "0", "--connection", "trojan-tls")
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "after-commit")
+        self.assertEqual(set(self.pending_policy()["alice"]), {"vless-reality", "trojan-tls"})
+
+        self.cli("disable", "alice", "--connection", "vless-reality")
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+
+        self.assertEqual(
+            self.query("SELECT connection_tag,enabled FROM client_credentials ORDER BY connection_tag"),
+            [("trojan-tls", 1), ("vless-reality", 0)],
+        )
+        inbounds = {item["tag"]: item for item in self.box.config()["inbounds"]}
+        self.assertEqual(inbounds["vless-reality"]["settings"]["clients"], [])
+        self.assertEqual(len(inbounds["trojan-tls"]["settings"]["clients"]), 1)
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_pending_reactivation_uses_password_rotated_while_credential_is_absent(self):
+        self.cli("add-trojan-connection", "Trojan", "10443", "trojan.example", "--no-caddy")
+        self.cli("add", "alice", "0", "--connection", "trojan-tls")
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "after-commit")
+        self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+
+        self.cli("rotate-trojan-password", "alice", "--connection", "trojan-tls")
+        with database.session() as conn:
+            row = conn.execute(
+                "SELECT xray_client_json FROM client_credentials "
+                "WHERE client_name='alice' AND connection_tag='trojan-tls'"
+            ).fetchone()
+            password = json.loads(row["xray_client_json"])["password"]
+
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+        inbounds = {item["tag"]: item for item in self.box.config()["inbounds"]}
+        self.assertEqual(len(inbounds["vless-reality"]["settings"]["clients"]), 1)
+        self.assertEqual(inbounds["trojan-tls"]["settings"]["clients"][0]["password"], password)
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_retry_preserves_marker_after_restart_failure(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        original = self.box.paths.config.read_bytes()
+        failure = self.processes.result(1, stderr="fixture restart failure")
+        self.processes.script({RESTART: [failure, failure]})
+
+        result = self.box.run_cli("client", "enforce-limits")
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(set(self.pending_policy()), {"alice"})
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+
+        self.processes.script({RESTART: self.processes.ok()})
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_limit_reset_uses_manager_calendar_day(self):
+        self.seed_active_traffic()
+        self.prepare_policy("enforce-limits")
+        self.cli("enforce-limits")
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "traffic-limit")])
+
+        # 21:00 UTC — полночь следующего дня в зоне менеджера.
+        for instant, enabled, output in (
+            ("2026-10-06T20:59:59Z", 0, "No traffic limits exceeded or reset."),
+            ("2026-10-06T21:00:00Z", 1, "Re-enabled clients after traffic limit reset: alice"),
+        ):
+            with self.subTest(instant=instant), Sandbox(
+                existing_config_dir=self.box.paths.config_dir, now=instant,
+            ) as next_box, running_xray(next_box):
+                script_processes(next_box)
+                result = next_box.run_cli("client", "enforce-limits")
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                self.assertIn(output, result.stdout)
+                self.assertEqual(self.query("SELECT enabled FROM clients"), [(enabled,)])
+                next_box.assert_restarted(times=enabled)
+
+    def test_set_exceeded_limit_syncs_after_commit_and_before_enforcement(self):
+        self.seed_active_traffic()
+        sync = self.box.paths.sbin_dir / "xray-traffic-sync"
+        sync.parent.mkdir(parents=True)
+        sync.touch()
+
+        def observe_sync(_argv, **_kwargs):
+            self.assertTrue(lock_is_free(self.box.paths.manager_lock))
+            self.assertEqual(self.query("SELECT limit_bytes FROM client_traffic_limits"), [(53,)])
+            self.assertEqual(self.query("SELECT enabled FROM clients"), [(1,)])
+            return self.processes.ok()
+
+        self.processes.script({(str(sync), "--quiet"): observe_sync})
+        output = self.cli("set-limit", "alice", "daily", "0.00000005")
+
+        self.assertEqual(self.processes.calls[:2], [(str(sync), "--quiet"), self.candidate_test])
+        self.assertLess(output.index("Traffic limit is already exceeded"), output.index("Disabled clients by traffic limit"))
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "traffic-limit")])
+
+    def test_policy_execstop_persists_traffic_after_client_commit(self):
+        email = self.seed_active_traffic()
+        self.prepare_policy("expire-due")
+
+        def observe_commit_and_traffic():
+            self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "expired")])
+            self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals"), [(175,)])
+            self.assertEqual(self.query("SELECT incoming_bytes FROM credential_traffic_history"), [(175,)])
+
+        self.script_execstop(email, 175, after_sync=observe_commit_and_traffic)
+        self.assertIn("Disabled expired clients: alice", self.cli("expire-due"))
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_history"), [(175,)])
+        self.assertEqual(self.query("PRAGMA journal_mode"), [("wal",)])
+        self.assertEqual(self.query("PRAGMA user_version"), [(8,)])
+
+    def test_policy_failures_compensate_then_retry(self):
+        email = self.seed_active_traffic()
+        original = self.box.paths.config.read_bytes()
+        failure = self.processes.result(1, stderr="fixture restart failure")
+        value = 100
+        for command, reason in (("expire-due", "expired"), ("enforce-limits", "traffic-limit")):
+            self.prepare_policy(command)
+            before = self.box.db_rows("clients", "client_credentials", "client_traffic_limit_state", "reality_connections")
+
+            for exit_code, restarts in (
+                (1, [failure, failure, self.processes.ok()]),
+                (130, [KeyboardInterrupt(), self.processes.ok()]),
+            ):
+                with self.subTest(command=command, exit_code=exit_code):
+                    value += 25
+
+                    def observe_client():
+                        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, reason)])
+
+                    self.script_execstop(email, value, after_sync=observe_client)
+                    self.processes.script({RESTART: restarts})
+                    result = self.box.run_cli("client", command, "--quiet")
+
+                    self.assertEqual(result.exit_code, exit_code, result.stderr)
+                    if exit_code == 1:
+                        self.assertIn("Restored backup:", result.stderr)
+                    else:
+                        self.assertEqual(result.stderr, "")
+                    self.assertEqual(self.box.paths.config.read_bytes(), original)
+                    self.assertEqual(self.box.db_rows(
+                        "clients", "client_credentials", "client_traffic_limit_state", "reality_connections",
+                    ), before)
+                    self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals"), [(value,)])
+
+            self.processes.script({RESTART: self.processes.ok()})
+            self.cli(command)
+            self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, reason)])
+            calls = list(self.processes.calls)
+            before_retry = self.db_rows()
+            self.cli(command, "--quiet")
+            self.assertEqual(self.db_rows(), before_retry)
+            self.assertEqual(self.processes.calls, calls)
+
+            self.processes.script({STOP: self.processes.ok()})
+            self.box.paths.config.write_bytes(original)
+            with database.write_session() as conn:
+                conn.execute("UPDATE clients SET expires_at=NULL, expired_at=NULL, disabled_at=NULL, disabled_reason=NULL, enabled=1")
+                conn.execute("UPDATE client_credentials SET enabled=1")
+
+    def test_policy_noop_does_not_persist_missing_connection(self):
+        with database.write_session() as conn:
+            conn.execute("DELETE FROM client_credentials")
+            conn.execute("DELETE FROM clients")
+            conn.execute("DELETE FROM reality_connections")
+            conn.execute("CREATE TRIGGER reject_connection_insert BEFORE INSERT ON reality_connections "
+                         "BEGIN SELECT RAISE(ABORT, 'Unexpected connection write'); END")
+        before = self.box.paths.config.read_bytes()
+        self.assertEqual(self.cli("enforce-limits"), "No traffic limits exceeded or reset.\n")
+        self.assertEqual(self.cli("expire-due"), "No expired clients.\n")
+        self.assertEqual(self.query("SELECT tag FROM reality_connections"), [])
+        self.assertEqual(self.query("SELECT name FROM clients"), [])
+        self.assertEqual(self.box.paths.config.read_bytes(), before)
+        self.assertEqual(self.processes.calls, [])
+
+    def test_policy_noop_preserves_restored_db_and_needs_no_writer(self):
+        # Резервная копия SQLite хранится одним файлом в режиме DELETE.
+        restored = database.backup_database(self.box.paths.manager_db)
+        self.box.paths.manager_db.write_bytes(restored.read_bytes())
+        before = self.box.paths.manager_db.read_bytes()
+        for command in ("expire-due", "enforce-limits"):
+            with self.subTest(command=command), database.session() as writer:
+                with database.transaction(writer, immediate=True):
+                    result = self.box.run_cli("client", command)
+                    self.assertEqual(result.exit_code, 0, result.stderr)
+                    self.assertIn("No ", result.stdout)
+        self.assertEqual(self.box.paths.manager_db.read_bytes(), before)
+        self.assertEqual(self.query("PRAGMA journal_mode"), [("delete",)])
+        self.assertEqual(self.processes.calls, [])
 
     def seed_linked_state(self):
         self.seed_credential_traffic()

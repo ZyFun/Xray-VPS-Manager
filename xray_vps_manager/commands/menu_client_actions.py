@@ -10,11 +10,14 @@ from xray_vps_manager.clients import routes as client_route_service
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.listing import client_rows as build_client_rows
 from xray_vps_manager.clients.repository import db_clients, load_db_sql
+from xray_vps_manager.clients import service as client_service
 from xray_vps_manager.commands import menu_reality_actions
+from xray_vps_manager.commands.client_output import client_change_errors, print_expiry, print_limit_enforcement
 from xray_vps_manager.core.terminal import green, print_table, table_border, table_row, visible_len, yellow
 from xray_vps_manager.core.time import manager_timezone, parse_time
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
 from xray_vps_manager.runner import run_command
+from xray_vps_manager.traffic.limits import traffic_limit_status
 from xray_vps_manager.traffic import repository as traffic_repository
 from xray_vps_manager.traffic.formatting import format_traffic
 from xray_vps_manager.traffic.history import all_time_total
@@ -31,16 +34,18 @@ def show_clients(call: CommandRunner) -> None:
     call(["xray-client", "list"])
 
 
-def expire_due(call: CommandRunner) -> None:
-    call(["xray-client", "expire-due"])
+def expire_due() -> None:
+    with client_change_errors():
+        print_expiry(client_service.expire_due())
 
 
 def show_traffic_limits(call: CommandRunner) -> None:
     call(["xray-client", "limit-list"])
 
 
-def enforce_traffic_limits(call: CommandRunner) -> None:
-    call(["xray-client", "enforce-limits", "--sync"])
+def enforce_traffic_limits() -> None:
+    with client_change_errors():
+        print_limit_enforcement(client_service.enforce_limits(limit_status=traffic_limit_status, sync_first=True))
 
 
 def run_client_action(*args: str) -> None:

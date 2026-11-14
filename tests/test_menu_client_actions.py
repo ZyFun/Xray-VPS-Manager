@@ -10,6 +10,25 @@ from xray_vps_manager.commands import menu_client_actions
 
 
 class MenuClientActionsTests(unittest.TestCase):
+    def test_policy_actions_use_shared_output_and_sync_traffic_before_enforcement(self) -> None:
+        with Sandbox() as box:
+            sync = box.paths.sbin_dir / "xray-traffic-sync"
+            sync.parent.mkdir(parents=True)
+            sync.touch()
+            box.processes.script({
+                ("/usr/local/bin/xray", "version"): box.processes.ok("Xray 26.1.1\n"),
+                (str(sync), "--quiet"): box.processes.ok(),
+            })
+            before = box.db_rows("clients", "client_credentials", "client_traffic_limit_state")
+            result = box.run_menu(["1", "11", "12", "4", "0", "0", "0"])
+
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            self.assertRegex(result.stdout, r"=+ Проверить просроченных клиентов =+\n\nNo expired clients\.\n")
+            self.assertRegex(result.stdout, r"=+ Проверить лимиты трафика =+\n\nNo traffic limits exceeded or reset\.\n")
+            self.assertEqual(box.processes.calls.count((str(sync), "--quiet")), 1)
+            self.assertEqual(box.db_rows("clients", "client_credentials", "client_traffic_limit_state"), before)
+            box.assert_restarted(times=0)
+
     def test_add_client_menu_rejects_existing_client_name(self) -> None:
         with mock.patch("builtins.input", return_value="alice 30"), \
             mock.patch.object(menu_client_actions, "client_exists_for_menu", return_value=True), \

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from hashlib import sha256
+import json
 from typing import Any
 
 from xray_vps_manager.clients import credentials as client_credentials
@@ -39,10 +41,11 @@ class AccessUpdateResult:
 class TrafficLimitEnforcementResult:
     reactivated_names: list[str]
     due_names: list[str]
+    expired_during_recovery: list[str] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
-        return bool(self.reactivated_names or self.due_names)
+        return bool(self.reactivated_names or self.due_names or self.expired_during_recovery)
 
 
 @dataclass
@@ -273,6 +276,82 @@ def enforce_traffic_limits(
         reactivated_names=reactivated_names,
         due_names=due_names,
     )
+
+
+def reactivation_fingerprints(entry, *, tags=None):
+    """Сверяет каждое подключение с состоянием на момент записи маркера."""
+    client = (entry.get("id"), entry.get("created"))
+    return {
+        tag: sha256(json.dumps(
+            (*client, tag, item.get("id"), item.get("protocol"), item.get("enabled")),
+            ensure_ascii=False,
+        ).encode()).hexdigest()
+        for tag, item in client_credentials.normalize_entry_credentials(entry).items()
+        if tags is None or tag in tags
+    }
+
+
+@dataclass
+class LimitReactivationRetry:
+    enabled: list[str]
+    exceeded: list[str]
+    expired: list[str]
+    config_changed: bool
+    credentials: dict[str, set[str]]
+
+
+def _matches_reactivation_connection(config, name, tag, item):
+    inbound, active = client_credentials.active_item_for_connection(config, name, tag)
+    if inbound is None or client_credentials.protocol_from_inbound(inbound) != item["protocol"]:
+        return False
+    field = "password" if item["protocol"] == "trojan" else "id"
+    return active is None or active.get(field) == item["client"].get(field)
+
+
+def retry_limit_reactivations(config, db, traffic_entries, pending, *, limit_status, now):
+    """Повторно оценить только зафиксированные попытки вернуть доступ."""
+    result = LimitReactivationRetry([], [], [], False, {})
+    for name, fingerprints in sorted(pending.items()):
+        entry = db_clients(db).get(name)
+        if not entry:
+            continue
+        items = client_credentials.normalize_entry_credentials(entry)
+        current = reactivation_fingerprints(entry, tags=fingerprints)
+        # Поздняя замена credential или подключения имеет приоритет.
+        matched = {
+            tag for tag, fingerprint in current.items()
+            if fingerprints[tag] == fingerprint and _matches_reactivation_connection(config, name, tag, items[tag])
+        }
+        if not matched:
+            continue
+        result.credentials[name] = matched
+        if entry.get("enabled") is False:
+            # Предыдущая попытка уже отменила реактивацию в БД.
+            for tag in sorted(matched):
+                removed, _item = client_credentials.remove_active_credential(config, name, tag)
+                result.config_changed |= removed
+            destination = result.exceeded if entry.get("disabledReason") == "traffic-limit" else result.expired
+            destination.append(name)
+            continue
+        traffic = traffic_entries.get(name, {})
+        current_limit = limit_status(entry, traffic, now)
+        if access_expired(entry, now) or (current_limit and current_limit["exceeded"]):
+            _update, config_changed, state, _traffic = reconcile_client_access_status(
+                config, db, traffic, name, entry, now, limit_status=limit_status,
+            )
+            result.config_changed |= config_changed
+            result.credentials[name] = set(items)
+            destination = result.exceeded if state == "disabled-traffic-limit" else result.expired
+            destination.append(name)
+        else:
+            for tag in sorted(matched):
+                if items[tag].get("enabled") is False:
+                    continue
+                _inbound, active = client_credentials.active_item_for_connection(config, name, tag)
+                if active is None:
+                    result.config_changed |= client_credentials.upsert_active_credential(config, name, entry, items[tag])
+            result.enabled.append(name)
+    return result
 
 
 def expire_due_clients(

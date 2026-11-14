@@ -17,7 +17,7 @@ from tests.test_client_manager_lock import foreign_lock_holder, lock_is_free, sc
 from tests.test_restart_verification import FakeClock, FakeSocket
 from tests.test_routing_apply_compensation import legacy_telegram_config
 from xray_vps_manager.clients import repository, routes, service
-from xray_vps_manager.commands import backup, client, menu_reality_actions, menu_xray_actions, update
+from xray_vps_manager.commands import backup, client_connections as client, menu_reality_actions, menu_xray_actions, update
 from xray_vps_manager.core import fs, systemd
 from xray_vps_manager.core.errors import ApplyConfigError, StateError, LockTimeout
 from xray_vps_manager.routing import torrent

@@ -15,7 +15,7 @@ class DataCliTests(unittest.TestCase):
     def test_client_list_on_one_client_fixture(self):
         """Текущее поведение, баг XR-REV-036: ANSI-метка free в выводе без TTY и при NO_COLOR=1."""
         with Sandbox() as box:
-            stats = ("/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
+            stats = (str(box.paths.xray_bin), "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
             box.processes.script({stats: box.processes.ok('{"stat": []}')})
             before = box.db_rows("clients", "client_credentials", "traffic_totals")
 
@@ -40,7 +40,7 @@ class DataCliTests(unittest.TestCase):
                     conn.execute("UPDATE clients SET selected_cascade_tag = ? WHERE name = 'alice'", (selected,))
                     conn.execute("INSERT INTO cascade_routes(tag, label) VALUES ('cascade-backup', 'backup')")
                 before = box.db_rows("clients", "cascade_routes")
-                stats = ("/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
+                stats = (str(box.paths.xray_bin), "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
                 box.processes.script({stats: box.processes.ok('{"stat": []}')})
                 subscriptions = {"clientSubscriptions": {"222": {"client": "alice"}}}
 

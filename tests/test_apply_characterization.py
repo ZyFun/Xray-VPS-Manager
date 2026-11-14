@@ -14,7 +14,7 @@ from tests.support.sandbox import Sandbox
 from xray_vps_manager.routing import blocklist
 from xray_vps_manager.clients import repository
 from xray_vps_manager.commands import (
-    backup, client, menu_activity_actions, menu_reality_actions, menu_xray_actions,
+    backup, client_connections as client, menu_activity_actions, menu_reality_actions, menu_xray_actions,
     set_bypass, set_cascade, update, warp,
 )
 from xray_vps_manager.telegram import setup

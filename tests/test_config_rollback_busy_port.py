@@ -21,7 +21,7 @@ from tests.support.sandbox import Sandbox
 from tests.test_restart_verification import FakeClock, show_output
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.commands import client as client_command
+from xray_vps_manager.commands import client_connections as client_command
 from xray_vps_manager.commands import menu_reality_actions
 from xray_vps_manager.core import process, systemd
 from xray_vps_manager.db import database
@@ -416,22 +416,18 @@ class TrojanLocalPortBusyTests(unittest.TestCase):
         add_trojan_ws_connection(self.root)
 
     def update(self, local_port, probe):
-        stderr = StringIO()
-        with client_lock_tests.sandbox_patches(self.root), \
-            mock.patch.object(client_command, "tcp_port_in_use", side_effect=probe) as port_probe, \
-            mock.patch.object(client_command, "update_trojan_caddy_site", return_value=None), \
-            redirect_stderr(stderr), \
-            redirect_stdout(StringIO()):
-            try:
-                client_command.cmd_trojan_connection_update(
-                    "trojan-tls-2",
-                    domain_value="vpn.example.com",
-                    local_port_value=local_port,
-                )
-                outcome = None
-            except SystemExit as exc:
-                outcome = exc
-        return outcome, stderr.getvalue(), port_probe
+        with client_lock_tests.sandbox_patches(self.root) as box, \
+            mock.patch.object(process, "tcp_port_in_use", side_effect=probe) as port_probe:
+            with database.write_session() as conn:
+                client_repository.save_connection(conn, "trojan-tls-2", {
+                    "name": "Trojan", "protocol": "trojan", "security": "tls", "transport": "ws", "port": 1443,
+                    "publicHost": "vpn.example.com", "localPort": 10100, "publicPort": 1443, "caddy": False,
+                })
+            result = box.run_cli(
+                "client", "update-trojan-connection", "trojan-tls-2",
+                "--domain", "vpn.example.com", "--local-port", local_port,
+            )
+        return result, port_probe
 
     def stored_local_port(self) -> int:
         config = json.loads((self.root / "config.json").read_text())
@@ -440,12 +436,11 @@ class TrojanLocalPortBusyTests(unittest.TestCase):
     def test_busy_local_port_is_refused_before_config_write(self) -> None:
         before = (self.root / "config.json").read_text()
 
-        outcome, stderr, probe = self.update("10101", lambda *_args: True)
+        result, probe = self.update("10101", lambda *_args: True)
 
-        self.assertIsNotNone(outcome)
-        self.assertEqual(outcome.code, 1)
+        self.assertEqual(result.exit_code, 1)
         self.assertEqual(
-            stderr.splitlines(),
+            result.stderr.splitlines(),
             ["ERROR: LOCAL_PORT is already in use on this server by another process: 10101"],
         )
         self.assertEqual((self.root / "config.json").read_text(), before)
@@ -453,16 +448,16 @@ class TrojanLocalPortBusyTests(unittest.TestCase):
         probe.assert_called_once_with(10101, "127.0.0.1")
 
     def test_free_local_port_is_applied(self) -> None:
-        outcome, stderr, probe = self.update("10101", lambda *_args: False)
+        result, probe = self.update("10101", lambda *_args: False)
 
-        self.assertIsNone(outcome, stderr)
+        self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(self.stored_local_port(), 10101)
         probe.assert_called_once_with(10101, "127.0.0.1")
 
     def test_unchanged_local_port_is_not_probed(self) -> None:
-        outcome, stderr, probe = self.update("10100", lambda *_args: True)
+        result, probe = self.update("10100", lambda *_args: True)
 
-        self.assertIsNone(outcome, stderr)
+        self.assertEqual(result.exit_code, 0, result.stderr)
         probe.assert_not_called()
         self.assertEqual(self.stored_local_port(), 10100)
 

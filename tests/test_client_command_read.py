@@ -1,57 +1,49 @@
-import functools
-import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr
 from io import StringIO
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
 from tests.test_client_characterization import ALICE_KEY, script_processes
-from xray_vps_manager.commands import client as client_command
-from xray_vps_manager.core import paths as core_paths
+from xray_vps_manager.commands import client_arguments
+from xray_vps_manager.commands.client_connections import update_trojan_caddy_site
+from xray_vps_manager.db import database
+from xray_vps_manager.xray import caddy
+
+
+def script_caddy(box):
+    box.processes.executables["caddy"] = "/usr/bin/caddy"
+    ok = box.processes.ok()
+    box.processes.script({
+        ("caddy", "validate", "--config", box.paths.caddyfile): ok,
+        "systemctl enable --now caddy": ok,
+        "systemctl reload caddy": ok,
+    })
 
 
 class ClientCommandReadTests(unittest.TestCase):
-    def setUp(self) -> None:
-        lock_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(lock_dir.cleanup)
-        lock_patch = mock.patch.object(core_paths, "MANAGER_LOCK_PATH", Path(lock_dir.name) / "manager.lock")
-        lock_patch.start()
-        self.addCleanup(lock_patch.stop)
+    def run_client(self, box, *args):
+        result = box.run_cli("client", *args)
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        return result
 
-    def test_load_db_uses_runtime_read_layer(self) -> None:
-        expected = {"clients": {"alice": {}}}
-        with mock.patch.object(
-            client_command.client_repository,
-            "load_db_sql",
-            return_value=expected,
-        ) as load_db_sql:
-            self.assertEqual(client_command.load_db(), expected)
-
-        load_db_sql.assert_called_once_with()
-
-    def test_load_traffic_db_uses_runtime_read_layer(self) -> None:
-        expected = {"clients": {"alice": {"incoming": 1, "outgoing": 2}}}
-        with mock.patch.object(
-            client_command.traffic_repository,
-            "load_traffic_db_for_read",
-            return_value=expected,
-        ) as load_traffic_for_read:
-            self.assertEqual(client_command.load_traffic_db(), expected)
-
-        load_traffic_for_read.assert_called_once_with()
+    def add_trojan(self, box, *options):
+        script_processes(box)
+        script_caddy(box)
+        return self.run_client(
+            box, "add-trojan-connection", "Trojan", "9443", "vpn.example.com", "--public-port", "1443", *options,
+        )
 
     def test_parse_add_args_supports_protocol_sugar(self) -> None:
-        parsed = client_command.parse_add_args(["alice", "30", "--protocol", "trojan", "--payment", "paid"])
+        parsed = client_arguments.parse_add_args(["alice", "30", "--protocol", "trojan", "--payment", "paid"])
 
         self.assertEqual(parsed, ("alice", 30, False, None, "trojan", "paid"))
 
     def test_parse_add_args_rejects_connection_and_protocol_together(self) -> None:
         with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
-            client_command.parse_add_args(["alice", "--connection", "trojan-tls", "--protocol", "trojan"])
+            client_arguments.parse_add_args(["alice", "--connection", "trojan-tls", "--protocol", "trojan"])
 
     def test_cmd_add_prints_access_key_with_connection_link(self) -> None:
         with Sandbox() as box, running_xray(box):
@@ -66,85 +58,42 @@ class ClientCommandReadTests(unittest.TestCase):
         self.assertNotIn("vpn-key:00000000-0000-4000-8000-000000000002", result.stdout)
 
     def test_trojan_password_check_prints_policy_rows(self) -> None:
-        output = StringIO()
+        with Sandbox() as box, running_xray(box):
+            self.add_trojan(box, "--no-caddy")
+            self.run_client(box, "add", "alice", "--connection", "trojan-tls")
+            output = self.run_client(box, "trojan-password-check").stdout
 
-        with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
-            mock.patch.object(client_command, "load_db_readonly", return_value={}), \
-            mock.patch.object(
-                client_command.client_crud,
-                "trojan_password_policy_rows",
-                return_value=[
-                    {
-                        "client": "alice",
-                        "connection": "trojan-tls",
-                        "status": "OK",
-                        "issues": "-",
-                    }
-                ],
-            ), \
-            redirect_stdout(output):
-            client_command.cmd_trojan_password_check()
-
-        text = output.getvalue()
-        self.assertIn("alice", text)
-        self.assertIn("trojan-tls", text)
-        self.assertIn("OK", text)
+        self.assertIn("alice", output)
+        self.assertIn("trojan-tls", output)
+        self.assertIn("OK", output)
 
     def test_traffic_period_prints_credential_breakdown_for_multi_credential_client(self) -> None:
-        traffic_db = {
-            "clients": {
-                "alice": {
-                    "history": {"2026-06-12": {"08": {"incoming": 1024, "outgoing": 2048}}},
-                }
-            },
-            "credentials": {
-                "alice": {
-                    "vless-reality": {
-                        "history": {"2026-06-12": {"08": {"incoming": 1024, "outgoing": 2048}}},
-                    },
-                    "trojan-tls": {
-                        "history": {"2026-06-12": {"09": {"incoming": 4096, "outgoing": 8192}}},
-                    },
-                }
-            },
-        }
-        credential_rows = [
-            {
-                "name": "alice",
-                "client": "alice",
-                "protocol": "vless",
-                "security": "reality",
-                "transport": "tcp",
-                "connection": "vless-reality",
-                "status": "enabled",
-            },
-            {
-                "name": "alice",
-                "client": "alice",
-                "protocol": "trojan",
-                "security": "tls/caddy",
-                "transport": "ws",
-                "connection": "trojan-tls",
-                "status": "enabled",
-            },
-        ]
-        output = StringIO()
+        with Sandbox() as box, running_xray(box):
+            self.add_trojan(box, "--no-caddy")
+            self.run_client(box, "add", "alice", "--connection", "trojan-tls")
+            with database.write_session() as conn:
+                conn.executemany(
+                    "INSERT INTO credential_traffic_totals(client_name,connection_tag)"
+                    " VALUES ('alice',?)",
+                    [("vless-reality",), ("trojan-tls",)],
+                )
+                conn.execute("INSERT INTO traffic_totals(client_name) VALUES ('alice')")
+                conn.executemany(
+                    "INSERT INTO credential_traffic_history"
+                    "(client_name,connection_tag,bucket_date,bucket_hour,incoming_bytes,outgoing_bytes)"
+                    " VALUES ('alice',?,'2026-06-12',?,?,?)",
+                    [("vless-reality", 8, 1024, 2048), ("trojan-tls", 9, 4096, 8192)],
+                )
+                conn.execute(
+                    "INSERT INTO traffic_history(client_name,bucket_date,bucket_hour,incoming_bytes,outgoing_bytes)"
+                    " VALUES ('alice','2026-06-12',8,5120,10240)"
+                )
+            output = self.run_client(box, "traffic-period", "alice", "2026-06-12", "2026-06-12").stdout
 
-        with mock.patch.object(
-            client_command,
-            "traffic_report_context",
-            return_value=({}, {}, traffic_db, traffic_db["clients"]["alice"]),
-        ), \
-            mock.patch.object(client_command, "traffic_credential_rows", return_value=credential_rows), \
-            mock.patch.object(client_command.client_settings, "manager_timezone_label", return_value="UTC"), \
-            redirect_stdout(output):
-            client_command.cmd_traffic_period("alice", "2026-06-12", "2026-06-12")
-
-        text = output.getvalue()
-        self.assertIn("Credentials", text)
-        self.assertIn("vless-reality", text)
-        self.assertIn("trojan-tls", text)
-        self.assertIn("15.00KB", text)
+        self.assertIn("Credentials", output)
+        self.assertIn("vless-reality", output)
+        self.assertIn("trojan-tls", output)
+        self.assertIn("15.00KB", output)
 
     def test_rotate_trojan_password_prints_reissued_link(self) -> None:
         with Sandbox() as box, running_xray(box):
@@ -167,48 +116,18 @@ class ClientCommandReadTests(unittest.TestCase):
         self.assertNotEqual(before.stdout, after.stdout)
 
     def test_connection_list_shows_protocol_column(self) -> None:
-        config = {
-            "inbounds": [
-                client_command.client_connections.make_reality_inbound(
-                    "vless-reality",
-                    443,
-                    "example.com",
-                    "private-key",
-                    "abcd",
-                )
-            ],
-            "outbounds": [],
-        }
-        db = {"connections": {}, "clients": {}}
-        with mock.patch.object(client_command.client_connections, "server_env_values", return_value={}):
-            client_command.client_connections.add_trojan_caddy_connection(
-                config,
-                db,
-                "trojan-web",
-                "vpn.example.com",
-                local_port=10100,
-                public_port=443,
-                fingerprint_value="firefox",
-                ws_path="/trojan",
-            )
+        with Sandbox() as box, running_xray(box):
+            self.add_trojan(box, "--no-caddy")
+            output = self.run_client(box, "connection-list").stdout
 
-        output = StringIO()
-        with mock.patch.object(client_command, "load_config", return_value=config), \
-            mock.patch.object(client_command, "load_db_readonly", return_value=db), \
-            mock.patch.object(client_command.client_connections, "server_env_values", return_value={}), \
-            mock.patch.object(client_command.client_connections, "fingerprint", return_value="chrome"), \
-            redirect_stdout(output):
-            client_command.cmd_connection_list()
-
-        text = output.getvalue()
-        self.assertIn("PROTOCOL", text)
-        self.assertIn("SECURITY", text)
-        self.assertIn("vless", text)
-        self.assertIn("trojan", text)
-        self.assertIn("tls", text)
+        self.assertIn("PROTOCOL", output)
+        self.assertIn("SECURITY", output)
+        self.assertIn("vless", output)
+        self.assertIn("trojan", output)
+        self.assertIn("tls", output)
 
     def test_parse_trojan_caddy_connection_args(self) -> None:
-        parsed = client_command.parse_trojan_connection_add_args(
+        parsed = client_arguments.parse_trojan_connection_add_args(
             [
                 "trojan-main",
                 "10100",
@@ -247,7 +166,7 @@ class ClientCommandReadTests(unittest.TestCase):
         )
 
     def test_parse_trojan_connection_defaults_to_caddy_websocket(self) -> None:
-        parsed = client_command.parse_trojan_connection_add_args(
+        parsed = client_arguments.parse_trojan_connection_add_args(
             [
                 "trojan-main",
                 "10100",
@@ -274,7 +193,7 @@ class ClientCommandReadTests(unittest.TestCase):
         )
 
     def test_parse_trojan_connection_can_disable_caddy_setup(self) -> None:
-        parsed = client_command.parse_trojan_connection_add_args(
+        parsed = client_arguments.parse_trojan_connection_add_args(
             [
                 "trojan-main",
                 "10100",
@@ -287,7 +206,7 @@ class ClientCommandReadTests(unittest.TestCase):
         self.assertFalse(parsed[9])
 
     def test_parse_trojan_legacy_direct_tls_args(self) -> None:
-        parsed = client_command.parse_trojan_connection_add_args(
+        parsed = client_arguments.parse_trojan_connection_add_args(
             [
                 "trojan-direct",
                 "8443",
@@ -305,7 +224,7 @@ class ClientCommandReadTests(unittest.TestCase):
         self.assertFalse(parsed[9])
 
     def test_parse_trojan_connection_update_args(self) -> None:
-        parsed = client_command.parse_trojan_connection_update_args(
+        parsed = client_arguments.parse_trojan_connection_update_args(
             [
                 "trojan-tls",
                 "--domain",
@@ -340,110 +259,50 @@ class ClientCommandReadTests(unittest.TestCase):
         )
 
     def test_cmd_trojan_connection_update_refreshes_caddy_site(self) -> None:
-        result = client_command.client_connections.UpdateTrojanConnectionResult(
-            tag="trojan-tls",
-            display_name="Trojan",
-            public_host="vpn.example.com",
-            public_port=443,
-            local_port=10101,
-            ws_path="/trojan2",
-            fingerprint="firefox",
-            tls_min_version="tls1.2",
-            tls_max_version="tls1.3",
-            caddy_enabled=True,
-            previous_public_host="vpn.example.com",
-            previous_public_port=443,
-            previous_local_port=10100,
-            previous_ws_path="/trojan",
-            previous_fingerprint="chrome",
-            previous_tls_min_version="tls1.2",
-            previous_tls_max_version="tls1.3",
-        )
-        output = StringIO()
+        with Sandbox() as box, running_xray(box):
+            self.add_trojan(box)
+            # Проверка bind через системный шов, подменённый в Sandbox.
+            with mock.patch("socket.socket", return_value=mock.MagicMock()):
+                result = self.run_client(
+                    box, "update-trojan-connection", "trojan-tls",
+                    "--domain", "vpn.example.com", "--local-port", "10101",
+                    "--public-port", "1443", "--ws-path", "/trojan2", "--fingerprint", "firefox",
+                    "--tls-min-version", "tls1.2", "--tls-max-version", "tls1.3",
+                )
+            site = box.paths.caddy_conf_dir / "vpn.example.com.caddy"
+            self.assertIn("127.0.0.1:10101", site.read_text())
+            self.assertIn("/trojan2", site.read_text())
+            self.assertEqual(box.processes.calls.count(("systemctl", "reload", "caddy")), 2)
 
-        config = {"inbounds": [{"tag": "trojan-tls", "listen": "127.0.0.1", "port": 10100, "protocol": "trojan"}]}
-
-        with mock.patch.object(client_command, "load_config", return_value=config), \
-            mock.patch.object(client_command, "load_db", return_value={"connections": {}, "clients": {}}), \
-            mock.patch.object(client_command.client_connections, "update_trojan_connection", return_value=result) as update_connection, \
-            mock.patch.object(client_command, "tcp_port_in_use", return_value=False), \
-            mock.patch.object(client_command, "save_config_restart_xray_and_db", return_value="/tmp/config.bak"), \
-            mock.patch.object(
-                client_command.xray_caddy,
-                "update_site_config",
-                return_value=SimpleNamespace(path="/etc/caddy/conf.d/vpn.example.com.caddy"),
-            ) as update_site, \
-            redirect_stdout(output):
-            client_command.cmd_trojan_connection_update(
-                "trojan-tls",
-                domain_value="vpn.example.com",
-                local_port_value="10101",
-                public_port_value="443",
-                ws_path_value="/trojan2",
-                fingerprint_value="firefox",
-                tls_min_version_value="tls1.2",
-                tls_max_version_value="tls1.3",
-            )
-
-        update_connection.assert_called_once_with(
-            config,
-            {"connections": {}, "clients": {}},
-            "trojan-tls",
-            domain="vpn.example.com",
-            local_port=10101,
-            public_port=443,
-            ws_path="/trojan2",
-            fingerprint_value="firefox",
-            tls_min_version="tls1.2",
-            tls_max_version="tls1.3",
-        )
-        update_site.assert_called_once_with(
-            "vpn.example.com",
-            10101,
-            tls_min_version="tls1.2",
-            tls_max_version="tls1.3",
-            upstream_transport="http",
-            route_path="/trojan2",
-        )
-        text = output.getvalue()
-        self.assertIn("Trojan connection updated: Trojan", text)
-        self.assertIn("Выведи клиентам новые Trojan-ссылки", text)
+        self.assertIn("Trojan connection updated: Trojan", result.stdout)
+        self.assertIn("Выведи клиентам новые Trojan-ссылки", result.stdout)
 
     def test_trojan_caddy_site_conflict_stops_before_config_save(self) -> None:
-        with mock.patch.object(client_command, "load_config", return_value={"inbounds": []}), \
-            mock.patch.object(client_command, "load_db", return_value={"connections": {}, "clients": {}}), \
-            mock.patch.object(
-                client_command.xray_caddy,
-                "require_site_config_absent",
-                side_effect=FileExistsError("existing site"),
-            ) as require_absent, \
-            mock.patch.object(client_command.client_connections, "add_trojan_caddy_connection") as add_connection, \
-            mock.patch.object(client_command, "save_config_restart_xray_and_db") as save_config:
-            with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
-                client_command.cmd_trojan_connection_add(
-                    "trojan-main",
-                    "10100",
-                    "vpn.example.com",
-                    fingerprint_value="chrome",
-                )
-
-        require_absent.assert_called_once_with("vpn.example.com")
-        add_connection.assert_not_called()
-        save_config.assert_not_called()
+        with Sandbox() as box, running_xray(box):
+            self.add_trojan(box)
+            before = box.paths.config.read_bytes()
+            db_before = box.db_rows("reality_connections")
+            calls = len(box.processes.calls)
+            result = box.run_cli("client", "add-trojan-connection", "New", "10100", "vpn.example.com",
+                                 "--public-port", "1443")
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("already exists", result.stderr)
+            self.assertEqual(box.paths.config.read_bytes(), before)
+            self.assertEqual(box.db_rows("reality_connections"), db_before)
+            self.assertEqual(len(box.processes.calls), calls)
 
 
 class TrojanCaddySiteBackupRotationTests(unittest.TestCase):
     """Смена домена сайта Caddy в `xray-client` оставляет не больше N копий (VIREI-241)."""
 
     def test_update_trojan_caddy_site_domain_change_prunes_copies(self) -> None:
-        caddy = client_command.xray_caddy
-        with tempfile.TemporaryDirectory() as tmp:
-            conf_dir = Path(tmp) / "conf.d"
-            conf_dir.mkdir()
-            caddyfile = Path(tmp) / "Caddyfile"
-            old_path = conf_dir / caddy.site_filename("old.example.com")
+        with Sandbox() as box:
+            script_caddy(box)
+            conf_dir = box.paths.caddy_conf_dir
+            conf_dir.mkdir(parents=True)
+            old_path = conf_dir / "old.example.com.caddy"
+            new_path = conf_dir / "new.example.com.caddy"
             old_path.write_text(caddy.caddy_site_block("old.example.com", 10100))
-            new_path = conf_dir / caddy.site_filename("new.example.com")
             for path in (old_path, new_path):
                 for index in range(7):
                     path.with_name(f"{path.name}.bak.2026010100000000{index:04d}").write_text("old\n")
@@ -456,27 +315,15 @@ class TrojanCaddySiteBackupRotationTests(unittest.TestCase):
                 tls_max_version="tls1.3",
                 ws_path="/trojan",
             )
-
-            with mock.patch.object(caddy, "site_config_path", lambda domain, conf_dir_arg=None: conf_dir / caddy.site_filename(domain)), \
-                mock.patch.object(
-                    caddy,
-                    "write_site_config",
-                    functools.partial(caddy.write_site_config, conf_dir=conf_dir, caddyfile_path=caddyfile),
-                ), \
-                mock.patch.object(caddy, "validate_and_reload_caddy"):
-                written = client_command.update_trojan_caddy_site(result)
+            written = update_trojan_caddy_site(result)
 
             old_copies = sorted(conf_dir.glob("old.example.com.caddy.bak.*"))
             new_copies = sorted(conf_dir.glob("new.example.com.caddy.bak.*"))
-            old_exists = old_path.exists()
-            new_exists = new_path.exists()
-
-        self.assertFalse(old_exists)
-        self.assertTrue(new_exists)
-        self.assertEqual(len(old_copies), caddy.SITE_BACKUP_KEEP)
-        self.assertEqual(old_copies[-1], written.backup)
-        self.assertEqual(len(new_copies), caddy.SITE_BACKUP_KEEP)
-
+            self.assertFalse(old_path.exists())
+            self.assertTrue(new_path.exists())
+            self.assertEqual(len(old_copies), caddy.SITE_BACKUP_KEEP)
+            self.assertEqual(old_copies[-1], written.backup)
+            self.assertEqual(len(new_copies), caddy.SITE_BACKUP_KEEP)
 
 if __name__ == "__main__":
     unittest.main()
