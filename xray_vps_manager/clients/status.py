@@ -12,12 +12,11 @@ from typing import Any
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients import connections
 from xray_vps_manager.clients.access import access_expired, local_now
-from xray_vps_manager.clients.models import client_from_db_entry, client_name, db_entry_from_client, split_email
+from xray_vps_manager.clients.models import client_from_db_entry, client_name
 from xray_vps_manager.clients.repository import db_clients
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.db.traffic_snapshot import traffic_entry
 from xray_vps_manager.xray.config import (
-    active_client_any,
     apply_client_transport,
     clients,
     connection_transport_settings_from_inbound,
@@ -182,21 +181,12 @@ def apply_access_update(
     db: dict[str, Any],
     traffic_entry: dict[str, Any],
     name: str,
+    entry: dict[str, Any],
     update_entry: Callable[[dict[str, Any]], None],
     *,
     limit_status: Callable,
 ) -> AccessUpdateResult:
     connections.ensure_connections(config, db)
-    entry = db_clients(db).get(name)
-
-    if not entry:
-        inbound, item = active_client_any(config, name)
-        if item is None:
-            raise ValueError(f"Client not found: {name}")
-        _, created = split_email(item.get("email", ""))
-        entry = db_entry_from_client(item, created=created, enabled=True)
-        entry["connection"] = inbound_tag(inbound)
-
     update_entry(entry)
     entry, config_changed, status, traffic_status = reconcile_client_access_status(
         config, db, traffic_entry, name, entry, limit_status=limit_status,
@@ -222,7 +212,6 @@ def enforce_traffic_limits(
     stamp = stamp or utc_stamp()
     reactivated_names: list[str] = []
     due_names: list[str] = []
-    due_clients: dict[str, tuple[str, dict[str, Any]]] = {}
     due_statuses: dict[str, dict[str, Any]] = {}
 
     for name, entry in db_clients(db).items():
@@ -248,21 +237,17 @@ def enforce_traffic_limits(
             name = client_name(item)
             if name in due_statuses:
                 continue
-            entry = db_clients(db).get(name, {})
+            entry = db_clients(db).get(name)
+            if entry is None:
+                continue
             status = limit_status(entry, traffic_entry(traffic_db, name), now)
             if status and status["exceeded"]:
                 due_names.append(name)
-                due_clients[name] = (inbound_tag(inbound), item)
                 due_statuses[name] = status
 
     for name in due_names:
         status = due_statuses[name]
-        previous = db_clients(db).get(name, {})
-        if not previous:
-            tag, item = due_clients[name]
-            _, created = split_email(item.get("email", ""))
-            previous = db_entry_from_client(item, created=created, enabled=True)
-            previous["connection"] = tag
+        previous = db_clients(db)[name]
         entry, _changed = disabled_entry_for_policy(config, name, previous)
         entry["disabledAt"] = stamp
         entry["disabledReason"] = "traffic-limit"
@@ -363,26 +348,20 @@ def expire_due_clients(
     now = now or local_now()
     stamp = stamp or utc_stamp()
     due_names: list[str] = []
-    due_clients: dict[str, tuple[str, dict[str, Any]]] = {}
+    due_clients: dict[str, dict[str, Any]] = {}
 
     for inbound in managed_connection_inbounds(config):
         for item in clients(inbound):
             name = client_name(item)
             if name in due_clients:
                 continue
-            entry = db_clients(db).get(name, {})
-            if access_expired(entry, now):
+            entry = db_clients(db).get(name)
+            if entry is not None and access_expired(entry, now):
                 due_names.append(name)
-                due_clients[name] = (inbound_tag(inbound), item)
+                due_clients[name] = entry
 
     for name in due_names:
-        previous = db_clients(db).get(name, {})
-        if not previous:
-            tag, item = due_clients[name]
-            _, created = split_email(item.get("email", ""))
-            previous = db_entry_from_client(item, created=created, enabled=True)
-            previous["connection"] = tag
-        entry, _changed = disabled_entry_for_policy(config, name, previous)
+        entry, _changed = disabled_entry_for_policy(config, name, due_clients[name])
         entry["disabledAt"] = stamp
         entry["expiredAt"] = stamp
         entry["disabledReason"] = "expired"

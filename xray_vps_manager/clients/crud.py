@@ -13,13 +13,11 @@ from xray_vps_manager.clients import status as client_status
 from xray_vps_manager.clients.models import (
     client_from_db_entry,
     client_name,
-    db_entry_from_client,
     email_for_client,
     normalize_payment_type,
-    split_email,
 )
 from xray_vps_manager.clients.repository import db_clients, db_managed_connections
-from xray_vps_manager.core.errors import ValidationError
+from xray_vps_manager.core.errors import StateError, ValidationError
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import (
@@ -153,20 +151,19 @@ def client_exists(config: dict[str, Any], db: dict[str, Any], name: str) -> bool
 
 
 def db_entry_for_existing_client(config: dict[str, Any], db: dict[str, Any], name: str) -> dict[str, Any]:
-    entry = db_clients(db).get(name)
+    entry = db.get("clients", {}).get(name)
     if entry:
         client_credentials.normalize_entry_credentials(entry)
         return entry
 
-    inbound, item = active_client_any(config, name)
-    if item is None:
-        raise ValueError(f"Client not found: {name}")
-    _, created = split_email(item.get("email", ""))
-    entry = db_entry_from_client(item, created=created, enabled=True)
-    entry["connection"] = inbound_tag(inbound)
-    client_credentials.normalize_entry_credentials(entry)
-    db_clients(db)[name] = entry
-    return entry
+    reject_config_only_client(config, name)
+    raise ValueError(f"Client not found: {name}")
+
+
+def reject_config_only_client(config: dict[str, Any], name: str) -> None:
+    _, item = active_client_any(config, name)
+    if item is not None:
+        raise StateError(f"Client exists only in config.json: {name}. Run xray-client repair first.")
 
 
 def prepare_add_client(
@@ -471,6 +468,7 @@ def rotate_trojan_password(
     credential["client"] = client
     credential["protocol"] = "trojan"
     credential["enabled"] = credential.get("enabled") is not False
+    credential.pop("restoredFromConfig", None)
 
     _inbound, active_item = client_credentials.active_item_for_connection(config, name, selected_tag)
     config_changed = False
@@ -565,7 +563,11 @@ def move_client_to_connection(
     else:
         if entry.get("enabled") is not False:
             raise ValueError(f"Enabled client config not found: {name}")
-        moved_client = client_from_db_entry(name, entry)
+        stored = entry_credentials.get(source_tag, {})
+        if stored.get("restoredFromConfig") is True:
+            moved_client = client_credentials.xray_client_for_credential(name, entry, stored)
+        else:
+            moved_client = client_from_db_entry(name, entry)
 
     credentials = dict(entry_credentials)
     credential = dict(credentials.pop(source_tag, {"created": moved_created}))

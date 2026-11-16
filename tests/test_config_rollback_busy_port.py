@@ -189,13 +189,13 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
         self.assertEqual(self.restore_restarts, 0)
 
     def test_disable_trojan_client_only_in_config_stops_before_apply(self) -> None:
-        """XR-REV-059: запись Trojan-клиента без UUID отклоняется до применения."""
+        """XR-REV-059: config-only Trojan требует явного repair до отключения."""
         trojan_config_only_client(self.box.paths.config.parent)
         self.before = self.stored_config()
         result = self.box.run_cli("client", "disable", "bob")
 
         self.assertEqual(result.exit_code, 1)
-        self.assertEqual(result.stderr, "ERROR: Client has no UUID: bob\n")
+        self.assertEqual(result.stderr, "ERROR: Client exists only in config.json: bob. Run xray-client repair first.\n")
         self.assertEqual(self.stored_config(), self.before)
         self.box.assert_restarted(times=0)
         self.assertEqual(self.restore_restarts, 0)

@@ -3,8 +3,10 @@
 from copy import deepcopy
 from contextlib import nullcontext
 from dataclasses import dataclass
+from itertools import groupby
 from pathlib import Path
 import re
+from uuid import uuid4
 
 from xray_vps_manager.clients import access, connections, credentials, crud, limits, payments, repository, routes, status
 from xray_vps_manager.core import process
@@ -17,7 +19,7 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import client_policy_recovery, client_traffic_handoff
 from xray_vps_manager.xray.apply import apply_config, restart_installed_config, restore_config_backup
 from xray_vps_manager.xray import client_route_runtime, client_routes
-from xray_vps_manager.xray.config import ensure_api_rule_first, load_config
+from xray_vps_manager.xray.config import active_client_any, ensure_api_rule_first, load_config
 
 
 _CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
@@ -72,6 +74,49 @@ def read_state():
     return _load_config(), repository.load_db_sql()
 
 
+def _repair_candidates(config, conn):
+    clients = repository.list_clients(conn, normalize=False)
+    return credentials.repair_candidates(config, clients, repository.list_connections(conn))
+
+
+def preview_repair() -> tuple[credentials.RepairCandidate, ...]:
+    config = _load_config()
+    with database.report_errors(), database.session() as conn, database.transaction(conn):
+        return _repair_candidates(config, conn)
+
+
+def repair_clients(confirmed: tuple[credentials.RepairCandidate, ...]) -> int:
+    with manager_lock(purpose="repair"):
+        config = _load_config()
+        with database.report_errors(), database.write_session() as conn:
+            candidates = _repair_candidates(config, conn)
+            if candidates != confirmed:
+                raise ConflictError("Repair candidates changed. Run xray-client repair again.")
+            for name, group in groupby(candidates, key=lambda candidate: candidate.name):
+                items = tuple(group)
+                first = items[0]
+                client_id = first.client_id or (first.item["id"] if first.protocol == "vless" else str(uuid4()))
+                records = {}
+                for item in items:
+                    if item.protocol == "vless":
+                        credential_id = item.item["id"]
+                    elif not first.client_id and item is first:
+                        credential_id = client_id
+                    else:
+                        credential_id = (item.legacy or {}).get("id") or str(uuid4())
+                    records[item.tag] = item.credential(credential_id)
+                if first.client_id:
+                    repository.save_restored_credentials(conn, name, records)
+                else:
+                    repository.save_client(conn, name, {
+                        "id": client_id,
+                        "created": first.created,
+                        "connection": first.tag,
+                        "credentials": records,
+                    })
+    return len(candidates)
+
+
 def _retire_traffic(conn, before, mutation, owner):
     if not mutation.apply or mutation.deletions is None:
         return False
@@ -90,10 +135,12 @@ def _retire_traffic(conn, before, mutation, owner):
     return client_traffic_handoff.start(conn, owner=owner, name=name, retired=retired, target=target)
 
 
-def _change(purpose, mutate, *, retires_traffic=False, removes_client=False, legacy_write_errors=False):
+def _change(purpose, mutate, *, retires_traffic=False, removes_client=False, before_write=None):
     parser_guard = activity_lock(purpose=purpose) if removes_client else nullcontext()
     with manager_lock(purpose=purpose), parser_guard:
         config = _load_config()
+        if before_write is not None:
+            before_write(config)
         undo = None
         applied = None
         owner = current_manager_operation() if retires_traffic else ""
@@ -147,10 +194,6 @@ def _change(purpose, mutate, *, retires_traffic=False, removes_client=False, leg
             except ValidationError:
                 raise
             except ValueError as exc:
-                if legacy_write_errors:
-                    # T4a: запись существующего только в конфиге Trojan без UUID
-                    # передаёт ValueError вызывающему коду до исправления VIREI-134.
-                    raise
                 raise ValidationError(str(exc)) from exc
             if mutation.apply:
                 # ExecStop получает traffic.lock и открывает собственную пишущую сессию.
@@ -270,15 +313,21 @@ def move_client(name, target_connection_identifier):
 
 def _update_access(purpose, name, update_entry, limit_status):
     validate_name(name)
-    sync_traffic()
+
+    def before_write(config):
+        with database.report_errors(message="SQLite clients cannot be read"), database.session() as conn:
+            if repository.get_client(conn, name) is None:
+                crud.reject_config_only_client(config, name)
+        sync_traffic()
 
     def mutate(config, db, conn):
+        entry = crud.db_entry_for_existing_client(config, db, name)
         with database.report_errors(message="SQLite traffic cannot be read"):
             traffic = repository.get_traffic_entry(conn, name)
-        result = status.apply_access_update(config, db, traffic, name, update_entry, limit_status=limit_status)
+        result = status.apply_access_update(config, db, traffic, name, entry, update_entry, limit_status=limit_status)
         return _Mutation(result, apply=result.config_changed)
 
-    return _change(purpose, mutate, legacy_write_errors=True)
+    return _change(purpose, mutate, before_write=before_write)
 
 
 def set_days(name, days, *, limit_status):
@@ -299,7 +348,7 @@ def _update_client_entry(purpose, name, update_entry):
         repository.db_clients(db)[name] = entry
         return _Mutation(result, apply=False)
 
-    return _change(purpose, mutate, legacy_write_errors=True)
+    return _change(purpose, mutate)
 
 
 def set_payment(name, payment_type):
@@ -339,7 +388,7 @@ def _run_policy(purpose, evaluate):
             return ClientChange(mutation.result, config, previous, None)
         # Трафик мог измениться после читающего снимка. Повторяем расчёт
         # на данных той же транзакции, которая фиксирует клиентские изменения.
-        return _change(purpose, mutate, legacy_write_errors=True)
+        return _change(purpose, mutate)
 
 
 def enforce_limits(*, limit_status, sync_first=False) -> ClientChange[status.TrafficLimitEnforcementResult]:
@@ -399,12 +448,25 @@ def rotate_trojan_password(name, connection_tag=None):
         result = crud.rotate_trojan_password(config, db, name, connection_tag)
         return _Mutation(result, apply=result.config_changed)
 
-    return _change("rotate-trojan-password", mutate, legacy_write_errors=True)
+    return _change("rotate-trojan-password", mutate)
 
 
 def set_route(name, route_value=None):
     """Синхронизировать выбор и при необходимости переключить runtime без рестарта."""
     validate_name(name)
+    if route_value is None:
+        config, db = read_state()
+        routes.sync_routes_from_config(config, db)
+        entry = repository.db_clients(db).get(name)
+        if entry is None:
+            _, item = active_client_any(config, name)
+            if item is None:
+                raise ValidationError(f"Client not found: {name}")
+            entry = {}
+            routes.assign_default_client_routes(config, {"clients": {name: entry}})
+        tag = client_routes.selected_route_tag(entry)
+        return ClientChange(RouteSelection(tag, routes.selected_route_label(db, entry), False), config, db, None)
+
     with manager_lock(purpose="route"):
         config = _load_config()
         undo = None
@@ -438,7 +500,7 @@ def set_route(name, route_value=None):
                 routes.sync_routes_from_config(config, db)
                 entry = crud.db_entry_for_existing_client(config, db, name)
                 current = client_routes.selected_route_tag(entry)
-                tag = current if route_value is None else routes.resolve_route_tag(config, db, route_value)
+                tag = routes.resolve_route_tag(config, db, route_value)
                 changed = current != tag
                 if changed:
                     if not client_routes.client_routes_allowed(config):
