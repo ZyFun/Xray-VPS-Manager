@@ -93,7 +93,9 @@ def _entry_from_row(connection: sqlite3.Connection, row) -> dict[str, Any] | Non
     return entry
 
 
-def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
+def upsert_client(
+    connection: sqlite3.Connection, name: str, entry: dict[str, Any], *, write_limits: bool = True,
+) -> None:
     client = _client_json(entry, name)
     uuid = str(entry.get("id") or client.get("id") or "")
     if not uuid:
@@ -144,19 +146,20 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
                 encode_json(extra),
             ),
         )
-        limit = _traffic_limit(entry)
-        if limit:
-            set_traffic_limit(connection, name, str(limit.get("period") or "daily"), int(limit.get("bytes") or 0), limit.get("setAt") or "")
-        else:
-            clear_traffic_limit(connection, name)
-        set_traffic_limit_state(
-            connection,
-            name,
-            exceeded_at=entry.get("trafficLimitExceededAt") or "",
-            exceeded_period=entry.get("trafficLimitExceededPeriod") or "",
-            exceeded_bytes=int(entry.get("trafficLimitExceededBytes") or 0),
-            reset_at=entry.get("trafficLimitResetAt") or "",
-        )
+        if write_limits:
+            limit = _traffic_limit(entry)
+            if limit:
+                set_traffic_limit(connection, name, str(limit.get("period") or "daily"), int(limit.get("bytes") or 0), limit.get("setAt") or "")
+            else:
+                clear_traffic_limit(connection, name)
+            set_traffic_limit_state(
+                connection,
+                name,
+                exceeded_at=entry.get("trafficLimitExceededAt") or "",
+                exceeded_period=entry.get("trafficLimitExceededPeriod") or "",
+                exceeded_bytes=int(entry.get("trafficLimitExceededBytes") or 0),
+                reset_at=entry.get("trafficLimitResetAt") or "",
+            )
         for tag, credential in entry.get("credentials", {}).items():
             upsert_client_credential(connection, name, tag, credential)
 

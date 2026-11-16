@@ -11,6 +11,7 @@ from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
+from xray_vps_manager.clients import service as client_service
 from xray_vps_manager.commands.arguments import CLIENT
 from xray_vps_manager.core.paths import Paths
 
@@ -48,6 +49,7 @@ SCENARIOS = {
         ("trojan-password-check", "validate-trojan-passwords"),
         ("rotate-trojan-password", "trojan-password-rotate"),
     ),
+    "trojan_only_in_config": (("repair",),),
     "limits": (("limit-list",), ("set-limit",), ("clear-limit",), ("enforce-limits",)),
     "routes": (("route",), ("sync-routes",)),
     "timezone": (("timezone",), ("set-timezone",)),
@@ -201,9 +203,9 @@ class ClientCharacterizationTests(unittest.TestCase):
         usage = [line.split()[1] for line in help_result.stdout.splitlines() if line.startswith("  xray-client ")]
         groups = [group for scenario in SCENARIOS.values() for group in scenario]
         aliases = [name for group in groups for name in group]
-        self.assertEqual(len(usage), 37)
-        self.assertEqual(len(groups), 35)
-        self.assertEqual(len(aliases), 52)
+        self.assertEqual(len(usage), 38)
+        self.assertEqual(len(groups), 36)
+        self.assertEqual(len(aliases), 53)
         self.assertCountEqual(usage, [group[0] for group in groups] + ["add-connection", "add-trojan-connection"])
         self.assertCountEqual(aliases, CLIENT.keys())
 
@@ -386,7 +388,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         self.assertEqual(run("key", "alice").stdout.strip(), f"vpn-key:{ALICE_KEY}")
 
     def test_trojan_only_in_config(self):
-        """Текущее поведение, баг XR-REV-059 (остаток)."""
+        """XR-REV-059: ссылка доступна на чтении, запись создаёт подтверждённый repair."""
         self.check(self.trojan_only_in_config)
 
     def trojan_only_in_config(self, box, run):
@@ -396,15 +398,19 @@ class ClientCharacterizationTests(unittest.TestCase):
         trojan["settings"]["clients"].append({"password": "fixture-only", "email": "bob", "level": 0})
         write_config(box, config)
         run("list")
-        run("link", "bob", exit_code=1)
+        run("link", "bob")
         for command, args in (
             ("set-days", ("3",)), ("extend-days", ("3",)), ("set-payment", ("paid",)),
             ("set-limit", ("daily", "1")),
         ):
-            run(command, "bob", *args, raises=(ValueError, "Client has no UUID: bob"))
+            run(command, "bob", *args, exit_code=1)
         original = box.paths.config.read_bytes()
         result = run("disable", "bob", exit_code=1)
-        self.assertIn("Client has no UUID: bob", result.stderr)
+        self.assertIn("xray-client repair", result.stderr)
+        with mock.patch.object(client_service, "uuid4", return_value="00000000-0000-4000-8000-000000000099"):
+            run("repair", stdin="y\n")
+        run("repair")
+        run("link", "bob")
         self.assertEqual(box.paths.config.read_bytes(), original)
 
     def test_client_edge_cases(self):

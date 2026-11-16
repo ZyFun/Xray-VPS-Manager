@@ -103,10 +103,28 @@ def cmd_route(name, route_value=None):
 def cmd_remove(name):
     with client_change_errors():
         change = client_service.remove_client(name)
-
     print(f"Removed client: {change.result.name}")
     print("Removed traffic history.")
     print(f"Backup: {backup_text(change.backup)}")
+
+
+def cmd_repair():
+    candidates = client_service.preview_repair()
+    if not candidates:
+        print("No missing client credentials in SQLite.")
+        return
+    print("Missing from SQLite:")
+    for candidate in candidates:
+        print(f"  {candidate.name} — {candidate.tag} ({candidate.protocol})")
+    try:
+        answer = input("Restore these client records and credentials? [y/N]: ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() not in {"y", "yes"}:
+        print("Repair cancelled.")
+        return
+    restored = client_service.repair_clients(candidates)
+    print(f"Restored credentials in SQLite: {restored}")
 
 
 def cmd_disable(name, connection_tag=None):
@@ -261,6 +279,8 @@ def main():
     command = sys.argv[1]
     if command == "list":
         reports.cmd_list()
+    elif command == "repair":
+        cmd_repair()
     elif command == "connection-list":
         connections.cmd_connection_list()
     elif command == "add-connection":

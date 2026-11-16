@@ -72,7 +72,7 @@ TLS = ('--tls-min-version', '--tls-max-version')
 XHTTP = ('--grpc-service-name', '--xhttp-path', '--xhttp-mode', '--xhttp-extra-json')
 CONNECTION = Form(1, 1, values=('--connection',), leading=1)
 CLIENT = table([
-    ('list connection-list trojan-password-check validate-trojan-passwords sync-routes limit-list timezone', Form()),
+    ('list connection-list repair trojan-password-check validate-trojan-passwords sync-routes limit-list timezone', Form()),
     ('add-connection', Form(3, 5, ('--install-caddy',), ('--security', '--transport', '--public-port', *XHTTP, *TLS), interspersed=True)),
     ('add-trojan-connection', Form(3, 6, ('--caddy', '--install-caddy', '--no-caddy', '--no-install-caddy'), ('--transport', '--ws-path', '--public-port', '--fingerprint', *TLS), interspersed=True)),
     ('update-trojan-connection trojan-connection-update', Form(1, 1, values=('--domain', '--tls-domain', '--local-port', '--public-port', '--ws-path', '--fingerprint', *TLS), leading=1)),
