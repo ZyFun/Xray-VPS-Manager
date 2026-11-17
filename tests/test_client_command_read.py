@@ -6,7 +6,8 @@ from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
-from tests.test_client_characterization import ALICE_KEY, script_processes
+from tests.test_client_characterization import ALICE_KEY, script_processes, write_config
+from xray_vps_manager.clients import links, repository
 from xray_vps_manager.commands import client_arguments
 from xray_vps_manager.commands.client_connections import update_trojan_caddy_site
 from xray_vps_manager.db import database
@@ -24,9 +25,9 @@ def script_caddy(box):
 
 
 class ClientCommandReadTests(unittest.TestCase):
-    def run_client(self, box, *args):
+    def run_client(self, box, *args, code=0):
         result = box.run_cli("client", *args)
-        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(result.exit_code, code, result.stderr)
         return result
 
     def add_trojan(self, box, *options):
@@ -44,6 +45,88 @@ class ClientCommandReadTests(unittest.TestCase):
     def test_parse_add_args_rejects_connection_and_protocol_together(self) -> None:
         with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
             client_arguments.parse_add_args(["alice", "--connection", "trojan-tls", "--protocol", "trojan"])
+
+    def test_add_warns_only_when_access_days_are_passed_for_an_existing_client(self):
+        tag = "vless-reality-2"
+        for days in ((), ("+5",), ("0",), ("без срока",), ("",)):
+            with self.subTest(days=days), Sandbox() as box, running_xray(box):
+                script_processes(box)
+                self.run_client(box, "add-connection", "Second", "8443", "cdn.example", "firefox", "tcp")
+                self.run_client(box, "set-days", "alice", "3")
+                before = repository.load_db()["clients"]["alice"]
+
+                result = self.run_client(box, "add", "alice", *days, "--connection", tag)
+
+                self.assertIn("Added credential for client: alice", result.stdout)
+                self.assertIn("vless://", result.stdout)
+                if days:
+                    self.assertIn("Access period is unchanged.", result.stdout)
+                    self.assertIn("xray-client set-days", result.stdout)
+                    self.assertIn("xray-client extend-days", result.stdout)
+                else:
+                    self.assertNotIn("WARN:", result.stdout + result.stderr)
+                after = repository.load_db()["clients"]["alice"]
+                self.assertIn(tag, after["credentials"])
+                self.assertEqual(after["expiresAt"], before["expiresAt"])
+                self.assertEqual(after["accessDays"], 3)
+
+    def test_add_and_set_days_accept_positive_days_with_plus(self):
+        with Sandbox() as box, running_xray(box):
+            script_processes(box)
+            result = self.run_client(box, "add", "bob", "+5")
+            self.assertIn("Added client: bob", result.stdout)
+            self.assertNotIn("WARN:", result.stdout + result.stderr)
+            self.assertEqual(repository.load_db()["clients"]["bob"]["accessDays"], 5)
+
+            self.run_client(box, "set-days", "bob", "+7")
+            self.assertEqual(repository.load_db()["clients"]["bob"]["accessDays"], 7)
+            self.run_client(box, "extend-days", "bob", "+5")
+            self.assertEqual(repository.load_db()["clients"]["bob"]["accessDays"], 12)
+
+    def test_enable_and_disable_report_the_selected_credential_status(self):
+        primary, secondary = "vless-reality", "vless-reality-2"
+        with Sandbox() as box, running_xray(box):
+            script_processes(box)
+            self.run_client(box, "add-connection", "Second", "8443", "cdn.example", "firefox", "tcp")
+            self.run_client(box, "add", "alice", "--connection", secondary)
+            self.run_client(box, "disable", "alice", "--connection", secondary)
+
+            for command, tag, message in (
+                ("disable", secondary, f"Client credential already disabled: alice ({secondary})"),
+                ("enable", primary, f"Client credential already enabled: alice ({primary})"),
+                ("disable", "missing", "Client credential not found for connection: missing"),
+                ("enable", "missing", "Client credential not found for connection: missing"),
+            ):
+                with self.subTest(command=command, tag=tag):
+                    result = self.run_client(box, command, "alice", "--connection", tag, code=1)
+                    self.assertEqual(result.stderr.strip(), f"ERROR: {message}")
+            credentials = repository.load_db()["clients"]["alice"]["credentials"]
+            self.assertTrue(credentials[primary]["enabled"])
+            self.assertFalse(credentials[secondary]["enabled"])
+
+            self.run_client(box, "enable", "alice", "--connection", secondary)
+            result = self.run_client(box, "enable", "alice", code=1)
+            self.assertEqual(result.stderr.strip(), "ERROR: Client already enabled: alice")
+            self.run_client(box, "disable", "alice")
+            result = self.run_client(box, "disable", "alice", code=1)
+            self.assertEqual(result.stderr.strip(), "ERROR: Client already disabled: alice")
+
+    def test_link_reports_missing_reality_server_names(self):
+        tag = "vless-reality"
+        with Sandbox() as box:
+            script_processes(box)
+            valid = self.run_client(box, "link", "alice", "--connection", tag)
+            self.assertTrue(valid.stdout.startswith(f"vless://{ALICE_KEY}@"))
+            config = box.config()
+            inbound = next(inbound for inbound in config["inbounds"] if inbound["tag"] == tag)
+            inbound["streamSettings"]["realitySettings"]["serverNames"] = []
+            write_config(box, config)
+
+            with self.assertRaisesRegex(ValueError, "serverNames not found"):
+                links.link_for(config, ALICE_KEY, "alice", tag, repository.load_db())
+            result = self.run_client(box, "link", "alice", "--connection", tag, code=1)
+            self.assertEqual(result.stderr.strip(), "ERROR: Reality privateKey/serverNames not found in inbound.")
+            self.assertEqual(result.stdout, "")
 
     def test_cmd_add_prints_access_key_with_connection_link(self) -> None:
         with Sandbox() as box, running_xray(box):

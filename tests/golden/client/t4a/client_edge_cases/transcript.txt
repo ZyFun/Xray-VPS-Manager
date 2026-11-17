@@ -95,6 +95,7 @@ state:
 exit: 0
 stdout:
 Added credential for client: alice
+WARN: Access period is unchanged. Use xray-client set-days or xray-client extend-days to change it.
 Connection: Second (vless-reality-2)
 Payment type: free
 Created: 2026-10-06T12:00:00Z
@@ -180,7 +181,7 @@ exit: 1
 stdout:
 
 stderr:
-ERROR: Enabled client not found: alice
+ERROR: Client credential already disabled: alice (vless-reality-2)
 
 processes:
 state:
@@ -190,26 +191,16 @@ exit: 1
 stdout:
 
 stderr:
-ERROR: Client already enabled: alice
+ERROR: Client credential already enabled: alice (vless-reality)
 
 processes:
 state:
 
 ["set-days", "alice", "+5"]
-exit: 1
-stdout:
-
-stderr:
-ERROR: Access days must be a positive number. Empty or 0 means unlimited access.
-
-processes:
-state:
-
-["extend-days", "alice", "+5"]
 exit: 0
 stdout:
 Client: alice
-Access until: 2026-10-14 00:00
+Access until: 2026-10-11 00:00
 Status: enabled
 Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000003
 
@@ -226,7 +217,7 @@ state:
 +++ after/SQLite
 @@ -2 +2 @@
 -["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-09T00:00:00+03:00", 3, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
-+["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-14T00:00:00+03:00", 8, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-11T00:00:00+03:00", 5, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
 @@ -5 +5 @@
 -["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 0, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
 +["alice", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
@@ -247,21 +238,39 @@ state:
 +          }
 +        ],
 
+["extend-days", "alice", "+5"]
+exit: 0
+stdout:
+Client: alice
+Access until: 2026-10-16 00:00
+Status: enabled
+
+stderr:
+
+processes:
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-11T00:00:00+03:00", 5, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-16T00:00:00+03:00", 10, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+
 ["enable", "orphan"]
 exit: 1
 stdout:
 
 stderr:
-ERROR: Client not found: orphan
+ERROR: Client exists only in config.json: orphan. Run xray-client repair first.
 
 processes:
 state:
 
 ["link", "alice", "--connection", "vless-reality"]
-exception: IndexError: list index out of range
+exit: 1
 stdout:
 
 stderr:
+ERROR: Reality privateKey/serverNames not found in inbound.
 
 processes:
 state:

@@ -104,7 +104,7 @@ def link_for(
 
     reality = stream.get("realitySettings", {})
     port = inbound.get("port", 443)
-    sni = reality.get("serverNames", [""])[0]
+    sni = (reality.get("serverNames") or [""])[0]
     private_key = reality.get("privateKey")
     short_ids = reality.get("shortIds", [""])
     short_id = short_ids[0] if short_ids else ""

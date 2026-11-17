@@ -414,7 +414,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         self.assertEqual(box.paths.config.read_bytes(), original)
 
     def test_client_edge_cases(self):
-        """Текущее поведение, баг XR-REV-073 (a–e)."""
+        """XR-REV-073 (a–e): ошибка link, предупреждение add, статус credential, repair и +ДНИ."""
         self.check(self.client_edge_cases)
 
     def client_edge_cases(self, box, run):
@@ -424,7 +424,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         run("disable", "alice", "--connection", "vless-reality-2")
         run("disable", "alice", "--connection", "vless-reality-2", exit_code=1)
         run("enable", "alice", "--connection", "vless-reality", exit_code=1)
-        run("set-days", "alice", "+5", exit_code=1)
+        run("set-days", "alice", "+5")
         run("extend-days", "alice", "+5")
         config = box.config()
         inbound = next(inbound for inbound in config["inbounds"] if inbound["tag"] == "vless-reality")
@@ -434,7 +434,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         config = box.config()
         config["inbounds"][1]["streamSettings"]["realitySettings"]["serverNames"] = []
         write_config(box, config)
-        run("link", "alice", "--connection", "vless-reality", raises=(IndexError, "list index out of range"))
+        run("link", "alice", "--connection", "vless-reality", exit_code=1)
 
     def test_clear_limit_preserves_disabled_status(self):
         """Текущее поведение, баг XR-REV-037."""
