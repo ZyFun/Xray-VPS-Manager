@@ -196,6 +196,7 @@ def parse_month_value(value=None):
 
 
 def parse_add_args(args):
+    """Сохраняет различие между пропущенным сроком и явно переданным бессрочным доступом."""
     if not args:
         usage()
         sys.exit(1)

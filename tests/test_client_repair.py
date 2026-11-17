@@ -1,8 +1,10 @@
 """Регрессия VIREI-134 для config-only клиентов и credentials."""
 
+from contextlib import closing
 from copy import deepcopy
 from io import StringIO
 import json
+import sqlite3
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -13,6 +15,7 @@ from tests.test_apply_characterization import running_xray
 from tests.test_client_characterization import script_processes
 from xray_vps_manager.clients import listing, repository, service
 from xray_vps_manager.commands.menu_client_actions import client_rows_for_selection
+from xray_vps_manager.core.paths import Paths, use
 from xray_vps_manager.db import database, schema
 from xray_vps_manager.traffic import repository as traffic_repository
 
@@ -102,17 +105,76 @@ class ClientRepairTests(unittest.TestCase):
         sync.touch()
         before, config, env = db_dump(), self.box.paths.config.read_bytes(), self.box.paths.server_env.read_bytes()
         commands = (
-            ("disable", "bob"), ("set-days", "bob", "3"), ("extend-days", "bob", "3"),
+            ("disable", "bob"), ("enable", "bob"), ("enable", "bob", "--connection", TROJAN_TAG),
+            ("set-days", "bob", "3"), ("extend-days", "bob", "3"),
             ("set-payment", "bob", "paid"), ("set-limit", "bob", "daily", "1"),
             ("clear-limit", "bob"), ("add", "bob", "--connection", VLESS_TAG),
             ("move-connection", "bob", SECOND_TAG), ("route", "bob", "any"),
             ("rotate-trojan-password", "bob", "--connection", TROJAN_TAG),
         )
         for argv in commands:
-            with self.subTest(command=argv[0]):
+            with self.subTest(argv=argv):
                 result = self.run_client(*argv, code=1)
                 self.assertIn("xray-client repair", result.stderr)
                 self.assert_unchanged(before, config, env)
+                self.assertEqual(self.box.processes.calls, [])
+
+    def test_enable_after_explicit_repair_reports_the_active_client(self):
+        self.run_client("enable", "bob", code=1)
+        self.run_client("repair", stdin="yes\n")
+
+        config = self.box.paths.config.read_bytes()
+        env = self.box.paths.server_env.read_bytes()
+        before = db_dump()
+        result = self.run_client("enable", "bob", code=1)
+        self.assertEqual(result.stderr.strip(), "ERROR: Client already enabled: bob")
+        result = self.run_client("enable", "bob", "--connection", TROJAN_TAG, code=1)
+        self.assertEqual(result.stderr.strip(), f"ERROR: Client credential already enabled: bob ({TROJAN_TAG})")
+        result = self.run_client("enable", "absent", code=1)
+        self.assertEqual(result.stderr.strip(), "ERROR: Client not found: absent")
+        self.assert_unchanged(before, config, env)
+        self.assertEqual(self.box.processes.calls, [])
+
+    def test_enable_rejects_config_only_client_without_migrating_sqlite(self):
+        legacy_db = self.box.root / "legacy.db"
+        with closing(sqlite3.connect(legacy_db)) as conn, conn:
+            for migration in schema.MIGRATIONS:
+                if migration.version > 7:
+                    break
+                schema.apply_migration(conn, migration)
+        legacy_db.replace(self.box.paths.manager_db)
+        original = self.box.paths.manager_db.read_bytes()
+
+        result = self.run_client("enable", "bob", code=1)
+
+        self.assertIn("xray-client repair", result.stderr)
+        self.assertEqual(self.box.paths.manager_db.read_bytes(), original)
+        self.assertEqual(list(self.box.paths.config_dir.glob("config.json.bak.*")), [])
+        self.assertEqual(self.box.processes.calls, [])
+
+    def test_client_preflight_reads_the_current_manager_database(self):
+        alternate = Paths.under(self.box.root / "alternate")
+        with closing(database.initialize(alternate.manager_db)) as conn:
+            self.assertIsNone(repository.get_client(conn, "alice"))
+
+        self.assertTrue(repository.client_exists_in_sqlite("alice"))
+        with use(alternate):
+            self.assertFalse(repository.client_exists_in_sqlite("alice"))
+
+    def test_client_preflight_rejects_a_newer_schema_before_recommending_repair(self):
+        supported = schema.CURRENT_SCHEMA_VERSION
+        newer = supported + 1
+        with database.write_session() as conn:
+            conn.execute(f"PRAGMA user_version = {newer}")
+        db_path = self.box.paths.manager_db
+        original = db_path.read_bytes()
+
+        for argv in (("enable", "bob"), ("set-days", "bob", "3"), ("extend-days", "bob", "3")):
+            with self.subTest(argv=argv):
+                result = self.run_client(*argv, code=1)
+                self.assertIn(f"SQLite schema version {newer} is newer than supported version {supported}", result.stderr)
+                self.assertNotIn("xray-client repair", result.stderr)
+                self.assertEqual(db_path.read_bytes(), original)
                 self.assertEqual(self.box.processes.calls, [])
 
     def test_repair_adds_missing_credentials_and_preserves_existing_data(self):

@@ -288,8 +288,16 @@ def sync_traffic():
         process.run([str(sync), "--quiet"], timeout=8)
 
 
+def _reject_config_only_client(config, name):
+    if not repository.client_exists_in_sqlite(name):
+        crud.reject_config_only_client(config, name)
+
+
 def enable_client(name, connection_tag=None, *, limit_status):
     validate_name(name)
+    # Проверяем согласованный снимок до pre-sync, который работает без manager.lock.
+    with manager_lock(purpose="enable"):
+        _reject_config_only_client(_load_config(), name)
     sync_traffic()
 
     def mutate(config, db, conn):
@@ -315,9 +323,7 @@ def _update_access(purpose, name, update_entry, limit_status):
     validate_name(name)
 
     def before_write(config):
-        with database.report_errors(message="SQLite clients cannot be read"), database.session() as conn:
-            if repository.get_client(conn, name) is None:
-                crud.reject_config_only_client(config, name)
+        _reject_config_only_client(config, name)
         sync_traffic()
 
     def mutate(config, db, conn):

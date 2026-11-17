@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,10 +10,10 @@ from typing import Any
 
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.payments import normalize_payment_type
-from xray_vps_manager.core.errors import ConflictError
+from xray_vps_manager.core.errors import ConflictError, StateError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import paths
-from xray_vps_manager.db import database
+from xray_vps_manager.db import database, schema
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import cascades as sqlite_cascades
 from xray_vps_manager.db.repositories import connections as sqlite_connections
@@ -57,6 +58,17 @@ def normalize_client_defaults(db: dict[str, Any]) -> dict[str, Any]:
 def get_client(conn, name):
     entry = sqlite_clients.get_client(conn, name)
     return _normalize_client(entry) if entry is not None else None
+
+
+def client_exists_in_sqlite(name: str) -> bool:
+    """Проверить наличие клиента перед изменением без запуска миграций SQLite."""
+    with database.report_errors(message="SQLite clients cannot be read"), \
+            closing(database.open_database(paths().manager_db, initialize=False)) as conn:
+        try:
+            schema.pending_migrations(conn)
+        except RuntimeError as exc:
+            raise StateError(str(exc)) from exc
+        return sqlite_clients.client_exists(conn, name)
 
 
 def list_clients(conn, *, normalize=True):

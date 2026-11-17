@@ -35,7 +35,10 @@ def prompt_access_days():
     return args.parse_access_days(value)
 
 
-def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None, protocol="", payment_type="free"):
+def cmd_add(
+    name, access_days=None, prompt_for_access=True, connection_tag=None, protocol="", payment_type="free",
+    *, access_days_specified=False,
+):
     with client_change_errors():
         existing = None
         if prompt_for_access:
@@ -51,6 +54,8 @@ def cmd_add(name, access_days=None, prompt_for_access=True, connection_tag=None,
     result, config, db = change.result, change.config, change.db
 
     print(("Added client: " if result.added_client else "Added credential for client: ") + name)
+    if access_days_specified and not result.added_client:
+        print("WARN: Access period is unchanged. Use xray-client set-days or xray-client extend-days to change it.")
     print(f"Connection: {connection_display_name(config, db, result.connection_tag)} ({result.connection_tag})")
     print(f"Payment type: {client_payments.payment_type_label(result.entry)}")
     print(f"Created: {result.created}")
@@ -306,6 +311,7 @@ def main():
             connection_tag=connection_tag,
             protocol=protocol,
             payment_type=payment_type,
+            access_days_specified=not prompt_for_access,
         )
     elif command in ("disable", "off"):
         name, connection_tag = args.parse_name_connection_args(sys.argv[2:])

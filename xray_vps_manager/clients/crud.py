@@ -341,6 +341,8 @@ def disable_client(
         credential["enabled"] = False
 
     if not removed_tags:
+        if connection_tag:
+            raise ValueError(f"Client credential already disabled: {name} ({connection_tag})")
         if entry.get("enabled") is False:
             raise ValueError(f"Client already disabled: {name}")
         raise ValueError(f"Enabled client not found: {name}")
@@ -373,6 +375,7 @@ def enable_client(
     connections.ensure_connections(config, db)
     entry = db_clients(db).get(name)
     if not entry:
+        reject_config_only_client(config, name)
         raise ValueError(f"Client not found: {name}")
     if access.access_expired(entry):
         raise ValueError(f"Access expired for client: {name}. Extend it first: xray-client extend-days {name} DAYS")
@@ -396,6 +399,8 @@ def enable_client(
         enabled_tags.append(tag)
 
     if not enabled_tags:
+        if connection_tag:
+            raise ValueError(f"Client credential already enabled: {name} ({connection_tag})")
         raise ValueError(f"Client already enabled: {name}")
 
     entry["enabled"] = True
