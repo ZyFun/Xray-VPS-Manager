@@ -2,6 +2,7 @@
 
 import multiprocessing
 import unittest
+from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from xray_vps_manager.clients import repository as repo
@@ -22,6 +23,72 @@ def replace_client_in_worker(channel):
 
 
 class ClientPointWriteTests(unittest.TestCase):
+    def test_metadata_commands_use_only_target_client_and_refresh_connection_metadata(self):
+        with Sandbox() as box:
+            with database.write_session() as conn:
+                repo.save_client(conn, "bob", {
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "connection": "vless-reality",
+                })
+                repo.save_connection(conn, "vless-reality", {"name": "Fixture", "port": 8443})
+                conn.execute("""
+                    CREATE TRIGGER forbid_credential_upsert BEFORE INSERT ON client_credentials
+                    BEGIN
+                        SELECT RAISE(ABORT, 'Metadata update rewrote a credential');
+                    END
+                """)
+                conn.execute("""
+                    CREATE TRIGGER forbid_client_identity_update BEFORE UPDATE OF uuid ON clients
+                    BEGIN
+                        SELECT RAISE(ABORT, 'Metadata update rewrote client identity');
+                    END
+                """)
+
+            for args in (
+                ("set-payment", "alice", "paid"),
+                ("set-limit", "alice", "daily", "1"),
+                ("clear-limit", "alice"),
+            ):
+                with (
+                    self.subTest(args=args),
+                    mock.patch.object(repo, "list_clients", wraps=repo.list_clients) as clients,
+                    mock.patch.object(repo, "list_routes", wraps=repo.list_routes) as routes,
+                    mock.patch.object(repo, "list_connections", wraps=repo.list_connections) as connections,
+                    mock.patch.object(repo, "get_client", wraps=repo.get_client) as get_client,
+                ):
+                    result = box.run_cli("client", *args)
+                    self.assertEqual(result.exit_code, 0, result.stderr)
+                    clients.assert_not_called()
+                    routes.assert_not_called()
+                    connections.assert_not_called()
+                    self.assertEqual([call.args[1] for call in get_client.call_args_list], ["alice"])
+
+            with database.session() as conn:
+                self.assertEqual(repo.get_client(conn, "alice")["paymentType"], "paid")
+                self.assertEqual(repo.get_client(conn, "bob")["paymentType"], "free")
+                self.assertEqual(repo.get_connection(conn, "vless-reality")["port"], 443)
+                self.assertIsNone(repo.get_client(conn, "alice").get("trafficLimit"))
+            self.assertEqual(box.processes.calls, [])
+
+    def test_metadata_and_connection_changes_are_atomic(self):
+        with Sandbox() as box:
+            with database.write_session() as conn:
+                repo.save_connection(conn, "vless-reality", {"name": "Fixture", "port": 8443})
+                conn.execute("""
+                    CREATE TRIGGER reject_connection_update BEFORE UPDATE ON reality_connections
+                    BEGIN
+                        SELECT RAISE(ABORT, 'Connection update refused');
+                    END
+                """)
+
+            result = box.run_cli("client", "set-payment", "alice", "paid")
+
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("Connection update refused", result.stderr)
+            with database.session() as conn:
+                self.assertEqual(repo.get_client(conn, "alice")["paymentType"], "free")
+                self.assertEqual(repo.get_connection(conn, "vless-reality")["port"], 8443)
+
     def test_delayed_snapshot_keeps_other_process_changes_and_commits_its_own_route(self):
         context = multiprocessing.get_context("spawn")
         receiver, sender = context.Pipe(duplex=False)

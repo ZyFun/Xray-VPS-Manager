@@ -235,6 +235,35 @@ class ClientRepairTests(unittest.TestCase):
         inbound = next(inbound for inbound in self.box.config()["inbounds"] if inbound["tag"] == TROJAN_TAG)
         self.assertEqual(inbound["settings"]["clients"][0], trojan("bob", PASSWORD))
 
+    def test_enable_restores_disabled_legacy_trojan_password_verbatim(self):
+        self.config["inbounds"][-2]["settings"]["users"].clear()
+        self.config["inbounds"][-1]["settings"]["users"].clear()
+        self.save_config()
+        legacy = dict(trojan("alice", PASSWORD), id=BOB_ID)
+        with database.write_session() as conn:
+            conn.execute(
+                "UPDATE clients SET connection_tag = ?, xray_client_json = ? WHERE name = 'alice'",
+                (TROJAN_TAG, json.dumps(legacy)),
+            )
+
+        config = self.box.paths.config.read_bytes()
+        result = self.run_client("repair", stdin="y\n")
+        self.assertIn(f"alice — {TROJAN_TAG} (trojan) [disabled]", result.stdout)
+        self.assertNotIn(PASSWORD, result.stdout + result.stderr)
+        self.assertEqual(self.box.paths.config.read_bytes(), config)
+        self.assertEqual(self.box.processes.calls, [])
+        with database.session() as conn:
+            credentials = repository.get_client(conn, "alice")["credentials"]
+            self.assertTrue(credentials[VLESS_TAG]["enabled"])
+            self.assertFalse(credentials[TROJAN_TAG]["enabled"])
+            self.assertEqual(credentials[TROJAN_TAG]["id"], BOB_ID)
+
+        with running_xray(self.box):
+            script_processes(self.box)
+            self.run_client("enable", "alice", "--connection", TROJAN_TAG)
+        inbound = next(inbound for inbound in self.box.config()["inbounds"] if inbound["tag"] == TROJAN_TAG)
+        self.assertEqual(inbound["settings"]["clients"], [trojan("alice", PASSWORD)])
+
     def test_move_disabled_repaired_trojan_keeps_password_and_uuid(self):
         self.config["inbounds"][-1]["settings"]["users"].clear()
         self.save_config()
@@ -302,6 +331,86 @@ class ClientRepairTests(unittest.TestCase):
         self.assertNotIn(BOB_ID, result.stdout + result.stderr)
         self.assert_unchanged(before, config, env)
 
+    def assert_repair_recovers_disabled_vless(self, *, already_repaired):
+        self.vless_inbound["settings"]["clients"].clear()
+        self.config["inbounds"][-2]["settings"]["users"] = [trojan("alice", STORED_PASSWORD)]
+        self.config["inbounds"][-1]["settings"]["users"].clear()
+        self.save_config()
+        with database.write_session() as conn:
+            original = repository.get_client(conn, "alice")
+            if already_repaired:
+                repository.save_credential(conn, "alice", TROJAN_TAG, {
+                    "id": BOB_ID, "protocol": "trojan", "enabled": True,
+                    "client": trojan("alice", STORED_PASSWORD),
+                })
+            else:
+                conn.execute("UPDATE clients SET enabled = 0 WHERE name = 'alice'")
+            conn.execute(
+                "DELETE FROM client_credentials WHERE client_name = 'alice' AND connection_tag = ?",
+                (VLESS_TAG,),
+            )
+
+        before, config, env = db_dump(), self.box.paths.config.read_bytes(), self.box.paths.server_env.read_bytes()
+        preview = self.run_client("repair", stdin="n\n")
+        self.assertIn(f"alice — {VLESS_TAG} (vless) [disabled]", preview.stdout)
+        self.assert_unchanged(before, config, env)
+
+        result = self.run_client("repair", stdin="y\n")
+        restored_count = 1 if already_repaired else 2
+        self.assertIn(f"Restored credentials in SQLite: {restored_count}", result.stdout)
+        with database.session() as conn:
+            entry = repository.get_client(conn, "alice")
+            self.assertEqual(entry["id"], original["id"])
+            self.assertEqual(entry["connection"], VLESS_TAG)
+            self.assertEqual(set(entry["credentials"]), {VLESS_TAG, TROJAN_TAG})
+            self.assertFalse(entry["credentials"][VLESS_TAG]["enabled"])
+            self.assertTrue(entry["credentials"][TROJAN_TAG]["enabled"])
+            vless_id = original["credentials"][VLESS_TAG]["id"]
+            self.assertEqual(entry["credentials"][VLESS_TAG]["id"], vless_id)
+            self.assertEqual(entry["credentials"][TROJAN_TAG]["client"]["password"], STORED_PASSWORD)
+
+        repaired = db_dump()
+        self.assertIn("No missing client credentials", self.run_client("repair").stdout)
+        self.assert_unchanged(repaired, config, env)
+        self.assertEqual(self.box.processes.calls, [])
+
+        with running_xray(self.box):
+            script_processes(self.box)
+            link = self.run_client("link", "alice", "--connection", VLESS_TAG).stdout.strip()
+            self.assertEqual(urlsplit(link).username, vless_id)
+            self.run_client("enable", "alice", "--connection", VLESS_TAG)
+        active_vless = next(inbound for inbound in self.box.config()["inbounds"] if inbound["tag"] == VLESS_TAG)
+        self.assertEqual([item["id"] for item in active_vless["settings"]["clients"]], [vless_id])
+
+    def test_repair_preserves_disabled_legacy_vless_when_adding_trojan(self):
+        self.assert_repair_recovers_disabled_vless(already_repaired=False)
+
+    def test_repeat_repair_finds_legacy_vless_hidden_by_prior_repair(self):
+        self.assert_repair_recovers_disabled_vless(already_repaired=True)
+
+    def test_repair_skips_legacy_credential_when_its_inbound_is_missing(self):
+        self.config["inbounds"].remove(self.vless_inbound)
+        self.config["inbounds"][-2]["settings"]["users"].clear()
+        self.config["inbounds"][-1]["settings"]["users"].clear()
+        self.save_config()
+        with database.write_session() as conn:
+            repository.save_credential(conn, "alice", TROJAN_TAG, {
+                "id": BOB_ID, "protocol": "trojan", "enabled": False,
+                "client": trojan("alice", STORED_PASSWORD),
+            })
+            conn.execute(
+                "DELETE FROM client_credentials WHERE client_name = 'alice' AND connection_tag = ?",
+                (VLESS_TAG,),
+            )
+
+        before, config, env = db_dump(), self.box.paths.config.read_bytes(), self.box.paths.server_env.read_bytes()
+        result = self.run_client("repair", stdin="y\n")
+        self.assertIn("No missing client credentials", result.stdout)
+        self.assert_unchanged(before, config, env)
+        with running_xray(self.box):
+            script_processes(self.box)
+            self.run_client("enable", "alice")
+
     def repair_with_legacy_primary_absent_from_config(self):
         with database.write_session() as conn:
             repository.save_credential(conn, "alice", TROJAN_TAG, {
@@ -324,7 +433,8 @@ class ClientRepairTests(unittest.TestCase):
             self.assertEqual(restored["client"], original["client"])
             self.assertEqual(restored["id"], original["id"])
             self.assertEqual(restored["paymentType"], "paid")
-            self.assertEqual(set(restored["credentials"]), {TROJAN_TAG, SECOND_TAG})
+            self.assertEqual(set(restored["credentials"]), {VLESS_TAG, TROJAN_TAG, SECOND_TAG})
+            self.assertFalse(restored["credentials"][VLESS_TAG]["enabled"])
 
     def test_remove_secondary_after_repair_preserves_remaining_credential_and_traffic(self):
         original = self.repair_with_legacy_primary_absent_from_config()
@@ -341,6 +451,9 @@ class ClientRepairTests(unittest.TestCase):
             remaining = repository.list_clients(conn, normalize=False)["alice"]
             self.assertEqual((remaining["id"], remaining["connection"], remaining["client"]),
                              (original["id"], VLESS_TAG, original["client"]))
+            vless = remaining["credentials"].pop(VLESS_TAG)
+            self.assertEqual(vless["id"], original["client"]["id"])
+            self.assertFalse(vless["enabled"])
             self.assertEqual(remaining["credentials"], original["credentials"])
             self.assertEqual(repository.get_traffic_entry(conn, "alice")["incoming"], 3072)
             traffic = conn.execute(
@@ -372,9 +485,12 @@ class ClientRepairTests(unittest.TestCase):
         self.assertEqual(self.box.processes.calls, [])
 
     def test_all_writes_roll_back_on_sqlite_failure_or_cancel(self):
+        self.vless_inbound["settings"]["clients"].clear()
         self.config["inbounds"][-1]["settings"]["users"].append(trojan("alice", PASSWORD))
         self.save_config()
         with database.write_session() as conn:
+            conn.execute("UPDATE clients SET enabled = 0 WHERE name = 'alice'")
+            conn.execute("DELETE FROM client_credentials WHERE client_name = 'alice'")
             conn.execute("""
                 CREATE TRIGGER reject_bob BEFORE INSERT ON client_credentials
                 WHEN NEW.client_name = 'bob'

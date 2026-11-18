@@ -131,8 +131,7 @@ class RenameConnectionResult:
     new_name: str
 
 
-def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
-    connections = db_managed_connections(db)
+def refresh_connection_records(config: dict[str, Any], connections: dict[str, Any]) -> None:
     env = server_env_values()
     now_stamp = utc_stamp()
     for inbound in reality_inbounds(config):
@@ -265,6 +264,9 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
         if certificate.get("keyFile"):
             entry["keyFile"] = certificate["keyFile"]
 
+
+def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
+    refresh_connection_records(config, db_managed_connections(db))
     default_tag = default_connection_tag(config)
     for inbound in managed_connection_inbounds(config):
         tag = inbound_tag(inbound)

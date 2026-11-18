@@ -306,6 +306,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         run("trojan-password-check")
 
     def test_limits(self):
+        """136-SR-001: установка лимита не переписывает метаданные клиента."""
         self.check(self.limits)
 
     def limits(self, box, run):

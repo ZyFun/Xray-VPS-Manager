@@ -19,7 +19,13 @@ from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import client_policy_recovery, client_traffic_handoff
 from xray_vps_manager.xray.apply import apply_config, restart_installed_config, restore_config_backup
 from xray_vps_manager.xray import client_route_runtime, client_routes
-from xray_vps_manager.xray.config import active_client_any, ensure_api_rule_first, load_config
+from xray_vps_manager.xray.config import (
+    active_client_any,
+    ensure_api_rule_first,
+    inbound_tag,
+    load_config,
+    managed_connection_inbounds,
+)
 
 
 _CLIENT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
@@ -344,35 +350,70 @@ def extend_days(name, days, *, limit_status):
     return _update_access("extend-days", name, lambda entry: access.extend_entry_expiry(entry, days), limit_status)
 
 
+def _sync_connection_records(conn, config):
+    tags = sorted({inbound_tag(inbound) for inbound in managed_connection_inbounds(config)})
+    previous = {
+        tag: record for tag in tags
+        if (record := repository.get_connection(conn, tag)) is not None
+    }
+    refreshed = deepcopy(previous)
+    connections.refresh_connection_records(config, refreshed)
+    for tag, record in refreshed.items():
+        if record != previous.get(tag):
+            repository.save_connection(conn, tag, record)
+
+
 def _update_client_entry(purpose, name, update_entry):
     validate_name(name)
-
-    def mutate(config, db, _conn):
-        connections.ensure_connections(config, db)
-        entry = crud.db_entry_for_existing_client(config, db, name)
-        result = update_entry(entry)
-        repository.db_clients(db)[name] = entry
-        return _Mutation(result, apply=False)
-
-    return _change(purpose, mutate)
+    with manager_lock(purpose=purpose):
+        config = _load_config()
+        try:
+            with database.report_errors(), database.write_session() as conn:
+                with database.report_errors(message="SQLite clients cannot be read"):
+                    entry = repository.get_client(conn, name)
+                if entry is None:
+                    crud.reject_config_only_client(config, name)
+                    raise ValidationError(f"Client not found: {name}")
+                result = update_entry(conn, entry)
+                _sync_connection_records(conn, config)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+    return result
 
 
 def set_payment(name, payment_type):
-    def update(entry):
-        payments.set_payment_type(entry, payment_type)
+    def update(conn, entry):
+        previous = entry["paymentType"]
+        current = payments.set_payment_type(entry, payment_type)
+        if current != previous:
+            repository.update_payment_type(conn, name, current)
         return entry
 
     return _update_client_entry("set-payment", name, update)
 
 
+def _update_client_limit(purpose, name, update_limit):
+    def update(conn, entry):
+        previous = entry.copy()
+        result = update_limit(entry)
+        if entry != previous:
+            repository.save_traffic_limit_fields(conn, name, entry)
+        if entry.get("disabledReason") != previous.get("disabledReason"):
+            repository.update_disabled_reason(conn, name, entry.get("disabledReason"))
+        return result
+
+    return _update_client_entry(purpose, name, update)
+
+
 def set_limit(name, period, limit_bytes):
-    return _update_client_entry(
-        "set-limit", name, lambda entry: limits.set_client_traffic_limit(entry, period, limit_bytes, utc_stamp),
+    return _update_client_limit(
+        "set-limit", name,
+        lambda entry: limits.set_client_traffic_limit(entry, period, limit_bytes, utc_stamp),
     )
 
 
 def clear_limit(name):
-    return _update_client_entry("clear-limit", name, lambda entry: limits.clear_client_traffic_limit(entry, utc_stamp))
+    return _update_client_limit("clear-limit", name, lambda entry: limits.clear_client_traffic_limit(entry, utc_stamp))
 
 
 def _run_policy(purpose, evaluate):
