@@ -263,7 +263,8 @@ class RepairCandidate:
             "client": dict(self.item, id=credential_id),
             "linkMetadata": {},
         }
-        if self.protocol == "trojan" and self.enabled:
+        if self.protocol == "trojan":
+            # Прежний пароль сохраняется и для отключённой записи из SQLite.
             record["restoredFromConfig"] = True
         return record
 

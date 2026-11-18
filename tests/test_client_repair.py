@@ -235,6 +235,35 @@ class ClientRepairTests(unittest.TestCase):
         inbound = next(inbound for inbound in self.box.config()["inbounds"] if inbound["tag"] == TROJAN_TAG)
         self.assertEqual(inbound["settings"]["clients"][0], trojan("bob", PASSWORD))
 
+    def test_enable_restores_disabled_legacy_trojan_password_verbatim(self):
+        self.config["inbounds"][-2]["settings"]["users"].clear()
+        self.config["inbounds"][-1]["settings"]["users"].clear()
+        self.save_config()
+        legacy = dict(trojan("alice", PASSWORD), id=BOB_ID)
+        with database.write_session() as conn:
+            conn.execute(
+                "UPDATE clients SET connection_tag = ?, xray_client_json = ? WHERE name = 'alice'",
+                (TROJAN_TAG, json.dumps(legacy)),
+            )
+
+        config = self.box.paths.config.read_bytes()
+        result = self.run_client("repair", stdin="y\n")
+        self.assertIn(f"alice — {TROJAN_TAG} (trojan) [disabled]", result.stdout)
+        self.assertNotIn(PASSWORD, result.stdout + result.stderr)
+        self.assertEqual(self.box.paths.config.read_bytes(), config)
+        self.assertEqual(self.box.processes.calls, [])
+        with database.session() as conn:
+            credentials = repository.get_client(conn, "alice")["credentials"]
+            self.assertTrue(credentials[VLESS_TAG]["enabled"])
+            self.assertFalse(credentials[TROJAN_TAG]["enabled"])
+            self.assertEqual(credentials[TROJAN_TAG]["id"], BOB_ID)
+
+        with running_xray(self.box):
+            script_processes(self.box)
+            self.run_client("enable", "alice", "--connection", TROJAN_TAG)
+        inbound = next(inbound for inbound in self.box.config()["inbounds"] if inbound["tag"] == TROJAN_TAG)
+        self.assertEqual(inbound["settings"]["clients"], [trojan("alice", PASSWORD)])
+
     def test_move_disabled_repaired_trojan_keeps_password_and_uuid(self):
         self.config["inbounds"][-1]["settings"]["users"].clear()
         self.save_config()
