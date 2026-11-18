@@ -68,7 +68,7 @@ def cmd_add(
 
 def cmd_set_payment(name, payment_value):
     with client_change_errors():
-        entry = client_service.set_payment(name, payment_value).result
+        entry = client_service.set_payment(name, payment_value)
     print(f"Client: {name}")
     print(f"Payment type: {client_payments.payment_type_label(entry)}")
     print_payment_summary()
@@ -120,7 +120,8 @@ def cmd_repair():
         return
     print("Missing from SQLite:")
     for candidate in candidates:
-        print(f"  {candidate.name} — {candidate.tag} ({candidate.protocol})")
+        status = "" if candidate.enabled else " [disabled]"
+        print(f"  {candidate.name} — {candidate.tag} ({candidate.protocol}){status}")
     try:
         answer = input("Restore these client records and credentials? [y/N]: ")
     except EOFError:
@@ -200,7 +201,7 @@ def cmd_set_limit(name, period_value, limit_gb_value):
     period = args.validate_limit_period(period_value)
     limit_bytes = args.parse_limit_gb(limit_gb_value)
     with client_change_errors():
-        result = client_service.set_limit(name, period, limit_bytes).result
+        result = client_service.set_limit(name, period, limit_bytes)
 
     print(f"Client: {name}")
     if result.limit_bytes is None:
@@ -222,7 +223,7 @@ def cmd_set_limit(name, period_value, limit_gb_value):
 
 def cmd_clear_limit(name):
     with client_change_errors():
-        result = client_service.clear_limit(name).result
+        result = client_service.clear_limit(name)
 
     print(f"Client: {name}")
     print("Traffic limit: без лимита")

@@ -249,6 +249,7 @@ class RepairCandidate:
     created: str
     item: dict = field(repr=False)
     legacy: dict | None = field(default=None, repr=False)
+    enabled: bool = True
 
     def credential(self, credential_id: str) -> dict:
         record = {
@@ -257,12 +258,12 @@ class RepairCandidate:
             "protocol": self.protocol,
             "security": self.security,
             "transport": self.transport,
-            "enabled": True,
+            "enabled": self.enabled,
             "created": self.created,
             "client": dict(self.item, id=credential_id),
             "linkMetadata": {},
         }
-        if self.protocol == "trojan":
+        if self.protocol == "trojan" and self.enabled:
             record["restoredFromConfig"] = True
         return record
 
@@ -287,6 +288,8 @@ def repair_candidates(config, entries, connections) -> tuple[RepairCandidate, ..
         stored = entry["credentials"]
         legacy = legacy_credential_from_entry(entry)
         if legacy and legacy["connection"] not in stored:
+            if legacy["protocol"] == "vless":
+                legacy["client"]["id"] = legacy["id"]
             legacy_credentials[name, legacy["connection"]] = legacy
             stored = {**stored, legacy["connection"]: legacy}
         for tag, credential in stored.items():
@@ -295,13 +298,13 @@ def repair_candidates(config, entries, connections) -> tuple[RepairCandidate, ..
             owners.setdefault((tag, protocol, identity), set()).add(name)
 
     active_counts = {}
-    active_tags = set()
+    inbounds_by_tag = {}
     duplicate_tags = set()
     for inbound in managed_connection_inbounds(config):
         tag = inbound_tag(inbound)
-        if tag in active_tags:
+        if tag in inbounds_by_tag:
             duplicate_tags.add(tag)
-        active_tags.add(tag)
+        inbounds_by_tag[tag] = inbound
         protocol = protocol_from_inbound(inbound)
         for item in clients(inbound):
             name, created = split_email(item.get("email", ""))
@@ -317,19 +320,38 @@ def repair_candidates(config, entries, connections) -> tuple[RepairCandidate, ..
                     created or (legacy or {}).get("created", ""), dict(item), legacy,
                 ))
 
+    names_with_candidates = {candidate.name for candidate in candidates}
+    for (name, tag), legacy in legacy_credentials.items():
+        inbound = inbounds_by_tag.get(tag)
+        if inbound is None or (name, tag) in active_counts:
+            continue
+        entry = entries[name]
+        if name not in names_with_candidates and not entry["credentials"]:
+            continue
+        protocol = legacy["protocol"]
+        if protocol != protocol_from_inbound(inbound):
+            raise ConflictError(f"Stored client data conflicts with config.json: {name} ({tag}).")
+        # Общий флаг enabled мог уже измениться из-за другого credential.
+        candidates.append(RepairCandidate(
+            name, tag, entry["id"], protocol,
+            security_from_inbound(inbound), transport_from_inbound(inbound),
+            legacy["created"], legacy["client"], legacy, enabled=False,
+        ))
+
     internal_owners = {_repair_identity("vless", entry): name for name, entry in entries.items()}
     new_clients = set()
     for candidate in candidates:
         name, tag, protocol = candidate.name, candidate.tag, candidate.protocol
         identity = _repair_identity(protocol, candidate.item)
         if identity is None:
-            raise StateError(f"Missing {protocol} credential in config.json: {name} ({tag}).")
+            source = "config.json" if candidate.enabled else "SQLite"
+            raise StateError(f"Missing {protocol} credential in {source}: {name} ({tag}).")
         if candidate.legacy is not None and (
             candidate.legacy["protocol"] != protocol
             or _repair_identity(protocol, candidate.legacy["client"]) != identity
         ):
             raise ConflictError(f"Stored client data conflicts with config.json: {name} ({tag}).")
-        if (tag in duplicate_tags or active_counts[name, tag] != 1
+        if (tag in duplicate_tags or active_counts.get((name, tag), 0) != int(candidate.enabled)
                 or owners[tag, protocol, identity] != {name}):
             raise ConflictError(f"Ambiguous client or credential in connection {tag}: {name}.")
         if tag not in connections:

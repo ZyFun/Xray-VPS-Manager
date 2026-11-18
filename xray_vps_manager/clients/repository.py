@@ -99,6 +99,9 @@ def _save_client_entry(conn, name, entry):
 
 
 delete_client = sqlite_clients.delete_client
+update_payment_type = sqlite_clients.update_payment_type
+update_disabled_reason = sqlite_clients.update_disabled_reason
+save_traffic_limit_fields = sqlite_clients.save_traffic_limit_fields
 get_connection = sqlite_connections.get_connection
 save_connection = sqlite_connections.upsert_connection
 list_connections = sqlite_connections.list_connections
