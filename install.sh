@@ -223,7 +223,7 @@ validate_server_name() {
 
 validate_manager_timezone() {
   local value="$1"
-  if [[ -z "$value" ]]; then
+  if [ -z "$value" ] || [ "$value" = "UTC" ]; then
     return
   fi
   if [[ "$value" == /* || "$value" == *".."* || "$value" == *" "* ]]; then
