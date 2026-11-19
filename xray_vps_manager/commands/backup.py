@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from xray_vps_manager.system import units as system_units
+from xray_vps_manager.system.backups import list_archives
 from xray_vps_manager.core.errors import ManagerError, RestoreError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.settings import ORDERED_ENV_KEYS, env_text as server_env_text, read_env as read_server_env, write_env as write_server_env
@@ -422,11 +423,7 @@ def format_size(value):
 
 def backup_rows():
     rows = []
-    for path in sorted(BACKUP_DIR.glob("*.tar.gz"), reverse=True):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
+    for path, stat in list_archives(BACKUP_DIR):
         created = datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         rows.append([str(path), created, format_size(stat.st_size)])
     return rows
