@@ -2,6 +2,7 @@ import unittest
 from urllib.parse import parse_qs, unquote, urlsplit
 from unittest import mock
 
+from xray_vps_manager.traffic.limits import traffic_limit_status
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import crud as client_crud
 from xray_vps_manager.clients import listing as client_listing
@@ -279,7 +280,7 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(config["inbounds"][1]["settings"]["clients"], [])
         self.assertFalse(db["clients"]["alice"]["enabled"])
 
-        client_crud.enable_client(config, db, {"clients": {}}, "alice")
+        client_crud.enable_client(config, db, {}, "alice", limit_status=traffic_limit_status)
 
         self.assertEqual(config["inbounds"][0]["settings"]["clients"][0]["id"], CLIENT_ID)
         self.assertEqual(config["inbounds"][1]["settings"]["clients"][0]["password"], PASSWORD)
@@ -531,7 +532,7 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(db["clients"]["alice"]["id"], CLIENT_ID)
         self.assertEqual(db["clients"]["alice"]["client"]["password"], PASSWORD)
 
-        client_crud.enable_client(config, db, {"clients": {}}, "alice")
+        client_crud.enable_client(config, db, {}, "alice", limit_status=traffic_limit_status)
 
         clients = config["inbounds"][1]["settings"]["clients"]
         self.assertEqual(clients[0]["password"], PASSWORD)

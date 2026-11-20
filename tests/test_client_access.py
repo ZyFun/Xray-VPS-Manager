@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from xray_vps_manager.clients import access
 from xray_vps_manager.clients.status import expire_due_clients, reconcile_client_access_status
+from xray_vps_manager.traffic.limits import traffic_limit_status
 
 
 def client_item(name: str) -> dict:
@@ -30,19 +31,24 @@ def reality_config(items: list[dict]) -> dict:
 
 class ClientAccessTests(unittest.TestCase):
     def test_parse_access_days_accepts_unlimited_aliases_and_positive_days(self) -> None:
-        self.assertIsNone(access.parse_access_days(""))
-        self.assertIsNone(access.parse_access_days("0"))
-        self.assertIsNone(access.parse_access_days("бессрочно"))
+        for value in (None, "", "0", "00", "none", "never", "no", "unlimited", "forever", "бессрочно", "без срока"):
+            with self.subTest(value=value):
+                self.assertIsNone(access.parse_access_days(value))
         self.assertEqual(access.parse_access_days("30"), 30)
+        self.assertEqual(access.parse_access_days(" +5 "), 5)
+        self.assertEqual(access.parse_access_days("+36500"), 36500)
 
     def test_parse_access_days_rejects_invalid_values(self) -> None:
-        with self.assertRaisesRegex(ValueError, "positive number"):
-            access.parse_access_days("1.5")
-        with self.assertRaisesRegex(ValueError, "too large"):
-            access.parse_access_days("36501")
+        for value in ("1.5", "-5", "++5", "+", "+ 5"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "positive number"):
+                access.parse_access_days(value)
+        for value in ("36501", "+36501"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "too large"):
+                access.parse_access_days(value)
 
     def test_parse_extend_days_requires_positive_number(self) -> None:
         self.assertEqual(access.parse_extend_days("+5"), 5)
+        self.assertEqual(access.parse_extend_days("++5"), 5)
         with self.assertRaisesRegex(ValueError, "positive number"):
             access.parse_extend_days("0")
 
@@ -108,10 +114,11 @@ class ClientAccessTests(unittest.TestCase):
         entry, changed, status, traffic_status = reconcile_client_access_status(
             config,
             db,
-            traffic_db,
+            traffic_db["clients"]["alice"],
             "alice",
             db["clients"]["alice"],
             now=datetime(2026, 6, 12, 12, tzinfo=timezone.utc),
+            limit_status=traffic_limit_status,
         )
 
         self.assertTrue(changed)

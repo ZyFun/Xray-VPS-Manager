@@ -19,6 +19,7 @@ from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.core.server_env import read_server_env
 from xray_vps_manager.db import database
+from xray_vps_manager.system.timezone import normalize_access_deadlines
 
 MOSCOW = ZoneInfo("Europe/Moscow")
 VLADIVOSTOK = ZoneInfo("Asia/Vladivostok")
@@ -102,7 +103,7 @@ class SetTimezoneAccessDeadlinesTests(unittest.TestCase):
         now = datetime(2026, 10, 4, 12, 0, tzinfo=MOSCOW)
 
         with self.sandbox("Asia/Vladivostok", now):
-            changed, warnings = client_command.normalize_access_deadlines(MOSCOW, VLADIVOSTOK, now=now)
+            changed, warnings = normalize_access_deadlines(MOSCOW, VLADIVOSTOK, now=now)
 
         self.assertEqual(changed, 3)
         self.assertEqual(warnings, [])

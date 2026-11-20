@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 from xray_vps_manager.clients.models import client_from_db_entry
-from xray_vps_manager.xray.email import client_name, email_for_client
+from xray_vps_manager.core.errors import ConflictError, StateError
+from xray_vps_manager.xray.email import client_name, email_for_client, split_email
 from xray_vps_manager.xray.config import (
     apply_client_transport,
     clients,
@@ -187,11 +190,14 @@ def xray_client_for_credential(name: str, entry: dict[str, Any], credential: dic
         protocol = "trojan"
     email = credential_email(name, entry, credential)
     if protocol == "trojan":
-        password = str(client.get("password") or "").strip()
-        try:
-            validate_trojan_password(password)
-        except ValueError as exc:
-            raise ValueError(f"Trojan credential has invalid password in database: {name}: {exc}") from exc
+        password = client.get("password")
+        # Восстанавливаем уже действовавший пароль в исходном виде.
+        if not (credential.get("restoredFromConfig") is True and isinstance(password, str) and password):
+            password = str(password or "").strip()
+            try:
+                validate_trojan_password(password)
+            except ValueError as exc:
+                raise ValueError(f"Trojan credential has invalid password in database: {name}: {exc}") from exc
         return {
             "password": password,
             "email": email,
@@ -230,6 +236,136 @@ def active_item_for_connection(
         if client_name(item) == name:
             return inbound, item
     return inbound, None
+
+
+@dataclass(frozen=True)
+class RepairCandidate:
+    name: str
+    tag: str
+    client_id: str
+    protocol: str
+    security: str
+    transport: str
+    created: str
+    item: dict = field(repr=False)
+    legacy: dict | None = field(default=None, repr=False)
+    enabled: bool = True
+
+    def credential(self, credential_id: str) -> dict:
+        record = {
+            "id": credential_id,
+            "connection": self.tag,
+            "protocol": self.protocol,
+            "security": self.security,
+            "transport": self.transport,
+            "enabled": self.enabled,
+            "created": self.created,
+            "client": dict(self.item, id=credential_id),
+            "linkMetadata": {},
+        }
+        if self.protocol == "trojan":
+            # Прежний пароль сохраняется и для отключённой записи из SQLite.
+            record["restoredFromConfig"] = True
+        return record
+
+
+def _repair_identity(protocol, item):
+    value = item.get("password" if protocol == "trojan" else "id")
+    if not isinstance(value, str) or not value:
+        return None
+    if protocol == "vless":
+        try:
+            return str(UUID(value))
+        except ValueError:
+            pass
+    return value
+
+
+def repair_candidates(config, entries, connections) -> tuple[RepairCandidate, ...]:
+    candidates = []
+    owners = {}
+    legacy_credentials = {}
+    for name, entry in entries.items():
+        stored = entry["credentials"]
+        legacy = legacy_credential_from_entry(entry)
+        if legacy and legacy["connection"] not in stored:
+            if legacy["protocol"] == "vless":
+                legacy["client"]["id"] = legacy["id"]
+            legacy_credentials[name, legacy["connection"]] = legacy
+            stored = {**stored, legacy["connection"]: legacy}
+        for tag, credential in stored.items():
+            protocol = credential["protocol"]
+            identity = _repair_identity(protocol, credential["client"])
+            owners.setdefault((tag, protocol, identity), set()).add(name)
+
+    active_counts = {}
+    inbounds_by_tag = {}
+    duplicate_tags = set()
+    for inbound in managed_connection_inbounds(config):
+        tag = inbound_tag(inbound)
+        if tag in inbounds_by_tag:
+            duplicate_tags.add(tag)
+        inbounds_by_tag[tag] = inbound
+        protocol = protocol_from_inbound(inbound)
+        for item in clients(inbound):
+            name, created = split_email(item.get("email", ""))
+            identity = _repair_identity(protocol, item)
+            owners.setdefault((tag, protocol, identity), set()).add(name)
+            pair = (name, tag)
+            active_counts[pair] = active_counts.get(pair, 0) + 1
+            if name and tag not in entries.get(name, {}).get("credentials", {}):
+                legacy = legacy_credentials.get(pair)
+                candidates.append(RepairCandidate(
+                    name, tag, entries.get(name, {}).get("id", ""), protocol,
+                    security_from_inbound(inbound), transport_from_inbound(inbound),
+                    created or (legacy or {}).get("created", ""), dict(item), legacy,
+                ))
+
+    names_with_candidates = {candidate.name for candidate in candidates}
+    for (name, tag), legacy in legacy_credentials.items():
+        inbound = inbounds_by_tag.get(tag)
+        if inbound is None or (name, tag) in active_counts:
+            continue
+        entry = entries[name]
+        if name not in names_with_candidates and not entry["credentials"]:
+            continue
+        protocol = legacy["protocol"]
+        if protocol != protocol_from_inbound(inbound):
+            raise ConflictError(f"Stored client data conflicts with config.json: {name} ({tag}).")
+        # Общий флаг enabled мог уже измениться из-за другого credential.
+        candidates.append(RepairCandidate(
+            name, tag, entry["id"], protocol,
+            security_from_inbound(inbound), transport_from_inbound(inbound),
+            legacy["created"], legacy["client"], legacy, enabled=False,
+        ))
+
+    internal_owners = {_repair_identity("vless", entry): name for name, entry in entries.items()}
+    new_clients = set()
+    for candidate in candidates:
+        name, tag, protocol = candidate.name, candidate.tag, candidate.protocol
+        identity = _repair_identity(protocol, candidate.item)
+        if identity is None:
+            source = "config.json" if candidate.enabled else "SQLite"
+            raise StateError(f"Missing {protocol} credential in {source}: {name} ({tag}).")
+        if candidate.legacy is not None and (
+            candidate.legacy["protocol"] != protocol
+            or _repair_identity(protocol, candidate.legacy["client"]) != identity
+        ):
+            raise ConflictError(f"Stored client data conflicts with config.json: {name} ({tag}).")
+        if (tag in duplicate_tags or active_counts.get((name, tag), 0) != int(candidate.enabled)
+                or owners[tag, protocol, identity] != {name}):
+            raise ConflictError(f"Ambiguous client or credential in connection {tag}: {name}.")
+        if tag not in connections:
+            raise StateError(f"Connection {tag} is missing from SQLite: {name}.")
+        # Первый VLESS ID становится внутренним идентификатором нового клиента.
+        # managed_connection_inbounds возвращает VLESS перед Trojan.
+        if not candidate.client_id and protocol == "vless" and name not in new_clients:
+            owner = internal_owners.setdefault(identity, name)
+            if owner != name:
+                raise ConflictError(f"VLESS credential overlaps another client's internal UUID: {name} ({tag}).")
+            new_clients.add(name)
+
+    return tuple(sorted(candidates, key=lambda candidate: candidate.name))
 
 
 def upsert_active_credential(

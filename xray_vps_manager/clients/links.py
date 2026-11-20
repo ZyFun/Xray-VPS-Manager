@@ -46,9 +46,12 @@ def link_for(
     protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
     security = entry.get("security") or stream.get("security") or "reality"
     if protocol == "trojan":
-        client = credential.get("client") if isinstance(credential, dict) else {}
-        password = str(client.get("password") or "").strip()
-        if not password:
+        if credential is None:
+            _, active = client_credentials.active_item_for_connection(config, name, connection_tag)
+            password = (active or {}).get("password")
+        else:
+            password = credential["client"].get("password")
+        if not isinstance(password, str) or not password:
             raise ValueError(f"Trojan password not found for client: {name}")
         host = entry.get("publicHost") or entry.get("sni") or server_addr()
         port = int(entry.get("publicPort") or entry.get("port") or inbound.get("port") or 443)
@@ -101,7 +104,7 @@ def link_for(
 
     reality = stream.get("realitySettings", {})
     port = inbound.get("port", 443)
-    sni = reality.get("serverNames", [""])[0]
+    sni = (reality.get("serverNames") or [""])[0]
     private_key = reality.get("privateKey")
     short_ids = reality.get("shortIds", [""])
     short_id = short_ids[0] if short_ids else ""

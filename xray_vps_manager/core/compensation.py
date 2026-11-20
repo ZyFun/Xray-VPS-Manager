@@ -10,11 +10,13 @@ def compensate(error: BaseException, actions) -> None:
         try:
             action()
         except BaseException as rollback_error:
-            failures.append(f"{name}: {rollback_error}\n{getattr(rollback_error, 'detail', '')}".strip())
+            reason = str(rollback_error) or type(rollback_error).__name__
+            failures.append(f"{name}: {reason}\n{getattr(rollback_error, 'detail', '')}".strip())
     if failures:
+        original = str(error) or type(error).__name__
         raise StateError(
             "Операция и её компенсация завершились с ошибкой; состояние не подтверждено",
-            detail=f"Операция: {error}\n{getattr(error, 'detail', '')}\n" + "\n".join(failures),
+            detail=f"Операция: {original}\n{getattr(error, 'detail', '')}\n" + "\n".join(failures),
         ) from error
     if isinstance(error, ManagerError):
         raise error

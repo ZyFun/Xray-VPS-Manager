@@ -2,16 +2,25 @@
 
 from contextlib import closing, contextmanager
 import json
+import os
+from pathlib import Path
+import signal
 import sqlite3
+import subprocess
+import sys
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
-from tests.test_client_characterization import TABLES, script_processes
+from tests.test_client_characterization import ALICE_KEY, TABLES, add_reality, script_processes, write_config
 from tests.test_client_manager_lock import lock_is_free
+from xray_vps_manager.clients import repository, service
 from xray_vps_manager.db import database
-from xray_vps_manager.clients import service
+from xray_vps_manager.db.repositories import client_policy_recovery
+from xray_vps_manager.telegram import settings as telegram_settings
+from xray_vps_manager.telegram import subscriptions
 
 
 RELATED_TABLES = (
@@ -22,6 +31,25 @@ RELATED_TABLES = (
 RESTART = ("systemctl", "restart", "xray")
 STOP = ("systemctl", "stop", "xray")
 STATS = ("/usr/local/bin/xray", "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>")
+SECONDARY_CREDENTIAL = "11111111-1111-4111-8111-111111111111"
+_START_WORKER = subprocess.Popen
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def crash_policy_worker(root, command, stage):
+    with Sandbox(existing_config_dir=root) as box, running_xray(box):
+        script_processes(box)
+
+        def crash(*_args, **_kwargs):
+            os.kill(os.getpid(), signal.SIGKILL)
+
+        if stage == "after-commit":
+            with mock.patch.object(service, "apply_config", side_effect=crash):
+                result = box.run_cli("client", command)
+        else:
+            box.processes.script({RESTART: crash})
+            result = box.run_cli("client", command)
+        raise SystemExit(f"Expected SIGKILL: {result}")
 
 
 class ClientServiceCompensationTests(unittest.TestCase):
@@ -54,16 +82,36 @@ class ClientServiceCompensationTests(unittest.TestCase):
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(statement, parameters)
 
-    def seed_credential_traffic(self):
+    def seed_credential_traffic(self, tag="vless-reality"):
         with database.write_session() as conn:
             conn.execute(
                 "INSERT INTO credential_traffic_totals(client_name,connection_tag,incoming_bytes) "
-                "VALUES ('alice','vless-reality',123)",
+                "VALUES ('alice',?,123)",
+                (tag,),
             )
             conn.execute(
                 "INSERT INTO credential_traffic_history(client_name,connection_tag,bucket_date,bucket_hour,incoming_bytes) "
-                "VALUES ('alice','vless-reality','2026-10-06',12,123)",
+                "VALUES ('alice',?,'2026-10-06',12,123)",
+                (tag,),
             )
+
+    def prepare_move_of_secondary_credential(self):
+        add_reality(self.cli)
+        add_reality(self.cli, "Third", "8444")
+        self.processes.script({
+            ("/usr/local/bin/xray", "uuid"): self.processes.ok(f"{SECONDARY_CREDENTIAL}\n"),
+        })
+        self.cli("add", "alice", "--connection", "vless-reality-2")
+        self.cli("remove-connection", "vless-reality")
+        self.assert_move_ids("vless-reality-2")
+
+    def assert_move_ids(self, tag, *, enabled=1):
+        self.assertEqual(self.query(
+            "SELECT uuid,connection_tag,enabled FROM clients WHERE name='alice'"
+        ), [(ALICE_KEY, tag, enabled)])
+        self.assertEqual(self.query(
+            "SELECT credential_uuid,connection_tag,enabled FROM client_credentials WHERE client_name='alice'"
+        ), [(SECONDARY_CREDENTIAL, tag, enabled)])
 
     def seed_active_traffic(self):
         email, = self.query("SELECT email FROM clients WHERE name='alice'")[0]
@@ -103,6 +151,368 @@ class ClientServiceCompensationTests(unittest.TestCase):
             return self.processes.ok()
 
         self.processes.script({STOP: stop, STATS: self.processes.ok(json.dumps(stats))})
+
+    def prepare_policy(self, command):
+        with database.write_session() as conn:
+            if command == "expire-due":
+                conn.execute("UPDATE clients SET expires_at='2026-10-06T00:00:00+03:00' WHERE name='alice'")
+            else:
+                conn.execute("INSERT INTO client_traffic_limits(client_name,period,limit_bytes) VALUES ('alice','daily',50)")
+
+    def crash_policy(self, command, stage):
+        worker = (
+            "import sys; from tests.test_client_service_compensation import crash_policy_worker; "
+            "crash_policy_worker(*sys.argv[1:])"
+        )
+        with _START_WORKER(
+            [sys.executable, "-c", worker, str(self.box.paths.config_dir), command, stage],
+            cwd=_REPO_ROOT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        ) as child:
+            try:
+                stdout, stderr = child.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate()
+                self.fail("Не дождались SIGKILL на контрольном шаге")
+            self.assertEqual(child.returncode, -signal.SIGKILL, stdout + stderr)
+
+    def pending_policy(self):
+        with database.session() as conn:
+            return client_policy_recovery.load(conn)
+
+    def prepare_limit_reset(self):
+        self.seed_active_traffic()
+        self.prepare_policy("enforce-limits")
+        self.cli("enforce-limits")
+        with database.write_session() as conn:
+            conn.execute("UPDATE client_traffic_limit_state SET exceeded_period='2026-10-05'")
+            conn.execute("UPDATE traffic_history SET bucket_date='2026-10-05'")
+
+    def test_limit_reset_retries_after_client_commit_and_sigkill(self):
+        self.prepare_limit_reset()
+        original = self.box.paths.config.read_bytes()
+        self.crash_policy("enforce-limits", "after-commit")
+
+        self.assertEqual(self.query("SELECT enabled FROM clients"), [(1,)])
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        self.assertEqual(set(self.pending_policy()), {"alice"})
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+        self.assertEqual(self.query("SELECT enabled FROM clients"), [(1,)])
+        self.assertIn(b'alice|created=', self.box.paths.config.read_bytes())
+        self.assertEqual(self.pending_policy(), {})
+        calls = list(self.processes.calls)
+        self.assertEqual(self.cli("enforce-limits"), "No traffic limits exceeded or reset.\n")
+        self.assertEqual(self.processes.calls, calls)
+
+    def test_limit_reset_after_sigkill_rechecks_fresh_traffic(self):
+        self.prepare_limit_reset()
+        original = self.box.paths.config.read_bytes()
+        self.crash_policy("enforce-limits", "after-commit")
+        self.write_during_apply(
+            "INSERT INTO traffic_history(client_name,bucket_date,bucket_hour,incoming_bytes) "
+            "VALUES ('alice','2026-10-06',15,150)"
+        )
+
+        self.assertIn("Disabled clients by traffic limit: alice", self.cli("enforce-limits"))
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "traffic-limit")])
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_history ORDER BY bucket_date"), [(100,), (150,)])
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_retry_after_config_replacement_keeps_other_changes_and_needs_no_backup(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        self.assertIn(b'alice|created=', self.box.paths.config.read_bytes())
+        for backup in self.box.paths.config_dir.glob("config.json.bak.*"):
+            backup.unlink()
+        self.cli("set-payment", "alice", "paid")
+        config = self.box.config()
+        config["log"]["loglevel"] = "debug"
+        updated = json.dumps(config).encode()
+        self.box.paths.config.write_bytes(updated)
+        restarts_before = self.processes.calls.count(RESTART)
+
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+        self.assertEqual(self.query("SELECT payment_type FROM clients"), [("paid",)])
+        self.assertEqual(self.box.paths.config.read_bytes(), updated)
+        self.box.assert_restarted(times=restarts_before + 1)
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_recovery_rejects_expired_access_before_restarting_candidate(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        self.prepare_policy("expire-due")
+
+        def check_restart(*_args, **_kwargs):
+            self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+            return self.processes.ok()
+
+        self.processes.script({RESTART: check_restart})
+        self.cli("enforce-limits")
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "expired")])
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_failed_restart_keeps_config_that_denies_expired_reactivation(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        self.prepare_policy("expire-due")
+        restarted_configs = []
+
+        def fail_restart(*_args, **_kwargs):
+            restarted_configs.append(self.box.paths.config.read_bytes())
+            return self.processes.result(1, stderr="fixture restart failure")
+
+        self.processes.script({RESTART: fail_restart})
+        result = self.box.run_cli("client", "enforce-limits")
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(len(restarted_configs), 2)
+        self.assertTrue(all(b'alice|created=' not in config for config in restarted_configs))
+        self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "expired")])
+        self.assertEqual(set(self.pending_policy()), {"alice"})
+
+        self.processes.script({RESTART: self.processes.ok()})
+        self.cli("enforce-limits")
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "expired")])
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_cancel_inside_apply_after_callback_compensates_expired_reactivation(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        self.prepare_policy("expire-due")
+        config_before = self.box.paths.config.read_bytes()
+        db_before = self.db_rows()
+        pending_before = self.pending_policy()
+        apply_config = service.apply_config
+
+        def interrupt_in_callback(config, *, on_applied, **kwargs):
+            def cancel(result):
+                on_applied(result)
+                self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+                raise KeyboardInterrupt
+
+            return apply_config(config, on_applied=cancel, **kwargs)
+
+        with mock.patch.object(service, "apply_config", side_effect=interrupt_in_callback):
+            result = self.box.run_cli("client", "enforce-limits")
+
+        self.assertEqual(result.exit_code, 130, result.stderr)
+        self.assertEqual(self.box.paths.config.read_bytes(), config_before)
+        self.assertEqual(self.db_rows(), db_before)
+        self.assertEqual(self.pending_policy(), pending_before)
+        self.cli("enforce-limits")
+        self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_pending_reactivation_does_not_override_later_disable(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "after-commit")
+        self.cli("disable", "alice")
+        self.cli("add", "bob", "0")
+        self.write_during_apply("INSERT INTO traffic_totals(client_name) VALUES ('bob')")
+        self.write_during_apply(
+            "INSERT INTO traffic_history(client_name,bucket_date,bucket_hour,incoming_bytes) "
+            "VALUES ('bob','2026-10-06',15,150)"
+        )
+        self.write_during_apply(
+            "INSERT INTO client_traffic_limits(client_name,period,limit_bytes) VALUES ('bob','daily',50)"
+        )
+
+        self.assertIn("Disabled clients by traffic limit: bob", self.cli("enforce-limits"))
+        self.assertEqual(self.query("SELECT name,enabled FROM clients ORDER BY name"), [("alice", 0), ("bob", 0)])
+        self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_pending_reactivation_preserves_targeted_disable_and_recovers_other_credential(self):
+        self.cli("add-trojan-connection", "Trojan", "10443", "trojan.example", "--no-caddy")
+        self.cli("add", "alice", "0", "--connection", "trojan-tls")
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "after-commit")
+        self.assertEqual(set(self.pending_policy()["alice"]), {"vless-reality", "trojan-tls"})
+
+        self.cli("disable", "alice", "--connection", "vless-reality")
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+
+        self.assertEqual(
+            self.query("SELECT connection_tag,enabled FROM client_credentials ORDER BY connection_tag"),
+            [("trojan-tls", 1), ("vless-reality", 0)],
+        )
+        inbounds = {item["tag"]: item for item in self.box.config()["inbounds"]}
+        self.assertEqual(inbounds["vless-reality"]["settings"]["clients"], [])
+        self.assertEqual(len(inbounds["trojan-tls"]["settings"]["clients"]), 1)
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_pending_reactivation_uses_password_rotated_while_credential_is_absent(self):
+        self.cli("add-trojan-connection", "Trojan", "10443", "trojan.example", "--no-caddy")
+        self.cli("add", "alice", "0", "--connection", "trojan-tls")
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "after-commit")
+        self.assertNotIn(b'alice|created=', self.box.paths.config.read_bytes())
+
+        self.cli("rotate-trojan-password", "alice", "--connection", "trojan-tls")
+        with database.session() as conn:
+            row = conn.execute(
+                "SELECT xray_client_json FROM client_credentials "
+                "WHERE client_name='alice' AND connection_tag='trojan-tls'"
+            ).fetchone()
+            password = json.loads(row["xray_client_json"])["password"]
+
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+        inbounds = {item["tag"]: item for item in self.box.config()["inbounds"]}
+        self.assertEqual(len(inbounds["vless-reality"]["settings"]["clients"]), 1)
+        self.assertEqual(inbounds["trojan-tls"]["settings"]["clients"][0]["password"], password)
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_retry_preserves_marker_after_restart_failure(self):
+        self.prepare_limit_reset()
+        self.crash_policy("enforce-limits", "before-restart")
+        original = self.box.paths.config.read_bytes()
+        failure = self.processes.result(1, stderr="fixture restart failure")
+        self.processes.script({RESTART: [failure, failure]})
+
+        result = self.box.run_cli("client", "enforce-limits")
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(set(self.pending_policy()), {"alice"})
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+
+        self.processes.script({RESTART: self.processes.ok()})
+        self.assertIn("Re-enabled clients after traffic limit reset: alice", self.cli("enforce-limits"))
+        self.assertEqual(self.pending_policy(), {})
+
+    def test_limit_reset_uses_manager_calendar_day(self):
+        self.seed_active_traffic()
+        self.prepare_policy("enforce-limits")
+        self.cli("enforce-limits")
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "traffic-limit")])
+
+        # 21:00 UTC — полночь следующего дня в зоне менеджера.
+        for instant, enabled, output in (
+            ("2026-10-06T20:59:59Z", 0, "No traffic limits exceeded or reset."),
+            ("2026-10-06T21:00:00Z", 1, "Re-enabled clients after traffic limit reset: alice"),
+        ):
+            with self.subTest(instant=instant), Sandbox(
+                existing_config_dir=self.box.paths.config_dir, now=instant,
+            ) as next_box, running_xray(next_box):
+                script_processes(next_box)
+                result = next_box.run_cli("client", "enforce-limits")
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                self.assertIn(output, result.stdout)
+                self.assertEqual(self.query("SELECT enabled FROM clients"), [(enabled,)])
+                next_box.assert_restarted(times=enabled)
+
+    def test_set_exceeded_limit_syncs_after_commit_and_before_enforcement(self):
+        self.seed_active_traffic()
+        sync = self.box.paths.sbin_dir / "xray-traffic-sync"
+        sync.parent.mkdir(parents=True)
+        sync.touch()
+
+        def observe_sync(_argv, **_kwargs):
+            self.assertTrue(lock_is_free(self.box.paths.manager_lock))
+            self.assertEqual(self.query("SELECT limit_bytes FROM client_traffic_limits"), [(53,)])
+            self.assertEqual(self.query("SELECT enabled FROM clients"), [(1,)])
+            return self.processes.ok()
+
+        self.processes.script({(str(sync), "--quiet"): observe_sync})
+        output = self.cli("set-limit", "alice", "daily", "0.00000005")
+
+        self.assertEqual(self.processes.calls[:2], [(str(sync), "--quiet"), self.candidate_test])
+        self.assertLess(output.index("Traffic limit is already exceeded"), output.index("Disabled clients by traffic limit"))
+        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "traffic-limit")])
+
+    def test_policy_execstop_persists_traffic_after_client_commit(self):
+        email = self.seed_active_traffic()
+        self.prepare_policy("expire-due")
+
+        def observe_commit_and_traffic():
+            self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, "expired")])
+            self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals"), [(175,)])
+            self.assertEqual(self.query("SELECT incoming_bytes FROM credential_traffic_history"), [(175,)])
+
+        self.script_execstop(email, 175, after_sync=observe_commit_and_traffic)
+        self.assertIn("Disabled expired clients: alice", self.cli("expire-due"))
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_history"), [(175,)])
+        self.assertEqual(self.query("PRAGMA journal_mode"), [("wal",)])
+        self.assertEqual(self.query("PRAGMA user_version"), [(8,)])
+
+    def test_policy_failures_compensate_then_retry(self):
+        email = self.seed_active_traffic()
+        original = self.box.paths.config.read_bytes()
+        failure = self.processes.result(1, stderr="fixture restart failure")
+        value = 100
+        for command, reason in (("expire-due", "expired"), ("enforce-limits", "traffic-limit")):
+            self.prepare_policy(command)
+            before = self.box.db_rows("clients", "client_credentials", "client_traffic_limit_state", "reality_connections")
+
+            for exit_code, restarts in (
+                (1, [failure, failure, self.processes.ok()]),
+                (130, [KeyboardInterrupt(), self.processes.ok()]),
+            ):
+                with self.subTest(command=command, exit_code=exit_code):
+                    value += 25
+
+                    def observe_client():
+                        self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, reason)])
+
+                    self.script_execstop(email, value, after_sync=observe_client)
+                    self.processes.script({RESTART: restarts})
+                    result = self.box.run_cli("client", command, "--quiet")
+
+                    self.assertEqual(result.exit_code, exit_code, result.stderr)
+                    if exit_code == 1:
+                        self.assertIn("Restored backup:", result.stderr)
+                    else:
+                        self.assertEqual(result.stderr, "")
+                    self.assertEqual(self.box.paths.config.read_bytes(), original)
+                    self.assertEqual(self.box.db_rows(
+                        "clients", "client_credentials", "client_traffic_limit_state", "reality_connections",
+                    ), before)
+                    self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals"), [(value,)])
+
+            self.processes.script({RESTART: self.processes.ok()})
+            self.cli(command)
+            self.assertEqual(self.query("SELECT enabled,disabled_reason FROM clients"), [(0, reason)])
+            calls = list(self.processes.calls)
+            before_retry = self.db_rows()
+            self.cli(command, "--quiet")
+            self.assertEqual(self.db_rows(), before_retry)
+            self.assertEqual(self.processes.calls, calls)
+
+            self.processes.script({STOP: self.processes.ok()})
+            self.box.paths.config.write_bytes(original)
+            with database.write_session() as conn:
+                conn.execute("UPDATE clients SET expires_at=NULL, expired_at=NULL, disabled_at=NULL, disabled_reason=NULL, enabled=1")
+                conn.execute("UPDATE client_credentials SET enabled=1")
+
+    def test_policy_noop_does_not_persist_missing_connection(self):
+        with database.write_session() as conn:
+            conn.execute("DELETE FROM client_credentials")
+            conn.execute("DELETE FROM clients")
+            conn.execute("DELETE FROM reality_connections")
+            conn.execute("CREATE TRIGGER reject_connection_insert BEFORE INSERT ON reality_connections "
+                         "BEGIN SELECT RAISE(ABORT, 'Unexpected connection write'); END")
+        before = self.box.paths.config.read_bytes()
+        self.assertEqual(self.cli("enforce-limits"), "No traffic limits exceeded or reset.\n")
+        self.assertEqual(self.cli("expire-due"), "No expired clients.\n")
+        self.assertEqual(self.query("SELECT tag FROM reality_connections"), [])
+        self.assertEqual(self.query("SELECT name FROM clients"), [])
+        self.assertEqual(self.box.paths.config.read_bytes(), before)
+        self.assertEqual(self.processes.calls, [])
+
+    def test_policy_noop_preserves_restored_db_and_needs_no_writer(self):
+        # Резервная копия SQLite хранится одним файлом в режиме DELETE.
+        restored = database.backup_database(self.box.paths.manager_db)
+        self.box.paths.manager_db.write_bytes(restored.read_bytes())
+        before = self.box.paths.manager_db.read_bytes()
+        for command in ("expire-due", "enforce-limits"):
+            with self.subTest(command=command), database.session() as writer:
+                with database.transaction(writer, immediate=True):
+                    result = self.box.run_cli("client", command)
+                    self.assertEqual(result.exit_code, 0, result.stderr)
+                    self.assertIn("No ", result.stdout)
+        self.assertEqual(self.box.paths.manager_db.read_bytes(), before)
+        self.assertEqual(self.query("PRAGMA journal_mode"), [("delete",)])
+        self.assertEqual(self.processes.calls, [])
 
     def seed_linked_state(self):
         self.seed_credential_traffic()
@@ -213,22 +623,132 @@ class ClientServiceCompensationTests(unittest.TestCase):
         self.assertEqual(self.query("PRAGMA foreign_key_check"), [])
 
     def test_move_restores_source_credential_and_history_on_apply_failure(self):
-        self.cli("add-connection", "Second", "8443", "cdn.example", "firefox", "tcp")
-        self.seed_credential_traffic()
+        self.prepare_move_of_secondary_credential()
+        self.seed_credential_traffic("vless-reality-2")
         before = self.db_rows()
         original = self.box.paths.config.read_bytes()
 
         def reject(_argv, **_kwargs):
-            self.assertEqual(self.query("SELECT connection_tag FROM client_credentials"), [("vless-reality-2",)])
+            self.assert_move_ids("vless-reality-3")
             self.assertEqual(self.query("SELECT * FROM credential_traffic_history"), [])
             return self.processes.result(1, stderr="fixture test failure")
 
         self.processes.script({self.candidate_test: reject})
-        result = self.box.run_cli("client", "move-connection", "alice", "Second")
+        result = self.box.run_cli("client", "move-connection", "alice", "Third")
 
         self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertIn("fixture test failure", result.stderr)
         self.assertEqual(self.box.paths.config.read_bytes(), original)
         self.assertEqual(self.db_rows(), before)
+
+    def test_active_move_keeps_client_identity_and_uses_secondary_credential(self):
+        with database.write_session() as conn:
+            telegram_settings.save_subscription(conn, "7", {"client": "alice", "clientId": ALICE_KEY})
+        self.prepare_move_of_secondary_credential()
+        config = self.box.config()
+        config["outbounds"].append({
+            "tag": "cascade-test", "protocol": "socks",
+            "settings": {"servers": [{"address": "192.0.2.1", "port": 1080}]},
+        })
+        config["routing"]["rules"].append({
+            "type": "field", "network": "tcp,udp", "outboundTag": "cascade-test",
+        })
+        write_config(self.box, config)
+        self.cli("sync-routes")
+        before = self.box.config()["routing"]["balancers"]
+        self.assertEqual([item["tag"] for item in before], ["client-route-000000000000400080000000"])
+        offset = len(self.processes.calls)
+
+        output = self.cli("move-connection", "alice", "Third")
+
+        self.assert_move_ids("vless-reality-3")
+        config = self.box.config()
+        inbounds = {inbound["tag"]: inbound for inbound in config["inbounds"]}
+        self.assertEqual(inbounds["vless-reality-2"]["settings"]["clients"], [])
+        self.assertEqual(
+            [item["id"] for item in inbounds["vless-reality-3"]["settings"]["clients"]],
+            [SECONDARY_CREDENTIAL],
+        )
+        self.assertEqual(config["routing"]["balancers"], before)
+        self.assertEqual(self.processes.calls[offset:].count(RESTART), 1)
+        link = urlsplit(next(line for line in output.splitlines() if line.startswith("vless://")))
+        self.assertEqual((link.username, link.port), (SECONDARY_CREDENTIAL, 8444))
+        self.assertEqual(parse_qs(link.query)["sni"], ["cdn.example"])
+        self.assertEqual(self.cli("key", "alice").strip(), f"vpn-key:{ALICE_KEY}")
+        with database.session() as conn:
+            telegram_db = telegram_settings.load_db_from_sqlite(conn)
+            client_db = repository.load_db_from_sqlite(conn)
+        name, entry, error = subscriptions.subscription_entry_for_chat(telegram_db, "7", client_db)
+        self.assertEqual((name, entry, error), ("alice", client_db["clients"]["alice"], ""))
+
+    def test_move_reads_legacy_vless_credential_from_client_row(self):
+        self.prepare_move_of_secondary_credential()
+        self.write_during_apply("DELETE FROM client_credentials WHERE client_name='alice'")
+
+        self.cli("move-connection", "alice", "Third")
+
+        self.assert_move_ids("vless-reality-3")
+
+    def set_up_vless_uuid_mismatch(self):
+        self.prepare_move_of_secondary_credential()
+        self.seed_credential_traffic("vless-reality-2")
+        config = self.box.config()
+        source = next(item for item in config["inbounds"] if item["tag"] == "vless-reality-2")
+        source["settings"]["clients"][0]["id"] = "22222222-2222-4222-8222-222222222222"
+        write_config(self.box, config)
+
+    def assert_move_rejects_vless_uuid_mismatch(self, location):
+        before = self.db_rows()
+        original = self.box.paths.config.read_bytes()
+        offset = len(self.processes.calls)
+
+        result = self.box.run_cli("client", "move-connection", "alice", "Third")
+
+        self.assertEqual(result.exit_code, 1, result)
+        self.assertIn(f"VLESS credential UUID mismatch between SQLite and {location}", result.stderr)
+        self.assertIn("alice", result.stderr)
+        self.assertIn("vless-reality-2", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.db_rows(), before)
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        self.assertEqual(self.processes.calls[offset:], [])
+
+    def test_move_rejects_active_vless_uuid_mismatch_without_writes(self):
+        self.set_up_vless_uuid_mismatch()
+        self.assert_move_rejects_vless_uuid_mismatch("config.json")
+
+    def test_move_rejects_disabled_vless_uuid_mismatch_without_writes(self):
+        self.set_up_vless_uuid_mismatch()
+        self.cli("disable", "alice")
+        self.assert_move_rejects_vless_uuid_mismatch("saved Xray client data")
+
+    def test_trojan_move_preserves_password_and_both_ids(self):
+        add_reality(self.cli)
+        self.cli("add-trojan-connection", "Trojan", "9443", "trojan.example", "--no-caddy")
+        self.cli("add-trojan-connection", "Target", "10443", "target.example", "/fixture/cert.pem",
+                 "/fixture/key.pem", "safari")
+        self.processes.script({
+            ("/usr/local/bin/xray", "uuid"): self.processes.ok(f"{SECONDARY_CREDENTIAL}\n"),
+        })
+        self.cli("add", "alice", "--connection", "trojan-tls")
+        self.cli("remove-connection", "vless-reality")
+        original_link = urlsplit(self.cli("link", "alice").strip())
+
+        output = self.cli("move-connection", "alice", "Target")
+
+        tag = "trojan-tls-2"
+        self.assert_move_ids(tag)
+        entry = repository.load_db_sql()["clients"]["alice"]
+        stored = entry["credentials"][tag]["client"]
+        self.assertEqual(entry["client"], stored)
+        self.assertEqual((stored["id"], stored["protocol"], stored["password"]),
+                         (SECONDARY_CREDENTIAL, "trojan", original_link.username))
+        inbound = next(item for item in self.box.config()["inbounds"] if item["tag"] == tag)
+        item, = inbound["settings"]["clients"]
+        self.assertEqual(item["password"], stored["password"])
+        self.assertNotIn("id", item)
+        link = urlsplit(next(line for line in output.splitlines() if line.startswith("trojan://")))
+        self.assertEqual((link.username, link.hostname, link.port), (original_link.username, "target.example", 10443))
 
     def test_active_move_keeps_execstop_delta_in_client_totals_only(self):
         self.cli("add-connection", "Second", "8443", "cdn.example", "firefox", "tcp")
@@ -324,21 +844,21 @@ class ClientServiceCompensationTests(unittest.TestCase):
         self.assert_restored_xray_counts_from_new_baseline("move-connection", "alice", "Second")
 
     def test_move_disabled_client_skips_apply_and_removes_old_credential_traffic(self):
-        self.cli("add-connection", "Second", "8443", "cdn.example", "firefox", "tcp")
+        self.prepare_move_of_secondary_credential()
         self.cli("disable", "alice")
-        self.seed_credential_traffic()
+        self.seed_credential_traffic("vless-reality-2")
         original = self.box.paths.config.read_bytes()
         offset = len(self.processes.calls)
 
-        output = self.cli("move-connection", "alice", "Second")
+        output = self.cli("move-connection", "alice", "Third")
 
         self.assertIn("Status: disabled", output)
         self.assertIn("Xray restart is not required for disabled client.", output)
-        self.assertIn("vless://", output)
+        self.assertIn(f"vless://{SECONDARY_CREDENTIAL}@", output)
         self.assertNotIn(RESTART, self.processes.calls[offset:])
         self.assertNotIn(self.candidate_test, self.processes.calls[offset:])
         self.assertEqual(self.box.paths.config.read_bytes(), original)
-        self.assertEqual(self.query("SELECT connection_tag,enabled FROM client_credentials"), [("vless-reality-2", 0)])
+        self.assert_move_ids("vless-reality-3", enabled=0)
         self.assertEqual(self.query("SELECT * FROM credential_traffic_totals"), [])
         self.assertEqual(self.query("SELECT * FROM credential_traffic_history"), [])
 

@@ -37,7 +37,6 @@ CLIENT_DB_WRITES = {
     "save_server_env_values",
 }
 WORKER_TIMEOUT = 30
-REAL_ADD_CONNECTION = client_command.client_connections.add_connection
 # Сколько медленный писатель держит окно между load_db и save_db, ожидая второго писателя.
 SLOW_WRITER_WINDOW = "2.0"
 
@@ -103,6 +102,7 @@ def script_apply(box, *, restart=None, record=None):
         return box.processes.ok(show_output() if "show" in argv else "")
     box.processes.script({
         ("/usr/local/bin/xray", "uuid"): lambda *_args, **_kwargs: box.processes.ok(str(uuid.uuid4())),
+        ("/usr/local/bin/xray", "x25519"): box.processes.ok("PrivateKey: " + "C" * 43 + "\nPublicKey: " + "A" * 43),
         ("/usr/local/bin/xray", "x25519", "-i", "test-private-key"): box.processes.ok("PublicKey: " + "A" * 43),
         (str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(box.paths.config.with_suffix(".json.tmp"))): response,
         (str(box.paths.xray_bin), "run", "-test", "-config", str(box.paths.config)): response,
@@ -165,7 +165,7 @@ def is_client_db_lock(node: ast.AST) -> bool:
     return isinstance(node, ast.With) and any(
         isinstance(item.context_expr, ast.Call)
         and isinstance(item.context_expr.func, ast.Name)
-        and item.context_expr.func.id == "client_db_lock"
+        and item.context_expr.func.id == "manager_lock"
         for item in node.items
     )
 
@@ -177,11 +177,13 @@ def unlocked_client_db_writes(tree: ast.Module) -> list:
         for child in ast.iter_child_nodes(node):
             if (
                 isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Name)
-                and child.func.id in CLIENT_DB_WRITES
+                and (
+                    (isinstance(child.func, ast.Name) and child.func.id in CLIENT_DB_WRITES)
+                    or (isinstance(child.func, ast.Attribute) and child.func.attr in CLIENT_DB_WRITES)
+                )
                 and not any(is_client_db_lock(item) for item in stack)
             ):
-                found.append(f"{function_name}:{child.lineno} {child.func.id}")
+                found.append(f"{function_name}:{child.lineno} {ast.unparse(child.func)}")
             visit(child, stack + [child], function_name)
 
     for function in tree.body:
@@ -243,30 +245,25 @@ def add_worker(argv: list) -> int:
     return 0
 
 
-def add_connection_without_xray(*args, **kwargs):
-    return REAL_ADD_CONNECTION(*args, key_pair_factory=lambda: ("test-private-key", "test-public-key"), **kwargs)
-
-
-# Второй писатель сценариев репро P1_001: меняет подключения и поля клиента, пока медленный add держит снимок.
+# Второй писатель меняет подключения или клиента, пока медленный add держит снимок.
 P1_001_WRITERS = {
-    "add-connection": lambda: client_command.cmd_connection_add("extra", "9443", "example.org"),
-    "disable": lambda: client_command.cmd_disable("bob"),
-    "remove-connection": lambda: client_command.cmd_connection_remove("vless-reality-2"),
+    "add-connection": ("add-connection", "extra", "9443", "example.org"),
+    "disable": ("disable", "bob"),
+    "remove-connection": ("remove-connection", "vless-reality-2"),
 }
 
 
 def writer_worker(argv: list) -> int:
-    """Отдельный процесс xray-client из P1_001_WRITERS: стартует, когда медленный писатель уже прочитал снимок."""
+    """Отдельный процесс xray-client стартует после загрузки снимка медленным писателем."""
     root, action = Path(argv[0]), argv[1]
     if not wait_for_file(root / "slow-loaded", WORKER_TIMEOUT):
         print("slow writer did not load the snapshot", file=sys.stderr)
         return 2
-    with signal_lock_contention(root), sandbox_patches(root, config_suffix=f".{action}"), \
-        mock.patch.object(client_command, "SERVER_ENV_PATH", root / "server.env"), \
-        mock.patch.object(client_command.client_connections, "add_connection", side_effect=add_connection_without_xray), \
-        redirect_stdout(StringIO()):
-        P1_001_WRITERS[action]()
-    return 0
+    with signal_lock_contention(root), sandbox_patches(root, config_suffix=f".{action}") as box:
+        result = box.run_cli("client", *P1_001_WRITERS[action])
+        if result.exit_code:
+            print(result.stderr, file=sys.stderr)
+        return result.exit_code
 
 
 def start_worker(*args: str, function: str = "add_worker") -> subprocess.Popen:
@@ -404,82 +401,43 @@ class ClientWritersLockTests(unittest.TestCase):
             f"ERROR: Другая операция менеджера ещё выполняется: {holder}",
             "Дождись её завершения и повтори команду.",
         ]
-        user_timeouts = {"MANAGER_LOCK_TIMEOUT": 0.2, "TIMER_MANAGER_LOCK_TIMEOUT": 10}
-        timer_timeouts = {"MANAGER_LOCK_TIMEOUT": 10, "TIMER_MANAGER_LOCK_TIMEOUT": 0.2}
-        # Команда пользователя ждёт MANAGER_LOCK_TIMEOUT, шаги таймера — TIMER_MANAGER_LOCK_TIMEOUT.
-        # Ручной запуск завершается ошибкой; шаг таймера (--quiet) пропускается с WARN и кодом 0,
-        # чтобы следующие ExecStart минутной цепочки выполнились (контракт 3.1, 59-R02).
-        commands = {
-            "add": (
-                lambda: client_command.cmd_add("alice", prompt_for_access=False, connection_tag="vless-reality"),
-                user_timeouts,
-                1,
-                error_lines,
-            ),
-            "expire-due": (
-                lambda: client_command.cmd_expire_due(quiet=False),
-                timer_timeouts,
-                1,
-                error_lines,
-            ),
-            "enforce-limits": (
-                lambda: client_command.cmd_enforce_limits(quiet=False),
-                timer_timeouts,
-                1,
-                error_lines,
-            ),
-            "expire-due --quiet": (
-                lambda: client_command.cmd_expire_due(quiet=True),
-                timer_timeouts,
-                0,
-                [
+        commands = [
+            (("add", "alice", "0", "--connection", "vless-reality"), 60, 1, error_lines),
+        ]
+        for purpose in ("expire-due", "enforce-limits"):
+            commands.extend([
+                ((purpose,), 30, 1, error_lines),
+                ((purpose, "--quiet"), 30, 0, [
                     f"WARN: Другая операция менеджера ещё выполняется: {holder}. "
-                    "Шаг expire-due пропущен, следующий запуск таймера повторит его."
-                ],
-            ),
-            "enforce-limits --quiet": (
-                lambda: client_command.cmd_enforce_limits(quiet=True),
-                timer_timeouts,
-                0,
-                [
-                    f"WARN: Другая операция менеджера ещё выполняется: {holder}. "
-                    "Шаг enforce-limits пропущен, следующий запуск таймера повторит его."
-                ],
-            ),
-        }
+                    f"Шаг {purpose} пропущен, следующий запуск таймера повторит его."
+                ]),
+            ])
+
         config_before = (self.root / "config.json").read_text()
+        acquire_flock = core_locks.acquire_flock
 
-        for purpose, (command, timeouts, exit_code, stderr_lines) in commands.items():
-            with self.subTest(purpose):
-                stderr = StringIO()
-                acquire_flock = core_locks.acquire_flock
-                requested_timeout = 0.2 if purpose == "add" else None
+        for argv, timeout, exit_code, stderr_lines in commands:
+            with self.subTest(argv=argv), sandbox_patches(self.root) as box:
+                def acquire(fd, requested):
+                    self.assertEqual(requested, timeout)
+                    acquire_flock(fd, 0)
 
-                def acquire(fd, timeout):
-                    acquire_flock(fd, requested_timeout if requested_timeout is not None else timeout)
+                with mock.patch.object(core_locks, "acquire_flock", side_effect=acquire), \
+                    foreign_lock_holder(self.root / "manager.lock", holder):
+                    result = box.run_cli("client", *argv)
 
-                with sandbox_patches(self.root), \
-                    mock.patch.multiple(client_command, **timeouts), \
-                    mock.patch.object(core_locks, "acquire_flock", side_effect=acquire), \
-                    foreign_lock_holder(self.root / "manager.lock", holder), \
-                    redirect_stdout(StringIO()), \
-                    redirect_stderr(stderr):
-                    started = time.monotonic()
-                    with self.assertRaises(SystemExit) as raised:
-                        command()
-                    elapsed = time.monotonic() - started
-
-                self.assertLess(elapsed, 5)
-                self.assertEqual(raised.exception.code, exit_code)
-                self.assertEqual(stderr.getvalue().splitlines(), stderr_lines)
+                self.assertEqual(result.exit_code, exit_code)
+                self.assertEqual(result.stderr.splitlines(), stderr_lines)
+                self.assertEqual(result.stdout, "")
 
         self.assertEqual(db_client_names(self.root), set())
         self.assertEqual((self.root / "config.json").read_text(), config_before)
 
     def test_client_db_writes_in_commands_happen_under_lock(self) -> None:
-        tree = ast.parse((PACKAGE_DIR / "commands" / "client.py").read_text(encoding="utf-8"))
-
-        self.assertEqual(unlocked_client_db_writes(tree), [])
+        for module in ("client.py", "client_connections.py"):
+            with self.subTest(module=module):
+                tree = ast.parse((PACKAGE_DIR / "commands" / module).read_text(encoding="utf-8"))
+                self.assertEqual(unlocked_client_db_writes(tree), [])
 
 
 class LostUpdateScenariosTests(unittest.TestCase):

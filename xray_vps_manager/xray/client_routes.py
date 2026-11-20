@@ -239,17 +239,3 @@ def remove_unavailable_client_route_config(config: dict[str, Any]) -> bool:
         )
     ]
     return before != repr(routing)
-
-
-def runtime_override_commands(
-    name: str,
-    entry: dict[str, Any],
-    outbound_tag: str,
-    *,
-    server: str = XRAY_API_SERVER,
-) -> list[list[str]]:
-    balancer_tag = client_balancer_tag(name, entry)
-    return [
-        ["/usr/local/bin/xray", "api", "bo", f"--server={server}", "-b", balancer_tag, outbound_tag],
-        ["/usr/local/bin/xray", "api", "bo", "-s", server, "-b", balancer_tag, outbound_tag],
-    ]

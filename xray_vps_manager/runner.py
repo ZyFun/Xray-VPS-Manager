@@ -40,8 +40,15 @@ def command_main(command: str) -> Callable[[], object]:
     return module.main
 
 
-def run_command(command: str) -> object:
-    return _boundary(lambda: command_main(command)())
+def run_command(command: str, *, argv: list[str] | None = None) -> object:
+    if argv is None:
+        return _boundary(lambda: command_main(command)())
+    previous = sys.argv
+    try:
+        sys.argv = [f"xray-{command}", *argv]
+        return _boundary(lambda: command_main(command)())
+    finally:
+        sys.argv = previous
 
 
 def error_exit(error: ManagerError) -> None:

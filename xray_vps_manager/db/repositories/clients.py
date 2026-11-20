@@ -93,7 +93,9 @@ def _entry_from_row(connection: sqlite3.Connection, row) -> dict[str, Any] | Non
     return entry
 
 
-def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
+def upsert_client(
+    connection: sqlite3.Connection, name: str, entry: dict[str, Any], *, write_limits: bool = True,
+) -> None:
     client = _client_json(entry, name)
     uuid = str(entry.get("id") or client.get("id") or "")
     if not uuid:
@@ -144,21 +146,18 @@ def upsert_client(connection: sqlite3.Connection, name: str, entry: dict[str, An
                 encode_json(extra),
             ),
         )
-        limit = _traffic_limit(entry)
-        if limit:
-            set_traffic_limit(connection, name, str(limit.get("period") or "daily"), int(limit.get("bytes") or 0), limit.get("setAt") or "")
-        else:
-            clear_traffic_limit(connection, name)
-        set_traffic_limit_state(
-            connection,
-            name,
-            exceeded_at=entry.get("trafficLimitExceededAt") or "",
-            exceeded_period=entry.get("trafficLimitExceededPeriod") or "",
-            exceeded_bytes=int(entry.get("trafficLimitExceededBytes") or 0),
-            reset_at=entry.get("trafficLimitResetAt") or "",
-        )
+        if write_limits:
+            save_traffic_limit_fields(connection, name, entry)
         for tag, credential in entry.get("credentials", {}).items():
             upsert_client_credential(connection, name, tag, credential)
+
+
+def update_payment_type(connection: sqlite3.Connection, name: str, payment_type: str) -> None:
+    connection.execute("UPDATE clients SET payment_type = ? WHERE name = ?", (payment_type, name))
+
+
+def update_disabled_reason(connection: sqlite3.Connection, name: str, reason: str | None) -> None:
+    connection.execute("UPDATE clients SET disabled_reason = ? WHERE name = ?", (reason, name))
 
 
 def client_exists(connection: sqlite3.Connection, name: str) -> bool:
@@ -271,6 +270,26 @@ def get_traffic_limit_state(connection: sqlite3.Connection, name: str) -> dict[s
     if row["reset_at"]:
         state["trafficLimitResetAt"] = row["reset_at"]
     return state
+
+
+def save_traffic_limit_fields(connection: sqlite3.Connection, name: str, entry: dict[str, Any]) -> None:
+    """Сохранить лимит и состояние его превышения в транзакции вызывающего кода."""
+    limit = _traffic_limit(entry)
+    if limit:
+        set_traffic_limit(
+            connection, name, str(limit.get("period") or "daily"),
+            int(limit.get("bytes") or 0), limit.get("setAt") or "",
+        )
+    else:
+        clear_traffic_limit(connection, name)
+    set_traffic_limit_state(
+        connection,
+        name,
+        exceeded_at=entry.get("trafficLimitExceededAt") or "",
+        exceeded_period=entry.get("trafficLimitExceededPeriod") or "",
+        exceeded_bytes=int(entry.get("trafficLimitExceededBytes") or 0),
+        reset_at=entry.get("trafficLimitResetAt") or "",
+    )
 
 
 def _credential_from_row(row) -> dict[str, Any] | None:

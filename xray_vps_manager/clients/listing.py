@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 from xray_vps_manager.clients import routes as client_route_service
@@ -17,7 +18,8 @@ def client_rows(
     config: dict[str, Any], db: dict[str, Any], *, resolve_countries: bool = False
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    ensure_connections(config, db)
+    entries = deepcopy(db.get("clients", {}))
+    config_only = set()
     active_by_name: dict[str, set[str]] = {}
     for inbound in managed_connection_inbounds(config):
         tag = inbound_tag(inbound)
@@ -27,19 +29,23 @@ def client_rows(
             if not name:
                 continue
             active_by_name.setdefault(name, set()).add(tag)
-            if name not in db_clients(db):
+            if name not in entries:
                 entry = db_entry_from_client(item, created=created, enabled=True)
                 entry["connection"] = tag
-                db_clients(db)[name] = entry
+                entries[name] = entry
+                config_only.add(name)
 
+    view = {"clients": entries, "cascadeRoutes": deepcopy(db.get("cascadeRoutes", {}))}
     if resolve_countries:
-        client_route_service.sync_routes_from_config(config, db)
+        client_route_service.sync_routes_from_config(config, view)
 
-    for name, entry in db_clients(db).items():
+    for name, entry in entries.items():
         credentials = client_credentials.normalize_entry_credentials(entry)
         active_tags = active_by_name.get(name, set())
         total = client_credentials.total_credential_count(entry)
         active = len([tag for tag in credentials if tag in active_tags or credentials[tag].get("enabled") is not False])
+        if name in config_only:
+            active = total = len(active_tags)
         status = "enabled" if active_tags else ("disabled" if entry.get("enabled") is False else "missing")
         rows.append(
             {
@@ -51,7 +57,7 @@ def client_rows(
                 "paymentType": payment_type_label(entry),
                 "expiresAt": entry.get("expiresAt", ""),
                 "connection": entry.get("connection") or default_connection_tag(config),
-                "cascade": client_route_service.selected_route_label(db, entry),
+                "cascade": client_route_service.selected_route_label(view, entry),
                 "credentialsActive": active,
                 "credentialsTotal": total,
             }

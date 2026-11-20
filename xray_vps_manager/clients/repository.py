@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,10 +10,10 @@ from typing import Any
 
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.payments import normalize_payment_type
-from xray_vps_manager.core.errors import ConflictError
+from xray_vps_manager.core.errors import ConflictError, StateError
 from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import paths
-from xray_vps_manager.db import database
+from xray_vps_manager.db import database, schema
 from xray_vps_manager.db.repositories import clients as sqlite_clients
 from xray_vps_manager.db.repositories import cascades as sqlite_cascades
 from xray_vps_manager.db.repositories import connections as sqlite_connections
@@ -59,16 +60,48 @@ def get_client(conn, name):
     return _normalize_client(entry) if entry is not None else None
 
 
-def list_clients(conn):
-    return {name: _normalize_client(entry) for name, entry in sqlite_clients.list_clients(conn).items()}
+def client_exists_in_sqlite(name: str) -> bool:
+    """Проверить наличие клиента перед изменением без запуска миграций SQLite."""
+    with database.report_errors(message="SQLite clients cannot be read"), \
+            closing(database.open_database(paths().manager_db, initialize=False)) as conn:
+        try:
+            schema.pending_migrations(conn)
+        except RuntimeError as exc:
+            raise StateError(str(exc)) from exc
+        return sqlite_clients.client_exists(conn, name)
+
+
+def list_clients(conn, *, normalize=True):
+    entries = sqlite_clients.list_clients(conn)
+    if normalize:
+        for entry in entries.values():
+            _normalize_client(entry)
+    return entries
 
 
 def save_client(conn, name, entry):
     """Сохраняет запись и переданные credentials. Отсутствие ключа не означает удаление."""
-    sqlite_clients.upsert_client(conn, name, _normalize_client(entry))
+    _save_client_entry(conn, name, _normalize_client(entry))
+
+
+def _save_client_entry(conn, name, entry):
+    previous = sqlite_clients.get_client(conn, name)
+    if previous and previous["credentials"]:
+        primary = previous["connection"]
+        if primary and primary not in previous["credentials"] and primary not in entry.get("credentials", {}):
+            # После repair прежний credential может храниться только в полях
+            # клиента. Нормализованный снимок выбирает другое подключение.
+            entry = dict(entry, connection=primary, client=previous["client"])
+            entry.pop("protocol", None)
+            if "protocol" in previous:
+                entry["protocol"] = previous["protocol"]
+    sqlite_clients.upsert_client(conn, name, entry)
 
 
 delete_client = sqlite_clients.delete_client
+update_payment_type = sqlite_clients.update_payment_type
+update_disabled_reason = sqlite_clients.update_disabled_reason
+save_traffic_limit_fields = sqlite_clients.save_traffic_limit_fields
 get_connection = sqlite_connections.get_connection
 save_connection = sqlite_connections.upsert_connection
 list_connections = sqlite_connections.list_connections
@@ -107,7 +140,27 @@ def save_credential(conn, name, tag, credential):
         entry["credentials"] = {
             key: item for key, item in entry["credentials"].items() if key == tag or key not in stored
         }
-        sqlite_clients.upsert_client(conn, name, entry)
+        _save_client_entry(conn, name, entry)
+
+
+def save_restored_credentials(conn, name, credentials):
+    """Добавить недостающие credentials, сохранив основное подключение и лимиты клиента."""
+    entry = sqlite_clients.get_client(conn, name)
+    if entry is None:
+        raise ConflictError(f"Client no longer exists in SQLite: {name}.")
+    stored = set(entry["credentials"])
+    if stored.intersection(credentials):
+        raise ConflictError(f"Client credentials already exist in SQLite: {name}.")
+    entry["credentials"].update(credentials)
+    primary = entry.get("connection")
+    if primary and primary not in entry["credentials"]:
+        # Для основного подключения остались только старые поля в clients.
+        # Они должны пережить добавление credentials из других подключений.
+        entry["enabled"] = True
+    else:
+        _normalize_client(entry)
+    entry["credentials"] = credentials
+    sqlite_clients.upsert_client(conn, name, entry, write_limits=False)
 
 
 def delete_credential(conn, name, tag):
@@ -120,7 +173,7 @@ def delete_credential(conn, name, tag):
             raise ConflictError("Use delete_client to remove the last credential.")
         client_credentials.sync_legacy_fields(entry)
         del entry["credentials"]
-        sqlite_clients.upsert_client(conn, name, entry)
+        _save_client_entry(conn, name, entry)
         return sqlite_clients.delete_client_credential(conn, name, tag)
 
 

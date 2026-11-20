@@ -22,7 +22,7 @@ def parse_access_days(value: str | None) -> int | None:
     raw = (value or "").strip().lower()
     if raw in ("", "0", "none", "never", "no", "unlimited", "forever", "бессрочно", "без срока"):
         return None
-    if not re.fullmatch(r"[0-9]+", raw):
+    if not re.fullmatch(r"\+?[0-9]+", raw):
         raise ValueError("Access days must be a positive number. Empty or 0 means unlimited access.")
     days = int(raw, 10)
     if days < 1:

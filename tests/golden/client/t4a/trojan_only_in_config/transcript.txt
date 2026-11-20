@@ -92,47 +92,51 @@ processes:
 state:
 
 ["link", "bob"]
-exit: 1
+exit: 0
 stdout:
+trojan://fixture-only@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
 
 stderr:
-ERROR: Trojan password not found for client: bob
 
 processes:
 state:
 
 ["set-days", "bob", "3"]
-exception: ValueError: Client has no UUID: bob
+exit: 1
 stdout:
 
 stderr:
+ERROR: Client exists only in config.json: bob. Run xray-client repair first.
 
 processes:
 state:
 
 ["extend-days", "bob", "3"]
-exception: ValueError: Client has no UUID: bob
+exit: 1
 stdout:
 
 stderr:
+ERROR: Client exists only in config.json: bob. Run xray-client repair first.
 
 processes:
 state:
 
 ["set-payment", "bob", "paid"]
-exception: ValueError: Client has no UUID: bob
+exit: 1
 stdout:
 
 stderr:
+ERROR: Client exists only in config.json: bob. Run xray-client repair first.
 
 processes:
 state:
 
 ["set-limit", "bob", "daily", "1"]
-exception: ValueError: Client has no UUID: bob
+exit: 1
 stdout:
 
 stderr:
+ERROR: Client exists only in config.json: bob. Run xray-client repair first.
 
 processes:
 state:
@@ -142,7 +146,45 @@ exit: 1
 stdout:
 
 stderr:
-ERROR: Client has no UUID: bob
+ERROR: Client exists only in config.json: bob. Run xray-client repair first.
+
+processes:
+state:
+
+["repair"]
+exit: 0
+stdout:
+Missing from SQLite:
+  bob — trojan-tls (trojan)
+Restore these client records and credentials? [y/N]: Restored credentials in SQLite: 1
+
+stderr:
+
+processes:
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2,0 +3 @@
++["bob", "00000000-0000-4000-8000-000000000099", "bob", "trojan-tls", "", 1, null, null, null, null, null, "free", "{\"password\":\"fixture-only\",\"email\":\"bob\",\"level\":0,\"id\":\"00000000-0000-4000-8000-000000000099\"}", "{\"protocol\":\"trojan\"}", null]
+@@ -4,0 +6 @@
++["bob", "trojan-tls", "00000000-0000-4000-8000-000000000099", "trojan", "none", "ws", 1, "", "{\"password\":\"fixture-only\",\"email\":\"bob\",\"level\":0,\"id\":\"00000000-0000-4000-8000-000000000099\"}", "{}", "{\"restoredFromConfig\":true}"]
+
+["repair"]
+exit: 0
+stdout:
+No missing client credentials in SQLite.
+
+stderr:
+
+processes:
+state:
+
+["link", "bob"]
+exit: 0
+stdout:
+trojan://fixture-only@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
+
+stderr:
 
 processes:
 state:

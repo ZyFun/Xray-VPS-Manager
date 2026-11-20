@@ -3,6 +3,7 @@ import unittest
 
 from xray_vps_manager.clients import limits
 from xray_vps_manager.clients.status import enforce_traffic_limits
+from xray_vps_manager.traffic import limits as traffic_limits
 
 
 def client_item(name: str) -> dict:
@@ -54,7 +55,7 @@ class ClientLimitTests(unittest.TestCase):
             }
         }
 
-        status = limits.traffic_limit_status(db_entry, traffic_entry, now)
+        status = traffic_limits.traffic_limit_status(db_entry, traffic_entry, now)
 
         self.assertEqual(status["period"], "daily")
         self.assertEqual(status["periodKey"], "2026-06-12")
@@ -92,6 +93,7 @@ class ClientLimitTests(unittest.TestCase):
             traffic_db,
             now=datetime(2026, 6, 12, 12, tzinfo=timezone.utc),
             stamp="2026-06-12T09:00:00Z",
+            limit_status=traffic_limits.traffic_limit_status,
         )
 
         self.assertEqual(result.due_names, ["alice"])
@@ -125,6 +127,7 @@ class ClientLimitTests(unittest.TestCase):
             traffic_db,
             now=datetime(2026, 6, 12, 12, tzinfo=timezone.utc),
             stamp="2026-06-12T09:00:00Z",
+            limit_status=traffic_limits.traffic_limit_status,
         )
 
         self.assertEqual(result.reactivated_names, ["alice"])

@@ -207,7 +207,8 @@ def restore_config_backup(backup: Path | None, *, restart: bool = True,
 
 def apply_config(config: dict, *, restart: bool = True,
                  verify_timeout: float = systemd.DEFAULT_VERIFY_TIMEOUT,
-                 reason: str = "", on_applied: Callable[[ApplyResult], None] | None = None) -> ApplyResult:
+                 reason: str = "", on_applied: Callable[[ApplyResult], None] | None = None,
+                 before_install: Callable[[], None] | None = None) -> ApplyResult:
     """Проверить кандидат, записать и применить; manager.lock берёт вызывающий сценарий.
 
     БД и server.env принадлежат сценарию. При ошибке старый файл восстанавливается
@@ -215,9 +216,10 @@ def apply_config(config: dict, *, restart: bool = True,
     Перед заменой остаётся до 20 технических копий, включая копию для отката.
     reason — контекст ошибки без вывода. on_applied передаёт результат до
     возврата управления сценарию, которому может понадобиться отменить запись.
+    before_install вызывается после проверки кандидата до изменения рабочего файла.
     """
     return _apply_config(lambda: config, restart=restart, verify_timeout=verify_timeout,
-                         reason=reason, on_applied=on_applied)
+                         reason=reason, on_applied=on_applied, before_install=before_install)
 
 
 def apply_config_after_probe(probe: dict, final_config: Callable[[], dict], *,
@@ -240,7 +242,8 @@ def apply_config_after_probe(probe: dict, final_config: Callable[[], dict], *,
 def _apply_config(final_config: Callable[[], dict], *, restart: bool,
                   verify_timeout: float, reason: str, probe: dict | None = None,
                   on_probe_start_failure: Callable[[ApplyConfigError], dict] | None = None,
-                  on_applied: Callable[[ApplyResult], None] | None = None) -> ApplyResult:
+                  on_applied: Callable[[ApplyResult], None] | None = None,
+                  before_install: Callable[[], None] | None = None) -> ApplyResult:
     from xray_vps_manager.xray import invariants
 
     path = paths.paths().config
@@ -281,6 +284,9 @@ def _apply_config(final_config: Callable[[], dict], *, restart: bool,
         stage = "test"
         data = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         _test_candidate(data)
+        if before_install is not None:
+            stage = "prepare"
+            before_install()
         stage = "write"
         if original is None:
             original = path.read_bytes()
@@ -322,7 +328,7 @@ def _apply_config(final_config: Callable[[], dict], *, restart: bool,
                 raise ApplyConfigError(label, stage="rollback", backup=backup,
                                        detail="Применение: " + _detail(error, 6)
                                        + "\nОткат: " + _detail(rollback_error, 6)) from rollback_error
-        if stage == "probe" or isinstance(error, ApplyConfigError):
+        if stage in ("probe", "prepare") or isinstance(error, ApplyConfigError):
             if needs_restore and isinstance(error, ApplyConfigError):
                 error.restored = restart
             raise

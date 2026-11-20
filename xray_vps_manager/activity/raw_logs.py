@@ -15,6 +15,8 @@ from xray_vps_manager.activity import settings
 from xray_vps_manager.activity import time as activity_time
 from xray_vps_manager.activity.constants import ACCESS_LOG_PATH, ERROR_LOG_PATH
 from xray_vps_manager.core import systemd
+from xray_vps_manager.core.errors import LockTimeout
+from xray_vps_manager.core.locks import activity_lock, manager_lock
 from xray_vps_manager.core.time import manager_timezone
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import activity as sqlite_activity
@@ -359,54 +361,61 @@ def rotate_raw_logs(
     log: Callable[[str], None] | None = None,
 ) -> int:
     emit = log or (lambda _message: None)
-    state = _load_state()
-    due, local_date, timezone_label = rotation_due(state=state)
+    purpose = "rotate-raw-logs"
+    due, local_date, timezone_label = rotation_due()
     if only_if_due and not due:
         emit(f"Raw log rotation is not due yet for {local_date} ({timezone_label}).")
         return 0
-
-    # A failed pre-sync must not block rotation for good: unread lines stay in the archive for backfill.
-    pre_sync_failed = bool(drain_logs_before_rotation(emit))
-    if pre_sync_failed:
-        emit(
-            "WARN: rotating anyway; unread log lines stay only in the rotated archives "
-            "(backfill restores detailed events from them, but not counters or alerts)."
-        )
-
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
-    rotated = []
     try:
-        for path in (ACCESS_LOG_PATH, ERROR_LOG_PATH):
-            result = rotate_file(path, stamp)
-            if result:
-                rotated.append(result)
-        removed_access = prune_rotated_logs(ACCESS_LOG_PATH, settings.xray_access_log_retention_days())
-        removed_error = prune_rotated_logs(ERROR_LOG_PATH, settings.xray_error_log_retention_days())
+        # Удаление клиента берёт эти блокировки в том же порядке.
+        # Читаем хвост после ожидания, чтобы новые строки не остались только в архиве.
+        with manager_lock(purpose=purpose), activity_lock(purpose=purpose):
+            state = _load_state()
+            due, local_date, timezone_label = rotation_due(state=state)
+            if only_if_due and not due:
+                emit(f"Raw log rotation is not due yet for {local_date} ({timezone_label}).")
+                return 0
+            pre_sync_failed = bool(drain_logs_before_rotation(emit))
+            if pre_sync_failed:
+                emit(
+                    "WARN: rotating anyway; unread log lines stay only in the rotated archives "
+                    "(backfill restores detailed events from them, but not counters or alerts)."
+                )
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+            rotated = []
+            for path in (ACCESS_LOG_PATH, ERROR_LOG_PATH):
+                result = rotate_file(path, stamp)
+                if result:
+                    rotated.append(result)
+            removed_access = prune_rotated_logs(ACCESS_LOG_PATH, settings.xray_access_log_retention_days())
+            removed_error = prune_rotated_logs(ERROR_LOG_PATH, settings.xray_error_log_retention_days())
+            restart = restart_xray()
+            restart_ok = restart.returncode == 0
+            state.update(
+                {
+                    "lastRunDate": local_date,
+                    "lastRunAt": activity_time.utc_stamp(),
+                    "lastTimezone": timezone_label,
+                    "lastRotatedFiles": [str(path) for path in rotated],
+                    "lastRemovedAccessArchives": removed_access,
+                    "lastRemovedErrorArchives": removed_error,
+                    "lastRestartOk": restart_ok,
+                }
+            )
+            if not restart_ok:
+                raw = (restart.stdout or "") + (restart.stderr or "")
+                state["lastError"] = raw.strip() or "systemctl try-restart xray.service failed"
+                record_rotation_error("systemctl try-restart xray.service failed", raw_line=state["lastError"])
+            else:
+                state.pop("lastError", None)
+            _save_state(state)
+    except LockTimeout as exc:
+        emit(f"ERROR: raw log rotation postponed: {exc}")
+        return exc.exit_code
     except OSError as exc:
         record_rotation_error(f"raw log rotation failed: {exc}", raw_line=str(exc))
         emit(f"ERROR: raw log rotation failed: {exc}")
         return 1
-
-    restart = restart_xray()
-    restart_ok = restart.returncode == 0
-    state.update(
-        {
-            "lastRunDate": local_date,
-            "lastRunAt": activity_time.utc_stamp(),
-            "lastTimezone": timezone_label,
-            "lastRotatedFiles": [str(path) for path in rotated],
-            "lastRemovedAccessArchives": removed_access,
-            "lastRemovedErrorArchives": removed_error,
-            "lastRestartOk": restart_ok,
-        }
-    )
-    if not restart_ok:
-        raw = (restart.stdout or "") + (restart.stderr or "")
-        state["lastError"] = raw.strip() or "systemctl try-restart xray.service failed"
-        record_rotation_error("systemctl try-restart xray.service failed", raw_line=state["lastError"])
-    else:
-        state.pop("lastError", None)
-    _save_state(state)
 
     emit(f"Rotated raw logs: {len(rotated)} files.")
     emit(f"Pruned access archives: {removed_access}")

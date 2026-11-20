@@ -1,10 +1,34 @@
+from contextlib import redirect_stderr
+from io import StringIO
+import sys
 import unittest
 from unittest import mock
 
+from tests.support.sandbox import Sandbox
+from xray_vps_manager.commands.menu import execute_action
 from xray_vps_manager.commands import menu_client_actions
 
 
 class MenuClientActionsTests(unittest.TestCase):
+    def test_policy_actions_use_shared_output_and_sync_traffic_before_enforcement(self) -> None:
+        with Sandbox() as box:
+            sync = box.paths.sbin_dir / "xray-traffic-sync"
+            sync.parent.mkdir(parents=True)
+            sync.touch()
+            box.processes.script({
+                ("/usr/local/bin/xray", "version"): box.processes.ok("Xray 26.1.1\n"),
+                (str(sync), "--quiet"): box.processes.ok(),
+            })
+            before = box.db_rows("clients", "client_credentials", "client_traffic_limit_state")
+            result = box.run_menu(["1", "11", "12", "4", "0", "0", "0"])
+
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            self.assertRegex(result.stdout, r"=+ Проверить просроченных клиентов =+\n\nNo expired clients\.\n")
+            self.assertRegex(result.stdout, r"=+ Проверить лимиты трафика =+\n\nNo traffic limits exceeded or reset\.\n")
+            self.assertEqual(box.processes.calls.count((str(sync), "--quiet")), 1)
+            self.assertEqual(box.db_rows("clients", "client_credentials", "client_traffic_limit_state"), before)
+            box.assert_restarted(times=0)
+
     def test_add_client_menu_rejects_existing_client_name(self) -> None:
         with mock.patch("builtins.input", return_value="alice 30"), \
             mock.patch.object(menu_client_actions, "client_exists_for_menu", return_value=True), \
@@ -61,13 +85,36 @@ class MenuClientActionsTests(unittest.TestCase):
             mock.patch("builtins.input", return_value="2"):
             self.assertEqual(menu_client_actions.choose_client_route("alice"), "cascade-us")
 
-    def test_update_selected_client_route_calls_route_command(self) -> None:
-        call = mock.Mock()
+    def test_update_selected_client_route_uses_shared_adapter(self) -> None:
         with mock.patch.object(menu_client_actions, "choose_client", return_value="alice"), \
-            mock.patch.object(menu_client_actions, "choose_client_route", return_value="cascade-us"):
-            menu_client_actions.update_selected_client_route(call)
+            mock.patch.object(menu_client_actions, "choose_client_route", return_value="cascade-us"), \
+            mock.patch.object(menu_client_actions, "run_command") as update_route:
+            menu_client_actions.update_selected_client_route()
 
-        call.assert_called_once_with(["xray-client", "route", "alice", "cascade-us"])
+        update_route.assert_called_once_with("client", argv=["route", "alice", "cascade-us"])
+
+    def test_menu_access_preserves_cli_argument_validation(self) -> None:
+        with Sandbox() as box:
+            for value in ("--bogus", "-h"):
+                with self.subTest(value=value):
+                    cli = box.run_cli("client", "extend-days", "alice", value)
+                    argv = sys.argv
+                    stderr = StringIO()
+                    with redirect_stderr(stderr), \
+                            mock.patch.object(menu_client_actions, "choose_client", return_value="alice"), \
+                            mock.patch("builtins.input", side_effect=["1", value]):
+                        menu_client_actions.update_selected_client_days()
+                    self.assertEqual(cli.exit_code, 2)
+                    self.assertEqual(stderr.getvalue(), cli.stderr)
+                    self.assertIs(sys.argv, argv)
+
+    def test_menu_routes_cli_cancellation_to_menu_action_boundary(self) -> None:
+        with Sandbox(), mock.patch.object(menu_client_actions, "choose_client", return_value="alice"), \
+                mock.patch.object(menu_client_actions, "choose_client_route", return_value="cascade-us"), \
+                mock.patch("xray_vps_manager.clients.service.set_route", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt) as error:
+                execute_action("Изменить страну подключения", menu_client_actions.update_selected_client_route)
+        self.assertTrue(error.exception.menu_cancel_reported)
 
     def test_available_connections_skip_client_existing_credentials(self) -> None:
         db = {

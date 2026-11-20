@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.support.sandbox import Sandbox, ProcessResult
+from tests.test_client_manager_lock import lock_is_free
 
 from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.activity import backfill
@@ -17,9 +18,81 @@ from xray_vps_manager.activity import raw_logs
 from xray_vps_manager.activity import settings as activity_settings
 from xray_vps_manager.activity import sync as activity_sync
 from xray_vps_manager.commands import activity as activity_command
+from xray_vps_manager.core.errors import LockTimeout
 
 
 class ActivityRawLogsTests(unittest.TestCase):
+    def test_raw_log_restart_holds_manager_lock(self) -> None:
+        with Sandbox() as box:
+            def pre_sync(*args, **kwargs):
+                self.assertFalse(lock_is_free(box.paths.manager_lock))
+                self.assertFalse(lock_is_free(box.paths.activity_lock))
+                return 0
+
+            def try_restart(*args, **kwargs):
+                self.assertFalse(lock_is_free(box.paths.manager_lock))
+                self.assertFalse(lock_is_free(box.paths.activity_lock))
+                return box.processes.ok()
+
+            box.processes.script({("systemctl", "try-restart", "xray.service"): try_restart})
+            with mock.patch.object(raw_logs, "drain_logs_before_rotation", side_effect=pre_sync):
+                result = box.run_cli("activity", "rotate-raw-logs")
+                self.assertEqual(result.exit_code, 0, result.stdout)
+            self.assertTrue(lock_is_free(box.paths.manager_lock))
+
+    def test_cli_waits_for_manager_before_locking_activity_and_reading_logs(self) -> None:
+        with Sandbox() as box:
+            path = box.paths.activity_lock
+            manager_lock = raw_logs.manager_lock
+            access = box.paths.access_log
+            access.write_text("before\n")
+
+            def wait_for_manager(*args, **kwargs):
+                self.assertTrue(lock_is_free(path))
+                with access.open("a") as handle:
+                    handle.write("during manager lock wait\n")
+                return manager_lock(*args, **kwargs)
+
+            def pre_sync(*args, **kwargs):
+                self.assertEqual(access.read_text(), "before\nduring manager lock wait\n")
+                return 0
+
+            box.processes.script({("systemctl", "try-restart", "xray.service"): box.processes.ok()})
+            with mock.patch.object(raw_logs, "drain_logs_before_rotation", side_effect=pre_sync) as drain, \
+                    mock.patch.object(raw_logs, "manager_lock", side_effect=wait_for_manager):
+                result = box.run_cli("activity", "rotate-raw-logs")
+            self.assertEqual(result.exit_code, 0, result.stdout)
+            drain.assert_called_once()
+
+    def test_due_cli_skips_rotation_completed_while_waiting_for_manager(self) -> None:
+        with Sandbox() as box:
+            with mock.patch.object(raw_logs, "drain_logs_before_rotation", return_value=0) as drain, \
+                    mock.patch.object(raw_logs, "rotation_due", side_effect=[
+                        (True, "2026-10-06", "UTC"), (False, "2026-10-06", "UTC"),
+                    ]) as due:
+                result = box.run_cli("activity", "rotate-raw-logs", "--due")
+            self.assertEqual(result.exit_code, 0, result.stdout)
+            self.assertIn("not due", result.stdout)
+            self.assertEqual(due.call_count, 2)
+            drain.assert_not_called()
+            self.assertEqual(box.processes.calls, [])
+
+    def test_lock_timeout_keeps_active_logs_and_leaves_rotation_due(self) -> None:
+        with Sandbox() as box:
+            access = box.paths.access_log
+            access.write_text("before\n")
+            original_inode = access.stat().st_ino
+            with mock.patch.object(raw_logs, "drain_logs_before_rotation", return_value=0), \
+                    mock.patch.object(raw_logs, "manager_lock", side_effect=LockTimeout("busy")):
+                messages = []
+                self.assertEqual(raw_logs.rotate_raw_logs(log=messages.append), 1)
+            self.assertEqual(access.read_text(), "before\n")
+            self.assertEqual(access.stat().st_ino, original_inode)
+            self.assertFalse(list(access.parent.glob("access.log.*.gz")))
+            self.assertNotIn("lastRunDate", raw_logs._load_state())
+            self.assertIn("rotation postponed", messages[-1])
+            self.assertEqual(box.processes.calls, [])
+
     def test_raw_log_timer_unit_uses_on_calendar_with_manager_timezone(self) -> None:
         env = {"XRAY_RAW_LOG_ROTATE_TIME": "03:00", "MANAGER_TIMEZONE": "Europe/Moscow"}
 
@@ -73,6 +146,7 @@ class ActivityRawLogsTests(unittest.TestCase):
         restarted = subprocess.CompletedProcess(["systemctl", "try-restart", "xray.service"], 0, "", "")
 
         with (
+            Sandbox() as box,
             mock.patch.object(raw_logs, "_load_state", return_value={}),
             mock.patch.object(raw_logs, "rotation_due", return_value=(True, "2026-06-12", "UTC")),
             mock.patch.object(raw_logs, "drain_logs_before_rotation", return_value=1),
@@ -90,7 +164,7 @@ class ActivityRawLogsTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(
             [call.args[0] for call in rotate_file.call_args_list],
-            [raw_logs.ACCESS_LOG_PATH, raw_logs.ERROR_LOG_PATH],
+            [box.paths.access_log, box.paths.error_log],
         )
         restart_xray.assert_called_once_with()
         self.assertEqual(save_state.call_args.args[0]["lastRunDate"], "2026-06-12")

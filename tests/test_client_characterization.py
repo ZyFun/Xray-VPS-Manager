@@ -11,7 +11,9 @@ from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
+from xray_vps_manager.clients import service as client_service
 from xray_vps_manager.commands.arguments import CLIENT
+from xray_vps_manager.core.paths import Paths
 
 
 XRAY = "/usr/local/bin/xray"
@@ -47,6 +49,7 @@ SCENARIOS = {
         ("trojan-password-check", "validate-trojan-passwords"),
         ("rotate-trojan-password", "trojan-password-rotate"),
     ),
+    "trojan_only_in_config": (("repair",),),
     "limits": (("limit-list",), ("set-limit",), ("clear-limit",), ("enforce-limits",)),
     "routes": (("route",), ("sync-routes",)),
     "timezone": (("timezone",), ("set-timezone",)),
@@ -105,7 +108,12 @@ class Transcript:
             status = f"exit: {result.exit_code}"
         output = f"{status}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}\n"
         calls = box.processes.calls[offset:]
-        processes = "".join(json.dumps(call) + "\n" for call in calls)
+        # Сопоставить путь бинарника Sandbox с серверным путём в эталоне T4a.
+        processes = "".join(
+            json.dumps((str(Paths.default().xray_bin), *call[1:])
+                       if call[:3] == (str(box.paths.xray_bin), "api", "statsquery") else call) + "\n"
+            for call in calls
+        )
         after = snapshot(box)
         changes = []
         for name in sorted(before.keys() | after.keys()):
@@ -138,7 +146,7 @@ def script_processes(box):
         (XRAY, "x25519"): processes.ok(f"PrivateKey: {PRIVATE_KEY}\nPublicKey: {PUBLIC_KEY}\n"),
         (XRAY, "x25519", "-i", PRIVATE_KEY): processes.ok(f"PublicKey: {PUBLIC_KEY}\n"),
         (XRAY, "x25519", "-i", "A" * 43): processes.ok(f"PublicKey: {'A' * 43}\n"),
-        (XRAY, "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>"): processes.ok(),
+        (str(box.paths.xray_bin), "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", "user>>>"): processes.ok(),
         "openssl rand -hex 8": processes.ok("fedcba9876543210\n"),
         "systemctl daemon-reload": processes.ok(),
         "systemctl enable --now xray-raw-log-rotate.timer": processes.ok(),
@@ -195,9 +203,9 @@ class ClientCharacterizationTests(unittest.TestCase):
         usage = [line.split()[1] for line in help_result.stdout.splitlines() if line.startswith("  xray-client ")]
         groups = [group for scenario in SCENARIOS.values() for group in scenario]
         aliases = [name for group in groups for name in group]
-        self.assertEqual(len(usage), 37)
-        self.assertEqual(len(groups), 35)
-        self.assertEqual(len(aliases), 52)
+        self.assertEqual(len(usage), 38)
+        self.assertEqual(len(groups), 36)
+        self.assertEqual(len(aliases), 53)
         self.assertCountEqual(usage, [group[0] for group in groups] + ["add-connection", "add-trojan-connection"])
         self.assertCountEqual(aliases, CLIENT.keys())
 
@@ -298,6 +306,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         run("trojan-password-check")
 
     def test_limits(self):
+        """136-SR-001: установка лимита не переписывает метаданные клиента."""
         self.check(self.limits)
 
     def limits(self, box, run):
@@ -326,7 +335,9 @@ class ClientCharacterizationTests(unittest.TestCase):
         })
         write_config(box, config)
         box.processes.script({
-            (XRAY, "api", "bo", "--server=127.0.0.1:10085", "-b", "client-route-000000000000400080000000", "cascade-new"): box.processes.ok(),
+            (str(box.paths.xray_bin), "api", "bi", "--server=127.0.0.1:10085", "-json",
+             "client-route-000000000000400080000000"): box.processes.ok('{"balancer":{"override":{}}}'),
+            (str(box.paths.xray_bin), "api", "bo", "--server=127.0.0.1:10085", "-b", "client-route-000000000000400080000000", "cascade-new"): box.processes.ok(),
         })
         run("sync-routes")
         run("route", "alice")
@@ -365,7 +376,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         box.processes.script({(path, "--quiet"): box.processes.ok()})
 
     def test_move_changes_client_uuid(self):
-        """Текущее поведение, баг XR-REV-062."""
+        """XR-REV-062 исправлен: перенос сохраняет внутренний UUID клиента."""
         self.check(self.move_changes_client_uuid)
 
     def move_changes_client_uuid(self, box, run):
@@ -375,10 +386,10 @@ class ClientCharacterizationTests(unittest.TestCase):
         run("remove-connection", "vless-reality")
         self.assertEqual(run("key", "alice").stdout.strip(), f"vpn-key:{ALICE_KEY}")
         run("move-connection", "alice", "Third")
-        self.assertEqual(run("key", "alice").stdout.strip(), "vpn-key:00000000-0000-4000-8000-000000000002")
+        self.assertEqual(run("key", "alice").stdout.strip(), f"vpn-key:{ALICE_KEY}")
 
     def test_trojan_only_in_config(self):
-        """Текущее поведение, баг XR-REV-059 (остаток)."""
+        """XR-REV-059: ссылка доступна на чтении, запись создаёт подтверждённый repair."""
         self.check(self.trojan_only_in_config)
 
     def trojan_only_in_config(self, box, run):
@@ -388,19 +399,23 @@ class ClientCharacterizationTests(unittest.TestCase):
         trojan["settings"]["clients"].append({"password": "fixture-only", "email": "bob", "level": 0})
         write_config(box, config)
         run("list")
-        run("link", "bob", exit_code=1)
+        run("link", "bob")
         for command, args in (
             ("set-days", ("3",)), ("extend-days", ("3",)), ("set-payment", ("paid",)),
             ("set-limit", ("daily", "1")),
         ):
-            run(command, "bob", *args, raises=(ValueError, "Client has no UUID: bob"))
+            run(command, "bob", *args, exit_code=1)
         original = box.paths.config.read_bytes()
         result = run("disable", "bob", exit_code=1)
-        self.assertIn("Client has no UUID: bob", result.stderr)
+        self.assertIn("xray-client repair", result.stderr)
+        with mock.patch.object(client_service, "uuid4", return_value="00000000-0000-4000-8000-000000000099"):
+            run("repair", stdin="y\n")
+        run("repair")
+        run("link", "bob")
         self.assertEqual(box.paths.config.read_bytes(), original)
 
     def test_client_edge_cases(self):
-        """Текущее поведение, баг XR-REV-073 (a–e)."""
+        """XR-REV-073 (a–e): ошибка link, предупреждение add, статус credential, repair и +ДНИ."""
         self.check(self.client_edge_cases)
 
     def client_edge_cases(self, box, run):
@@ -410,7 +425,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         run("disable", "alice", "--connection", "vless-reality-2")
         run("disable", "alice", "--connection", "vless-reality-2", exit_code=1)
         run("enable", "alice", "--connection", "vless-reality", exit_code=1)
-        run("set-days", "alice", "+5", exit_code=1)
+        run("set-days", "alice", "+5")
         run("extend-days", "alice", "+5")
         config = box.config()
         inbound = next(inbound for inbound in config["inbounds"] if inbound["tag"] == "vless-reality")
@@ -420,7 +435,7 @@ class ClientCharacterizationTests(unittest.TestCase):
         config = box.config()
         config["inbounds"][1]["streamSettings"]["realitySettings"]["serverNames"] = []
         write_config(box, config)
-        run("link", "alice", "--connection", "vless-reality", raises=(IndexError, "list index out of range"))
+        run("link", "alice", "--connection", "vless-reality", exit_code=1)
 
     def test_clear_limit_preserves_disabled_status(self):
         """Текущее поведение, баг XR-REV-037."""

@@ -769,7 +769,7 @@ class TelegramSetupLockTests(unittest.TestCase):
 
     def test_country_switch_waits_for_route_longer_than_lock_timeout(self) -> None:
         """58-R01: бот ждёт xray-client route дольше, чем тот ждёт manager.lock, иначе kill опережает LockTimeout."""
-        self.assertGreater(telegram_poller.CLIENT_ROUTE_TIMEOUT, client_command.MANAGER_LOCK_TIMEOUT)
+        self.assertGreater(telegram_poller.CLIENT_ROUTE_TIMEOUT, core_locks.DEFAULT_TIMEOUT)
 
 
 if __name__ == "__main__":

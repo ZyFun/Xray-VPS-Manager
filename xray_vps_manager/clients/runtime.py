@@ -6,7 +6,7 @@ from datetime import datetime, timezone, tzinfo
 from typing import Any
 
 from xray_vps_manager.core import clock
-from xray_vps_manager.traffic.repository import credential_traffic_entry, traffic_entry
+from xray_vps_manager.db.traffic_snapshot import credential_traffic_entry, traffic_entry
 
 ONLINE_WINDOW_SECONDS = 300
 
