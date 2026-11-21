@@ -13,7 +13,7 @@ from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from xray_vps_manager.core.systemd import MANAGER_UNITS
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import random_tls
 from xray_vps_manager.system import units as system_units, unit_sync
 from xray_vps_manager.commands import manager_update
 from xray_vps_manager.commands import menu_xray_actions
@@ -105,10 +105,10 @@ class ManagerUnitListsTests(unittest.TestCase):
                 self.assertEqual(server.processes.calls, [])
 
             check()
-            caddy.write_random_tls_config("alpha.example", 8080, directory / "20.env")
+            random_tls.write_random_tls_config("alpha.example", 8080, directory / "20.env")
             check("alpha.example")
-            caddy.write_random_tls_config("zeta.example", 8081, directory / "10.env")
-            caddy.write_random_tls_config("zeta.example", 8081, directory / "30.env")
+            random_tls.write_random_tls_config("zeta.example", 8081, directory / "10.env")
+            random_tls.write_random_tls_config("zeta.example", 8081, directory / "30.env")
             check("zeta.example", "alpha.example")
 
     def test_xray_test_checks_three_timers_without_random_tls(self) -> None:

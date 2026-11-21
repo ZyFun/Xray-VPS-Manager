@@ -90,7 +90,7 @@ def find_import_violations(sources: dict[Path, str]) -> set[tuple[str, str]]:
 
 # Согласованный R1.5: исключения относятся к роли, а не ко всему пакету области.
 INTERFACE_MODULES = frozenset({'cli', 'runner', 'telegram.admin', 'telegram.poller'})
-INFRASTRUCTURE_MODULES = frozenset({'xray.apply', 'xray.crypto', 'xray.caddy',
+INFRASTRUCTURE_MODULES = frozenset({'xray.apply', 'xray.crypto',
     'telegram.api', 'system.units', 'traffic.stats', 'activity.raw_logs'})
 SAFE_SUBPROCESS_NAMES = frozenset({'subprocess.CalledProcessError',
     'subprocess.TimeoutExpired', 'subprocess.CompletedProcess'})
@@ -209,7 +209,7 @@ class MarkerCheckerTests(unittest.TestCase):
 
     def test_infrastructure_roles_are_explicit(self):
         code = 'import subprocess, sqlite3\nsubprocess.run([]); sqlite3.connect("x"); open("x")'
-        for module in ('core.process', 'db.database', 'xray.apply', 'xray.crypto', 'xray.caddy', 'caddy.service', 'telegram.api', 'system.units', 'traffic.stats', 'activity.raw_logs'):
+        for module in ('core.process', 'db.database', 'xray.apply', 'xray.crypto', 'caddy.service', 'telegram.api', 'system.units', 'traffic.stats', 'activity.raw_logs'):
             self.assertFalse(self.check(module, code), module)
         for module in ('clients.service', 'xray.config', 'caddy.model', 'system.unit_sync', 'commands.client'):
             self.assertEqual(self.markers(module, code), Counter({'subprocess': 2, 'sqlite3': 2, 'open': 1}), module)

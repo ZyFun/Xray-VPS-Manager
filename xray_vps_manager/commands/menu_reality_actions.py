@@ -22,7 +22,8 @@ from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import CONFIG_PATH
 from xray_vps_manager.core.process import tcp_port_in_use
 from xray_vps_manager.core.terminal import table_border, table_row
-from xray_vps_manager.xray import caddy as xray_caddy
+from xray_vps_manager.caddy import model as caddy_model
+from xray_vps_manager.caddy import sites as caddy_sites
 from xray_vps_manager.xray import apply as xray_apply
 from xray_vps_manager.xray.config import (
     DEFAULT_TROJAN_TLS_LOCAL_PORT,
@@ -746,7 +747,7 @@ def create_trojan_connection(call: CommandRunner) -> None:
             print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
             return
         try:
-            xray_caddy.require_site_config_absent(domain)
+            caddy_sites.require_site_config_absent(domain)
         except OSError as exc:
             print(str(exc))
             print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
@@ -797,7 +798,7 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
             print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
             return
         try:
-            xray_caddy.require_site_config_absent(domain)
+            caddy_sites.require_site_config_absent(domain)
         except OSError as exc:
             print(str(exc))
             print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
@@ -980,26 +981,26 @@ def choose_xhttp_mode(default: str = DEFAULT_XHTTP_MODE) -> str:
 
 def choose_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2") -> tuple[str, str]:
     try:
-        current_key = xray_caddy.tls_version_choice_key(current_min, current_max)
-        current_label = xray_caddy.tls_version_label(current_min, current_max)
+        current_key = caddy_model.tls_version_choice_key(current_min, current_max)
+        current_label = caddy_model.tls_version_label(current_min, current_max)
     except ValueError as exc:
         die(str(exc))
     print()
     print("TLS: выбери версию протокола для Caddy site.")
-    for index, choice in enumerate(xray_caddy.TLS_VERSION_CHOICES, start=1):
+    for index, choice in enumerate(caddy_model.TLS_VERSION_CHOICES, start=1):
         marker = " (текущий)" if choice.key == current_key else ""
         print(f"  {index}) {choice.label}{marker}")
     while True:
         value = input(f"TLS [{current_label}] (номер из списка): ").strip()
         if not value:
-            choice = xray_caddy.tls_version_choice(current_key or "tls12")
+            choice = caddy_model.tls_version_choice(current_key or "tls12")
             return choice.tls_min_version, choice.tls_max_version
         if value.isdigit():
             index = int(value, 10)
-            if 1 <= index <= len(xray_caddy.TLS_VERSION_CHOICES):
-                choice = xray_caddy.TLS_VERSION_CHOICES[index - 1]
+            if 1 <= index <= len(caddy_model.TLS_VERSION_CHOICES):
+                choice = caddy_model.TLS_VERSION_CHOICES[index - 1]
                 return choice.tls_min_version, choice.tls_max_version
-        print(f"Выбери номер 1-{len(xray_caddy.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
+        print(f"Выбери номер 1-{len(caddy_model.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
 
 
 def update_fingerprint() -> None:

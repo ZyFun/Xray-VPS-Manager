@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import model as caddy_model
+from xray_vps_manager.caddy import random_tls
 
+from xray_vps_manager.core import process
 from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
 
 
@@ -28,13 +29,13 @@ def usage() -> None:
 def cmd_random_tls_run(quiet: bool = False, domain: str | None = None) -> None:
     require_root()
     try:
-        result = caddy.apply_random_tls_switch(domain=domain)
+        result = random_tls.apply_random_tls_switch(domain=domain, runner=process.run_stream)
     except (FileNotFoundError, ValueError, OSError, subprocess.CalledProcessError, RuntimeError) as exc:
         die(str(exc))
     if quiet:
         return
-    previous = caddy.tls_version_label(result.previous_tls_min_version, result.previous_tls_max_version)
-    current = caddy.tls_version_label(result.tls_min_version, result.tls_max_version)
+    previous = caddy_model.tls_version_label(result.previous_tls_min_version, result.previous_tls_max_version)
+    current = caddy_model.tls_version_label(result.tls_min_version, result.tls_max_version)
     print(f"Caddy TLS randomized for {result.domain}: {previous} -> {current}")
     print(f"Site config: {result.path}")
     if result.backup:

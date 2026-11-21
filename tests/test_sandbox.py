@@ -199,24 +199,24 @@ class SandboxTests(unittest.TestCase):
             self.assertEqual(aware.microsecond, 123456)
 
     def test_dangerous_site_roots_remain_protected_and_restore_in_nested_contexts(self):
-        from xray_vps_manager.xray import caddy
-        original = caddy.DANGEROUS_SITE_ROOTS
+        from xray_vps_manager.caddy import sites
+        original = sites.DANGEROUS_SITE_ROOTS
         with Sandbox() as outer:
-            outer_guards = caddy.DANGEROUS_SITE_ROOTS
+            outer_guards = sites.DANGEROUS_SITE_ROOTS
             for path in (Path('/usr'), Path('/etc'), outer.root/'etc'):
                 with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'dangerous site root'):
-                    caddy.validate_site_root(path, must_exist=False)
+                    sites.validate_site_root(path, must_exist=False)
             with Sandbox() as inner:
                 inner.assert_legacy_paths()
                 for path in (Path('/usr'), Path('/etc'), inner.root/'etc'):
                     with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'dangerous site root'):
-                        caddy.validate_site_root(path, must_exist=False)
+                        sites.validate_site_root(path, must_exist=False)
                 site = inner.root/'srv/test-site'
                 site.mkdir(parents=True)
-                self.assertEqual(caddy.validate_site_root(site), site.resolve())
-            self.assertIs(caddy.DANGEROUS_SITE_ROOTS, outer_guards)
+                self.assertEqual(sites.validate_site_root(site), site.resolve())
+            self.assertIs(sites.DANGEROUS_SITE_ROOTS, outer_guards)
             outer.assert_legacy_paths()
-        self.assertIs(caddy.DANGEROUS_SITE_ROOTS, original)
+        self.assertIs(sites.DANGEROUS_SITE_ROOTS, original)
 
     def test_swallowed_external_attempt_fails_on_exit_and_restores_dependencies(self):
         from xray_vps_manager.commands.test import Diagnostics, is_active
@@ -358,7 +358,7 @@ class SandboxTests(unittest.TestCase):
         self.assertIs(read_server_env.__defaults__, defaults)
 
     def test_wrapped_context_manager_default_is_redirected(self):
-        from xray_vps_manager.xray.caddy import random_tls_lock
+        from xray_vps_manager.caddy.random_tls import random_tls_lock
         original = random_tls_lock.__wrapped__.__defaults__
         with Sandbox() as box:
             with random_tls_lock():

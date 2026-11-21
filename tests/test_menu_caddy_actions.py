@@ -1,15 +1,14 @@
-import functools
-import subprocess
-import tempfile
+import json
 import unittest
-from contextlib import redirect_stdout
-from io import StringIO
 from pathlib import Path
-from unittest import mock
 
 from xray_vps_manager.commands import menu_caddy_actions
 from xray_vps_manager.clients import connections as client_connections
-from xray_vps_manager.xray import caddy
+from tests.support.sandbox import Sandbox
+from tests.test_connection_menu_characterization import script_menu_processes
+from xray_vps_manager.caddy import model, sites
+from xray_vps_manager.clients import service as client_service
+from xray_vps_manager.clients.repository import save_db
 
 
 class MenuCaddyActionsTests(unittest.TestCase):
@@ -64,6 +63,7 @@ class MenuCaddyActionsTests(unittest.TestCase):
                     "publicHost": "api.example.com",
                     "publicPort": 443,
                     "localPort": 10000,
+                    "port": 10000,
                     "xhttpPath": "/vless",
                 },
                 "trojan-tls": {
@@ -75,6 +75,7 @@ class MenuCaddyActionsTests(unittest.TestCase):
                     "publicHost": "vpn.example.com",
                     "publicPort": 443,
                     "localPort": 10100,
+                    "port": 10100,
                     "wsPath": "/trojan",
                 },
                 "trojan-tls-2": {
@@ -90,10 +91,13 @@ class MenuCaddyActionsTests(unittest.TestCase):
             "clients": {},
         }
 
-        with mock.patch.object(menu_caddy_actions, "load_xray_config", return_value=config), \
-            mock.patch.object(menu_caddy_actions, "load_db_sql", return_value=db):
-            options = menu_caddy_actions.tls_connection_options()
+        with Sandbox(db=None) as box:
+            box.paths.config.write_text(json.dumps(config))
+            save_db(db)
+            stored_options = client_service.caddy_connection_options()
 
+        self.assertEqual([item["tag"] for item in stored_options], ["trojan-tls", "vless-tls"])
+        options = client_connections.caddy_connection_options(config, db)
         self.assertEqual([item["tag"] for item in options], ["vless-tls", "trojan-tls"])
         self.assertEqual(options[0]["routePath"], "/vless")
         self.assertEqual(options[1]["upstreamTransport"], "http")
@@ -104,40 +108,22 @@ class MenuCaddyBackupRotationTests(unittest.TestCase):
     """Действия меню Caddy с копией файла оставляют не больше N копий (VIREI-241)."""
 
     def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.conf_dir = Path(tmp.name) / "conf.d"
-        self.conf_dir.mkdir()
-        self.caddyfile = Path(tmp.name) / "Caddyfile"
+        self.box = self.enterContext(Sandbox())
+        self.conf_dir = self.box.paths.caddy_conf_dir
+        self.conf_dir.mkdir(parents=True)
+        self.caddyfile = self.box.paths.caddyfile
         self.caddyfile.write_text(f"import {self.conf_dir}/*.caddy\n")
-        conf_dir = self.conf_dir
-        list_site_configs = caddy.list_site_configs
-        self.reload = mock.Mock()
-        patches = [
-            mock.patch.object(caddy, "CADDYFILE_PATH", self.caddyfile),
-            mock.patch.object(
-                caddy, "site_config_path", lambda domain, conf_dir_arg=None: conf_dir / caddy.site_filename(domain)
-            ),
-            mock.patch.object(
-                caddy,
-                "write_site_config",
-                functools.partial(caddy.write_site_config, conf_dir=conf_dir, caddyfile_path=self.caddyfile),
-            ),
-            mock.patch.object(caddy, "list_site_configs", lambda: list_site_configs(conf_dir)),
-            mock.patch.object(
-                caddy,
-                "remove_site_block_from_caddyfile",
-                functools.partial(caddy.remove_site_block_from_caddyfile, caddyfile_path=self.caddyfile),
-            ),
-            mock.patch.object(caddy, "validate_and_reload_caddy", self.reload),
-        ]
-        for patch in patches:
-            patch.start()
-            self.addCleanup(patch.stop)
+        script_menu_processes(self.box)
+
+    def run_site_action(self, *answers):
+        result = self.box.run_menu(["2", "4", "2", *answers, "0", "0", "0", "0"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertNotIn("Ввод закрыт", result.stdout)
+        return result
 
     def write_site(self, domain: str) -> Path:
-        path = self.conf_dir / caddy.site_filename(domain)
-        path.write_text(caddy.caddy_site_block(domain, 10300))
+        path = self.conf_dir / model.site_filename(domain)
+        path.write_text(model.caddy_site_block(domain, 10300))
         return path
 
     def make_copies(self, path: Path, count: int) -> list:
@@ -157,40 +143,38 @@ class MenuCaddyBackupRotationTests(unittest.TestCase):
     def test_update_site_domain_prunes_copies_of_old_site(self) -> None:
         old_path = self.write_site("old.example.com")
         old = self.make_copies(old_path, 7)
-        new_path = self.conf_dir / caddy.site_filename("new.example.com")
+        new_path = self.conf_dir / model.site_filename("new.example.com")
         new_old = self.make_copies(new_path, 7)
 
-        with mock.patch("builtins.input", return_value="new.example.com"), redirect_stdout(StringIO()):
-            menu_caddy_actions.update_site_domain()
+        self.run_site_action("7", "new.example.com")
 
         self.assertFalse(old_path.exists())
         self.assertTrue(new_path.exists())
         old_copies = self.copies_of(old_path)
-        self.assertEqual(len(old_copies), caddy.SITE_BACKUP_KEEP)
+        self.assertEqual(len(old_copies), sites.SITE_BACKUP_KEEP)
         self.assertEqual(old_copies[:-1], old[-4:])
         self.assertEqual(self.copies_of(new_path), new_old[-5:])
 
     def test_delete_site_prunes_copies_and_keeps_reported_backup(self) -> None:
         path = self.write_site("api.example.com")
         old = self.make_copies(path, 7)
-        output = StringIO()
-
-        with mock.patch("builtins.input", return_value="1"), redirect_stdout(output):
-            menu_caddy_actions.delete_site(lambda message: True)
+        result = self.run_site_action("8", "1", "y")
 
         copies = self.copies_of(path)
         self.assertFalse(path.exists())
         self.assertEqual(copies[:-1], old[-4:])
-        self.assertIn(f"Backup: {copies[-1]}", output.getvalue())
+        self.assertIn(f"Backup: {copies[-1]}", result.stdout)
 
     def test_delete_site_failure_restores_file_and_keeps_copies(self) -> None:
         path = self.write_site("api.example.com")
         self.make_copies(path, 7)
-        self.reload.side_effect = subprocess.CalledProcessError(1, ["caddy", "validate"])
+        validate = ("caddy", "validate", "--config", str(self.caddyfile))
+        self.box.processes.script({validate: self.box.processes.result(1)})
 
-        with mock.patch("builtins.input", return_value="1"), redirect_stdout(StringIO()):
-            with self.assertRaises(SystemExit):
-                menu_caddy_actions.delete_site(lambda message: True)
+        result = self.run_site_action("8", "1", "y")
+
+        self.assertIn("Caddy config failed. Restored backup:", result.stderr)
+        self.assertEqual([call for call in self.box.processes.calls if call[0] == "caddy"], [validate, validate])
 
         self.assertTrue(path.exists())
         self.assertEqual(len(self.copies_of(path)), 8)
@@ -198,15 +182,12 @@ class MenuCaddyBackupRotationTests(unittest.TestCase):
     def test_remove_default_http_site_prunes_caddyfile_copies(self) -> None:
         self.caddyfile.write_text(f":80 {{\n    file_server\n}}\n\nimport {self.conf_dir}/*.caddy\n")
         old = self.make_copies(self.caddyfile, 7)
-        output = StringIO()
-
-        with redirect_stdout(output):
-            menu_caddy_actions.remove_default_http_site(lambda message: True)
+        result = self.run_site_action("9", "y")
 
         copies = self.copies_of(self.caddyfile)
         self.assertNotIn(":80 {", self.caddyfile.read_text())
         self.assertEqual(copies[:-1], old[-4:])
-        self.assertIn(f"Backup: {copies[-1]}", output.getvalue())
+        self.assertIn(f"Backup: {copies[-1]}", result.stdout)
 
 
 if __name__ == "__main__":

@@ -9,14 +9,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from xray_vps_manager.commands import backup, manager_update
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import sites
 
 
 class BackupExtractionTests(unittest.TestCase):
     extractors = (
         (backup.extract_archive, "usr/local/etc/xray/manager.db", SystemExit),
-        (caddy.extract_config_backup, "etc/caddy/conf.d/site.caddy", ValueError),
-        (caddy.extract_site_backup, "site/index.html", ValueError),
+        (sites.extract_config_backup, "etc/caddy/conf.d/site.caddy", ValueError),
+        (sites.extract_site_backup, "site/index.html", ValueError),
     )
 
     def setUp(self):
@@ -71,7 +71,7 @@ class BackupExtractionTests(unittest.TestCase):
             ]
             for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE, b"D"):
                 cases.append((name + ".bad", kind, type_error))
-            if extract in (caddy.extract_config_backup, caddy.extract_site_backup):
+            if extract in (sites.extract_config_backup, sites.extract_site_backup):
                 cases.append(("unexpected.txt", tarfile.REGTYPE, "Unexpected archive member"))
 
             for bad_name, kind, message in cases:

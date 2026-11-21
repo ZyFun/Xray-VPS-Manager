@@ -1,11 +1,12 @@
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
-from pathlib import Path
 from unittest import mock
 
 from xray_vps_manager.commands import menu_caddy_actions, menu_reality_actions
-from xray_vps_manager.xray import caddy
+from tests.support.sandbox import Sandbox
+from tests.test_connection_menu_characterization import script_menu_processes
+from xray_vps_manager.caddy import sites
 
 
 class MenuRealityActionsReadTests(unittest.TestCase):
@@ -98,15 +99,10 @@ class MenuRealityActionsReadTests(unittest.TestCase):
         calls = []
         output = StringIO()
 
-        with mock.patch.object(menu_reality_actions, "current_fingerprint", return_value="chrome"), \
-            mock.patch.object(menu_reality_actions, "load_config", return_value={"inbounds": []}), \
-            mock.patch.object(
-                menu_reality_actions.xray_caddy,
-                "require_site_config_absent",
-                side_effect=FileExistsError("existing site"),
-            ), \
-            mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), \
+        with Sandbox() as box, mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), \
             redirect_stdout(output):
+            box.paths.config.write_text('{"inbounds": []}')
+            sites.write_site_config("vpn.example.com", 10100)
             menu_reality_actions.create_trojan_connection(lambda command: calls.append(command))
 
         self.assertEqual(calls, [])
@@ -207,22 +203,18 @@ class MenuRealityActionsReadTests(unittest.TestCase):
         self.assertEqual((tls_min, tls_max), ("tls1.3", "tls1.3"))
 
     def test_update_site_tls_supports_static_site_default_profile(self) -> None:
-        inputs = iter(["4"])
-        site = caddy.SiteConfig(
-            path=Path("/etc/caddy/conf.d/site.example.com.caddy"),
-            domain="site.example.com",
-            local_port=None,
-            tls_min_version="default",
-            tls_max_version="default",
-        )
+        with Sandbox() as box:
+            script_menu_processes(box)
+            box.paths.caddy_conf_dir.mkdir(parents=True)
+            path = box.paths.caddy_conf_dir / "site.example.com.caddy"
+            path.write_text("site.example.com {\n    file_server\n}\n")
 
-        with mock.patch.object(menu_caddy_actions, "site_rows", return_value=[site]), \
-            mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), \
-            mock.patch.object(menu_caddy_actions, "apply_site_tls_write") as apply_tls, \
-            redirect_stdout(StringIO()):
-            menu_caddy_actions.update_site_tls()
+            result = box.run_menu(["2", "4", "2", "5", "4", "0", "0", "0", "0"])
 
-        apply_tls.assert_called_once_with(site, "tls1.3", "tls1.3")
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("Caddy site TLS updated:", result.stdout)
+            self.assertIn("protocols tls1.3 tls1.3", path.read_text())
+            self.assertIn("file_server", path.read_text())
 
 
 if __name__ == "__main__":

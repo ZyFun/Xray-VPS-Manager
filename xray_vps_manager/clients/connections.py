@@ -10,7 +10,7 @@ from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
 from xray_vps_manager.core.time import utc_stamp
-from xray_vps_manager.xray import caddy as xray_caddy
+from xray_vps_manager.caddy import model as caddy_model
 from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import (
     DEFAULT_XHTTP_MODE,
@@ -1050,7 +1050,7 @@ def update_trojan_connection(
     previous_tls_min = str(entry.get("tlsMinVersion") or DEFAULT_TROJAN_TLS_MIN_VERSION)
     previous_tls_max = str(entry.get("tlsMaxVersion") or DEFAULT_TROJAN_TLS_MAX_VERSION)
 
-    next_public_host = xray_caddy.validate_domain(domain or previous_public_host)
+    next_public_host = caddy_model.validate_domain(domain or previous_public_host)
     next_public_port = public_port if public_port is not None else previous_public_port
     next_local_port = local_port if local_port is not None else previous_local_port
     next_ws_path = normalize_trojan_ws_path(ws_path) if ws_path is not None else previous_ws_path
@@ -1061,7 +1061,7 @@ def update_trojan_connection(
     )
     next_tls_min = tls_min_version if tls_min_version is not None else previous_tls_min
     next_tls_max = tls_max_version if tls_max_version is not None else previous_tls_max
-    next_tls_min, next_tls_max = xray_caddy.normalize_tls_version_pair(next_tls_min, next_tls_max)
+    next_tls_min, next_tls_max = caddy_model.normalize_tls_version_pair(next_tls_min, next_tls_max)
 
     if port_used_by_other_inbound(config, tag, next_local_port):
         raise ValueError(f"LOCAL_PORT is already used by another inbound: {next_local_port}")
@@ -1183,3 +1183,36 @@ def resolve_connection_identifier(config: dict[str, Any], db: dict[str, Any], va
     if len(matches) > 1:
         raise ValueError(f"Connection name is ambiguous: {identifier}. Use TAG instead.")
     raise ValueError(f"Connection not found: {identifier}")
+
+
+def caddy_connection_options(config: dict, db: dict) -> list[dict]:
+    options = []
+    for tag, entry in db.get("connections", {}).items():
+        if (entry.get("security") or "reality") != "tls":
+            continue
+        inbound = find_inbound_by_tag(config, tag)
+        protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
+        transport = entry.get("transport") or inbound.get("streamSettings", {}).get("network") or "xhttp"
+        if not ((protocol == "vless" and transport == "xhttp") or (protocol == "trojan" and transport == "ws")):
+            continue
+        route_path = ""
+        if protocol == "trojan" and transport == "ws":
+            route_path = entry.get("wsPath") or ""
+        elif protocol == "vless" and transport == "xhttp":
+            route_path = entry.get("xhttpPath") or ""
+        options.append(
+            {
+                "tag": tag,
+                "name": entry.get("name") or tag,
+                "protocol": protocol,
+                "transport": transport,
+                "domain": entry.get("publicHost") or entry.get("sni") or "",
+                "publicPort": int(entry.get("publicPort") or entry.get("port") or 443),
+                "localPort": int(entry.get("localPort") or inbound.get("port") or 0),
+                "tlsMin": entry.get("tlsMinVersion") or "tls1.2",
+                "tlsMax": entry.get("tlsMaxVersion") or "tls1.2",
+                "routePath": route_path,
+                "upstreamTransport": "http" if protocol == "trojan" and transport == "ws" else "xhttp",
+            }
+        )
+    return options

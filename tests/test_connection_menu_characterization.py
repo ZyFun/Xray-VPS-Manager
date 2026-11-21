@@ -71,9 +71,9 @@ def snapshot(box):
 
 def normalize_paths(box, value):
     # В имени архива сайта абсолютный путь кодируется с подчёркиваниями.
-    archive_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(box.root).strip("/ ")).strip("_")
+    archive_prefix = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(box.root).lstrip("/ ") + "/").lstrip("_")
     return value.replace(str(box.root), "<ROOT>").replace(
-        f"caddy-site-backup-{archive_prefix}_", "caddy-site-backup-<ROOT>_",
+        f"caddy-site-backup-{archive_prefix}", "caddy-site-backup-<ROOT>_",
     )
 
 
@@ -379,12 +379,12 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
             action(CADDY_BACKUPS, "4", "1", "y")
             self.assertFalse(saved_config.exists())
 
-            # Автопоиск стандартных site roots не зависит от папок хоста.
+            # Сценарий проверяет ручной ввод при отсутствии стандартных site roots.
             exists = Path.exists
-            host_roots = {Path(path) for path in ("/usr/share/caddy", "/var/www", "/var/www/html", "/srv/www")}
+            fallback_roots = set(box.paths.caddy_site_roots)
 
             def exists_in_fixture(path):
-                return path not in host_roots and exists(path)
+                return path not in fallback_roots and exists(path)
 
             with mock.patch.object(Path, "exists", exists_in_fixture):
                 action(CADDY_BACKUPS, "5", "M", str(site_root))
