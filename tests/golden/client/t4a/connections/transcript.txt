@@ -235,12 +235,14 @@ Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000004
 stderr:
 
 processes:
+["caddy", "validate", "--config", "<CADDY_CANDIDATE>/Caddyfile"]
 ["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
 ["systemctl", "stop", "xray"]
 ["systemctl", "reset-failed", "xray"]
 ["systemctl", "restart", "xray"]
 ["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
 ["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "show", "--property=ActiveState,UnitFileState", "caddy"]
 ["systemctl", "enable", "--now", "caddy"]
 ["systemctl", "reload", "caddy"]
 state:
@@ -317,12 +319,14 @@ Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000005
 stderr:
 
 processes:
+["caddy", "validate", "--config", "<CADDY_CANDIDATE>/Caddyfile"]
 ["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
 ["systemctl", "stop", "xray"]
 ["systemctl", "reset-failed", "xray"]
 ["systemctl", "restart", "xray"]
 ["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
 ["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "show", "--property=ActiveState,UnitFileState", "caddy"]
 ["systemctl", "enable", "--now", "caddy"]
 ["systemctl", "reload", "caddy"]
 state:
@@ -404,12 +408,14 @@ Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000006
 stderr:
 
 processes:
+["caddy", "validate", "--config", "<CADDY_CANDIDATE>/Caddyfile"]
 ["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
 ["systemctl", "stop", "xray"]
 ["systemctl", "reset-failed", "xray"]
 ["systemctl", "restart", "xray"]
 ["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
 ["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "show", "--property=ActiveState,UnitFileState", "caddy"]
 ["systemctl", "enable", "--now", "caddy"]
 ["systemctl", "reload", "caddy"]
 state:

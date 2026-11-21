@@ -1,7 +1,5 @@
 """Регрессия XR-REV-003: удаление подключения не стирает трафик клиентов с другими credentials."""
 
-from contextlib import redirect_stdout
-from io import StringIO
 import json
 import unittest
 from unittest import mock
@@ -9,8 +7,9 @@ from unittest import mock
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import crud as client_crud
 from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.commands import menu_reality_actions
 from tests.support.sandbox import Sandbox
+from tests.test_apply_characterization import running_xray
+from tests.test_connection_menu_characterization import script_menu_processes
 from tests.test_restart_verification import FakeClock, FakeSocket, show_output
 from xray_vps_manager.core import systemd
 from xray_vps_manager.db import database
@@ -264,15 +263,19 @@ class RemoveConnectionTrafficTest(unittest.TestCase):
 
 
 class MenuDeleteConnectionWarningTest(unittest.TestCase):
-    def run_menu(self, func, rows, tag) -> str:
-        call = mock.Mock()
-        output = StringIO()
-        with mock.patch.object(menu_reality_actions, "connection_rows", return_value=rows), \
-            mock.patch.object(menu_reality_actions, "choose_connection", return_value=tag), \
-            redirect_stdout(output):
-            func(call, lambda _prompt: False)
-        call.assert_not_called()
-        return output.getvalue()
+    def run_cancelled_delete(self, install, answers):
+        with Sandbox() as box, running_xray(box):
+            script_menu_processes(box)
+            setup = box.run_cli("client", *install)
+            self.assertEqual((setup.exit_code, setup.stderr), (0, ""))
+            config = box.paths.config.read_bytes()
+            rows = box.db_rows("reality_connections", "clients", "client_credentials")
+            action = box.run_menu(answers)
+            self.assertEqual((action.exit_code, action.stderr), (0, ""))
+            self.assertEqual(box.paths.config.read_bytes(), config)
+            self.assertEqual(box.db_rows("reality_connections", "clients", "client_credentials"), rows)
+            self.assertIn("Удаление отменено.", action.stdout)
+            return action.stdout
 
     def assert_warning(self, output: str) -> None:
         self.assertNotIn("Все клиенты этого подключения также будут удалены", output)
@@ -280,14 +283,16 @@ class MenuDeleteConnectionWarningTest(unittest.TestCase):
         self.assertIn("клиент и его трафик останутся", output)
 
     def test_vless_delete_warning_keeps_clients_with_other_connections(self) -> None:
-        rows = [{"tag": KEPT_TAG, "name": "main"}, {"tag": REMOVED_TAG, "name": "second"}]
-
-        self.assert_warning(self.run_menu(menu_reality_actions.delete_connection, rows, REMOVED_TAG))
+        self.assert_warning(self.run_cancelled_delete(
+            ("add-connection", "second", "8443", "secondary.example"),
+            ["2", "1", "9", "2", "n", "0", "0", "0"],
+        ))
 
     def test_trojan_delete_warning_keeps_clients_with_other_connections(self) -> None:
-        rows = [{"tag": "trojan-tls", "name": "trojan"}]
-
-        self.assert_warning(self.run_menu(menu_reality_actions.delete_trojan_connection, rows, "trojan-tls"))
+        self.assert_warning(self.run_cancelled_delete(
+            ("add-trojan-connection", "trojan", "18101", "trojan.example", "--no-caddy"),
+            ["2", "2", "3", "1", "n", "0", "0", "0"],
+        ))
 
 
 if __name__ == "__main__":

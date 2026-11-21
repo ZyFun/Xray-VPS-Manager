@@ -1,16 +1,7 @@
-"""Переходные команды подключений до шага 4b.
-
-Здесь остаётся существующий порядок записи Xray, SQLite, Caddy и server.env.
-"""
-
-from contextlib import contextmanager
-import copy
-import subprocess
+"""Аргументы и вывод команд управления подключениями."""
 
 from xray_vps_manager.clients import connections as client_connections
-from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.clients import service as client_service
-from xray_vps_manager.clients import settings as client_settings
+from xray_vps_manager.clients import connections_service, service as client_service
 from xray_vps_manager.commands.client_arguments import (
     validate_absolute_path,
     validate_connection_name,
@@ -26,29 +17,12 @@ from xray_vps_manager.commands.client_arguments import (
     validate_xhttp_mode,
     validate_xhttp_path,
 )
-from xray_vps_manager.commands.client_output import ensure_connections
-from xray_vps_manager.commands.presenters import apply_error_text, backup_text
-from xray_vps_manager.core import process
-from xray_vps_manager.core.errors import ApplyConfigError, ManagerError
-from xray_vps_manager.core.locks import manager_lock
+from xray_vps_manager.commands.client_output import client_change_errors, ensure_connections
+from xray_vps_manager.commands.presenters import backup_text
 from xray_vps_manager.core.terminal import print_table
-from xray_vps_manager.runner import error_exit, fail
-from xray_vps_manager.xray import apply as xray_apply
+from xray_vps_manager.runner import fail
 from xray_vps_manager.caddy import model as caddy_model
-from xray_vps_manager.caddy import service as caddy_service
-from xray_vps_manager.caddy import sites as caddy_sites
 from xray_vps_manager.xray import config as xray_config
-
-
-def save_config_restart_xray_and_db(config, db, *, deletions=None):
-    try:
-        return client_service.apply_config_and_save_db(config, db, deletions=deletions).backup
-    except ApplyConfigError as exc:
-        if exc.exit_code == 130:
-            raise KeyboardInterrupt from exc
-        fail(apply_error_text(exc))
-    except ManagerError as exc:
-        error_exit(exc)
 
 
 def cmd_connection_list():
@@ -93,68 +67,23 @@ def cmd_connection_add(
     public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_XHTTP_TLS_PUBLIC_PORT
     tls_min_version = validate_tls_version(tls_min_version, "tls1.2")
     tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
-    with manager_lock(purpose="add-connection"):
-        config, db = client_service.read_state()
-        try:
-            if security == "tls":
-                tls_domain = caddy_model.validate_domain(sni)
-                if install_caddy:
-                    conflicts = client_connections.public_port_conflicts(config, public_port)
-                    if conflicts:
-                        tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
-                        fail(
-                            f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
-                            "Move those connections to another port before installing Caddy."
-                        )
-                    caddy_sites.require_site_config_absent(tls_domain)
-                result = client_connections.add_tls_xhttp_connection(
-                    config,
-                    db,
-                    name,
-                    tls_domain,
-                    local_port=port,
-                    public_port=public_port,
-                    fingerprint_value=fp,
-                    xhttp_path=xhttp_path,
-                    xhttp_mode=xhttp_mode,
-                    xhttp_extra=xhttp_extra,
-                    tls_min_version=tls_min_version,
-                    tls_max_version=tls_max_version,
-                    caddy_enabled=install_caddy,
-                )
-            else:
-                result = client_connections.add_connection(
-                    config,
-                    db,
-                    name,
-                    port,
-                    sni,
-                    fp,
-                    transport=transport,
-                    grpc_service_name=grpc_service_name,
-                    xhttp_path=xhttp_path,
-                    xhttp_mode=xhttp_mode,
-                    xhttp_extra=xhttp_extra,
-                )
-        except (OSError, ValueError, RuntimeError) as exc:
-            fail(str(exc))
+    with client_change_errors():
+        if security == "tls":
+            change = connections_service.add_tls_xhttp_connection(
+                name, sni, local_port=port, public_port=public_port, fingerprint_value=fp,
+                xhttp_path=xhttp_path, xhttp_mode=xhttp_mode, xhttp_extra=xhttp_extra,
+                tls_min_version=tls_min_version, tls_max_version=tls_max_version, install_caddy=install_caddy,
+            )
+        else:
+            change = connections_service.add_connection(
+                name, port, sni, fp, transport=transport, grpc_service_name=grpc_service_name,
+                xhttp_path=xhttp_path, xhttp_mode=xhttp_mode, xhttp_extra=xhttp_extra,
+            )
+    print_added_connection(change)
 
-        backup = save_config_restart_xray_and_db(config, db)
-        caddy_site = None
-        if result.security == "tls" and install_caddy:
-            try:
-                caddy_site = caddy_service.setup_caddy_for_xhttp(
-                    result.public_host,
-                    result.local_port,
-                    tls_min_version=result.tls_min_version,
-                    tls_max_version=result.tls_max_version,
-                    runner=process.run_stream,
-                )
-            except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-                fail(
-                    "TLS-XHTTP connection was added, but Caddy setup failed. "
-                    f"Config backup: {backup_text(backup)}. Detail: {exc}"
-                )
+
+def print_added_connection(change):
+    result, backup, caddy_site = change.result, change.backup, change.site
 
     print(f"Added connection: {result.name}")
     print(f"Tag: {result.tag}")
@@ -204,72 +133,28 @@ def cmd_trojan_connection_add(
     transport = (transport_value or "ws").strip().lower()
     if transport not in ("tcp", "ws"):
         fail("Trojan TRANSPORT must be tcp or ws.")
-    with manager_lock(purpose="add-trojan-connection"):
-        config, db = client_service.read_state()
-        try:
-            if transport == "ws":
-                local_port = validate_port(port_value)
-                public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_TROJAN_TLS_PUBLIC_PORT
-                path = validate_trojan_ws_path(ws_path)
-                tls_min_version = validate_tls_version(tls_min_version, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
-                tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
-                tls_domain = caddy_model.validate_domain(domain)
-                if install_caddy:
-                    conflicts = client_connections.public_port_conflicts(config, public_port)
-                    if conflicts:
-                        tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
-                        fail(
-                            f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
-                            "Move those connections to another port before installing Caddy."
-                        )
-                    caddy_sites.require_site_config_absent(tls_domain)
-                result = client_connections.add_trojan_caddy_connection(
-                    config,
-                    db,
-                    name,
-                    tls_domain,
-                    local_port=local_port,
-                    public_port=public_port,
-                    fingerprint_value=fp,
-                    ws_path=path,
-                    tls_min_version=tls_min_version,
-                    tls_max_version=tls_max_version,
-                    caddy_enabled=install_caddy,
-                )
-            else:
-                port = validate_port(port_value)
-                cert_file = validate_absolute_path(cert_file_value, "CERT_FILE")
-                key_file = validate_absolute_path(key_file_value, "KEY_FILE")
-                result = client_connections.add_trojan_tls_connection(
-                    config,
-                    db,
-                    name,
-                    port,
-                    domain,
-                    cert_file,
-                    key_file,
-                    fp,
-                )
-        except (OSError, ValueError, RuntimeError) as exc:
-            fail(str(exc))
+    with client_change_errors():
+        if transport == "ws":
+            local_port = validate_port(port_value)
+            public_port = validate_port(public_port_value) if public_port_value else xray_config.DEFAULT_TROJAN_TLS_PUBLIC_PORT
+            path = validate_trojan_ws_path(ws_path)
+            tls_min_version = validate_tls_version(tls_min_version, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
+            tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
+            change = connections_service.add_trojan_caddy_connection(
+                name, domain, local_port=local_port, public_port=public_port, fingerprint_value=fp,
+                ws_path=path, tls_min_version=tls_min_version, tls_max_version=tls_max_version,
+                install_caddy=install_caddy,
+            )
+        else:
+            port = validate_port(port_value)
+            cert_file = validate_absolute_path(cert_file_value, "CERT_FILE")
+            key_file = validate_absolute_path(key_file_value, "KEY_FILE")
+            change = connections_service.add_trojan_tls_connection(name, port, domain, cert_file, key_file, fp)
+    print_added_trojan_connection(change)
 
-        backup = save_config_restart_xray_and_db(config, db)
-        caddy_site = None
-        if result.transport == "ws" and install_caddy:
-            try:
-                caddy_site = caddy_service.setup_caddy_for_trojan_ws(
-                    result.public_host,
-                    result.local_port,
-                    result.ws_path,
-                    tls_min_version=result.tls_min_version,
-                    tls_max_version=result.tls_max_version,
-                    runner=process.run_stream,
-                )
-            except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-                fail(
-                    "Trojan Caddy connection was added, but Caddy setup failed. "
-                    f"Config backup: {backup_text(backup)}. Detail: {exc}"
-                )
+
+def print_added_trojan_connection(change):
+    result, backup, caddy_site = change.result, change.backup, change.site
 
     print(f"Added Trojan connection: {result.name}")
     print(f"Tag: {result.tag}")
@@ -293,31 +178,24 @@ def cmd_trojan_connection_add(
     print(f"Backup: {backup_text(backup)}")
 
 
-def cmd_connection_transport(identifier, transport_value, grpc_service_name="", xhttp_path="", xhttp_mode="", xhttp_extra_json=None):
+def cmd_connection_transport(
+    identifier, transport_value, grpc_service_name="", xhttp_path="", xhttp_mode="", xhttp_extra_json=None,
+):
     transport = validate_reality_transport(transport_value)
     grpc_service_name = validate_grpc_service_name(grpc_service_name) if transport == "grpc" else ""
     xhttp_path = validate_xhttp_path(xhttp_path) if transport == "xhttp" else ""
     xhttp_mode = validate_xhttp_mode(xhttp_mode) if transport == "xhttp" else ""
     xhttp_extra = validate_xhttp_extra_json(xhttp_extra_json) if transport == "xhttp" and xhttp_extra_json is not None else None
-    with manager_lock(purpose="connection-transport"):
-        config, db = client_service.read_state()
-        try:
-            result = client_connections.update_connection_transport(
-                config,
-                db,
-                identifier,
-                transport,
-                grpc_service_name=grpc_service_name,
-                xhttp_path=xhttp_path,
-                xhttp_mode=xhttp_mode,
-                xhttp_extra=xhttp_extra,
-            )
-        except (ValueError, RuntimeError) as exc:
-            fail(str(exc))
+    with client_change_errors():
+        change = connections_service.update_transport(
+            identifier, transport, grpc_service_name=grpc_service_name, xhttp_path=xhttp_path,
+            xhttp_mode=xhttp_mode, xhttp_extra=xhttp_extra,
+        )
+    print_transport_change(change)
 
-        backup = save_config_restart_xray_and_db(config, db)
-        if result.env_update is not None:
-            client_settings.save_server_env_values(result.env_update)
+
+def print_transport_change(change):
+    result, backup = change.result, change.backup
 
     print(f"Connection: {result.display_name} ({result.tag})")
     print(f"TRANSPORT: {result.transport}")
@@ -335,60 +213,18 @@ def cmd_connection_transport(identifier, transport_value, grpc_service_name="", 
 
 def cmd_connection_xhttp_extra(identifier, xhttp_extra_json=None, clear=False):
     xhttp_extra = {} if clear else validate_xhttp_extra_json(xhttp_extra_json)
-    with manager_lock(purpose="connection-xhttp-extra"):
-        config, db = client_service.read_state()
-        try:
-            result = client_connections.update_connection_xhttp_extra(config, db, identifier, xhttp_extra)
-        except (ValueError, RuntimeError) as exc:
-            fail(str(exc))
+    with client_change_errors():
+        change = connections_service.update_xhttp_extra(identifier, xhttp_extra)
+    print_xhttp_extra_change(change)
 
-        backup = save_config_restart_xray_and_db(config, db)
+
+def print_xhttp_extra_change(change):
+    result, backup = change.result, change.backup
     extra_json = xray_config.xhttp_extra_json(result.xhttp_extra)
     print(f"Connection: {result.display_name} ({result.tag})")
     print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
     print(f"Backup: {backup_text(backup)}")
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
-
-
-def update_trojan_caddy_site(result):
-    if not result.caddy_enabled:
-        return None
-    if result.public_host == result.previous_public_host:
-        return caddy_service.update_site_config(
-            result.public_host,
-            result.local_port,
-            tls_min_version=result.tls_min_version,
-            tls_max_version=result.tls_max_version,
-            upstream_transport="http",
-            route_path=result.ws_path,
-            runner=process.run_stream,
-        )
-
-    old_path = caddy_sites.site_config_path(result.previous_public_host)
-    new_path = caddy_sites.site_config_path(result.public_host)
-    old_backup = caddy_sites.backup_file(old_path)
-    new_backup = caddy_sites.backup_file(new_path)
-    try:
-        caddy_sites.write_site_config(
-            result.public_host,
-            result.local_port,
-            tls_min_version=result.tls_min_version,
-            tls_max_version=result.tls_max_version,
-            upstream_transport="http",
-            route_path=result.ws_path,
-        )
-        caddy_sites.delete_site_config(old_path, keep_backup=False)
-        caddy_service.validate_and_reload_caddy(process.run_stream)
-    except Exception:
-        caddy_sites.restore_file(old_backup, old_path)
-        caddy_sites.restore_file(new_backup, new_path)
-        try:
-            caddy_service.validate_and_reload_caddy(process.run_stream)
-        except Exception:
-            pass
-        raise
-    caddy_sites.prune_site_backups(old_path, new_path, protect=(old_backup, new_backup))
-    return caddy_model.SiteWriteResult(new_path, old_backup)
 
 
 def cmd_trojan_connection_update(
@@ -417,43 +253,16 @@ def cmd_trojan_connection_update(
         else None
     )
 
-    with manager_lock(purpose="update-trojan-connection"):
-        config, db = client_service.read_state()
-        original_db = copy.deepcopy(db)
-        try:
-            result = client_connections.update_trojan_connection(
-                config,
-                db,
-                identifier,
-                domain=domain,
-                local_port=local_port,
-                public_port=public_port,
-                ws_path=ws_path,
-                fingerprint_value=fp,
-                tls_min_version=tls_min,
-                tls_max_version=tls_max,
-            )
-            if result.caddy_enabled and result.public_host != result.previous_public_host:
-                caddy_sites.require_site_config_absent(result.public_host)
-        except (OSError, ValueError, RuntimeError) as exc:
-            fail(str(exc))
-        if result.local_port != result.previous_local_port:
-            # Порт мог занять не Xray-процесс: Xray не стартует на нём, поэтому отказ до записи config.json (XR-REV-010).
-            listen = str(xray_config.find_inbound_by_tag(config, result.tag).get("listen") or "")
-            if process.tcp_port_in_use(result.local_port, listen):
-                fail(f"LOCAL_PORT is already in use on this server by another process: {result.local_port}")
+    with client_change_errors():
+        change = connections_service.update_trojan_connection(
+            identifier, domain=domain, local_port=local_port, public_port=public_port,
+            ws_path=ws_path, fingerprint_value=fp, tls_min_version=tls_min, tls_max_version=tls_max,
+        )
+    print_trojan_connection_change(change)
 
-        backup = save_config_restart_xray_and_db(config, db)
-        caddy_result = None
-        try:
-            caddy_result = update_trojan_caddy_site(result)
-        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-            xray_apply.restore_config_backup(backup)
-            client_repository.restore_after_update(db, original_db)
-            fail(
-                "Trojan connection was updated, but Caddy update failed. "
-                f"Rolled back Xray config and database. Detail: {exc}"
-            )
+
+def print_trojan_connection_change(change):
+    result, backup, caddy_site = change.result, change.backup, change.site
 
     print(f"Trojan connection updated: {result.display_name}")
     print(f"Tag: {result.tag}")
@@ -464,8 +273,8 @@ def cmd_trojan_connection_update(
     print(f"FINGERPRINT: {result.fingerprint or '-'}")
     print(f"TLS_MIN_VERSION: {result.tls_min_version}")
     print(f"TLS_MAX_VERSION: {result.tls_max_version}")
-    if caddy_result:
-        print(f"CADDY_SITE: {caddy_result.path}")
+    if caddy_site:
+        print(f"CADDY_SITE: {caddy_site}")
     elif result.caddy_enabled:
         print("CADDY_SITE: not updated")
     else:
@@ -476,34 +285,25 @@ def cmd_trojan_connection_update(
 
 def cmd_connection_rename(identifier, new_name):
     new_name = validate_connection_name(new_name)
-    with manager_lock(purpose="rename-connection"):
-        config, db = client_service.read_state()
-        try:
-            result = client_connections.rename_connection(config, db, identifier, new_name)
-        except ValueError as exc:
-            fail(str(exc))
-        client_repository.save_db(db)
+    with client_change_errors():
+        result = connections_service.rename_connection(identifier, new_name)
+    print_renamed_connection(result)
+
+
+def print_renamed_connection(result):
     print(f"Connection renamed: {result.old_name} -> {result.new_name}")
     print(f"Tag: {result.tag}")
     print("Xray restart is not required.")
 
 
 def cmd_connection_remove(identifier):
-    with manager_lock(purpose="remove-connection"):
-        config, db = client_service.read_state()
-        try:
-            result = client_connections.remove_connection(config, db, identifier)
-        except ValueError as exc:
-            fail(str(exc))
+    with client_change_errors():
+        change = connections_service.remove_connection(identifier)
+    print_removed_connection(change)
 
-        deletions = client_repository.Deletions(
-            clients=tuple(result.removed_client_names),
-            credentials=tuple((name, result.tag) for name in result.detached_client_names),
-            connections=(result.tag,),
-        )
-        backup = save_config_restart_xray_and_db(config, db, deletions=deletions)
-        if result.env_update is not None:
-            client_settings.save_server_env_values(result.env_update)
+
+def print_removed_connection(change):
+    result, backup = change.result, change.backup
 
     print(f"Removed connection: {result.display_name}")
     print(f"Tag: {result.tag}")

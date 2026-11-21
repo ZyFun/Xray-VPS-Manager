@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.clients import connections as connection_store
+from xray_vps_manager.clients import connections_service
+from xray_vps_manager.clients.connections_service import refresh_initial_link
+from xray_vps_manager.commands import client_connections as connection_output
+from xray_vps_manager.commands.client_arguments import validate_connection_name
+from xray_vps_manager.commands.client_output import client_change_errors
 from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql, save_db
 from xray_vps_manager.clients.settings import (
     fingerprint as server_fingerprint,
@@ -60,7 +63,6 @@ from xray_vps_manager.xray.config import (
     xhttp_extra_json,
 )
 
-CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 FINGERPRINTS = [
     "chrome",
@@ -83,10 +85,6 @@ ConfirmCallback = Callable[[str], bool]
 
 def die(message: str) -> None:
     raise SystemExit(message)
-
-
-def run(command: list[str], **kwargs) -> None:
-    subprocess.run(command, check=True, **kwargs)
 
 
 def load_config() -> dict:
@@ -371,43 +369,6 @@ def apply_config(config: dict) -> Path | None:
         die(apply_error_text(exc))
 
 
-def refresh_initial_link() -> None:
-    config = load_config()
-    inbound = find_inbound(config)
-    clients = inbound.get("settings", {}).get("clients", [])
-    if not clients:
-        return
-    name = clients[0].get("email", "starter").split("|created=", 1)[0]
-    result = subprocess.run(
-        ["xray-client", "link", name],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        return
-
-    inbound, _, port, sni, dest = current_settings(config)
-    settings = connection_settings_from_inbound(inbound)
-    fp = current_fingerprint()
-    link = result.stdout.strip()
-    flow = "xtls-rprx-vision" if settings["transport"] == "tcp" else ""
-    content = (
-        f"CLIENT_URI={link}\n"
-        f"PORT={port}\n"
-        "PROTOCOL=VLESS\n"
-        "SECURITY=REALITY\n"
-        f"TRANSPORT={settings['transport']}\n"
-        f"FLOW={flow}\n"
-        f"SNI={sni}\n"
-        f"DEST={dest}\n"
-        f"FINGERPRINT={fp}\n"
-    )
-    CLIENT_LINK_PATH.write_text(content)
-    os.chmod(CLIENT_LINK_PATH, 0o600)
-
-
 def prompt(default, message: str) -> str:
     value = input(f"{message} [{default}]: ").strip()
     return value or str(default)
@@ -624,11 +585,6 @@ def maybe_prompt_xhttp_advanced_settings(
     )
 
 
-def xhttp_extra_cli_arg(extra: dict | None) -> list[str]:
-    encoded = xhttp_extra_json(extra)
-    return ["--xhttp-extra-json", encoded] if encoded else []
-
-
 def print_xhttp_extra_status(extra: dict | None) -> None:
     encoded = xhttp_extra_json(extra)
     print("XHTTP_EXTRA: " + (encoded if encoded else "default"))
@@ -698,39 +654,35 @@ def show_trojan_settings(call: CommandRunner) -> None:
     print_connection_selection_table(rows)
 
 
-def create_connection(call: CommandRunner) -> None:
+def create_connection() -> None:
     security = choose_security("reality")
     name = input("Имя подключения: ").strip()
     if security == "tls":
-        create_tls_xhttp_connection(call, name)
+        create_tls_xhttp_connection(name)
         return
     print("Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом и SNI.")
     print("PORT: публичный TCP-порт для подключения клиентов. Он не должен совпадать с уже занятыми портами.")
-    port = str(validate_port(input("PORT: ").strip()))
+    port = validate_port(input("PORT: ").strip())
     print("REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
     sni = validate_host(input("REALITY_SNI: ").strip(), "REALITY_SNI")
     fp = choose_fingerprint(current_fingerprint())
     transport = choose_transport("tcp")
-    command = ["xray-client", "add-connection", name, port, sni, fp, "--transport", transport["transport"]]
-    if transport["transport"] == "grpc":
-        command.extend(["--grpc-service-name", transport["grpc_service_name"]])
-    elif transport["transport"] == "xhttp":
-        command.extend(["--xhttp-path", transport["xhttp_path"], "--xhttp-mode", transport["xhttp_mode"]])
-        command.extend(xhttp_extra_cli_arg(transport.get("xhttp_extra")))
-    call(command)
+    with client_change_errors():
+        change = connections_service.add_connection(validate_connection_name(name), port, sni, fp, **transport)
+    connection_output.print_added_connection(change)
 
 
-def create_trojan_connection(call: CommandRunner) -> None:
+def create_trojan_connection() -> None:
     config = load_config()
     print("Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.")
     print("Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.")
     name = input("Имя Trojan-подключения: ").strip()
     default_local_port = connection_store.next_local_port(config, DEFAULT_TROJAN_TLS_LOCAL_PORT)
     print("LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.")
-    local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
+    local_port = validate_port(prompt(default_local_port, "LOCAL_PORT для Xray"))
     print("TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.")
     domain = validate_host(input("TLS_DOMAIN: ").strip(), "TLS_DOMAIN")
-    public_port = str(validate_port(prompt(DEFAULT_TROJAN_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
+    public_port = validate_port(prompt(DEFAULT_TROJAN_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy"))
     print("WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.")
     ws_path = validate_trojan_ws_path(prompt(DEFAULT_TROJAN_WS_PATH, "WS_PATH"))
     fp = choose_fingerprint(current_fingerprint())
@@ -740,7 +692,7 @@ def create_trojan_connection(call: CommandRunner) -> None:
     )
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас (production default)", True)
     if install_caddy:
-        conflicts = connection_store.public_port_conflicts(config, int(public_port))
+        conflicts = connection_store.public_port_conflicts(config, public_port)
         if conflicts:
             tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
             print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
@@ -752,38 +704,22 @@ def create_trojan_connection(call: CommandRunner) -> None:
             print(str(exc))
             print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
             return
-    command = [
-        "xray-client",
-        "add-trojan-connection",
-        name,
-        local_port,
-        domain,
-        fp,
-        "--transport",
-        "ws",
-        "--ws-path",
-        ws_path,
-        "--public-port",
-        public_port,
-        "--tls-min-version",
-        tls_min,
-        "--tls-max-version",
-        tls_max,
-    ]
-    if install_caddy:
-        command.append("--install-caddy")
-    else:
-        command.append("--no-caddy")
-    call(command)
+    with client_change_errors():
+        change = connections_service.add_trojan_caddy_connection(
+            validate_connection_name(name), domain, local_port=local_port, public_port=public_port,
+            fingerprint_value=fp, ws_path=ws_path, tls_min_version=tls_min, tls_max_version=tls_max,
+            install_caddy=install_caddy,
+        )
+    connection_output.print_added_trojan_connection(change)
 
 
-def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
+def create_tls_xhttp_connection(name: str) -> None:
     config = load_config()
     print("TLS-XHTTP подключение работает через Caddy: публично api.domain:443, внутри Xray слушает 127.0.0.1:LOCAL_PORT.")
     domain = validate_host(input("TLS domain/SNI: ").strip(), "TLS_DOMAIN")
     default_local_port = connection_store.next_local_port(config)
-    local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
-    public_port = str(validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
+    local_port = validate_port(prompt(default_local_port, "LOCAL_PORT для Xray"))
+    public_port = validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy"))
     fp = choose_fingerprint(current_fingerprint())
     path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
     mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
@@ -791,7 +727,7 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
     tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
     if install_caddy:
-        conflicts = connection_store.public_port_conflicts(config, int(public_port))
+        conflicts = connection_store.public_port_conflicts(config, public_port)
         if conflicts:
             tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
             print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
@@ -803,32 +739,13 @@ def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
             print(str(exc))
             print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
             return
-    command = [
-        "xray-client",
-        "add-connection",
-        name,
-        local_port,
-        domain,
-        fp,
-        "--security",
-        "tls",
-        "--transport",
-        "xhttp",
-        "--xhttp-path",
-        path,
-        "--xhttp-mode",
-        mode,
-        "--public-port",
-        public_port,
-        "--tls-min-version",
-        tls_min,
-        "--tls-max-version",
-        tls_max,
-    ]
-    command.extend(xhttp_extra_cli_arg(xhttp_extra))
-    if install_caddy:
-        command.append("--install-caddy")
-    call(command)
+    with client_change_errors():
+        change = connections_service.add_tls_xhttp_connection(
+            validate_connection_name(name), domain, local_port=local_port, public_port=public_port,
+            fingerprint_value=fp, xhttp_path=path, xhttp_mode=mode, xhttp_extra=xhttp_extra,
+            tls_min_version=tls_min, tls_max_version=tls_max, install_caddy=install_caddy,
+        )
+    connection_output.print_added_connection(change)
 
 
 def update_port() -> None:
@@ -1022,7 +939,13 @@ def update_fingerprint() -> None:
     print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
 
 
-def update_transport(call: CommandRunner) -> None:
+def show_change_and_link_error(change, present) -> None:
+    present(change)
+    if change.link_error is not None:
+        raise change.link_error
+
+
+def update_transport() -> None:
     config = load_config()
     tag = choose_connection("обновления TRANSPORT", protocol_filter="vless")
     if not tag:
@@ -1035,14 +958,9 @@ def update_transport(call: CommandRunner) -> None:
         str(current.get("xhttpPath") or DEFAULT_XHTTP_PATH),
         str(current.get("xhttpMode") or DEFAULT_XHTTP_MODE),
     )
-    command = ["xray-client", "connection-transport", tag, settings["transport"]]
-    if settings["transport"] == "grpc":
-        command.extend(["--grpc-service-name", settings["grpc_service_name"]])
-    elif settings["transport"] == "xhttp":
-        command.extend(["--xhttp-path", settings["xhttp_path"], "--xhttp-mode", settings["xhttp_mode"]])
-        command.extend(xhttp_extra_cli_arg(settings.get("xhttp_extra")))
-    call(command)
-    refresh_initial_link()
+    with client_change_errors():
+        change = connections_service.update_transport(tag, refresh_link=True, **settings)
+    show_change_and_link_error(change, connection_output.print_transport_change)
 
 
 def current_xhttp_extra(tag: str) -> dict:
@@ -1062,7 +980,7 @@ def current_xhttp_extra(tag: str) -> dict:
     return {}
 
 
-def update_xhttp_advanced(call: CommandRunner) -> None:
+def update_xhttp_advanced() -> None:
     tag = choose_xhttp_connection("расширенных XHTTP настроек", auto_single=False)
     if not tag:
         print("Действие отменено.")
@@ -1081,23 +999,22 @@ def update_xhttp_advanced(call: CommandRunner) -> None:
         print("Действие отменено.")
         return
     if choice == "1":
-        call(["xray-client", "connection-xhttp-extra", tag, "--clear-xhttp-extra"])
-        refresh_initial_link()
-        return
-    if choice != "2":
+        extra = {}
+    elif choice == "2":
+        extra = prompt_xhttp_advanced_settings(
+            current or default_xhttp_advanced_extra(),
+            default_xhttp_path=str(settings.get("xhttpPath") or DEFAULT_XHTTP_PATH),
+            default_xhttp_mode=str(settings.get("xhttpMode") or DEFAULT_XHTTP_MODE),
+        )
+    else:
         print("Неизвестное действие.")
         return
-    extra = prompt_xhttp_advanced_settings(
-        current or default_xhttp_advanced_extra(),
-        default_xhttp_path=str(settings.get("xhttpPath") or DEFAULT_XHTTP_PATH),
-        default_xhttp_mode=str(settings.get("xhttpMode") or DEFAULT_XHTTP_MODE),
-    )
-    call(["xray-client", "connection-xhttp-extra", tag, "--xhttp-extra-json", xhttp_extra_json(extra)])
-    refresh_initial_link()
+    with client_change_errors():
+        change = connections_service.update_xhttp_extra(tag, extra, refresh_link=True)
+    show_change_and_link_error(change, connection_output.print_xhttp_extra_change)
 
 
 def delete_connection(
-    call: CommandRunner,
     confirm: ConfirmCallback,
     protocol_filter: str | None = "vless",
 ) -> None:
@@ -1121,11 +1038,12 @@ def delete_connection(
     if not confirm("Продолжить удаление"):
         print("Удаление отменено.")
         return
-    call(["xray-client", "remove-connection", tag])
-    refresh_initial_link()
+    with client_change_errors():
+        change = connections_service.remove_connection(tag, refresh_link=True)
+    show_change_and_link_error(change, connection_output.print_removed_connection)
 
 
-def delete_trojan_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
+def delete_trojan_connection(confirm: ConfirmCallback) -> None:
     rows = connection_rows(protocol_filter="trojan")
     if not rows:
         print("Trojan-подключений пока нет.")
@@ -1143,10 +1061,12 @@ def delete_trojan_connection(call: CommandRunner, confirm: ConfirmCallback) -> N
     if not confirm("Продолжить удаление"):
         print("Удаление отменено.")
         return
-    call(["xray-client", "remove-connection", tag])
+    with client_change_errors():
+        change = connections_service.remove_connection(tag)
+    connection_output.print_removed_connection(change)
 
 
-def rename_connection(call: CommandRunner, protocol_filter: str | None = "vless") -> None:
+def rename_connection(protocol_filter: str | None = "vless") -> None:
     tag = choose_connection("переименования подключения", auto_single=False, protocol_filter=protocol_filter)
     if not tag:
         print("Действие отменено.")
@@ -1158,11 +1078,13 @@ def rename_connection(call: CommandRunner, protocol_filter: str | None = "vless"
     if not new_name or new_name == current_name:
         print("Имя не изменено.")
         return
-    call(["xray-client", "connection-rename", tag, new_name])
+    with client_change_errors():
+        result = connections_service.rename_connection(tag, validate_connection_name(new_name))
+    connection_output.print_renamed_connection(result)
 
 
-def rename_trojan_connection(call: CommandRunner) -> None:
+def rename_trojan_connection() -> None:
     if not connection_rows(protocol_filter="trojan"):
         print("Trojan-подключений пока нет.")
         return
-    rename_connection(call, protocol_filter="trojan")
+    rename_connection(protocol_filter="trojan")

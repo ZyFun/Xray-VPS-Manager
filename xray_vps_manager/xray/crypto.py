@@ -80,7 +80,13 @@ def random_trojan_password() -> str:
 
 
 def reality_public_key(private_key: str) -> str:
-    output = subprocess.check_output(["/usr/local/bin/xray", "x25519", "-i", private_key], text=True)
+    try:
+        output = subprocess.check_output(
+            ["/usr/local/bin/xray", "x25519", "-i", private_key], text=True, stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as exc:
+        # Аргументы Xray содержат приватный ключ, поэтому скрываем и причину в traceback.
+        raise RuntimeError(f"Failed to derive Reality public key. Xray exit code: {exc.returncode}.") from None
     _private_key, public_key = parse_x25519_output(output)
     if not public_key:
         raise x25519_output_error("Failed to derive Reality public key.", "xray x25519 -i", output, private_key)

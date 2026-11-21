@@ -1,6 +1,6 @@
 """Регрессия XR-REV-059 ч. 2 и XR-REV-010 (VIREI-71).
 
-`save_config_restart_xray_and_db` откатывает config.json при любой ошибке после рестарта Xray, а смена PORT
+`apply_config_and_save_db` откатывает config.json при любой ошибке после рестарта Xray, а смена PORT
 отказывает до записи конфига, если порт занят в системе другим процессом, а не только другим Xray inbound.
 """
 
@@ -18,10 +18,10 @@ from unittest import mock
 from tests import test_client_manager_lock as client_lock_tests
 from tests import test_routing_manager_lock as routing_lock_tests
 from tests.support.sandbox import Sandbox
+from tests.test_apply_characterization import apply_legacy_client_snapshot
 from tests.test_restart_verification import FakeClock, show_output
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.commands import client_connections as client_command
 from xray_vps_manager.commands import menu_reality_actions
 from xray_vps_manager.core import process, systemd
 from xray_vps_manager.db import database
@@ -92,7 +92,7 @@ class SaveConfigRestartRollbackTests(unittest.TestCase):
         stderr = StringIO()
         with redirect_stderr(stderr):
             try:
-                result = client_command.save_config_restart_xray_and_db(config, db)
+                result = apply_legacy_client_snapshot(config, db)
             except (SystemExit, KeyboardInterrupt) as exc:
                 result = exc
         return result, stderr.getvalue()

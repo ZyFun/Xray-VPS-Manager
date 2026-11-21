@@ -5,14 +5,17 @@ import json
 import os
 import re
 import shutil
+import stat
 import tarfile
 import tempfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from subprocess import TimeoutExpired
 
 from xray_vps_manager.caddy import model
 from xray_vps_manager.core import fs, process
+from xray_vps_manager.core.errors import ConflictError
 from xray_vps_manager.core.paths import paths
 
 SITE_BACKUP_KEEP = 5
@@ -566,19 +569,59 @@ def require_site_config_absent(domain: str, conf_dir: Path | None = None) -> Non
     )
 
 
-def ensure_caddyfile_import(caddyfile_path: Path | None = None, conf_dir: Path | None = None) -> None:
+def read_caddyfile(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def replace_caddyfile(path: Path, content: bytes | None, *, expected: bytes | None) -> None:
+    """Меняет файл через атомарную запись с проверкой ожидаемых байтов."""
+    target = path.resolve()
+
+    def check_expected() -> None:
+        if path.resolve() != target or read_caddyfile(target) != expected:
+            raise ConflictError("Файл изменился после начала операции. Сохранена его текущая версия.")
+
+    check_expected()
+    if content is None:
+        target.unlink()
+    elif expected is None:
+        try:
+            fs.create_file(target, content)
+        except FileExistsError as exc:
+            raise ConflictError("Файл появился во время операции. Сохранена его текущая версия.") from exc
+    else:
+        info = target.stat()
+
+        def prepare(candidate: Path) -> None:
+            if os.geteuid() == 0:
+                os.chown(candidate, info.st_uid, info.st_gid)
+            candidate.chmod(stat.S_IMODE(info.st_mode))
+            check_expected()
+
+        fs.replace_file(target, content, prepare=prepare, staging_mode=0o600)
+
+
+def ensure_caddyfile_import(
+    caddyfile_path: Path | None = None, conf_dir: Path | None = None, *,
+    before_write: Callable[[bytes | None, bytes], None] | None = None,
+) -> None:
     conf_dir = paths().caddy_conf_dir if conf_dir is None else conf_dir
     caddyfile_path = paths().caddyfile if caddyfile_path is None else caddyfile_path
-    caddyfile_path.parent.mkdir(parents=True, exist_ok=True)
-    import_line = f"import {conf_dir}/*.caddy"
-    if not caddyfile_path.exists():
-        caddyfile_path.write_text(import_line + "\n")
-        return
-    content = caddyfile_path.read_text()
-    if import_line in content:
-        return
-    suffix = "" if content.endswith("\n") else "\n"
-    caddyfile_path.write_text(content + suffix + "\n# Managed by Xray VPS Manager\n" + import_line + "\n")
+    import_line = f"import {conf_dir}/*.caddy".encode()
+    before = read_caddyfile(caddyfile_path)
+    if before is None:
+        after = import_line + b"\n"
+    else:
+        if import_line in before:
+            return
+        suffix = b"" if before.endswith(b"\n") else b"\n"
+        after = before + suffix + b"\n# Managed by Xray VPS Manager\n" + import_line + b"\n"
+    if before_write is not None:
+        before_write(before, after)
+    replace_caddyfile(caddyfile_path, after, expected=before)
 
 
 def write_site_config(
@@ -592,22 +635,28 @@ def write_site_config(
     conf_dir: Path | None = None,
     caddyfile_path: Path | None = None,
 ) -> Path:
+    content = model.caddy_site_block(
+        domain,
+        local_port,
+        tls_min_version=tls_min_version,
+        tls_max_version=tls_max_version,
+        upstream_transport=upstream_transport,
+        route_path=route_path,
+    )
+    return write_site_text(domain, content, conf_dir=conf_dir, caddyfile_path=caddyfile_path)
+
+
+def write_site_text(
+    domain: str, content: str, *, conf_dir: Path | None = None, caddyfile_path: Path | None = None,
+    before_caddyfile_write: Callable[[bytes | None, bytes], None] | None = None,
+) -> Path:
     conf_dir = paths().caddy_conf_dir if conf_dir is None else conf_dir
     caddyfile_path = paths().caddyfile if caddyfile_path is None else caddyfile_path
     domain = model.validate_domain(domain)
     conf_dir.mkdir(parents=True, exist_ok=True)
-    ensure_caddyfile_import(caddyfile_path, conf_dir)
+    ensure_caddyfile_import(caddyfile_path, conf_dir, before_write=before_caddyfile_write)
     site_path = conf_dir / model.site_filename(domain)
-    site_path.write_text(
-        model.caddy_site_block(
-            domain,
-            local_port,
-            tls_min_version=tls_min_version,
-            tls_max_version=tls_max_version,
-            upstream_transport=upstream_transport,
-            route_path=route_path,
-        )
-    )
+    site_path.write_text(content)
     os.chmod(site_path, 0o644)
     return site_path
 

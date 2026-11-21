@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import ExitStack, closing
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -276,7 +276,7 @@ def _write_records(conn, db, deletions):
         deletions.apply(conn)
 
 
-def write_client_change(conn, db, previous, *, deletions=None, prepare_undo=True):
+def write_client_change(conn, db, previous, *, undo_resources: ExitStack, deletions=None, prepare_undo=True):
     """Записать изменённые строки и подготовить их компенсацию в той же сессии."""
     changes = _Snapshot(db, original=previous)
     if not prepare_undo:
@@ -291,13 +291,18 @@ def write_client_change(conn, db, previous, *, deletions=None, prepare_undo=True
     removed_credentials = deletions.credentials if deletions else ()
     changed_clients.update(removed_clients)
     changed_clients.update(name for name, _ in removed_credentials)
+    changed_connections = changed_keys("connections")
+    if deletions:
+        changed_connections.update(deletions.connections)
     undo = ClientUndo.capture(
         conn,
+        resources=undo_resources,
         clients=changed_clients,
-        connections=changed_keys("connections"),
+        connections=changed_connections,
         routes=changed_keys("cascadeRoutes"),
-        removed_client=next(iter(removed_clients), None),
+        removed_clients=removed_clients,
         removed_credentials=removed_credentials,
+        removed_connections=deletions.connections if deletions else (),
     )
     _write_records(conn, changes, deletions)
     undo.record_written(conn)

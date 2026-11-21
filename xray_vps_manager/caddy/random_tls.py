@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from xray_vps_manager.caddy import model, service, sites
+from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.paths import paths
 from xray_vps_manager.core.settings import read_env, write_env
 
@@ -152,7 +153,7 @@ def apply_random_tls_switch(
     chooser=secrets.choice,
 ) -> RandomTlsApplyResult:
     config = config or read_random_tls_config(domain=domain)
-    with random_tls_lock():
+    with manager_lock(purpose="randomize Caddy site TLS"), random_tls_lock():
         site = sites.site_config_for_domain(config.domain)
         local_port = site.local_port or config.local_port
         tls_min, tls_max = choose_random_tls_pair(site.tls_min_version, site.tls_max_version, chooser=chooser)

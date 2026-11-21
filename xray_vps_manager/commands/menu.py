@@ -650,24 +650,24 @@ def connection_tls_menu_handlers():
 def trojan_menu_handlers():
     return {
         "1": ("Показать Trojan-подключения", lambda: menu_reality_actions.show_trojan_settings(call)),
-        "2": ("Создать Trojan TLS подключение", lambda: menu_reality_actions.create_trojan_connection(call)),
-        "3": ("Удалить Trojan-подключение", lambda: menu_reality_actions.delete_trojan_connection(call, confirm)),
-        "4": ("Переименовать Trojan-подключение", lambda: menu_reality_actions.rename_trojan_connection(call)),
+        "2": ("Создать Trojan TLS подключение", menu_reality_actions.create_trojan_connection),
+        "3": ("Удалить Trojan-подключение", lambda: menu_reality_actions.delete_trojan_connection(confirm)),
+        "4": ("Переименовать Trojan-подключение", menu_reality_actions.rename_trojan_connection),
     }
 
 
 def reality_menu_handlers():
     return {
         "1": ("Показать подключения", lambda: menu_reality_actions.show_settings(call)),
-        "2": ("Создать подключение", lambda: menu_reality_actions.create_connection(call)),
+        "2": ("Создать подключение", menu_reality_actions.create_connection),
         "3": ("Обновить PORT", menu_reality_actions.update_port),
         "4": ("Обновить REALITY_SNI и REALITY_DEST", menu_reality_actions.update_sni),
         "5": ("Обновить PORT, REALITY_SNI и REALITY_DEST", menu_reality_actions.update_port_and_sni),
         "6": ("Обновить FINGERPRINT", menu_reality_actions.update_fingerprint),
-        "7": ("Обновить TRANSPORT", lambda: menu_reality_actions.update_transport(call)),
-        "8": ("Расширенные XHTTP настройки", lambda: menu_reality_actions.update_xhttp_advanced(call)),
-        "9": ("Удалить подключение", lambda: menu_reality_actions.delete_connection(call, confirm)),
-        "10": ("Переименовать подключение", lambda: menu_reality_actions.rename_connection(call)),
+        "7": ("Обновить TRANSPORT", menu_reality_actions.update_transport),
+        "8": ("Расширенные XHTTP настройки", menu_reality_actions.update_xhttp_advanced),
+        "9": ("Удалить подключение", lambda: menu_reality_actions.delete_connection(confirm)),
+        "10": ("Переименовать подключение", menu_reality_actions.rename_connection),
     }
 
 

@@ -5,6 +5,7 @@ from difflib import unified_diff
 from io import StringIO
 import json
 import os
+from pathlib import Path
 import sqlite3
 import unittest
 from unittest import mock
@@ -82,6 +83,36 @@ def snapshot(box):
     return state
 
 
+def is_caddy_candidate_validation(call):
+    return (
+        len(call) == 4 and tuple(call[:3]) == ("caddy", "validate", "--config")
+        and Path(call[3]).name == "Caddyfile"
+        and Path(call[3]).parent.name.startswith("xray-caddy-candidate-")
+    )
+
+
+def normalize_caddy_candidate_call(call):
+    if is_caddy_candidate_validation(call):
+        return (*call[:3], "<CADDY_CANDIDATE>/Caddyfile")
+    return call
+
+
+CADDY_ACTIVATION_STATE = ("systemctl", "show", "--property=ActiveState,UnitFileState", "caddy")
+
+
+def script_connection_caddy_checks(box):
+    def validate(call, **kwargs):
+        if not is_caddy_candidate_validation(call):
+            raise AssertionError(f"Неизвестная команда Caddy: {call}")
+        assert Path(call[3]).is_file()
+        return box.processes.ok()
+
+    box.processes.script_program("caddy", validate)
+    box.processes.script({
+        CADDY_ACTIVATION_STATE: box.processes.ok("ActiveState=active\nUnitFileState=enabled\n"),
+    })
+
+
 class Transcript:
     def __init__(self, test, box, aliases):
         self.test = test
@@ -111,7 +142,8 @@ class Transcript:
         # Сопоставить путь бинарника Sandbox с серверным путём в эталоне T4a.
         processes = "".join(
             json.dumps((str(Paths.default().xray_bin), *call[1:])
-                       if call[:3] == (str(box.paths.xray_bin), "api", "statsquery") else call) + "\n"
+                       if call[:3] == (str(box.paths.xray_bin), "api", "statsquery")
+                       else normalize_caddy_candidate_call(call)) + "\n"
             for call in calls
         )
         after = snapshot(box)
@@ -263,6 +295,7 @@ class ClientCharacterizationTests(unittest.TestCase):
 
     def connections(self, box, run):
         box.processes.executables["caddy"] = "/usr/bin/caddy"
+        script_connection_caddy_checks(box)
         ok = box.processes.ok()
         box.processes.script({
             ("caddy", "validate", "--config", box.paths.caddyfile): ok,
