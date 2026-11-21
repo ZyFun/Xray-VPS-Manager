@@ -79,7 +79,7 @@ def _invoke(command, **kwargs):
     return result
 
 
-def run(command: Sequence[str], timeout: float = 30, *, input_text=None,
+def run(command: Sequence[str], timeout: float | None = 30, *, input_text=None,
         check: bool = False, **kwargs) -> subprocess.CompletedProcess[str]:
     """Текстовый stdout/stderr; прежний позиционный timeout остаётся рабочим."""
     if input_text is not None:
@@ -98,9 +98,12 @@ def run_capture(command: Sequence[str], timeout: int = 30, input_text=None,
                    stderr=subprocess.PIPE, timeout=timeout, **kwargs)
 
 
-def run_stream(command: Sequence[str], *, timeout=None) -> int:
-    """Вывод непосредственно в терминал; использовать только из интерфейсов."""
-    return _invoke(list(command), text=True, timeout=timeout).returncode
+def run_stream(command: Sequence[str], *, timeout=None, check: bool = False) -> int:
+    """Унаследовать stdout/stderr процесса; при check сохранить CalledProcessError."""
+    result = _invoke(list(command), text=True, timeout=timeout)
+    if check:
+        result.check_returncode()
+    return result.returncode
 
 
 def tcp_endpoint_open(host: str, port: int, timeout: float = 0.5) -> bool:

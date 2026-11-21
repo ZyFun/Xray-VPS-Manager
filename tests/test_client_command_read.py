@@ -11,7 +11,7 @@ from xray_vps_manager.clients import links, repository
 from xray_vps_manager.commands import client_arguments
 from xray_vps_manager.commands.client_connections import update_trojan_caddy_site
 from xray_vps_manager.db import database
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import model, sites
 
 
 def script_caddy(box):
@@ -385,7 +385,7 @@ class TrojanCaddySiteBackupRotationTests(unittest.TestCase):
             conf_dir.mkdir(parents=True)
             old_path = conf_dir / "old.example.com.caddy"
             new_path = conf_dir / "new.example.com.caddy"
-            old_path.write_text(caddy.caddy_site_block("old.example.com", 10100))
+            old_path.write_text(model.caddy_site_block("old.example.com", 10100))
             for path in (old_path, new_path):
                 for index in range(7):
                     path.with_name(f"{path.name}.bak.2026010100000000{index:04d}").write_text("old\n")
@@ -404,9 +404,9 @@ class TrojanCaddySiteBackupRotationTests(unittest.TestCase):
             new_copies = sorted(conf_dir.glob("new.example.com.caddy.bak.*"))
             self.assertFalse(old_path.exists())
             self.assertTrue(new_path.exists())
-            self.assertEqual(len(old_copies), caddy.SITE_BACKUP_KEEP)
+            self.assertEqual(len(old_copies), sites.SITE_BACKUP_KEEP)
             self.assertEqual(old_copies[-1], written.backup)
-            self.assertEqual(len(new_copies), caddy.SITE_BACKUP_KEEP)
+            self.assertEqual(len(new_copies), sites.SITE_BACKUP_KEEP)
 
 if __name__ == "__main__":
     unittest.main()

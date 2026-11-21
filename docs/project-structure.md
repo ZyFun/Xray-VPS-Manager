@@ -28,6 +28,7 @@ xray_vps_manager/
   commands/
   core/
   clients/
+  caddy/
   traffic/
   activity/
   xray/
@@ -36,7 +37,9 @@ xray_vps_manager/
 README.md
 ```
 
-Корневые команды - это тонкие совместимые точки входа для ручного запуска и автоматизации. `install-caddy-download-proxy.sh` и `caddy-menu` относятся к отдельному Caddy-only сценарию второго download endpoint и не ставят основной Xray manager. Основной код находится в Python-пакете `xray_vps_manager`: команды в `commands`, общая инфраструктура в `core`, логика клиентов в `clients`, трафик в `traffic`, активность в `activity`, работа с Xray config в `xray`, Telegram-бот в `telegram`, SQLite-слой в `db`, системные сценарии (интерпретатор команд, генерация и доставка systemd units) в `system`. Модуль `system/sqlite_admin.py` создаёт и мигрирует базу менеджера и собирает сведения для `sqlite status`.
+Корневые команды - это тонкие совместимые точки входа для ручного запуска и автоматизации. `install-caddy-download-proxy.sh` и `caddy-menu` относятся к отдельному Caddy-only сценарию второго download endpoint и не ставят основной Xray manager. Основной код находится в Python-пакете `xray_vps_manager`: команды в `commands`, общая инфраструктура в `core`, логика клиентов в `clients`, работа с Caddy в `caddy`, трафик в `traffic`, активность в `activity`, работа с Xray config в `xray`, Telegram-бот в `telegram`, SQLite-слой в `db`, системные сценарии (интерпретатор команд, генерация и доставка systemd units) в `system`. Модуль `system/sqlite_admin.py` создаёт и мигрирует базу менеджера и собирает сведения для `sqlite status`.
+
+`caddy.model` содержит модели и обработку параметров site config, `caddy.sites` — операции с конфигурациями сайтов и их резервными копиями, `caddy.service` — сценарии применения и управления Caddy. Команда и действия меню вызывают эти модули через адаптеры в `commands`.
 
 `runner.py` задаёт общую обработку ошибок, проверку root и вход в команды; `commands/arguments.py` проверяет форму argv до рабочих операций. Контракт описан в [CLI](cli.md). Версия во время выполнения берётся из `xray_vps_manager.__version__`; тест сверяет её с меню и `pyproject.toml`.
 

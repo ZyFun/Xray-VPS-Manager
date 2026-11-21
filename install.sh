@@ -1287,7 +1287,8 @@ if initial_has_trojan; then
   "$XRAY_PYTHON" <<'PY'
 import os
 
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import service as caddy
+from xray_vps_manager.core.process import run_stream
 
 site_path = caddy.setup_caddy_for_trojan_ws(
     os.environ["INSTALL_TROJAN_DOMAIN"],
@@ -1296,6 +1297,7 @@ site_path = caddy.setup_caddy_for_trojan_ws(
     tls_min_version=os.environ["INSTALL_TROJAN_TLS_MIN_VERSION"],
     tls_max_version=os.environ["INSTALL_TROJAN_TLS_MAX_VERSION"],
     install=False,
+    runner=run_stream,
 )
 print(f"Caddy Trojan site config: {site_path}")
 PY

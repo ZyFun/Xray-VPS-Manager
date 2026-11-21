@@ -88,13 +88,16 @@ Trojan-пароли воспроизводимы, UUID/shortId/ключи зад
 - `telegram.admin.run_server_test_text` и `create_backup_text`: helper-файлы
   `/usr/local/sbin/xray-test` и `/usr/local/sbin/xray-backup`;
 - `commands.menu_security_actions.sshd_binary`: `/usr/sbin/sshd` и
-  `/usr/local/sbin/sshd` независимо от подмены `which`;
-- `xray.caddy.site_root_candidates`: `/usr/share/caddy`, `/var/www`,
-  `/var/www/html`, `/srv/www`.
+  `/usr/local/sbin/sshd` независимо от подмены `which`.
 
 Не записывайте эти сценарии как переносимые golden без отдельной подмены
 соответствующих файловых проверок. Литералы в argv перехватываются
 `FakeProcesses`, но наличие файлов само по себе не подменяется.
+
+Стандартные каталоги сайтов Caddy задаются через `paths().caddy_site_roots`
+и в Sandbox находятся под временным корнем. Сценарий T4b с ручным вводом
+явно моделирует отсутствие этих каталогов.
+
 Полный инвентарь строк внутри функций, начинающихся с `/`, находится в
 `tests/fixtures/paths/legacy-function-literals.json`: модуль, функция, строка,
 число вхождений. `test_sandbox_path_inventory.py` сверяет его через AST,

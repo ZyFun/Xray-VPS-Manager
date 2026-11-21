@@ -10,7 +10,7 @@ from xray_vps_manager.clients import limits as client_limits
 from xray_vps_manager.clients import payments as client_payments
 from xray_vps_manager.clients.settings import FINGERPRINTS
 from xray_vps_manager.runner import fail
-from xray_vps_manager.xray import caddy as xray_caddy
+from xray_vps_manager.caddy import model as caddy_model
 from xray_vps_manager.xray import config as xray_config
 
 CONNECTION_NAME_RE = re.compile(r"^[^\r\n|]{1,64}$")
@@ -138,7 +138,7 @@ def validate_connection_security(value):
 
 def validate_tls_version(value, default="tls1.2"):
     try:
-        return xray_caddy.normalize_tls_version(value, default)
+        return caddy_model.normalize_tls_version(value, default)
     except ValueError as exc:
         fail(str(exc))
 

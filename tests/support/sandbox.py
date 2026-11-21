@@ -128,20 +128,12 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PATH'),
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PACKAGES_PATH'),
     ('xray_vps_manager.telegram.setup', 'CONFIG_PATH'),
-    ('xray_vps_manager.xray.caddy', 'CADDYFILE_PATH'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_CONF_DIR'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_BACKUP_DIR'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_SITE_BACKUP_DIR'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_RANDOM_TLS_ENV_PATH'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_RANDOM_TLS_CONFIG_DIR'),
-    ('xray_vps_manager.xray.caddy', 'RANDOM_TLS_LOCK_PATH'),
-    ('xray_vps_manager.xray.caddy', 'SYSTEMD_DIR'),
     ('xray_vps_manager.xray.config', 'CONFIG_PATH'),
 )
 
 # Защитные списки сохраняют исходные запреты, а не только временные пути.
 LEGACY_GUARD_PATH_ATTRS = (
-    ('xray_vps_manager.xray.caddy', 'DANGEROUS_SITE_ROOTS'),
+    ('xray_vps_manager.caddy.sites', 'DANGEROUS_SITE_ROOTS'),
 )
 
 LEGACY_CACHE_ATTRS = (

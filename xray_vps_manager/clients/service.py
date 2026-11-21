@@ -80,6 +80,13 @@ def read_state():
     return _load_config(), repository.load_db_sql()
 
 
+def caddy_connection_options() -> list[dict]:
+    config = load_config()
+    db = repository.load_db_sql()
+    connections.ensure_connections(config, db)
+    return connections.caddy_connection_options(config, db)
+
+
 def _repair_candidates(config, conn):
     clients = repository.list_clients(conn, normalize=False)
     return credentials.repair_candidates(config, clients, repository.list_connections(conn))

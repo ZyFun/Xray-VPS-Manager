@@ -32,7 +32,7 @@ from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.xray import blocklist as xray_blocklist
 from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import cascade as cascade_config
-from xray_vps_manager.xray import caddy as caddy_config
+from xray_vps_manager.caddy import sites as caddy_sites
 
 from xray_vps_manager.runner import command_entry, require_root as _require_root
 
@@ -1476,7 +1476,7 @@ def check_tls_diagnostics(diag, now=None, *, deep=False):
             issues.append(str(exc))
         checked_direct += 1
 
-    site_by_domain = {site.domain.lower(): site for site in caddy_config.list_site_configs()}
+    site_by_domain = {site.domain.lower(): site for site in caddy_sites.list_site_configs()}
     for item in caddy_expectations(diag):
         domain = item["domain"]
         site = site_by_domain.get(domain.lower())

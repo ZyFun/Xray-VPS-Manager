@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import model as caddy_model
 
 
 def is_owner_chat(db, chat_id):
@@ -335,7 +335,7 @@ def admin_server_tls_sites_keyboard(sites):
 
 def admin_server_tls_site_keyboard(site_index, current_choice):
     rows = []
-    for choice in caddy.TLS_VERSION_CHOICES:
+    for choice in caddy_model.TLS_VERSION_CHOICES:
         label = choice.label
         if choice.key == current_choice:
             label = f"{label} (выбрано)"

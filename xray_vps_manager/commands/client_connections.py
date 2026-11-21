@@ -34,7 +34,9 @@ from xray_vps_manager.core.locks import manager_lock
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.runner import error_exit, fail
 from xray_vps_manager.xray import apply as xray_apply
-from xray_vps_manager.xray import caddy as xray_caddy
+from xray_vps_manager.caddy import model as caddy_model
+from xray_vps_manager.caddy import service as caddy_service
+from xray_vps_manager.caddy import sites as caddy_sites
 from xray_vps_manager.xray import config as xray_config
 
 
@@ -95,7 +97,7 @@ def cmd_connection_add(
         config, db = client_service.read_state()
         try:
             if security == "tls":
-                tls_domain = xray_caddy.validate_domain(sni)
+                tls_domain = caddy_model.validate_domain(sni)
                 if install_caddy:
                     conflicts = client_connections.public_port_conflicts(config, public_port)
                     if conflicts:
@@ -104,7 +106,7 @@ def cmd_connection_add(
                             f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
                             "Move those connections to another port before installing Caddy."
                         )
-                    xray_caddy.require_site_config_absent(tls_domain)
+                    caddy_sites.require_site_config_absent(tls_domain)
                 result = client_connections.add_tls_xhttp_connection(
                     config,
                     db,
@@ -141,11 +143,12 @@ def cmd_connection_add(
         caddy_site = None
         if result.security == "tls" and install_caddy:
             try:
-                caddy_site = xray_caddy.setup_caddy_for_xhttp(
+                caddy_site = caddy_service.setup_caddy_for_xhttp(
                     result.public_host,
                     result.local_port,
                     tls_min_version=result.tls_min_version,
                     tls_max_version=result.tls_max_version,
+                    runner=process.run_stream,
                 )
             except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
                 fail(
@@ -210,7 +213,7 @@ def cmd_trojan_connection_add(
                 path = validate_trojan_ws_path(ws_path)
                 tls_min_version = validate_tls_version(tls_min_version, xray_config.DEFAULT_TROJAN_TLS_MIN_VERSION)
                 tls_max_version = validate_tls_version(tls_max_version, tls_min_version)
-                tls_domain = xray_caddy.validate_domain(domain)
+                tls_domain = caddy_model.validate_domain(domain)
                 if install_caddy:
                     conflicts = client_connections.public_port_conflicts(config, public_port)
                     if conflicts:
@@ -219,7 +222,7 @@ def cmd_trojan_connection_add(
                             f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
                             "Move those connections to another port before installing Caddy."
                         )
-                    xray_caddy.require_site_config_absent(tls_domain)
+                    caddy_sites.require_site_config_absent(tls_domain)
                 result = client_connections.add_trojan_caddy_connection(
                     config,
                     db,
@@ -254,12 +257,13 @@ def cmd_trojan_connection_add(
         caddy_site = None
         if result.transport == "ws" and install_caddy:
             try:
-                caddy_site = xray_caddy.setup_caddy_for_trojan_ws(
+                caddy_site = caddy_service.setup_caddy_for_trojan_ws(
                     result.public_host,
                     result.local_port,
                     result.ws_path,
                     tls_min_version=result.tls_min_version,
                     tls_max_version=result.tls_max_version,
+                    runner=process.run_stream,
                 )
             except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
                 fail(
@@ -350,21 +354,22 @@ def update_trojan_caddy_site(result):
     if not result.caddy_enabled:
         return None
     if result.public_host == result.previous_public_host:
-        return xray_caddy.update_site_config(
+        return caddy_service.update_site_config(
             result.public_host,
             result.local_port,
             tls_min_version=result.tls_min_version,
             tls_max_version=result.tls_max_version,
             upstream_transport="http",
             route_path=result.ws_path,
+            runner=process.run_stream,
         )
 
-    old_path = xray_caddy.site_config_path(result.previous_public_host)
-    new_path = xray_caddy.site_config_path(result.public_host)
-    old_backup = xray_caddy.backup_file(old_path)
-    new_backup = xray_caddy.backup_file(new_path)
+    old_path = caddy_sites.site_config_path(result.previous_public_host)
+    new_path = caddy_sites.site_config_path(result.public_host)
+    old_backup = caddy_sites.backup_file(old_path)
+    new_backup = caddy_sites.backup_file(new_path)
     try:
-        xray_caddy.write_site_config(
+        caddy_sites.write_site_config(
             result.public_host,
             result.local_port,
             tls_min_version=result.tls_min_version,
@@ -372,19 +377,18 @@ def update_trojan_caddy_site(result):
             upstream_transport="http",
             route_path=result.ws_path,
         )
-        if old_path.exists():
-            old_path.unlink()
-        xray_caddy.validate_and_reload_caddy()
+        caddy_sites.delete_site_config(old_path, keep_backup=False)
+        caddy_service.validate_and_reload_caddy(process.run_stream)
     except Exception:
-        xray_caddy.restore_file(old_backup, old_path)
-        xray_caddy.restore_file(new_backup, new_path)
+        caddy_sites.restore_file(old_backup, old_path)
+        caddy_sites.restore_file(new_backup, new_path)
         try:
-            xray_caddy.validate_and_reload_caddy()
+            caddy_service.validate_and_reload_caddy(process.run_stream)
         except Exception:
             pass
         raise
-    xray_caddy.prune_site_backups(old_path, new_path, protect=(old_backup, new_backup))
-    return xray_caddy.SiteWriteResult(new_path, old_backup)
+    caddy_sites.prune_site_backups(old_path, new_path, protect=(old_backup, new_backup))
+    return caddy_model.SiteWriteResult(new_path, old_backup)
 
 
 def cmd_trojan_connection_update(
@@ -397,7 +401,7 @@ def cmd_trojan_connection_update(
     tls_min_version_value=None,
     tls_max_version_value=None,
 ):
-    domain = xray_caddy.validate_domain(domain_value) if domain_value else None
+    domain = caddy_model.validate_domain(domain_value) if domain_value else None
     local_port = validate_port(local_port_value) if local_port_value else None
     public_port = validate_port(public_port_value) if public_port_value else None
     ws_path = validate_trojan_ws_path(ws_path_value) if ws_path_value else None
@@ -430,7 +434,7 @@ def cmd_trojan_connection_update(
                 tls_max_version=tls_max,
             )
             if result.caddy_enabled and result.public_host != result.previous_public_host:
-                xray_caddy.require_site_config_absent(result.public_host)
+                caddy_sites.require_site_config_absent(result.public_host)
         except (OSError, ValueError, RuntimeError) as exc:
             fail(str(exc))
         if result.local_port != result.previous_local_port:

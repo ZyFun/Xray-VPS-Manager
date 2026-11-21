@@ -22,6 +22,8 @@ class Paths:
     db_backup_dir: Path
     warp_dir: Path
     caddy_random_tls_dir: Path
+    caddy_random_tls_env: Path
+    caddy_random_tls_lock: Path
     xray_bin: Path
     asset_dir: Path
     log_dir: Path
@@ -37,6 +39,11 @@ class Paths:
     initial_link: Path
     caddyfile: Path
     caddy_conf_dir: Path
+    caddy_backup_dir: Path
+    caddy_site_backup_dir: Path
+    caddy_default_root: Path
+    caddy_var_www_root: Path
+    caddy_srv_www_root: Path
     sshd_config: Path
     sshd_dropin_dir: Path
 
@@ -55,6 +62,8 @@ class Paths:
             db_backup_dir=Path('/usr/local/etc/xray/manager-db-backups'),
             warp_dir=Path('/usr/local/etc/xray/warp'),
             caddy_random_tls_dir=Path('/usr/local/etc/xray/caddy-random-tls.d'),
+            caddy_random_tls_env=Path('/usr/local/etc/xray/caddy-random-tls.env'),
+            caddy_random_tls_lock=Path('/tmp/xray-caddy-random-tls.lock'),
             xray_bin=Path('/usr/local/bin/xray'),
             asset_dir=Path('/usr/local/share/xray'),
             log_dir=Path('/var/log/xray'),
@@ -70,9 +79,19 @@ class Paths:
             initial_link=Path('/root/xray-reality-client.txt'),
             caddyfile=Path('/etc/caddy/Caddyfile'),
             caddy_conf_dir=Path('/etc/caddy/conf.d'),
+            caddy_backup_dir=Path('/root/xray_caddy_backups'),
+            caddy_site_backup_dir=Path('/root/xray_caddy_site_backups'),
+            caddy_default_root=Path('/usr/share/caddy'),
+            caddy_var_www_root=Path('/var/www'),
+            caddy_srv_www_root=Path('/srv/www'),
             sshd_config=Path('/etc/ssh/sshd_config'),
             sshd_dropin_dir=Path('/etc/ssh/sshd_config.d'),
         )
+
+    @property
+    def caddy_site_roots(self) -> tuple[Path, ...]:
+        return (self.caddy_default_root, self.caddy_var_www_root,
+                self.caddy_var_www_root / 'html', self.caddy_srv_www_root)
 
     @classmethod
     def under(cls, root: Path) -> Paths:

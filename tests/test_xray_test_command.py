@@ -12,7 +12,8 @@ from unittest import mock
 
 from xray_vps_manager.commands import test as test_command
 from xray_vps_manager.db import schema
-from xray_vps_manager.xray import caddy
+from tests.support.sandbox import Sandbox
+from xray_vps_manager.caddy import sites
 from xray_vps_manager.xray import bypass as bypass_config
 from xray_vps_manager.xray import outbound_links
 
@@ -205,8 +206,7 @@ class XrayTestCommandTests(unittest.TestCase):
                 }
             )
 
-            with mock.patch.object(test_command, "decode_certificate_file", return_value=self.valid_cert()), \
-                mock.patch.object(test_command.caddy_config, "list_site_configs", return_value=[]):
+            with Sandbox(), mock.patch.object(test_command, "decode_certificate_file", return_value=self.valid_cert()):
                 result = test_command.check_tls_diagnostics(
                     diag,
                     now=datetime(2026, 6, 23, tzinfo=timezone.utc),
@@ -242,18 +242,13 @@ class XrayTestCommandTests(unittest.TestCase):
                 "config": {"inbounds": []},
             }
         )
-        site = caddy.SiteConfig(
-            path=Path("/etc/caddy/conf.d/vpn.example.com.caddy"),
-            domain="vpn.example.com",
-            local_port=10100,
-            tls_min_version="tls1.2",
-            tls_max_version="tls1.3",
-            upstream_transport="http",
-            match_path="/trojan",
+        self.enterContext(Sandbox())
+        sites.write_site_config(
+            "vpn.example.com", 10100, tls_min_version="tls1.2", tls_max_version="tls1.3",
+            upstream_transport="http", route_path="/trojan",
         )
 
-        with mock.patch.object(test_command.caddy_config, "list_site_configs", return_value=[site]), \
-            mock.patch.object(test_command, "fetch_remote_tls_certificate", return_value=self.valid_cert()):
+        with mock.patch.object(test_command, "fetch_remote_tls_certificate", return_value=self.valid_cert()):
             result = test_command.check_tls_diagnostics(
                 diag,
                 now=datetime(2026, 6, 23, tzinfo=timezone.utc),
@@ -281,17 +276,13 @@ class XrayTestCommandTests(unittest.TestCase):
                 "config": {"inbounds": []},
             }
         )
-        site = caddy.SiteConfig(
-            path=Path("/etc/caddy/conf.d/vpn.example.com.caddy"),
-            domain="vpn.example.com",
-            local_port=10100,
-            tls_min_version="tls1.2",
-            tls_max_version="tls1.3",
-            upstream_transport="http",
-            match_path="/trojan",
+        self.enterContext(Sandbox())
+        sites.write_site_config(
+            "vpn.example.com", 10100, tls_min_version="tls1.2", tls_max_version="tls1.3",
+            upstream_transport="http", route_path="/trojan",
         )
 
-        with mock.patch.object(test_command.caddy_config, "list_site_configs", return_value=[site]), mock.patch.object(
+        with mock.patch.object(
             test_command, "fetch_remote_tls_certificate", return_value=self.valid_cert()
         ) as fetch_cert, mock.patch.object(
             test_command, "probe_caddy_endpoint", return_value="vpn.example.com:8443/trojan WebSocket endpoint responded 101"
@@ -373,18 +364,13 @@ class XrayTestCommandTests(unittest.TestCase):
                 "config": {"inbounds": []},
             }
         )
-        site = caddy.SiteConfig(
-            path=Path("/etc/caddy/conf.d/vpn.example.com.caddy"),
-            domain="vpn.example.com",
-            local_port=10100,
-            tls_min_version="tls1.2",
-            tls_max_version="tls1.3",
-            upstream_transport="http",
-            match_path="/other",
+        self.enterContext(Sandbox())
+        sites.write_site_config(
+            "vpn.example.com", 10100, tls_min_version="tls1.2", tls_max_version="tls1.3",
+            upstream_transport="http", route_path="/other",
         )
 
-        with mock.patch.object(test_command.caddy_config, "list_site_configs", return_value=[site]), \
-            mock.patch.object(test_command, "fetch_remote_tls_certificate", return_value=self.valid_cert()):
+        with mock.patch.object(test_command, "fetch_remote_tls_certificate", return_value=self.valid_cert()):
             with self.assertRaisesRegex(RuntimeError, "route path mismatch"):
                 test_command.check_tls_diagnostics(
                     diag,
