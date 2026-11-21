@@ -14,7 +14,9 @@ from urllib.parse import urlsplit
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
-from tests.test_client_characterization import script_processes, snapshot as client_snapshot
+from tests.test_client_characterization import (
+    normalize_caddy_candidate_call, script_connection_caddy_checks, script_processes, snapshot as client_snapshot,
+)
 
 
 REALITY = ("2", "1")
@@ -32,6 +34,7 @@ ARCHIVE_FOLDERS = ("xray_caddy_backups", "xray_caddy_site_backups")
 
 def script_menu_processes(box):
     script_processes(box)
+    script_connection_caddy_checks(box)
     processes = box.processes
     processes.executables["caddy"] = "/usr/bin/caddy"
     processes.script({
@@ -126,7 +129,7 @@ class MenuTranscript:
         # На шаге 4b меню вызовет сценарии напрямую. Фиксируем системные
         # команды внутри них, включая порядок, без промежуточного запуска CLI.
         calls = "".join(
-            json.dumps(call, ensure_ascii=False) + "\n"
+            json.dumps(normalize_caddy_candidate_call(call), ensure_ascii=False) + "\n"
             for call in box.processes.calls[offset:]
             if call[0] != "xray-client"
         )

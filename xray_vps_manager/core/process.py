@@ -98,9 +98,9 @@ def run_capture(command: Sequence[str], timeout: int = 30, input_text=None,
                    stderr=subprocess.PIPE, timeout=timeout, **kwargs)
 
 
-def run_stream(command: Sequence[str], *, timeout=None, check: bool = False) -> int:
+def run_stream(command: Sequence[str], *, timeout=None, check: bool = False, **kwargs) -> int:
     """Унаследовать stdout/stderr процесса; при check сохранить CalledProcessError."""
-    result = _invoke(list(command), text=True, timeout=timeout)
+    result = _invoke(list(command), text=True, timeout=timeout, **kwargs)
     if check:
         result.check_returncode()
     return result.returncode

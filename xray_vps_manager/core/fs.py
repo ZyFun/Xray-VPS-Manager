@@ -8,6 +8,7 @@ import re
 import shutil
 import stat
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Callable, Iterable, Optional
 
 
@@ -55,25 +56,41 @@ def replace_directory(source: Path, destination: Path, prepare: Optional[Callabl
         _remove_tree(old_dir)
 
 
-def replace_file(destination: Path, data: bytes, prepare: Optional[Callable[[Path], None]] = None) -> None:
+def replace_file(
+    destination: Path, data: bytes, prepare: Optional[Callable[[Path], None]] = None, *, staging_mode: int = 0o666,
+) -> None:
     """Replace ``destination`` with ``data`` using one rename.
 
     The data is written next to the destination as hidden ``.<name>.new``; ``prepare`` (mode, owner)
     runs on that copy before ``os.replace`` makes it live, so ``destination`` is always the complete
     old or the complete new file. Any error leaves ``destination`` untouched and removes the copy;
     a stale copy from an interrupted run is overwritten. Errors propagate as ``OSError``.
+    The staging mode applies at creation, subject to umask.
     """
     new_file = destination.with_name("." + destination.name + ".new")
     destination.parent.mkdir(parents=True, exist_ok=True)
     _remove_tree(new_file)
+    staging = open(new_file, "xb", opener=lambda name, flags: os.open(name, flags, staging_mode))
     try:
-        new_file.write_bytes(data)
+        with staging:
+            staging.write(data)
         if prepare is not None:
             prepare(new_file)
         os.replace(new_file, destination)
     except BaseException:
         _remove_tree(new_file)
         raise
+
+
+def create_file(destination: Path, data: bytes, prepare: Optional[Callable[[Path], None]] = None) -> None:
+    """Опубликовать готовый файл атомарно. Если имя уже занято, вернуть FileExistsError."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=f".{destination.name}.", dir=destination.parent) as directory:
+        candidate = Path(directory) / destination.name
+        candidate.write_bytes(data)
+        if prepare is not None:
+            prepare(candidate)
+        os.link(candidate, destination)
 
 
 def set_root_executable(path: Path) -> None:

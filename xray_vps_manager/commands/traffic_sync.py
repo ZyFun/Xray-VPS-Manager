@@ -16,7 +16,7 @@ from xray_vps_manager.core.time import parse_time, xray_access_time_to_iso
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.models import split_email as split_client_email
 from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.db.repositories.client_traffic_handoff import DB_FIELD
+from xray_vps_manager.db.repositories.client_traffic_handoff import DB_FIELD, entries_for_operation
 from xray_vps_manager.traffic import consistency as traffic_consistency
 from xray_vps_manager.traffic import history as traffic_history
 from xray_vps_manager.traffic import repository as traffic_repository
@@ -343,7 +343,9 @@ def prune_history(db, bucket_time):
                 del history[date_key]
 
 
-def sync_access_log(db, credentials, stamp, *, retired=None, new_credential=None):
+def sync_access_log(
+    db, credentials, stamp, *, retired=None, new_credential=None, skip_aggregate_seed=(), claim_legacy_seed=None,
+):
     if not ACCESS_LOG_PATH.exists():
         return set()
 
@@ -382,13 +384,16 @@ def sync_access_log(db, credentials, stamp, *, retired=None, new_credential=None
             continue
         name, connection_tag = match_key
         event_time = access_time_to_iso(match.group(1))
+        if claim_legacy_seed is not None:
+            claim_legacy_seed(match_key)
         if retired and match_key in retired:
             targets = (retired[match_key],)
         else:
             targets = (
                 ensure_entry(entries, name, credentials[match_key]),
                 ensure_credential_entry(
-                    db, name, connection_tag, credentials[match_key], seed_from_aggregate=match_key != new_credential,
+                    db, name, connection_tag, credentials[match_key],
+                    seed_from_aggregate=match_key != new_credential and name not in skip_aggregate_seed,
                 ),
             )
         for entry in targets:
@@ -441,6 +446,19 @@ def sync_retired_credentials(retired, runtime, bucket_time, stamp, access_seen, 
                 aggregate["updated"] = stamp
 
 
+def record_legacy_aggregate_history(retired, history_changes):
+    legacy = {name: entry for (name, _), entry in retired.items() if "legacy_baseline" in entry}
+    if not legacy:
+        return
+    for (name, day, hour), (incoming, outgoing) in history_changes.clients.items():
+        if name in legacy:
+            history = legacy[name].setdefault("aggregate_history_changes", {})
+            hours = history.setdefault(day, {})
+            delta = hours.setdefault(f"{hour:02d}", [0, 0])
+            delta[0] += incoming
+            delta[1] += outgoing
+
+
 def sync_locked():
     credentials = known_credentials()
     db = None
@@ -459,15 +477,25 @@ def sync_locked():
     if db is None:
         db = traffic_repository.load_traffic_db_for_read(include_client_handoff=True)
     handoff = db.pop(DB_FIELD, {})
-    retired = {}
-    new_credential = None
-    if handoff:
-        name = handoff["name"]
-        retired = {(name, tag): entry for tag, entry in handoff["credentials"].items()}
-        for key in retired:
-            credentials.pop(key, None)
-        if handoff.get("target"):
-            new_credential = name, handoff["target"]
+    retiring_clients = entries_for_operation(handoff)
+    retired = {
+        (client["name"], tag): entry
+        for client in retiring_clients for tag, entry in client["credentials"].items()
+    }
+    for key in retired:
+        credentials.pop(key, None)
+    new_credential = next(((client["name"], client["target"]) for client in retiring_clients if client.get("target")), None)
+    skip_aggregate_seed = {
+        client["name"] for client in retiring_clients
+        if client.get("retired_baseline") or (
+            client.get("keep_aggregate") and any(entry.get("seeded") for entry in client["credentials"].values())
+        )
+    }
+    pending_legacy_seed = {
+        client["name"]: (client["name"], tag) if client["prefer_retired_without_events"] else None
+        for client in retiring_clients if "prefer_retired_without_events" in client
+        for tag, entry in client["credentials"].items() if not entry.get("sampled")
+    }
     stamp = now()
     bucket_time = local_bucket_time()
     history_cutoff = subtract_months(bucket_time.date(), HISTORY_RETENTION_MONTHS)
@@ -476,15 +504,36 @@ def sync_locked():
     db["historyRetentionMonths"] = HISTORY_RETENTION_MONTHS
     entries = db.setdefault("clients", {})
     db.setdefault("credentials", {})
+
+    def claim_legacy_seed(key):
+        name, _ = key
+        if name not in pending_legacy_seed:
+            return
+        del pending_legacy_seed[name]
+        aggregate = entries.get(name)
+        if key in retired and aggregate:
+            entry = retired[key]
+            entry["last"] = dict(aggregate.get("last", {}))
+            entry["seeded"] = True
+            entry["legacy_baseline"] = {
+                field: value for field, value in aggregate.items() if field not in ("last", "history")
+            }
+            skip_aggregate_seed.add(name)
+
     access_seen = sync_access_log(
         db, credentials | {key: entry["email"] for key, entry in retired.items()}, stamp,
         retired=retired, new_credential=new_credential,
+        skip_aggregate_seed=skip_aggregate_seed, claim_legacy_seed=claim_legacy_seed,
     )
+    for key in tuple(pending_legacy_seed.values()):
+        if key is not None:
+            claim_legacy_seed(key)
 
     for (name, connection_tag), email in credentials.items():
         entry = ensure_entry(entries, name, email)
         credential_entry = ensure_credential_entry(
-            db, name, connection_tag, email, seed_from_aggregate=(name, connection_tag) != new_credential,
+            db, name, connection_tag, email,
+            seed_from_aggregate=(name, connection_tag) != new_credential and name not in skip_aggregate_seed,
         )
         delta_up, delta_down = record_runtime_sample(credential_entry, runtime, email, bucket_time)
         history_changes.add_credential(name, connection_tag, bucket_time, delta_up, delta_down)
@@ -514,11 +563,14 @@ def sync_locked():
         normalize_future_last_online(credential_entry, stamp)
         normalize_future_last_online(entry, stamp)
 
-    if retired:
-        aggregate = entries.get(handoff["name"]) if new_credential is not None else None
+    for client in retiring_clients:
+        name = client["name"]
+        aggregate = entries.get(name) if client.get("target") or client.get("keep_aggregate") else None
         sync_retired_credentials(
-            retired, runtime, bucket_time, stamp, access_seen, aggregate=aggregate, history_changes=history_changes,
+            {(name, tag): entry for tag, entry in client["credentials"].items()},
+            runtime, bucket_time, stamp, access_seen, aggregate=aggregate, history_changes=history_changes,
         )
+    if retiring_clients:
         db[DB_FIELD] = handoff
     prune_history(db, bucket_time)
     try:
@@ -535,6 +587,7 @@ def sync_locked():
         )
         if repaired:
             log(f"Repaired retained traffic history gaps for clients: {', '.join(gap.name for gap in repaired)}")
+    record_legacy_aggregate_history(retired, history_changes)
     db["updated"] = stamp
     if new_credential is not None:
         name, tag = new_credential

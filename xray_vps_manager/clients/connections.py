@@ -80,7 +80,6 @@ class RemoveConnectionResult:
     detached_client_names: list[str] = field(default_factory=list)
     env_switch_tag: str = ""
     env_switch_name: str = ""
-    env_update: dict[str, str] | None = None
 
 
 @dataclass
@@ -93,7 +92,6 @@ class UpdateConnectionTransportResult:
     xhttp_mode: str = ""
     xhttp_extra: dict[str, Any] | None = None
     updated_clients: list[str] | None = None
-    env_update: dict[str, str] | None = None
 
 
 @dataclass
@@ -881,7 +879,6 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
             db_clients(db).pop(name, None)
             removed_client_names.append(name)
 
-    env_update = None
     env_switch_tag = ""
     env_switch_name = ""
     if tag == INBOUND_TAG:
@@ -889,7 +886,6 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
         if remaining:
             env_switch_tag = inbound_tag(remaining[0])
             env_switch_name = connection_display_name(config, db, env_switch_tag)
-            env_update = server_env_values_for_connection(config, db, env_switch_tag)
 
     return RemoveConnectionResult(
         tag=tag,
@@ -898,7 +894,6 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
         detached_client_names=detached_client_names,
         env_switch_tag=env_switch_tag,
         env_switch_name=env_switch_name,
-        env_update=env_update,
     )
 
 
@@ -957,7 +952,6 @@ def update_connection_transport(
                 credential["transport"] = settings["transport"]
                 client_credentials.sync_legacy_fields(client_entry)
 
-    env_update = server_env_values_for_connection(config, db, tag) if tag == INBOUND_TAG else None
     return UpdateConnectionTransportResult(
         tag=tag,
         display_name=connection_display_name(config, db, tag),
@@ -967,7 +961,6 @@ def update_connection_transport(
         xhttp_mode=settings.get("xhttpMode", ""),
         xhttp_extra=settings.get("xhttpExtra"),
         updated_clients=sorted(updated_clients),
-        env_update=env_update,
     )
 
 
@@ -1141,27 +1134,6 @@ def connection_client_names(config: dict[str, Any], db: dict[str, Any], tag: str
         if tag in credentials:
             names.add(name)
     return sorted(names)
-
-
-def server_env_values_for_connection(config: dict[str, Any], db: dict[str, Any], tag: str) -> dict[str, str]:
-    inbound = find_inbound_by_tag(config, tag)
-    settings = connection_settings_from_inbound(inbound)
-    values = server_env_values()
-    values.setdefault("SERVER_ADDR", "")
-    values["PORT"] = str(settings["port"])
-    values["REALITY_SNI"] = settings["sni"]
-    values["REALITY_DEST"] = settings["dest"]
-    values["FINGERPRINT"] = connection_fingerprint(config, db, tag)
-    values["REALITY_TRANSPORT"] = settings["transport"]
-    values.pop("GRPC_SERVICE_NAME", None)
-    values.pop("XHTTP_PATH", None)
-    values.pop("XHTTP_MODE", None)
-    if settings["transport"] == "grpc":
-        values["GRPC_SERVICE_NAME"] = settings["grpcServiceName"]
-    elif settings["transport"] == "xhttp":
-        values["XHTTP_PATH"] = settings["xhttpPath"]
-        values["XHTTP_MODE"] = settings["xhttpMode"]
-    return values
 
 
 def resolve_connection_identifier(config: dict[str, Any], db: dict[str, Any], value: str) -> str:

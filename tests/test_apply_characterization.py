@@ -12,13 +12,19 @@ from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from xray_vps_manager.routing import blocklist
-from xray_vps_manager.clients import repository
+from xray_vps_manager.clients import repository, service as client
 from xray_vps_manager.commands import (
-    backup, client_connections as client, menu_activity_actions, menu_reality_actions, menu_xray_actions,
+    backup, menu_activity_actions, menu_reality_actions, menu_xray_actions,
     set_bypass, set_cascade, update, warp,
 )
 from xray_vps_manager.telegram import setup
+from xray_vps_manager.commands.client_output import client_change_errors
 from xray_vps_manager.core.errors import ApplyConfigError
+
+def apply_legacy_client_snapshot(config, db):
+    with client_change_errors():
+        return client.apply_config_and_save_db(config, db).backup
+
 
 MIGRATED = (client, menu_reality_actions, menu_xray_actions, blocklist, setup, warp, set_cascade, set_bypass, menu_activity_actions)
 
@@ -132,7 +138,7 @@ class ApplyCharacterizationTests(unittest.TestCase):
             if module is client:
                 db = repository.load_db()
                 db["clients"]["alice"]["paymentType"] = "paid"
-                return client.save_config_restart_xray_and_db(candidate, db)
+                return apply_legacy_client_snapshot(candidate, db)
             if restore_dict:
                 return module.apply_config(candidate, before)
             return module.apply_config(candidate)

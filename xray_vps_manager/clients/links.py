@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import quote
 
 from xray_vps_manager.clients import credentials as client_credentials
+from xray_vps_manager.clients import listing
 from xray_vps_manager.clients.connections import connection_fingerprint, ensure_connections
 from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.clients.settings import server_addr, server_name
@@ -18,6 +19,35 @@ from xray_vps_manager.xray.config import (
     xhttp_extra_json,
 )
 from xray_vps_manager.xray.crypto import is_x25519_key, reality_public_key
+
+
+def client_link_lines(config, db, name, connection_tag=None):
+    ensure_connections(config, db)
+    rows = [
+        row for row in listing.credential_rows(config, db)
+        if row["name"] == name and (not connection_tag or row["connection"] == connection_tag)
+    ]
+    if not rows:
+        raise ValueError(f"Client not found: {name}")
+    for row in rows:
+        if len(rows) > 1:
+            yield f"[{row['protocol']} {row['connection']}]"
+        yield link_for(config, row["id"], name, row["connection"], db)
+
+
+def initial_reality_link_content(uri, settings, fingerprint):
+    flow = client_flow_for_transport(settings["transport"])
+    return (
+        f"CLIENT_URI={uri}\n"
+        f"PORT={settings['port']}\n"
+        "PROTOCOL=VLESS\n"
+        "SECURITY=REALITY\n"
+        f"TRANSPORT={settings['transport']}\n"
+        f"FLOW={flow}\n"
+        f"SNI={settings['sni']}\n"
+        f"DEST={settings['dest']}\n"
+        f"FINGERPRINT={fingerprint}\n"
+    )
 
 
 def link_for(

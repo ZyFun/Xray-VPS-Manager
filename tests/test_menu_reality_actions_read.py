@@ -5,6 +5,8 @@ from unittest import mock
 
 from xray_vps_manager.commands import menu_caddy_actions, menu_reality_actions
 from tests.support.sandbox import Sandbox
+from tests.test_apply_characterization import running_xray
+from tests.test_client_characterization import write_config
 from tests.test_connection_menu_characterization import script_menu_processes
 from xray_vps_manager.caddy import sites
 
@@ -59,55 +61,46 @@ class MenuRealityActionsReadTests(unittest.TestCase):
             },
         )
 
-    def test_create_trojan_connection_builds_cli_command(self) -> None:
-        inputs = iter(["trojan-main", "", "vpn.example.com", "", "/private-trojan", "1", "", "y"])
-        calls = []
+    def test_create_trojan_connection_applies_selected_settings(self) -> None:
+        answers = ["2", "2", "2", "trojan-main", "", "vpn.example.com", "", "/private-trojan",
+                   "1", "", "y", "0", "0", "0"]
+        with Sandbox() as box, running_xray(box):
+            script_menu_processes(box)
+            config = box.config()
+            next(item for item in config["inbounds"] if item["tag"] == "vless-reality")["port"] = 5443
+            write_config(box, config)
+            result = box.run_menu(answers)
 
-        with mock.patch.object(menu_reality_actions, "current_fingerprint", return_value="chrome"), \
-            mock.patch.object(menu_reality_actions, "load_config", return_value={"inbounds": []}), \
-            mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), \
-            redirect_stdout(StringIO()):
-            menu_reality_actions.create_trojan_connection(lambda command: calls.append(command))
-
-        self.assertEqual(
-            calls,
-            [
-                [
-                    "xray-client",
-                    "add-trojan-connection",
-                    "trojan-main",
-                    "10100",
-                    "vpn.example.com",
-                    "chrome",
-                    "--transport",
-                    "ws",
-                    "--ws-path",
-                    "/private-trojan",
-                    "--public-port",
-                    "443",
-                    "--tls-min-version",
-                    "tls1.2",
-                    "--tls-max-version",
-                    "tls1.3",
-                    "--install-caddy",
-                ]
-            ],
-        )
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            self.assertIn("Added Trojan connection: trojan-main", result.stdout)
+            self.assertIn("PUBLIC_PORT: 443", result.stdout)
+            self.assertIn("FINGERPRINT: chrome", result.stdout)
+            inbound = next(item for item in box.config()["inbounds"] if item["tag"] == "trojan-tls")
+            self.assertEqual((inbound["protocol"], inbound["listen"], inbound["port"]), ("trojan", "127.0.0.1", 10100))
+            self.assertEqual(inbound["streamSettings"]["wsSettings"]["path"], "/private-trojan")
+            site = (box.paths.caddy_conf_dir / "vpn.example.com.caddy").read_text()
+            self.assertIn("protocols tls1.2 tls1.3", site)
+            self.assertFalse(any(call[:2] == ("xray-client", "add-trojan-connection") for call in box.processes.calls))
 
     def test_create_trojan_connection_refuses_existing_caddy_site(self) -> None:
-        inputs = iter(["trojan-main", "", "vpn.example.com", "", "/private-trojan", "1", "", "y"])
-        calls = []
-        output = StringIO()
+        answers = ["2", "2", "2", "trojan-main", "", "vpn.example.com", "", "/private-trojan",
+                   "1", "", "y", "0", "0", "0"]
+        with Sandbox() as box:
+            script_menu_processes(box)
+            config = box.config()
+            next(item for item in config["inbounds"] if item["tag"] == "vless-reality")["port"] = 5443
+            write_config(box, config)
+            path = sites.write_site_config("vpn.example.com", 10100)
+            before = path.read_bytes()
+            rows = box.db_rows("reality_connections")
+            result = box.run_menu(answers)
 
-        with Sandbox() as box, mock.patch("builtins.input", side_effect=lambda _prompt="": next(inputs)), \
-            redirect_stdout(output):
-            box.paths.config.write_text('{"inbounds": []}')
-            sites.write_site_config("vpn.example.com", 10100)
-            menu_reality_actions.create_trojan_connection(lambda command: calls.append(command))
-
-        self.assertEqual(calls, [])
-        self.assertIn("existing site", output.getvalue())
-        self.assertIn("Caddy / TLS -> Site configs", output.getvalue())
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            self.assertIn("existing site", result.stdout)
+            self.assertIn("Caddy / TLS -> Site configs", result.stdout)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(box.db_rows("reality_connections"), rows)
+            box.assert_restarted(times=0)
 
     def test_choose_transport_can_collect_xhttp_advanced_defaults(self) -> None:
         inputs = iter(["3", "/private-xhttp", "1", "y", "", "", "n", "n", "n", "", "", "", "", "", "", "n"])

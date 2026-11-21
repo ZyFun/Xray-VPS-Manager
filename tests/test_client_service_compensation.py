@@ -16,7 +16,7 @@ from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
 from tests.test_client_characterization import ALICE_KEY, TABLES, add_reality, script_processes, write_config
 from tests.test_client_manager_lock import lock_is_free
-from xray_vps_manager.clients import repository, service
+from xray_vps_manager.clients import credentials, repository, service
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import client_policy_recovery
 from xray_vps_manager.telegram import settings as telegram_settings
@@ -804,6 +804,213 @@ class ClientServiceCompensationTests(unittest.TestCase):
 
         self.assertEqual(self.query("SELECT client_name,incoming_bytes FROM traffic_totals"), [("bob", 456)])
         self.assertEqual(self.query("SELECT * FROM traffic_history WHERE client_name='alice'"), [])
+        self.assertEqual(self.query("SELECT key FROM manager_metadata WHERE key='clients.trafficHandoff'"), [])
+
+    def configure_connection_delete_execstop(self):
+        add_reality(self.cli)
+        self.cli("add", "alice", "--connection", "vless-reality-2")
+        self.cli("add", "bob", "0", "--connection", "vless-reality")
+        alice = self.seed_active_traffic()
+        entry = repository.load_db()["clients"]["alice"]
+        secondary = credentials.credential_email("alice", entry, entry["credentials"]["vless-reality-2"])
+        bob, = self.query("SELECT email FROM clients WHERE name='bob'")[0]
+        with database.write_session() as conn:
+            conn.execute(
+                "INSERT INTO traffic_totals(client_name,email,incoming_bytes,last_runtime_uplink) VALUES ('bob',?,20,20)",
+                (bob,),
+            )
+            conn.execute(
+                "INSERT INTO credential_traffic_totals(client_name,connection_tag,email,incoming_bytes,last_runtime_uplink) "
+                "VALUES ('bob','vless-reality',?,20,20)", (bob,),
+            )
+        stats = {"stat": [
+            {"name": f"user>>>{alice}>>>traffic>>>uplink", "value": 175},
+            {"name": f"user>>>{secondary}>>>traffic>>>uplink", "value": 30},
+            {"name": f"user>>>{bob}>>>traffic>>>uplink", "value": 55},
+        ]}
+
+        def stop(*args, **kwargs):
+            self.assertFalse(lock_is_free(self.box.paths.manager_lock))
+            self.assertTrue(lock_is_free(self.box.paths.traffic_lock))
+            self.assertFalse(lock_is_free(self.box.paths.activity_lock))
+            self.assertEqual(self.query("SELECT name FROM clients ORDER BY name"), [("alice",)])
+            sync = self.box.run_cli("traffic-sync", "--quiet")
+            self.assertEqual((sync.exit_code, sync.stderr), (0, ""))
+            return self.processes.ok()
+
+        self.processes.script({STOP: stop, STATS: self.processes.ok(json.dumps(stats))})
+
+    def test_remove_connection_keeps_execstop_delta_in_retained_client_total(self):
+        self.configure_connection_delete_execstop()
+
+        self.cli("remove-connection", "vless-reality")
+
+        self.assertEqual(self.query("SELECT client_name,incoming_bytes FROM traffic_totals"), [("alice", 175)])
+        self.assertEqual(self.query("SELECT SUM(incoming_bytes) FROM traffic_history WHERE client_name='alice'"), [(175,)])
+        self.assertEqual(self.query(
+            "SELECT client_name FROM credential_traffic_totals WHERE connection_tag='vless-reality'"
+        ), [])
+        self.assertEqual(self.query(
+            "SELECT incoming_bytes,last_runtime_uplink FROM credential_traffic_totals "
+            "WHERE connection_tag='vless-reality-2'"
+        ), [(0, 30)])
+        self.assertEqual(self.query("SELECT key FROM manager_metadata WHERE key='clients.trafficHandoff'"), [])
+
+    def test_remove_connection_restart_failure_restores_old_credentials_with_execstop_delta(self):
+        self.configure_connection_delete_execstop()
+        original = self.box.paths.config.read_bytes()
+        failure = self.processes.result(1, stderr="fixture restart failure")
+        self.processes.script({RESTART: [failure, failure, self.processes.ok()]})
+        result = self.box.run_cli("client", "remove-connection", "vless-reality")
+
+        self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertIn("Restored backup:", result.stderr)
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        expected = [("alice", 175), ("bob", 55)]
+        self.assertEqual(self.query("SELECT client_name,incoming_bytes FROM traffic_totals ORDER BY client_name"), expected)
+        self.assertEqual(self.query(
+            "SELECT client_name,incoming_bytes FROM credential_traffic_totals "
+            "WHERE connection_tag='vless-reality' ORDER BY client_name"
+        ), expected)
+        self.assertEqual(self.query("SELECT key FROM manager_metadata WHERE key='clients.trafficHandoff'"), [])
+        self.assertEqual(self.query("PRAGMA foreign_key_check"), [])
+
+    def seed_connection_removal_with_aggregate_only(self, *, disable_alternate):
+        add_reality(self.cli)
+        self.cli("add", "alice", "--connection", "vless-reality-2")
+        if disable_alternate:
+            self.cli("disable", "alice", "--connection", "vless-reality-2")
+        primary = self.seed_active_traffic()
+        with database.write_session() as conn:
+            conn.execute("DELETE FROM credential_traffic_totals WHERE client_name='alice'")
+            conn.execute("DELETE FROM credential_traffic_history WHERE client_name='alice'")
+        entry = repository.load_db()["clients"]["alice"]
+        alternate = credentials.credential_email("alice", entry, entry["credentials"]["vless-reality-2"])
+        self.script_execstop(primary if disable_alternate else alternate, 175)
+        return primary, alternate
+
+    def seed_connection_removal_access_log(self, *, retired_first, alternate_runtime=30):
+        primary, alternate = self.seed_connection_removal_with_aggregate_only(disable_alternate=False)
+        emails = (primary, alternate) if retired_first else (alternate, primary)
+        path = self.box.paths.access_log
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(
+            f"2026/10/06 11:59:50 from 127.0.0.1:4567 accepted tcp:example.com:443 email: {email}\n"
+            for email in emails
+        ))
+        stats = {"stat": [
+            {"name": f"user>>>{email}>>>traffic>>>uplink", "value": value}
+            for email, value in ((primary, 175), (alternate, alternate_runtime))
+        ]}
+        self.processes.script({STATS: self.processes.ok(json.dumps(stats))})
+        return primary, alternate
+
+    def test_remove_connection_assigns_legacy_baseline_to_first_logged_retired_credential(self):
+        self.seed_connection_removal_access_log(retired_first=True, alternate_runtime=0)
+
+        self.cli("remove-connection", "vless-reality")
+
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals WHERE client_name='alice'"), [(175,)])
+        self.assertEqual(self.query(
+            "SELECT connection_tag,incoming_bytes,last_runtime_uplink FROM credential_traffic_totals "
+            "WHERE client_name='alice'"
+        ), [("vless-reality-2", 0, 0)])
+
+    def test_remove_connection_assigns_legacy_baseline_to_first_logged_remaining_credential(self):
+        self.seed_connection_removal_access_log(retired_first=False)
+
+        self.cli("remove-connection", "vless-reality")
+
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals WHERE client_name='alice'"), [(130,)])
+        self.assertEqual(self.query(
+            "SELECT connection_tag,incoming_bytes,last_runtime_uplink FROM credential_traffic_totals "
+            "WHERE client_name='alice'"
+        ), [("vless-reality-2", 130, 30)])
+
+    def test_remove_connection_rollback_restores_legacy_baseline_chosen_by_access_log(self):
+        self.seed_connection_removal_access_log(retired_first=True)
+        original = self.box.paths.config.read_bytes()
+        failure = self.processes.result(1, stderr="fixture restart failure")
+        self.processes.script({RESTART: [failure, failure, self.processes.ok()]})
+
+        result = self.box.run_cli("client", "remove-connection", "vless-reality")
+
+        self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals WHERE client_name='alice'"), [(175,)])
+        self.assertEqual(self.query(
+            "SELECT connection_tag,incoming_bytes FROM credential_traffic_totals "
+            "WHERE client_name='alice' ORDER BY connection_tag"
+        ), [("vless-reality", 175), ("vless-reality-2", 0)])
+        self.assertEqual(self.query("SELECT key FROM manager_metadata WHERE key='clients.trafficHandoff'"), [])
+
+    def test_remove_connection_rollback_does_not_assign_secondary_traffic_to_legacy_primary(self):
+        primary, alternate = self.seed_connection_removal_access_log(retired_first=True)
+
+        def stats(primary_value, alternate_value):
+            return self.processes.ok(json.dumps({"stat": [
+                {"name": f"user>>>{email}>>>traffic>>>uplink", "value": value}
+                for email, value in ((primary, primary_value), (alternate, alternate_value))
+            ]}))
+
+        self.processes.script({
+            STATS: [stats(175, 30), stats(0, 20)],
+            "systemctl show --property=ActiveState,SubState,NRestarts xray": [
+                self.processes.ok("ActiveState=active\nSubState=running\nNRestarts=1\n"),
+                self.processes.ok("ActiveState=active\nSubState=running\nNRestarts=0\n"),
+            ],
+        })
+        result = self.box.run_cli("client", "remove-connection", "vless-reality")
+
+        self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertIn("Restored backup:", result.stderr)
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals WHERE client_name='alice'"), [(195,)])
+        self.assertEqual(self.query(
+            "SELECT connection_tag,incoming_bytes FROM credential_traffic_totals "
+            "WHERE client_name='alice' ORDER BY connection_tag"
+        ), [("vless-reality", 175), ("vless-reality-2", 20)])
+        self.assertEqual(self.query(
+            "SELECT connection_tag,SUM(incoming_bytes) FROM credential_traffic_history "
+            "WHERE client_name='alice' GROUP BY connection_tag ORDER BY connection_tag"
+        ), [("vless-reality", 175), ("vless-reality-2", 20)])
+        self.assertEqual(self.query("SELECT key FROM manager_metadata WHERE key='clients.trafficHandoff'"), [])
+
+    def test_remove_connection_keeps_legacy_delta_with_disabled_alternate(self):
+        self.seed_connection_removal_with_aggregate_only(disable_alternate=True)
+
+        self.cli("remove-connection", "vless-reality")
+
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals WHERE client_name='alice'"), [(175,)])
+        self.assertEqual(self.query(
+            "SELECT connection_tag,incoming_bytes FROM credential_traffic_totals WHERE client_name='alice'"
+        ), [("vless-reality-2", 0)])
+        self.assertEqual(self.query("SELECT SUM(incoming_bytes) FROM traffic_history WHERE client_name='alice'"), [(175,)])
+
+    def test_remove_connection_keeps_legacy_baseline_on_active_alternate(self):
+        self.seed_connection_removal_with_aggregate_only(disable_alternate=False)
+
+        self.cli("remove-connection", "vless-reality")
+
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals WHERE client_name='alice'"), [(175,)])
+        self.assertEqual(self.query(
+            "SELECT connection_tag,incoming_bytes FROM credential_traffic_totals WHERE client_name='alice'"
+        ), [("vless-reality-2", 175)])
+
+    def test_remove_connection_rollback_restores_legacy_delta_to_primary_credential(self):
+        self.seed_connection_removal_with_aggregate_only(disable_alternate=True)
+        original = self.box.paths.config.read_bytes()
+        failure = self.processes.result(1, stderr="fixture restart failure")
+        self.processes.script({RESTART: [failure, failure, self.processes.ok()]})
+
+        result = self.box.run_cli("client", "remove-connection", "vless-reality")
+
+        self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertEqual(self.box.paths.config.read_bytes(), original)
+        self.assertEqual(self.query("SELECT incoming_bytes FROM traffic_totals WHERE client_name='alice'"), [(175,)])
+        self.assertEqual(self.query(
+            "SELECT connection_tag,incoming_bytes FROM credential_traffic_totals "
+            "WHERE client_name='alice' ORDER BY connection_tag"
+        ), [("vless-reality", 175), ("vless-reality-2", 0)])
         self.assertEqual(self.query("SELECT key FROM manager_metadata WHERE key='clients.trafficHandoff'"), [])
 
     def assert_restored_xray_counts_from_new_baseline(self, *command):

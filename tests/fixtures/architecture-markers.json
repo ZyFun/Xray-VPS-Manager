@@ -434,34 +434,6 @@
     "count": 1
   },
   {
-    "module": "commands.menu_reality_actions",
-    "scope": "<module>",
-    "category": "subprocess",
-    "ast": "Import(names=[alias(name='subprocess')])",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_reality_actions",
-    "scope": "refresh_initial_link",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
-    "count": 2
-  },
-  {
-    "module": "commands.menu_reality_actions",
-    "scope": "refresh_initial_link",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_reality_actions",
-    "scope": "run",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
     "module": "commands.menu_security_actions",
     "scope": "<module>",
     "category": "subprocess",
