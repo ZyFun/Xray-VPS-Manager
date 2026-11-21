@@ -1,0 +1,310 @@
+
+["2", "4", "2", "3", "1", "3"]
+exit: 0
+stdout:
+========= Создать/обновить site из TLS-подключения =========
+
+Выбери TLS подключение.
++-+-+-+-+-+-+-+
+|№|NAME|TAG|TYPE|DOMAIN|PUBLIC|LOCAL|
++-+-+-+-+-+-+-+
+|1|WS|trojan-tls|trojan/ws|ws.example|443|18101|
+|0|Назад||||||
++-+-+-+-+-+-+-+
+Подключение:
+TLS: выбери версию протокола для Caddy site.
+  1) Caddy default
+  2) TLS 1.2
+  3) TLS 1.2 + TLS 1.3 (текущий)
+  4) TLS 1.3
+TLS [TLS 1.2 + TLS 1.3] (номер из списка): Valid configuration
+Caddy site updated: <ROOT>/etc/caddy/conf.d/ws.example.caddy
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/Caddyfile
++++ after/etc/caddy/Caddyfile
+@@ -0,0 +1 @@
++import <ROOT>/etc/caddy/conf.d/*.caddy
+--- before/etc/caddy/conf.d/ws.example.caddy
++++ after/etc/caddy/conf.d/ws.example.caddy
+@@ -0,0 +1,20 @@
++ws.example {
++    tls {
++        protocols tls1.2 tls1.3
++    }
++
++    @xray_path {
++        path /ws
++        header Connection *Upgrade*
++        header Upgrade websocket
++    }
++    handle @xray_path {
++        reverse_proxy 127.0.0.1:18101
++    }
++
++    handle {
++        root * /usr/share/caddy
++        try_files {path} /index.html
++        file_server
++    }
++}
+
+["2", "4", "2", "1"]
+exit: 0
+stdout:
+================ Показать TLS site configs =================
+
++-+-+-+-+-+
+|DOMAIN|FILE|UPSTREAM|TLS MIN|TLS MAX|
++-+-+-+-+-+
+|ws.example|<ROOT>/etc/caddy/conf.d/ws.example.caddy|18101|tls1.2|tls1.3|
++-+-+-+-+-+
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "2", "2"]
+exit: 0
+stdout:
+=================== Показать site config ===================
+
+ws.example {
+    tls {
+        protocols tls1.2 tls1.3
+    }
+
+    @xray_path {
+        path /ws
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    handle @xray_path {
+        reverse_proxy 127.0.0.1:18101
+    }
+
+    handle {
+        root * /usr/share/caddy
+        try_files {path} /index.html
+        file_server
+    }
+}
+
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "2", "5", "4"]
+exit: 0
+stdout:
+================ Изменить TLS version site =================
+
+
+TLS: выбери версию протокола для Caddy site.
+  1) Caddy default
+  2) TLS 1.2
+  3) TLS 1.2 + TLS 1.3 (текущий)
+  4) TLS 1.3
+TLS [TLS 1.2 + TLS 1.3] (номер из списка): Valid configuration
+Caddy site TLS updated: <ROOT>/etc/caddy/conf.d/ws.example.caddy
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/conf.d/ws.example.caddy
++++ after/etc/caddy/conf.d/ws.example.caddy
+@@ -3 +3 @@
+-        protocols tls1.2 tls1.3
++        protocols tls1.3 tls1.3
+--- before/etc/caddy/conf.d/ws.example.caddy.bak.20261006120000000000
++++ after/etc/caddy/conf.d/ws.example.caddy.bak.20261006120000000000
+@@ -0,0 +1,20 @@
++ws.example {
++    tls {
++        protocols tls1.2 tls1.3
++    }
++
++    @xray_path {
++        path /ws
++        header Connection *Upgrade*
++        header Upgrade websocket
++    }
++    handle @xray_path {
++        reverse_proxy 127.0.0.1:18101
++    }
++
++    handle {
++        root * /usr/share/caddy
++        try_files {path} /index.html
++        file_server
++    }
++}
+
+["2", "4", "2", "6", "18102"]
+exit: 0
+stdout:
+=============== Изменить upstream local port ===============
+
+LOCAL_PORT upstream [18101]: Valid configuration
+Caddy site updated: <ROOT>/etc/caddy/conf.d/ws.example.caddy
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/conf.d/ws.example.caddy
++++ after/etc/caddy/conf.d/ws.example.caddy
+@@ -12 +12 @@
+-        reverse_proxy 127.0.0.1:18101
++        reverse_proxy 127.0.0.1:18102
+--- before/etc/caddy/conf.d/ws.example.caddy.bak.20261006120000000000
++++ after/etc/caddy/conf.d/ws.example.caddy.bak.20261006120000000000
+@@ -3 +3 @@
+-        protocols tls1.2 tls1.3
++        protocols tls1.3 tls1.3
+
+["2", "4", "2", "8", "1", "n"]
+exit: 0
+stdout:
+=================== Удалить site config ====================
+
+Выбери Caddy site для действия: удаления site config.
++-+-+-+-+-+-+
+|№|DOMAIN|FILE|UPSTREAM|TLS MIN|TLS MAX|
++-+-+-+-+-+-+
+|1|ws.example|<ROOT>/etc/caddy/conf.d/ws.example.caddy|18102|tls1.3|tls1.3|
+|0|Назад|||||
++-+-+-+-+-+-+
+Site: Будет удалён Caddy site: ws.example
+Файл: <ROOT>/etc/caddy/conf.d/ws.example.caddy
+Удалить Caddy site [y/N]: Удаление отменено.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "2", "8", "1", "y"]
+exit: 0
+stdout:
+=================== Удалить site config ====================
+
+Выбери Caddy site для действия: удаления site config.
++-+-+-+-+-+-+
+|№|DOMAIN|FILE|UPSTREAM|TLS MIN|TLS MAX|
++-+-+-+-+-+-+
+|1|ws.example|<ROOT>/etc/caddy/conf.d/ws.example.caddy|18102|tls1.3|tls1.3|
+|0|Назад|||||
++-+-+-+-+-+-+
+Site: Будет удалён Caddy site: ws.example
+Файл: <ROOT>/etc/caddy/conf.d/ws.example.caddy
+Удалить Caddy site [y/N]: Valid configuration
+Caddy site removed. Backup: <ROOT>/etc/caddy/conf.d/ws.example.caddy.bak.20261006120000000000
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/conf.d/ws.example.caddy
++++ after/etc/caddy/conf.d/ws.example.caddy
+@@ -1,20 +0,0 @@
+-ws.example {
+-    tls {
+-        protocols tls1.3 tls1.3
+-    }
+-
+-    @xray_path {
+-        path /ws
+-        header Connection *Upgrade*
+-        header Upgrade websocket
+-    }
+-    handle @xray_path {
+-        reverse_proxy 127.0.0.1:18102
+-    }
+-
+-    handle {
+-        root * /usr/share/caddy
+-        try_files {path} /index.html
+-        file_server
+-    }
+-}
+--- before/etc/caddy/conf.d/ws.example.caddy.bak.20261006120000000000
++++ after/etc/caddy/conf.d/ws.example.caddy.bak.20261006120000000000
+@@ -12 +12 @@
+-        reverse_proxy 127.0.0.1:18101
++        reverse_proxy 127.0.0.1:18102

@@ -1,0 +1,55 @@
+
+["2", "4", "2", "7", "new.example"]
+exit: 0
+stdout:
+=================== Изменить домен site ====================
+
+NEW_DOMAIN [old.example]: Valid configuration
+Caddy site domain changed: old.example -> new.example
+Важно: это не меняет VLESS-подключение в manager.db и не перевыпускает клиентские ссылки.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/conf.d/new.example.caddy
++++ after/etc/caddy/conf.d/new.example.caddy
+@@ -0,0 +1,7 @@
++new.example {
++    tls {
++        protocols tls1.2 tls1.2
++    }
++
++    reverse_proxy h2c://127.0.0.1:18100
++}
+--- before/etc/caddy/conf.d/old.example.caddy
++++ after/etc/caddy/conf.d/old.example.caddy
+@@ -1,7 +0,0 @@
+-old.example {
+-    tls {
+-        protocols tls1.2 tls1.2
+-    }
+-
+-    reverse_proxy h2c://127.0.0.1:18100
+-}
+--- before/etc/caddy/conf.d/old.example.caddy.bak.20261006120000000000
++++ after/etc/caddy/conf.d/old.example.caddy.bak.20261006120000000000
+@@ -0,0 +1,7 @@
++old.example {
++    tls {
++        protocols tls1.2 tls1.2
++    }
++
++    reverse_proxy h2c://127.0.0.1:18100
++}

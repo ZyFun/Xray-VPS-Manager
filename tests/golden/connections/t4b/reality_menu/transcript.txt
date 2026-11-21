@@ -1,0 +1,978 @@
+
+["2", "1", "1"]
+exit: 0
+stdout:
+=================== Показать подключения ===================
+
++-+-+-+-+-+-+-+-+-+
+|NAME|TAG|PROTOCOL|SECURITY|PORT|SNI|TRANSPORT|FINGERPRINT|CREATED|
++-+-+-+-+-+-+-+-+-+
+|Reality|vless-reality|vless|reality|443|www.example.com|tcp|chrome|2026-10-06T12:00:00Z|
++-+-+-+-+-+-+-+-+-+
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "1", "3", "5443"]
+exit: 0
+stdout:
+====================== Обновить PORT =======================
+
+
+Новый PORT: публичный TCP-порт для подключения клиентов.
+DEST будет автоматически пересчитан как REALITY_SNI:443.
+PORT [443]: PORT обновлён: 5443
+REALITY_DEST обновлён: www.example.com:443
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 5443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -20 +20 @@
+-      "port": 443,
++      "port": 5443,
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -0,0 +1,9 @@
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++PORT=5443
++PROTOCOL=VLESS
++SECURITY=REALITY
++TRANSPORT=tcp
++FLOW=xtls-rprx-vision
++SNI=www.example.com
++DEST=www.example.com:443
++FINGERPRINT=chrome
+--- before/server.env
++++ after/server.env
+@@ -3 +3 @@
+-PORT=443
++PORT=5443
+@@ -7,0 +8,4 @@
++GRPC_SERVICE_NAME=
++XHTTP_PATH=
++XHTTP_MODE=
++MANAGER_TIMEZONE=Europe/Moscow
+@@ -9 +12,0 @@
+-MANAGER_TIMEZONE=Europe/Moscow
+
+["2", "1", "4", "sni.example"]
+exit: 0
+stdout:
+=========== Обновить REALITY_SNI и REALITY_DEST ============
+
+
+Новый REALITY_SNI: реальный HTTPS-домен без https:// и без порта.
+DEST будет автоматически пересчитан как REALITY_SNI:443.
+REALITY_SNI [www.example.com]: REALITY_SNI обновлён: sni.example
+REALITY_DEST обновлён: sni.example:443
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6 @@
+-["vless-reality", "Reality", 5443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 5443, "sni.example", "sni.example:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -1,0 +2 @@
++config.json.bak.20261006120000000001
+--- before/config.json
++++ after/config.json
+@@ -35 +35 @@
+-          "dest": "www.example.com:443",
++          "dest": "sni.example:443",
+@@ -38 +38 @@
+-            "www.example.com"
++            "sni.example"
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1 +1 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+@@ -7,2 +7,2 @@
+-SNI=www.example.com
+-DEST=www.example.com:443
++SNI=sni.example
++DEST=sni.example:443
+--- before/server.env
++++ after/server.env
+@@ -4,2 +4,2 @@
+-REALITY_SNI=www.example.com
+-REALITY_DEST=www.example.com:443
++REALITY_SNI=sni.example
++REALITY_DEST=sni.example:443
+
+["2", "1", "5", "6443", "other-sni.example"]
+exit: 0
+stdout:
+======== Обновить PORT, REALITY_SNI и REALITY_DEST =========
+
+
+Обновление PORT и REALITY_SNI.
+DEST будет автоматически пересчитан как REALITY_SNI:443.
+PORT [5443]: REALITY_SNI [sni.example]: PORT обновлён: 6443
+REALITY_SNI обновлён: other-sni.example
+REALITY_DEST обновлён: other-sni.example:443
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000002
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6 @@
+-["vless-reality", "Reality", 5443, "sni.example", "sni.example:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
+--- before/config backups
++++ after/config backups
+@@ -2,0 +3 @@
++config.json.bak.20261006120000000002
+--- before/config.json
++++ after/config.json
+@@ -20 +20 @@
+-      "port": 5443,
++      "port": 6443,
+@@ -35 +35 @@
+-          "dest": "sni.example:443",
++          "dest": "other-sni.example:443",
+@@ -38 +38 @@
+-            "sni.example"
++            "other-sni.example"
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1,2 +1,2 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+-PORT=5443
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++PORT=6443
+@@ -7,2 +7,2 @@
+-SNI=sni.example
+-DEST=sni.example:443
++SNI=other-sni.example
++DEST=other-sni.example:443
+--- before/server.env
++++ after/server.env
+@@ -3,3 +3,3 @@
+-PORT=5443
+-REALITY_SNI=sni.example
+-REALITY_DEST=sni.example:443
++PORT=6443
++REALITY_SNI=other-sni.example
++REALITY_DEST=other-sni.example:443
+
+["2", "1", "6", "2"]
+exit: 0
+stdout:
+=================== Обновить FINGERPRINT ===================
+
+
+Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.
+Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.
+  1) chrome
+  2) firefox
+  3) safari
+  4) ios
+  5) android
+  6) edge
+  7) 360
+  8) qq
+  9) random
+  10) randomized
+FINGERPRINT [chrome] (номер или значение): FINGERPRINT обновлён: firefox
+Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6 @@
+-["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1 +1 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+@@ -9 +9 @@
+-FINGERPRINT=chrome
++FINGERPRINT=firefox
+--- before/server.env
++++ after/server.env
+@@ -6 +6 @@
+-FINGERPRINT=chrome
++FINGERPRINT=firefox
+
+["2", "1", "7", "2", "fixture-grpc"]
+exit: 0
+stdout:
+==================== Обновить TRANSPORT ====================
+
+
+TRANSPORT: транспорт VLESS Reality для этого подключения.
+  tcp   - TCP transport с Vision flow
+  grpc  - gRPC поверх HTTP/2
+  xhttp - XHTTP/XMUX
+  1) tcp
+  2) grpc
+  3) xhttp
+TRANSPORT [tcp] (номер или значение): GRPC serviceName [vless-grpc]: Connection: Reality (vless-reality)
+TRANSPORT: grpc
+GRPC_SERVICE_NAME: fixture-grpc
+Updated clients: alice
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000003
+Выведи клиентам новые ссылки через xray-client link NAME.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
+@@ -4 +4 @@
+-["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
++["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "grpc", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
+@@ -6 +6 @@
+-["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"grpc\",\"grpcServiceName\":\"fixture-grpc\"}"]
+--- before/config backups
++++ after/config backups
+@@ -3,0 +4 @@
++config.json.bak.20261006120000000003
+--- before/config.json
++++ after/config.json
+@@ -26 +25,0 @@
+-            "flow": "xtls-rprx-vision",
+@@ -33 +32,4 @@
+-        "network": "tcp",
++        "grpcSettings": {
++          "serviceName": "fixture-grpc"
++        },
++        "network": "grpc",
+@@ -74,0 +77 @@
++    "balancers": [],
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1 +1 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=grpc&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&serviceName=fixture-grpc#fixture
+@@ -5,2 +5,2 @@
+-TRANSPORT=tcp
+-FLOW=xtls-rprx-vision
++TRANSPORT=grpc
++FLOW=
+--- before/server.env
++++ after/server.env
+@@ -7,2 +7,2 @@
+-REALITY_TRANSPORT=tcp
+-GRPC_SERVICE_NAME=
++REALITY_TRANSPORT=grpc
++GRPC_SERVICE_NAME=fixture-grpc
+
+["2", "1", "7", "3", "/upload", "2", "n"]
+exit: 0
+stdout:
+==================== Обновить TRANSPORT ====================
+
+
+TRANSPORT: транспорт VLESS Reality для этого подключения.
+  tcp   - TCP transport с Vision flow
+  grpc  - gRPC поверх HTTP/2
+  xhttp - XHTTP/XMUX
+  1) tcp
+  2) grpc
+  3) xhttp
+TRANSPORT [grpc] (номер или значение): XHTTP path [/vless-xhttp]:
+XHTTP_MODE: режим XHTTP/XMUX.
+  1) auto
+  2) packet-up
+  3) stream-up
+  4) stream-one
+XHTTP_MODE [auto] (номер из списка): Использовать расширенные XHTTP настройки [y/N]: Connection: Reality (vless-reality)
+TRANSPORT: xhttp
+XHTTP_PATH: /upload
+XHTTP_MODE: packet-up
+XHTTP_EXTRA: default
+Updated clients: alice
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000004
+Выведи клиентам новые ссылки через xray-client link NAME.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -4 +4 @@
+-["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "grpc", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
++["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "xhttp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
+@@ -6 +6 @@
+-["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"grpc\",\"grpcServiceName\":\"fixture-grpc\"}"]
++["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/upload\",\"xhttpMode\":\"packet-up\"}"]
+--- before/config backups
++++ after/config backups
+@@ -4,0 +5 @@
++config.json.bak.20261006120000000004
+--- before/config.json
++++ after/config.json
+@@ -32,4 +32 @@
+-        "grpcSettings": {
+-          "serviceName": "fixture-grpc"
+-        },
+-        "network": "grpc",
++        "network": "xhttp",
+@@ -48 +45,5 @@
+-        "security": "reality"
++        "security": "reality",
++        "xhttpSettings": {
++          "mode": "packet-up",
++          "path": "/upload"
++        }
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1 +1 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=grpc&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&serviceName=fixture-grpc#fixture
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
+@@ -5 +5 @@
+-TRANSPORT=grpc
++TRANSPORT=xhttp
+--- before/server.env
++++ after/server.env
+@@ -7,4 +7,4 @@
+-REALITY_TRANSPORT=grpc
+-GRPC_SERVICE_NAME=fixture-grpc
+-XHTTP_PATH=
+-XHTTP_MODE=
++REALITY_TRANSPORT=xhttp
++GRPC_SERVICE_NAME=
++XHTTP_PATH=/upload
++XHTTP_MODE=packet-up
+
+["2", "1", "8", "1", "2", "150-300", "", "y", "512000", "50", "12", "y", "y", "n", "n", "8-12", "", "", "", "", "15", "y", "download.example", "", "", "", "", "", "/download", "", "", "n", "n"]
+exit: 0
+stdout:
+=============== Расширенные XHTTP настройки ================
+
+Выбери xHTTP-подключение для действия: расширенных XHTTP настроек.
++-+-+-+-+-+-+-+-+-+
+|№|NAME|TAG|PROTOCOL|SECURITY|PORT|SNI|TRANSPORT|FINGERPRINT|
++-+-+-+-+-+-+-+-+-+
+|1|Reality|vless-reality|vless|reality|6443|other-sni.example|xhttp|firefox|
+|0|Назад||||||||
++-+-+-+-+-+-+-+-+-+
+Подключение:
+XHTTP_EXTRA: default
+1) Сбросить к настройкам Xray по умолчанию
+2) Настроить расширенные значения
+0) Назад
+Действие:
+Расширенные XHTTP настройки. Enter оставляет значение в квадратных скобках.
+Диапазон задаётся как MIN-MAX, например 100-1000. Одиночное число задаёт фиксированное значение.
+xPaddingBytes [100-1000]: scStreamUpServerSecs [20-80]: Настроить packet-up параметры [y/N]: scMaxEachPostBytes [1000000]: scMinPostsIntervalMs [30]: scMaxBufferedPosts [30]: Настроить noGRPCHeader/noSSEHeader [y/N]: noGRPCHeader [y/N]: noSSEHeader [y/N]: Настроить custom headers [y/N]:
+XMUX. maxConcurrency и maxConnections конфликтуют: оставляй один из них равным 0.
+xmux.maxConcurrency [16-32]: xmux.maxConnections [0]: xmux.cMaxReuseTimes [0]: xmux.hMaxRequestTimes [600-900]: xmux.hMaxReusableSecs [1800-3000]: xmux.hKeepAlivePeriod [0]: Настроить downloadSettings [y/N]:
+downloadSettings: отдельная точка входа для download/downstream.
+network фиксируется как xhttp; security выбирается tls или reality.
+address: домен или IP download endpoint без https:// и без порта.
+downloadSettings.address []: port: публичный порт download endpoint, обычно 443.
+downloadSettings.port [443]: security: tls для обычного TLS/Caddy/CDN, reality для отдельного Reality endpoint.
+downloadSettings.security tls|reality [tls]: tlsSettings.serverName: SNI для TLS download endpoint; обычно тот же домен, что address.
+tlsSettings.fingerprint: uTLS/browser fingerprint, обычно chrome.
+tlsSettings.alpn: HTTP versions через запятую, например h2 или h3. Для Caddy обычно h2.
+downloadSettings.tlsSettings.serverName [download.example]: downloadSettings.tlsSettings.fingerprint [chrome]: downloadSettings.tlsSettings.alpn comma-list [h2]: xhttpSettings.path: path download endpoint; обычно такой же, как у основного xHTTP подключения.
+xhttpSettings.mode: режим download endpoint. Для auto Xray сам выберет подходящий режим.
+downloadSettings.xhttpSettings.path [/upload]:
+XHTTP_MODE: режим XHTTP/XMUX.
+  1) auto
+  2) packet-up
+  3) stream-up
+  4) stream-one
+XHTTP_MODE [packet-up] (номер из списка): xhttpSettings.host: опциональная проверка/отправка Host. Без необходимости лучше оставить пустым.
+downloadSettings.xhttpSettings.host optional []: Настроить downloadSettings.xhttpSettings.extra JSON [y/N]: Настроить downloadSettings.sockopt JSON [y/N]: Connection: Reality (vless-reality)
+XHTTP_EXTRA: {"downloadSettings":{"address":"download.example","network":"xhttp","port":443,"security":"tls","tlsSettings":{"alpn":["h2"],"fingerprint":"chrome","serverName":"download.example"},"xhttpSettings":{"mode":"packet-up","path":"/download"}},"noGRPCHeader":true,"noSSEHeader":false,"scMaxBufferedPosts":12,"scMaxEachPostBytes":512000,"scMinPostsIntervalMs":50,"scStreamUpServerSecs":"20-80","xPaddingBytes":"150-300","xmux":{"cMaxReuseTimes":0,"hKeepAlivePeriod":15,"hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","maxConcurrency":"8-12","maxConnections":0}}
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000005
+Выведи клиентам новые ссылки через xray-client link NAME.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6 @@
+-["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/upload\",\"xhttpMode\":\"packet-up\"}"]
++["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"xhttpExtra\":{\"xPaddingBytes\":\"150-300\",\"noGRPCHeader\":true,\"noSSEHeader\":false,\"scMaxEachPostBytes\":512000,\"scMinPostsIntervalMs\":50,\"scMaxBufferedPosts\":12,\"scStreamUpServerSecs\":\"20-80\",\"xmux\":{\"maxConcurrency\":\"8-12\",\"maxConnections\":0,\"cMaxReuseTimes\":0,\"hMaxRequestTimes\":\"600-900\",\"hMaxReusableSecs\":\"1800-3000\",\"hKeepAlivePeriod\":15},\"downloadSettings\":{\"address\":\"download.example\",\"port\":443,\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"serverName\":\"download.example\",\"fingerprint\":\"chrome\",\"alpn\":[\"h2\"]},\"xhttpSettings\":{\"path\":\"/download\",\"mode\":\"packet-up\"}}},\"transport\":\"xhttp\",\"xhttpPath\":\"/upload\",\"xhttpMode\":\"packet-up\"}"]
+--- before/config backups
++++ after/config backups
+@@ -5,0 +6 @@
++config.json.bak.20261006120000000005
+--- before/config.json
++++ after/config.json
+@@ -46,0 +47,7 @@
++          "extra": {
++            "noSSEHeader": false,
++            "scMaxBufferedPosts": 12,
++            "scMaxEachPostBytes": 512000,
++            "scStreamUpServerSecs": "20-80",
++            "xPaddingBytes": "150-300"
++          },
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1 +1 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up&extra=%7B%22downloadSettings%22%3A%7B%22address%22%3A%22download.example%22%2C%22network%22%3A%22xhttp%22%2C%22port%22%3A443%2C%22security%22%3A%22tls%22%2C%22tlsSettings%22%3A%7B%22alpn%22%3A%5B%22h2%22%5D%2C%22fingerprint%22%3A%22chrome%22%2C%22serverName%22%3A%22download.example%22%7D%2C%22xhttpSettings%22%3A%7B%22mode%22%3A%22packet-up%22%2C%22path%22%3A%22%2Fdownload%22%7D%7D%2C%22noGRPCHeader%22%3Atrue%2C%22noSSEHeader%22%3Afalse%2C%22scMaxBufferedPosts%22%3A12%2C%22scMaxEachPostBytes%22%3A512000%2C%22scMinPostsIntervalMs%22%3A50%2C%22scStreamUpServerSecs%22%3A%2220-80%22%2C%22xPaddingBytes%22%3A%22150-300%22%2C%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22hKeepAlivePeriod%22%3A15%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%2C%22maxConcurrency%22%3A%228-12%22%2C%22maxConnections%22%3A0%7D%7D#fixture
+
+["2", "1", "8", "1", "1"]
+exit: 0
+stdout:
+=============== Расширенные XHTTP настройки ================
+
+Выбери xHTTP-подключение для действия: расширенных XHTTP настроек.
++-+-+-+-+-+-+-+-+-+
+|№|NAME|TAG|PROTOCOL|SECURITY|PORT|SNI|TRANSPORT|FINGERPRINT|
++-+-+-+-+-+-+-+-+-+
+|1|Reality|vless-reality|vless|reality|6443|other-sni.example|xhttp|firefox|
+|0|Назад||||||||
++-+-+-+-+-+-+-+-+-+
+Подключение:
+XHTTP_EXTRA: {"downloadSettings":{"address":"download.example","network":"xhttp","port":443,"security":"tls","tlsSettings":{"alpn":["h2"],"fingerprint":"chrome","serverName":"download.example"},"xhttpSettings":{"mode":"packet-up","path":"/download"}},"noGRPCHeader":true,"noSSEHeader":false,"scMaxBufferedPosts":12,"scMaxEachPostBytes":512000,"scMinPostsIntervalMs":50,"scStreamUpServerSecs":"20-80","xPaddingBytes":"150-300","xmux":{"cMaxReuseTimes":0,"hKeepAlivePeriod":15,"hMaxRequestTimes":"600-900","hMaxReusableSecs":"1800-3000","maxConcurrency":"8-12","maxConnections":0}}
+1) Сбросить к настройкам Xray по умолчанию
+2) Настроить расширенные значения
+0) Назад
+Действие: Connection: Reality (vless-reality)
+XHTTP_EXTRA: default
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000006
+Выведи клиентам новые ссылки через xray-client link NAME.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6 @@
+-["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"xhttpExtra\":{\"xPaddingBytes\":\"150-300\",\"noGRPCHeader\":true,\"noSSEHeader\":false,\"scMaxEachPostBytes\":512000,\"scMinPostsIntervalMs\":50,\"scMaxBufferedPosts\":12,\"scStreamUpServerSecs\":\"20-80\",\"xmux\":{\"maxConcurrency\":\"8-12\",\"maxConnections\":0,\"cMaxReuseTimes\":0,\"hMaxRequestTimes\":\"600-900\",\"hMaxReusableSecs\":\"1800-3000\",\"hKeepAlivePeriod\":15},\"downloadSettings\":{\"address\":\"download.example\",\"port\":443,\"network\":\"xhttp\",\"security\":\"tls\",\"tlsSettings\":{\"serverName\":\"download.example\",\"fingerprint\":\"chrome\",\"alpn\":[\"h2\"]},\"xhttpSettings\":{\"path\":\"/download\",\"mode\":\"packet-up\"}}},\"transport\":\"xhttp\",\"xhttpPath\":\"/upload\",\"xhttpMode\":\"packet-up\"}"]
++["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/upload\",\"xhttpMode\":\"packet-up\"}"]
+--- before/config backups
++++ after/config backups
+@@ -6,0 +7 @@
++config.json.bak.20261006120000000006
+--- before/config.json
++++ after/config.json
+@@ -47,7 +46,0 @@
+-          "extra": {
+-            "noSSEHeader": false,
+-            "scMaxBufferedPosts": 12,
+-            "scMaxEachPostBytes": 512000,
+-            "scStreamUpServerSecs": "20-80",
+-            "xPaddingBytes": "150-300"
+-          },
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1 +1 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up&extra=%7B%22downloadSettings%22%3A%7B%22address%22%3A%22download.example%22%2C%22network%22%3A%22xhttp%22%2C%22port%22%3A443%2C%22security%22%3A%22tls%22%2C%22tlsSettings%22%3A%7B%22alpn%22%3A%5B%22h2%22%5D%2C%22fingerprint%22%3A%22chrome%22%2C%22serverName%22%3A%22download.example%22%7D%2C%22xhttpSettings%22%3A%7B%22mode%22%3A%22packet-up%22%2C%22path%22%3A%22%2Fdownload%22%7D%7D%2C%22noGRPCHeader%22%3Atrue%2C%22noSSEHeader%22%3Afalse%2C%22scMaxBufferedPosts%22%3A12%2C%22scMaxEachPostBytes%22%3A512000%2C%22scMinPostsIntervalMs%22%3A50%2C%22scStreamUpServerSecs%22%3A%2220-80%22%2C%22xPaddingBytes%22%3A%22150-300%22%2C%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22hKeepAlivePeriod%22%3A15%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%2C%22maxConcurrency%22%3A%228-12%22%2C%22maxConnections%22%3A0%7D%7D#fixture
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
+
+["2", "1", "7", "1"]
+exit: 0
+stdout:
+==================== Обновить TRANSPORT ====================
+
+
+TRANSPORT: транспорт VLESS Reality для этого подключения.
+  tcp   - TCP transport с Vision flow
+  grpc  - gRPC поверх HTTP/2
+  xhttp - XHTTP/XMUX
+  1) tcp
+  2) grpc
+  3) xhttp
+TRANSPORT [xhttp] (номер или значение): Connection: Reality (vless-reality)
+TRANSPORT: tcp
+Updated clients: alice
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000007
+Выведи клиентам новые ссылки через xray-client link NAME.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -2 +2 @@
+-["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{\"protocol\":\"vless\"}", null]
++["alice", "00000000-0000-4000-8000-000000000001", "alice|created=2026-10-06T12:00:00Z|connection=vless-reality", "vless-reality", "2026-10-06T12:00:00Z", 1, null, null, null, null, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
+@@ -4 +4 @@
+-["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "xhttp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
++["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+@@ -6 +6 @@
+-["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/upload\",\"xhttpMode\":\"packet-up\"}"]
++["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -7,0 +8 @@
++config.json.bak.20261006120000000007
+--- before/config.json
++++ after/config.json
+@@ -25,0 +26 @@
++            "flow": "xtls-rprx-vision",
+@@ -32 +33 @@
+-        "network": "xhttp",
++        "network": "tcp",
+@@ -45,5 +46 @@
+-        "security": "reality",
+-        "xhttpSettings": {
+-          "mode": "packet-up",
+-          "path": "/upload"
+-        }
++        "security": "reality"
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1 +1 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
++CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+@@ -5,2 +5,2 @@
+-TRANSPORT=xhttp
+-FLOW=
++TRANSPORT=tcp
++FLOW=xtls-rprx-vision
+--- before/server.env
++++ after/server.env
+@@ -7 +7 @@
+-REALITY_TRANSPORT=xhttp
++REALITY_TRANSPORT=tcp
+@@ -9,2 +9,2 @@
+-XHTTP_PATH=/upload
+-XHTTP_MODE=packet-up
++XHTTP_PATH=
++XHTTP_MODE=
+
+["2", "1", "9"]
+exit: 0
+stdout:
+=================== Удалить подключение ====================
+
+Нельзя удалить последнее VLESS-подключение. Сначала создай другое подключение.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "1", "2", "1", "Reserve", "7443", "reserve.example", "3", "1"]
+exit: 0
+stdout:
+=================== Создать подключение ====================
+
+
+SECURITY: тип входящего подключения.
+  1) reality - текущая схема без своего домена и сертификата
+  2) tls     - XHTTP через Caddy с доменом и автоматическим сертификатом
+SECURITY [reality] (номер или значение): Имя подключения: Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом и SNI.
+PORT: публичный TCP-порт для подключения клиентов. Он не должен совпадать с уже занятыми портами.
+PORT: REALITY_SNI: реальный HTTPS-домен без https:// и без порта.
+REALITY_SNI:
+Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.
+Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.
+  1) chrome
+  2) firefox
+  3) safari
+  4) ios
+  5) android
+  6) edge
+  7) 360
+  8) qq
+  9) random
+  10) randomized
+FINGERPRINT [firefox] (номер или значение):
+TRANSPORT: транспорт VLESS Reality для этого подключения.
+  tcp   - TCP transport с Vision flow
+  grpc  - gRPC поверх HTTP/2
+  xhttp - XHTTP/XMUX
+  1) tcp
+  2) grpc
+  3) xhttp
+TRANSPORT [tcp] (номер или значение): Added connection: Reserve
+Tag: vless-reality-2
+SECURITY: reality
+PORT: 7443
+REALITY_SNI: reserve.example
+REALITY_DEST: reserve.example:443
+FINGERPRINT: safari
+TRANSPORT: tcp
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000008
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "x25519"]
+["openssl", "rand", "-hex", "8"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6,0 +7 @@
++["vless-reality-2", "Reserve", 7443, "reserve.example", "reserve.example:443", "safari", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -8,0 +9 @@
++config.json.bak.20261006120000000008
+--- before/config.json
++++ after/config.json
+@@ -48,0 +49,34 @@
++    },
++    {
++      "listen": "0.0.0.0",
++      "port": 7443,
++      "protocol": "vless",
++      "settings": {
++        "clients": [],
++        "decryption": "none"
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "tcp",
++        "realitySettings": {
++          "dest": "reserve.example:443",
++          "privateKey": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
++          "serverNames": [
++            "reserve.example"
++          ],
++          "shortIds": [
++            "fedcba9876543210"
++          ],
++          "show": false,
++          "xver": 0
++        },
++        "security": "reality"
++      },
++      "tag": "vless-reality-2"
+
+["2", "1", "10", "2", "Fallback"]
+exit: 0
+stdout:
+================ Переименовать подключение =================
+
+Выбери подключение для действия: переименования подключения.
++-+-+-+-+-+-+-+-+-+
+|№|NAME|TAG|PROTOCOL|SECURITY|PORT|SNI|TRANSPORT|FINGERPRINT|
++-+-+-+-+-+-+-+-+-+
+|1|Reality|vless-reality|vless|reality|6443|other-sni.example|tcp|firefox|
+|2|Reserve|vless-reality-2|vless|reality|7443|reserve.example|tcp|safari|
+|0|Назад||||||||
++-+-+-+-+-+-+-+-+-+
+Подключение: Новое имя подключения [Reserve]: Connection renamed: Reserve -> Fallback
+Tag: vless-reality-2
+Xray restart is not required.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -9 +9 @@
+-["vless-reality-2", "Reserve", 7443, "reserve.example", "reserve.example:443", "safari", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"tcp\"}"]
++["vless-reality-2", "Fallback", 7443, "reserve.example", "reserve.example:443", "safari", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"tcp\"}"]
+
+["2", "1", "9", "2", "n"]
+exit: 0
+stdout:
+=================== Удалить подключение ====================
+
+Выбери подключение для действия: удаления подключения.
++-+-+-+-+-+-+-+-+-+
+|№|NAME|TAG|PROTOCOL|SECURITY|PORT|SNI|TRANSPORT|FINGERPRINT|
++-+-+-+-+-+-+-+-+-+
+|1|Reality|vless-reality|vless|reality|6443|other-sni.example|tcp|firefox|
+|2|Fallback|vless-reality-2|vless|reality|7443|reserve.example|tcp|safari|
+|0|Назад||||||||
++-+-+-+-+-+-+-+-+-+
+Подключение:
+Будет удалено подключение: Fallback (vless-reality-2)
+Клиенты без других подключений будут удалены вместе с историей трафика.
+У клиентов с другими подключениями удалится только credential этого подключения; клиент и его трафик останутся.
+Продолжить удаление [y/N]: Удаление отменено.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "1", "9", "2", "y"]
+exit: 0
+stdout:
+=================== Удалить подключение ====================
+
+Выбери подключение для действия: удаления подключения.
++-+-+-+-+-+-+-+-+-+
+|№|NAME|TAG|PROTOCOL|SECURITY|PORT|SNI|TRANSPORT|FINGERPRINT|
++-+-+-+-+-+-+-+-+-+
+|1|Reality|vless-reality|vless|reality|6443|other-sni.example|tcp|firefox|
+|2|Fallback|vless-reality-2|vless|reality|7443|reserve.example|tcp|safari|
+|0|Назад||||||||
++-+-+-+-+-+-+-+-+-+
+Подключение:
+Будет удалено подключение: Fallback (vless-reality-2)
+Клиенты без других подключений будут удалены вместе с историей трафика.
+У клиентов с другими подключениями удалится только credential этого подключения; клиент и его трафик останутся.
+Продолжить удаление [y/N]: Removed connection: Fallback
+Tag: vless-reality-2
+Removed clients: bob
+Removed traffic history for deleted clients.
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000010
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -3 +2,0 @@
+-["bob", "00000000-0000-4000-8000-000000000002", "bob|created=2026-10-06T12:00:00Z|connection=vless-reality-2", "vless-reality-2", "2026-10-06T12:00:00Z", 1, null, null, "2026-10-16T00:00:00+03:00", 10, null, "free", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{\"protocol\":\"vless\"}", null]
+@@ -6 +4,0 @@
+-["bob", "vless-reality-2", "00000000-0000-4000-8000-000000000002", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000002\",\"level\":0,\"email\":\"bob|created=2026-10-06T12:00:00Z|connection=vless-reality-2\",\"flow\":\"xtls-rprx-vision\"}", "{}", "{}"]
+@@ -9 +6,0 @@
+-["vless-reality-2", "Fallback", 7443, "reserve.example", "reserve.example:443", "safari", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"tcp\"}"]
+--- before/config backups
++++ after/config backups
+@@ -10,0 +11 @@
++config.json.bak.20261006120000000010
+--- before/config.json
++++ after/config.json
+@@ -49,41 +48,0 @@
+-    },
+-    {
+-      "listen": "0.0.0.0",
+-      "port": 7443,
+-      "protocol": "vless",
+-      "settings": {
+-        "clients": [
+-          {
+-            "email": "bob|created=2026-10-06T12:00:00Z|connection=vless-reality-2",
+-            "flow": "xtls-rprx-vision",
+-            "id": "00000000-0000-4000-8000-000000000002",
+-            "level": 0
+-          }
+-        ],
+-        "decryption": "none"
+-      },
+-      "sniffing": {
+-        "destOverride": [
+-          "http",
+-          "tls",
+-          "quic"
+-        ],
+-        "enabled": true
+-      },
+-      "streamSettings": {
+-        "network": "tcp",
+-        "realitySettings": {
+-          "dest": "reserve.example:443",
+-          "privateKey": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+-          "serverNames": [
+-            "reserve.example"
+-          ],
+-          "shortIds": [
+-            "fedcba9876543210"
+-          ],
+-          "show": false,
+-          "xver": 0
+-        },
+-        "security": "reality"
+-      },
+-      "tag": "vless-reality-2"
+
+["2", "3"]
+exit: 0
+stdout:
+================= Вывести стартовую ссылку =================
+
+CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+PORT=6443
+PROTOCOL=VLESS
+SECURITY=REALITY
+TRANSPORT=tcp
+FLOW=xtls-rprx-vision
+SNI=other-sni.example
+DEST=other-sni.example:443
+FINGERPRINT=firefox
+
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:

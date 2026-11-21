@@ -168,6 +168,7 @@ class FakeProcesses:
         self.unexpected = []
         self.executables = {}
         self._scripts = {}
+        self._programs = {}
 
     def _reject(self, message):
         self.unexpected.append(message)
@@ -193,13 +194,17 @@ class FakeProcesses:
             key = tuple(shlex.split(command)) if isinstance(command, str) else tuple(map(str, command))
             self._scripts[key] = list(response) if isinstance(response, list) else response
 
+    def script_program(self, executable, handler):
+        """Обработчик argv конкретного исполняемого файла внутри Sandbox."""
+        self._programs[executable] = handler
+
     def run(self, args, *positional, **kwargs):
         if isinstance(args, (str, bytes)) or kwargs.get('shell') or positional:
             self._reject('Sandbox запрещает shell и неоднозначный запуск: '+repr(args))
         key = tuple(map(str, args))
         self.calls.append(key)
         self.requests.append((key, dict(kwargs)))
-        response = self._scripts.get(key)
+        response = self._scripts.get(key, self._programs.get(key[0]) if key else None)
         if isinstance(response, list):
             response = response.pop(0) if response else None
         if response is None:
