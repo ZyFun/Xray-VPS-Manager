@@ -1,0 +1,278 @@
+
+["2", "4", "1", "2"]
+exit: 0
+stdout:
+===================== Установить Caddy =====================
+
+Valid configuration
+Caddy installed and started.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["apt-get", "update"]
+["apt-get", "install", "-y", "caddy"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/Caddyfile
++++ after/etc/caddy/Caddyfile
+@@ -3,0 +4,3 @@
++
++# Managed by Xray VPS Manager
++import <ROOT>/etc/caddy/conf.d/*.caddy
+
+["2", "4", "1", "1"]
+exit: 0
+stdout:
+======================= Статус Caddy =======================
+
+Active: active (running)
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["systemctl", "--no-pager", "--full", "status", "caddy.service"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "1", "3"]
+exit: 0
+stdout:
+================== Проверить Caddy config ==================
+
+Valid configuration
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "1", "4"]
+exit: 0
+stdout:
+==================== Показать Caddyfile ====================
+
+:80 {
+    file_server
+}
+
+# Managed by Xray VPS Manager
+import <ROOT>/etc/caddy/conf.d/*.caddy
+
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "1", "6"]
+exit: 0
+stdout:
+=================== Показать логи Caddy ====================
+
+caddy: fixture log
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["journalctl", "-u", "caddy", "-n", "120", "--no-pager"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "2", "4", "manual.example", "18100", "2"]
+exit: 0
+stdout:
+============== Создать/обновить site вручную ===============
+
+DOMAIN: LOCAL_PORT upstream [10300]:
+TLS: выбери версию протокола для Caddy site.
+  1) Caddy default
+  2) TLS 1.2 (текущий)
+  3) TLS 1.2 + TLS 1.3
+  4) TLS 1.3
+TLS [TLS 1.2] (номер из списка): Valid configuration
+Caddy site updated: <ROOT>/etc/caddy/conf.d/manual.example.caddy
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/conf.d/manual.example.caddy
++++ after/etc/caddy/conf.d/manual.example.caddy
+@@ -0,0 +1,7 @@
++manual.example {
++    tls {
++        protocols tls1.2 tls1.2
++    }
++
++    reverse_proxy h2c://127.0.0.1:18100
++}
+
+["2", "4", "1", "5"]
+exit: 0
+stdout:
+================= Проверить TLS handshake ==================
+
+
+Проверка tls1.2:
+Protocol version: TLSv1.2
+
+Проверка tls1.3:
+Protocol version not supported
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["timeout", "10", "openssl", "s_client", "-connect", "manual.example:443", "-servername", "manual.example", "-tls1_2", "-brief"]
+["timeout", "10", "openssl", "s_client", "-connect", "manual.example:443", "-servername", "manual.example", "-tls1_3", "-brief"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "2", "9", "y"]
+exit: 0
+stdout:
+================ Убрать дефолтный site :80 =================
+
+Действие удалит дефолтный блок ':80 { file_server }' из /etc/caddy/Caddyfile.
+ACME HTTP challenge и HTTPS redirect для доменных site configs останутся у Caddy.
+Удалить дефолтный :80 site [y/N]: Valid configuration
+Default :80 site removed. Backup: <ROOT>/etc/caddy/Caddyfile.bak.20261006120000000000
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/Caddyfile
++++ after/etc/caddy/Caddyfile
+@@ -1,4 +0,0 @@
+-:80 {
+-    file_server
+-}
+-
+--- before/etc/caddy/Caddyfile.bak.20261006120000000000
++++ after/etc/caddy/Caddyfile.bak.20261006120000000000
+@@ -0,0 +1,6 @@
++:80 {
++    file_server
++}
++
++# Managed by Xray VPS Manager
++import <ROOT>/etc/caddy/conf.d/*.caddy
+
+["2", "4", "3", "1"]
+exit: 0
+stdout:
+======================= Reload Caddy =======================
+
+Valid configuration
+Caddy reloaded.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["systemctl", "restart", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "3", "2"]
+exit: 0
+stdout:
+====================== Restart Caddy =======================
+
+Valid configuration
+Caddy restarted.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "restart", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
