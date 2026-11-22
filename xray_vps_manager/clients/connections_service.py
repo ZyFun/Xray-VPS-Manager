@@ -31,6 +31,13 @@ class ConnectionChange[T]:
 
 
 @dataclass(frozen=True)
+class RealityEndpoint:
+    port: int
+    sni: str
+    dest: str
+
+
+@dataclass(frozen=True)
 class _Edit[T]:
     result: T
     deletions: repository.Deletions | None = None
@@ -188,17 +195,22 @@ def _change(purpose, edit, *, refresh_link=False, retires_traffic=False, prechec
             link_error = exc
         finally:
             if env is not None:
-                try:
-                    settings.update_server_env_values(env)
-                except OSError as exc:
-                    raise StateError("Xray configuration was applied, but server.env could not be updated.",
-                                     hint="Run xray-test.", detail=str(exc)) from exc
+                _update_connection_env(env)
         if post_commit_error is not None:
             raise post_commit_error
         return ConnectionChange(
             change.result, applied.backup if applied else None, site_update.target if site_update else None,
             link_error,
         )
+
+
+def _update_connection_env(values, *, metadata_only=False):
+    try:
+        settings.update_server_env_values(values)
+    except OSError as exc:
+        changed = "Connection metadata was updated" if metadata_only else "Xray configuration was applied"
+        raise StateError(f"{changed}, but server.env could not be updated.",
+                         hint="Run xray-test.", detail=str(exc)) from exc
 
 
 def _require_caddy_site_available(config, domain, public_port):
@@ -285,6 +297,113 @@ def update_xhttp_extra(identifier, extra, *, refresh_link=False):
     return _change("connection-xhttp-extra", edit, refresh_link=refresh_link)
 
 
+def check_reality_port(config: dict, tag: str, port: int) -> None:
+    """Проверка для меню до следующего вопроса и для сценария под блокировкой."""
+    if connections.port_used_by_other_inbound(config, tag, port):
+        raise ConflictError(f"PORT is already used by another inbound: {port}")
+    listen = xray.changed_port_listen(config, tag, port)
+    if listen is not None and process.tcp_port_in_use(port, listen):
+        raise ConflictError(f"PORT is already in use on this server by another process: {port}")
+
+
+def update_reality_endpoint(tag: str, *, port: int | None = None, sni: str | None = None) -> ConnectionChange[RealityEndpoint]:
+    if port is None and sni is None:
+        raise ValidationError("Specify PORT or REALITY_SNI.")
+    if port is None:
+        purpose = "update-sni"
+    elif sni is None:
+        purpose = "update-port"
+    else:
+        purpose = "update-port-sni"
+    return _update_reality(purpose, tag, port=port, sni=sni)
+
+
+def update_reality_fingerprint(tag: str, fingerprint: str) -> None:
+    try:
+        fingerprint = connections.validate_connection_fingerprint(fingerprint)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    if not fingerprint:
+        raise ValidationError("FINGERPRINT must not be empty.")
+    _update_reality("update-fingerprint", tag, fingerprint=fingerprint)
+
+
+def _update_reality(purpose: str, tag: str, *, port: int | None = None, sni: str | None = None,
+                    fingerprint: str | None = None) -> ConnectionChange[RealityEndpoint]:
+    with manager_lock(purpose=purpose), ExitStack() as resources:
+        config = service.load_working_config()
+        try:
+            inbound = xray.find_inbound_by_tag(config, tag)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        stream = inbound.get("streamSettings", {})
+        if stream.get("security") != "reality":
+            raise ValidationError(f"Connection is not Reality: {tag}")
+
+        reality = stream.get("realitySettings", {})
+        if port is not None:
+            check_reality_port(config, tag, port)
+            inbound["port"] = port
+        if sni is not None:
+            reality["serverNames"] = [sni]
+        port = int(inbound.get("port", 443))
+        sni = xray.reality_sni(reality)
+        dest = xray.reality_dest(sni)
+        if fingerprint is None:
+            reality["dest"] = dest
+            xray.ensure_api_rule_first(config)
+        else:
+            dest = reality.get("dest", dest)
+        result = RealityEndpoint(port, sni, dest)
+        env = None
+        if tag == xray.INBOUND_TAG:
+            env = {"PORT": str(port), "REALITY_SNI": sni, "REALITY_DEST": dest,
+                   "FINGERPRINT": fingerprint if fingerprint is not None else settings.fingerprint_or_default()}
+
+        undo = None
+        applied = None
+
+        def remember_apply(result):
+            nonlocal applied
+            applied = result
+
+        def restore_connection():
+            with database.report_errors(), database.write_session() as conn:
+                undo.restore(conn)
+
+        try:
+            with database.report_errors(), database.write_session() as conn:
+                record = repository.get_connection(conn, tag)
+                updated = dict(record or {"tag": tag, "name": xray.connection_name_from_tag(tag)})
+                updated.update(port=port, sni=sni, dest=dest)
+                if fingerprint is not None:
+                    updated["fingerprint"] = fingerprint
+                previous = {"connections": {tag: record} if record is not None else {},
+                            "clients": {}, "cascadeRoutes": {}}
+                changed = {**previous, "connections": {tag: updated}}
+                undo = repository.write_client_change(conn, changed, previous, undo_resources=resources)
+            if fingerprint is None:
+                applied = xray_apply.apply_config(config, on_applied=remember_apply)
+        except BaseException as error:
+            if undo is None:
+                raise
+            actions = []
+            if not isinstance(error, ApplyConfigError) and applied is not None and applied.backup is not None:
+                actions.append(("Конфигурация Xray", lambda: xray_apply.restore_config_backup(applied.backup)))
+            actions.append(("Данные подключения SQLite", restore_connection))
+            compensate(error, actions)
+
+        # Ссылка для первого клиента строится по сохранённому состоянию, в том
+        # числе при редактировании дополнительного подключения этого клиента.
+        try:
+            pending_fingerprint = env["FINGERPRINT"] if env else None
+            _write_initial_link(config, pending_env_fingerprint=pending_fingerprint)
+        finally:
+            if env is not None:
+                _update_connection_env(env, metadata_only=fingerprint is not None)
+        return ConnectionChange(result, applied.backup if applied else None)
+
+
 def update_trojan_connection(identifier, **options):
     # Повторное построение плана использует ту же проверку для того же адреса.
     port_in_use = cache(process.tcp_port_in_use)
@@ -355,12 +474,7 @@ def _values_for_connection(config, db, tag):
     return values
 
 
-def refresh_initial_link():
-    with manager_lock(purpose="refresh-initial-link"):
-        _write_initial_link(*service.read_state())
-
-
-def _write_initial_link(config, db, *, fingerprint=None):
+def _write_initial_link(config, db=None, *, fingerprint=None, pending_env_fingerprint=None):
     inbound = xray.find_inbound(config)
     clients = inbound.get("settings", {}).get("clients", [])
     if not clients:
@@ -368,10 +482,20 @@ def _write_initial_link(config, db, *, fingerprint=None):
     name = clients[0].get("email", "starter").split("|created=", 1)[0]
     try:
         service.validate_name(name)
-        uri = "\n".join(links.client_link_lines(config, db, name)).strip()
+    except ValidationError:
+        return
+    if db is None:
+        active_tags = {tag for tag, _, _ in credentials.active_items_for_client(config, name)}
+        db = repository.load_client_link_state(name, active_tags)
+    try:
+        uri = "\n".join(links.client_link_lines(
+            config, db, name, default_fingerprint=pending_env_fingerprint,
+        )).strip()
     except (ValueError, RuntimeError, ManagerError):
         return
-    if fingerprint is None:
+    if pending_env_fingerprint is not None:
+        fingerprint = pending_env_fingerprint
+    elif fingerprint is None:
         fingerprint = settings.server_env_value("FINGERPRINT", "chrome").lower()
     if fingerprint not in settings.FINGERPRINTS:
         fingerprint = "chrome"

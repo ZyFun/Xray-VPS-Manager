@@ -504,11 +504,16 @@ class ApplyConfigRollbackTests(unittest.TestCase):
 
         return restart
 
+    def update_reality_port(self):
+        with mock.patch.object(process, "tcp_port_in_use", return_value=False), \
+                mock.patch("builtins.input", return_value="2443"), contextlib.redirect_stdout(io.StringIO()):
+            menu_reality_actions.update_port()
+
     def test_menu_reality_apply_config_restores_backup_when_xray_does_not_start(self) -> None:
         systemctl = SequencedSystemctl([[('failed', 'failed', 0)], [('active', 'running', 0)]])
-        with self.rollback_sandbox(systemctl, FakeClock()):
+        with self.rollback_sandbox(systemctl, FakeClock(), reality=True):
             with self.assertRaises(SystemExit) as caught:
-                menu_reality_actions.apply_config(valid_config_with_port(2443))
+                self.update_reality_port()
             self.assertIn("Restored backup", str(caught.exception))
             self.assertIn("ActiveState=failed", str(caught.exception))
             self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
@@ -525,11 +530,14 @@ class ApplyConfigRollbackTests(unittest.TestCase):
             self.assertEqual(self.config_path.read_bytes(), original)
             self.assertEqual([item[1] for item in systemctl.commands].count("restart"), 2)
 
-    def rollback_sandbox(self, systemctl, clock):
+    def rollback_sandbox(self, systemctl, clock, *, reality=False):
         with ExitStack() as stack:
             box = stack.enter_context(Sandbox())
             self.config_path = box.paths.config
-            self.config_path.write_text(json.dumps(valid_config_with_port(443)))
+            config = valid_config_with_port(443)
+            if reality:
+                config["inbounds"][0]["streamSettings"] = xray_config.find_inbound(box.config())["streamSettings"]
+            self.config_path.write_text(json.dumps(config))
             box.processes.script({
                 ('systemctl', action, 'xray'): systemctl for action in ('stop', 'reset-failed', 'restart')})
             box.processes.script({
@@ -546,9 +554,9 @@ class ApplyConfigRollbackTests(unittest.TestCase):
             [("active", "running", 0), ("failed", "failed", 0)],
             [("active", "running", 0)],
         ])
-        with self.rollback_sandbox(systemctl, FakeClock()):
+        with self.rollback_sandbox(systemctl, FakeClock(), reality=True):
             with self.assertRaises(SystemExit) as caught:
-                menu_reality_actions.apply_config(valid_config_with_port(2443))
+                self.update_reality_port()
             self.assertIn("Restored backup", str(caught.exception))
             self.assertIn("ActiveState=failed", str(caught.exception))
             self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)
@@ -557,9 +565,9 @@ class ApplyConfigRollbackTests(unittest.TestCase):
     def test_menu_reality_rolls_back_when_systemctl_show_times_out(self) -> None:
         """Зависший `systemctl show` после рестарта нового конфига → откат на прежний конфиг (70-R02)."""
         systemctl = HangingShowSystemctl()
-        with self.rollback_sandbox(systemctl, FakeClock()):
+        with self.rollback_sandbox(systemctl, FakeClock(), reality=True):
             with self.assertRaises(SystemExit) as caught:
-                menu_reality_actions.apply_config(valid_config_with_port(2443))
+                self.update_reality_port()
             self.assertIn("Restored backup", str(caught.exception))
             self.assertIn("timed out", str(caught.exception))
             self.assertEqual(json.loads(self.config_path.read_text())["inbounds"][0]["port"], 443)

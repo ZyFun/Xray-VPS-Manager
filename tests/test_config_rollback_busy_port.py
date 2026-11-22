@@ -337,7 +337,7 @@ class MenuPortBusyTests(routing_lock_tests.RoutingLockTestCase):
             return answers.pop(0)
 
         with routing_lock_tests.routing_patches(self.root, record=record), \
-            mock.patch.object(menu_reality_actions, "tcp_port_in_use", side_effect=probe) as port_probe, \
+            mock.patch.object(process, "tcp_port_in_use", side_effect=probe) as port_probe, \
             mock.patch("builtins.input", side_effect=fake_input), \
             redirect_stdout(StringIO()):
             try:

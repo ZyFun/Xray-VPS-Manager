@@ -250,6 +250,22 @@ def load_db_from_sqlite(connection) -> dict[str, Any]:
     }
 
 
+def load_client_link_state(name: str, active_tags: set[str]) -> dict[str, Any]:
+    """Прочитать данные одного клиента для ссылки в согласованном снимке SQLite."""
+    with database.report_errors(message="SQLite clients cannot be read"), \
+            database.session(read_snapshot=True) as conn, database.transaction(conn):
+        entry = get_client(conn, name)
+        tags = set(active_tags)
+        if entry is not None:
+            tags.update(client_credentials.db_credentials(entry))
+        connections = {}
+        for tag in sorted(tags):
+            record = get_connection(conn, tag)
+            if record is not None:
+                connections[tag] = record
+        return {"clients": {name: entry} if entry is not None else {}, "connections": connections}
+
+
 def _write_records(conn, db, deletions):
     original = db.original if isinstance(db, _Snapshot) else None
     if deletions and original is not None and load_db_from_sqlite(conn) != original:

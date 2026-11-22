@@ -24,7 +24,6 @@ from xray_vps_manager.core import systemd
 
 WORKER_POPEN = subprocess.Popen
 from xray_vps_manager.clients import repository as client_repository
-from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.commands import client as client_command
 from xray_vps_manager.commands import menu_reality_actions
 from xray_vps_manager.commands import set_bypass
@@ -33,7 +32,7 @@ from xray_vps_manager.commands import traffic_sync
 from xray_vps_manager.commands import warp
 from xray_vps_manager.core import locks as core_locks
 from xray_vps_manager.core import paths as core_paths
-from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, read_server_env, write_server_env
+from xray_vps_manager.core.server_env import ORDERED_ENV_KEYS, write_server_env
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import bypass as sqlite_bypass
 from xray_vps_manager.xray import bypass as bypass_config
@@ -55,7 +54,6 @@ LOCK_TIMEOUTS = {
     set_cascade: {"MANAGER_LOCK_TIMEOUT": 0.2},
     set_bypass: {"MANAGER_LOCK_TIMEOUT": 0.2},
     warp: {"MANAGER_LOCK_TIMEOUT": 0.2},
-    menu_reality_actions: {"MANAGER_LOCK_TIMEOUT": 0.2},
 }
 # ExecStop=-+/usr/local/sbin/xray-traffic-sync --quiet должен завершиться, пока сценарий держит manager.lock.
 EXEC_STOP_TIMEOUT = 20
@@ -124,7 +122,6 @@ def routing_patches(root: Path, *, restart=None, record=None):
     """
     root = root.resolve()
     config_path = root / "config.json"
-    env_path = root / "server.env"
     record = record or (lambda _kind, _detail="": None)
     real_save_db = client_repository.save_db
 
@@ -201,19 +198,13 @@ def routing_patches(root: Path, *, restart=None, record=None):
         for url in ("https://ya.ru/", "https://example.org/", "https://example.com/"):
             command = (*curl(18109, url, bypass=True)[:-1], "-o", "/dev/null", "-w", "%{http_code}", url)
             box.processes.script({command: route_response})
-        # Пробный bind нового PORT не должен зависеть от портов машины, на которой идут тесты.
-        enter(mock.patch.object(menu_reality_actions, "tcp_port_in_use", return_value=False))
-        enter(mock.patch.object(menu_reality_actions, "load_xray_config", side_effect=lambda: xray_config.load_config(config_path)))
-        enter(mock.patch.object(menu_reality_actions, "save_db", side_effect=save_db))
-        enter(mock.patch.object(menu_reality_actions, "server_env_values", side_effect=lambda: read_server_env(env_path)))
-        enter(
-            mock.patch.object(
-                menu_reality_actions,
-                "save_server_env_values",
-                side_effect=lambda values: client_settings.save_server_env_values(values, env_path),
-            )
-        )
-        enter(mock.patch.object(menu_reality_actions, "refresh_initial_link"))
+        real_save_connection = client_repository.save_connection
+
+        def save_connection(*args):
+            record("db", "connection")
+            return real_save_connection(*args)
+
+        enter(mock.patch.object(client_repository, "save_connection", side_effect=save_connection))
         yield
 
 
@@ -692,11 +683,12 @@ class RoutingBusyLockTests(RoutingLockTestCase):
             "Обновить FINGERPRINT": (menu_reality_actions.update_fingerprint, ["1", "2"]),
         }
         before = self.snapshot()
+        acquire = core_locks.acquire_flock
 
         for title, (action, answers) in actions.items():
             with self.subTest(title):
                 with routing_patches(self.root), \
-                    mock.patch.multiple(menu_reality_actions, **LOCK_TIMEOUTS[menu_reality_actions]), \
+                    mock.patch.object(core_locks, "acquire_flock", side_effect=lambda fd, _timeout: acquire(fd, 0.2)), \
                     mock.patch("builtins.input", side_effect=list(answers)), \
                     client_lock_tests.foreign_lock_holder(self.lock_path, HOLDER), \
                     redirect_stdout(StringIO()):
@@ -783,7 +775,6 @@ class ExecStopTrafficSyncTests(RoutingLockTestCase):
                 },
                 ("probe_warp_disabled", "test_warp"),
             ),
-            "menu_reality_actions.py": ({"apply_config", "update_connection_db", "write_server_env"}, ("apply_config",)),
         }
         for name, (calls, skip_functions) in checks.items():
             with self.subTest(name):

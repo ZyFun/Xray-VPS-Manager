@@ -81,7 +81,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.commands.manager_update', 'MANAGER_LIB_DIR'),
     ('xray_vps_manager.commands.manager_update', 'MANAGER_PACKAGE_DIR'),
     ('xray_vps_manager.commands.manager_update', 'BACKUP_DIR'),
-    ('xray_vps_manager.commands.menu_reality_actions', 'CONFIG_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_CONFIG_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_DROPIN_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_LEGACY_DROPIN_PATH'),

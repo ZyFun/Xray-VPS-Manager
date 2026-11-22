@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
@@ -16,12 +17,13 @@ from tests.test_client_command_read import script_caddy
 from tests.test_client_manager_lock import lock_is_free
 from tests.test_connection_menu_characterization import script_menu_processes
 from xray_vps_manager.caddy import model as caddy_model, sites as caddy_sites
-from xray_vps_manager.clients import connections, repository
+from xray_vps_manager.clients import connections, connections_service, links, repository
 from xray_vps_manager.core import locks
+from xray_vps_manager.core.errors import ValidationError
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import client_traffic_handoff, client_undo
 from xray_vps_manager.xray.client_routes import client_balancer_tag
-from xray_vps_manager.xray.config import TROJAN_INBOUND_TAG
+from xray_vps_manager.xray.config import INBOUND_TAG, TROJAN_INBOUND_TAG, find_inbound_by_tag
 
 
 TLS = ("add-connection", "TLS", "18100", "tls.example", "--security", "tls",
@@ -44,6 +46,234 @@ def state(box):
         {path: path.read_bytes() for path in files if path.exists()},
         box.db_rows("reality_connections", "clients", "client_credentials"),
     )
+
+
+class RealityMenuConnectionTests(unittest.TestCase):
+    def test_link_helpers_use_same_default_fingerprint_for_config_only_connection(self):
+        with Sandbox() as box:
+            script_processes(box)
+            config = box.config()
+            client_id = find_inbound_by_tag(config, INBOUND_TAG)["settings"]["clients"][0]["id"]
+            for stored, expected in ((None, "firefox"), ("safari", "safari")):
+                for helper in ("link_for", "client_link_lines", "connection_fingerprint"):
+                    with self.subTest(stored=stored, helper=helper):
+                        db = repository.load_db_sql()
+                        if stored is None:
+                            del db["connections"][INBOUND_TAG]
+                        else:
+                            db["connections"][INBOUND_TAG]["fingerprint"] = stored
+                        if helper == "connection_fingerprint":
+                            actual = connections.connection_fingerprint(
+                                config, db, INBOUND_TAG, default_fingerprint="firefox",
+                            )
+                        else:
+                            if helper == "link_for":
+                                uri = links.link_for(
+                                    config, client_id, "alice", INBOUND_TAG, db, default_fingerprint="firefox",
+                                )
+                            else:
+                                uri = next(links.client_link_lines(config, db, "alice", default_fingerprint="firefox"))
+                            actual = parse_qs(urlsplit(uri).query)["fp"][0]
+                        self.assertEqual(actual, expected)
+
+    def test_empty_inbound_skips_link_reads_and_updates_server_env(self):
+        with Sandbox() as box:
+            config = box.config()
+            find_inbound_by_tag(config, INBOUND_TAG)["settings"]["clients"] = []
+            write_config(box, config)
+            box.paths.initial_link.parent.mkdir(parents=True, exist_ok=True)
+            box.paths.initial_link.write_text("CLIENT_URI=starter\n")
+
+            with mock.patch.object(repository, "load_db_sql", wraps=repository.load_db_sql) as full_read, \
+                    mock.patch.object(repository, "get_client", wraps=repository.get_client) as read_client:
+                connections_service.update_reality_fingerprint(INBOUND_TAG, "firefox")
+
+            full_read.assert_not_called()
+            read_client.assert_not_called()
+            self.assertEqual(box.paths.initial_link.read_text(), "CLIENT_URI=starter\n")
+            self.assertEqual(box.env()["FINGERPRINT"], "firefox")
+            self.assertEqual(repository.load_db_sql()["connections"][INBOUND_TAG]["fingerprint"], "firefox")
+
+    def test_starter_link_reads_only_first_client_and_linked_connections(self):
+        config_only = "vless-reality-2"
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            commands = (
+                ("add-connection", "Config only", "8443", "second.example"),
+                ("add", "alice", "--connection", config_only),
+                ("add-trojan-connection", "Trojan", "18101", "trojan.example", "--no-caddy"),
+                ("add", "alice", "--connection", TROJAN_INBOUND_TAG),
+                ("add", "bob", "10", "--connection", INBOUND_TAG),
+            )
+            for args in commands:
+                result = box.run_cli("client", *args)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            with database.write_session() as conn:
+                repository.delete_connection(conn, config_only)
+                repository.save_connection(conn, "unused", {"name": "Unused", "port": 8444})
+            trojan = box.run_cli("client", "link", "alice", "--connection", TROJAN_INBOUND_TAG)
+            self.assertEqual((trojan.exit_code, trojan.stderr), (0, ""))
+
+            with mock.patch.object(repository, "load_db_sql", wraps=repository.load_db_sql) as full_read, \
+                    mock.patch.object(repository, "get_client", wraps=repository.get_client) as read_client, \
+                    mock.patch.object(repository, "get_connection", wraps=repository.get_connection) as read_connection:
+                connections_service.update_reality_fingerprint(INBOUND_TAG, "firefox")
+
+            full_read.assert_not_called()
+            self.assertEqual([call.args[1] for call in read_client.call_args_list], ["alice"])
+            self.assertEqual({call.args[1] for call in read_connection.call_args_list},
+                             {INBOUND_TAG, TROJAN_INBOUND_TAG, config_only})
+            lines = box.paths.initial_link.read_text().splitlines()
+            self.assertEqual(lines[:3], [f"CLIENT_URI=[trojan {TROJAN_INBOUND_TAG}]", trojan.stdout.strip(),
+                                         f"[vless {INBOUND_TAG}]"])
+            self.assertEqual(lines[4], f"[vless {config_only}]")
+            self.assertEqual(urlsplit(lines[5]).port, 8443)
+            self.assertEqual(parse_qs(urlsplit(lines[5]).query)["fp"], ["firefox"])
+            self.assertNotIn(config_only, repository.load_db_sql()["connections"])
+
+    def test_endpoint_without_port_or_sni_is_rejected_before_lock_and_writes(self):
+        with Sandbox() as box, running_xray(box):
+            script_menu_processes(box)
+            config = box.config()
+            inbound = find_inbound_by_tag(config, INBOUND_TAG)
+            inbound["streamSettings"]["realitySettings"]["dest"] = "custom.example:8443"
+            write_config(box, config)
+            before = state(box)
+
+            with mock.patch.object(locks, "acquire_flock", wraps=locks.acquire_flock) as acquire:
+                with self.assertRaises(ValidationError):
+                    connections_service.update_reality_endpoint(INBOUND_TAG)
+
+            acquire.assert_not_called()
+            self.assertEqual(state(box), before)
+            self.assertEqual(list(box.paths.config_dir.glob("config.json.bak.*")), [])
+            self.assertEqual(box.processes.calls, [])
+
+    def test_invalid_fingerprint_is_rejected_before_lock_and_writes(self):
+        with Sandbox() as box:
+            box.paths.initial_link.parent.mkdir(parents=True, exist_ok=True)
+            box.paths.initial_link.write_text("CLIENT_URI=starter\n")
+            before = state(box)
+
+            with mock.patch.object(locks, "acquire_flock", wraps=locks.acquire_flock) as acquire:
+                for fingerprint in ("", "  ", "firfox"):
+                    with self.subTest(fingerprint=fingerprint):
+                        with self.assertRaises(ValidationError):
+                            connections_service.update_reality_fingerprint(INBOUND_TAG, fingerprint)
+                        self.assertEqual(state(box), before)
+
+            acquire.assert_not_called()
+            self.assertEqual(box.processes.calls, [])
+
+    def test_endpoint_and_fingerprint_keep_inbound_db_env_and_starter_links_aligned(self):
+        secondary = "vless-reality-2"
+        for tag in (INBOUND_TAG, secondary):
+            with self.subTest(tag=tag), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+                script_menu_processes(box)
+                for args in (("add-connection", "Second", "8443", "second.example"),
+                             ("add", "alice", "--connection", secondary)):
+                    result = box.run_cli("client", *args)
+                    self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                with database.write_session() as conn:
+                    # Старая строка без собственного fingerprint берёт его из server.env.
+                    conn.execute("UPDATE reality_connections SET fingerprint = '' WHERE tag = ?", (secondary,))
+                original_env = box.paths.server_env.read_bytes()
+                other_tag = secondary if tag == INBOUND_TAG else INBOUND_TAG
+                other = find_inbound_by_tag(box.config(), other_tag)
+                other_record = repository.load_db_sql()["connections"][other_tag]
+                port, sni = ((443, "www.example.com") if tag == INBOUND_TAG else (8443, "second.example"))
+                selection = "1" if tag == INBOUND_TAG else "2"
+                scenarios = (
+                    ("3", ["5443"], 5443, sni, "chrome"),
+                    ("4", ["sni.example"], 5443, "sni.example", "chrome"),
+                    ("5", ["6443", "both.example"], 6443, "both.example", "chrome"),
+                    ("6", ["2"], 6443, "both.example", "firefox"),
+                )
+                for option, answers, port, sni, fingerprint in scenarios:
+                    with self.subTest(option=option):
+                        original_config = box.paths.config.read_bytes()
+                        box.processes.calls.clear()
+                        result = box.run_menu(["2", "1", option, selection, *answers, "0", "0", "0"])
+                        self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                        box.assert_restarted(times=0 if option == "6" else 1)
+                        if option == "6":
+                            self.assertEqual(box.paths.config.read_bytes(), original_config)
+
+                        inbound = find_inbound_by_tag(box.config(), tag)
+                        reality = inbound["streamSettings"]["realitySettings"]
+                        dest = f"{sni}:443"
+                        self.assertEqual((inbound["port"], reality["serverNames"], reality["dest"]), (port, [sni], dest))
+                        records = repository.load_db_sql()["connections"]
+                        self.assertEqual(tuple(records[tag][key] for key in ("port", "sni", "dest")), (port, sni, dest))
+                        self.assertEqual(records[other_tag], other_record)
+                        self.assertEqual(find_inbound_by_tag(box.config(), other_tag), other)
+                        if option == "6":
+                            self.assertEqual(records[tag]["fingerprint"], fingerprint)
+                        if tag == INBOUND_TAG:
+                            env = box.env()
+                            self.assertEqual(tuple(env[key] for key in ("PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT")),
+                                             (str(port), sni, dest, fingerprint))
+                        else:
+                            self.assertEqual(box.paths.server_env.read_bytes(), original_env)
+
+                        starter = box.paths.initial_link.read_text()
+                        uris = (urlsplit(line) for line in starter.splitlines() if line.startswith("vless://"))
+                        links = {uri.port: parse_qs(uri.query) for uri in uris}
+                        self.assertEqual(links[port]["sni"], [sni])
+                        self.assertEqual(links[port]["fp"], [fingerprint])
+                        if tag == INBOUND_TAG:
+                            self.assertEqual(links[other["port"]]["fp"], [fingerprint])
+
+    def test_rejected_candidate_compensates_committed_record_before_touching_env_and_link(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            box.paths.initial_link.parent.mkdir(parents=True, exist_ok=True)
+            box.paths.initial_link.write_text("CLIENT_URI=starter\n")
+            before = state(box)
+            candidate = box.paths.config.with_suffix(".json.tmp")
+
+            def reject(*args, **kwargs):
+                record = repository.load_db_sql()["connections"][INBOUND_TAG]
+                self.assertEqual((record["port"], record["sni"], record["dest"]), (5443, "changed.example", "changed.example:443"))
+                self.assertEqual(state(box)[0], before[0])
+                self.assertFalse(lock_is_free(box.paths.manager_lock))
+                return box.processes.result(1, stderr="candidate rejected")
+
+            box.processes.script({(str(box.paths.xray_bin), "run", "-test", "-format", "json", "-config", str(candidate)): reject})
+
+            result = box.run_menu(["2", "1", "5", "5443", "changed.example", "0", "0", "0"])
+
+            self.assertIn("candidate rejected", result.stderr)
+            self.assertEqual(state(box), before)
+            box.assert_restarted(times=0)
+
+    def test_fingerprint_cancelled_at_commit_restores_state_and_exits_menu_with_130(self):
+        original_write = database.write_session
+        for committed in (False, True):
+            with self.subTest(committed=committed), Sandbox() as box:
+                script_menu_processes(box)
+                before = state(box)
+                calls = 0
+
+                @contextmanager
+                def interrupt_first_write(*args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    first = calls == 1
+                    with original_write(*args, **kwargs) as conn:
+                        yield conn
+                        if first and not committed:
+                            raise KeyboardInterrupt
+                    if first and committed:
+                        raise KeyboardInterrupt
+
+                with mock.patch.object(database, "write_session", side_effect=interrupt_first_write):
+                    result = box.run_menu(["2", "1", "6", "2", "0", "0", "0"])
+
+                self.assertEqual((result.exit_code, result.stderr), (130, ""))
+                self.assertEqual(result.stdout.count("Отменено"), 1)
+                self.assertEqual(state(box), before)
+                box.assert_restarted(times=0)
 
 
 class ConnectionCaddyCompensationTests(unittest.TestCase):
