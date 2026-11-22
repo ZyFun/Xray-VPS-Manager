@@ -17,9 +17,7 @@ AREA_ORDER = (
 )
 # Исходный список R1.0; следующие задачи только удаляют устранённые пары.
 # Идентичность исключения — модуль-источник и модуль-цель, без номеров строк.
-ALLOWED_IMPORTS = frozenset({
-    # Клиентские операции пока читают трафик до его отдельного шага миграции.
-})
+ALLOWED_IMPORTS = frozenset()
 
 
 def module_name(path: Path) -> str:
@@ -90,7 +88,7 @@ def find_import_violations(sources: dict[Path, str]) -> set[tuple[str, str]]:
 
 # Согласованный R1.5: исключения относятся к роли, а не ко всему пакету области.
 INTERFACE_MODULES = frozenset({'cli', 'runner', 'telegram.admin', 'telegram.poller'})
-INFRASTRUCTURE_MODULES = frozenset({'xray.apply', 'xray.crypto', 'xray.caddy',
+INFRASTRUCTURE_MODULES = frozenset({'xray.apply', 'xray.crypto',
     'telegram.api', 'system.units', 'traffic.stats', 'activity.raw_logs'})
 SAFE_SUBPROCESS_NAMES = frozenset({'subprocess.CalledProcessError',
     'subprocess.TimeoutExpired', 'subprocess.CompletedProcess'})
@@ -209,7 +207,7 @@ class MarkerCheckerTests(unittest.TestCase):
 
     def test_infrastructure_roles_are_explicit(self):
         code = 'import subprocess, sqlite3\nsubprocess.run([]); sqlite3.connect("x"); open("x")'
-        for module in ('core.process', 'db.database', 'xray.apply', 'xray.crypto', 'xray.caddy', 'caddy.service', 'telegram.api', 'system.units', 'traffic.stats', 'activity.raw_logs'):
+        for module in ('core.process', 'db.database', 'xray.apply', 'xray.crypto', 'caddy.service', 'telegram.api', 'system.units', 'traffic.stats', 'activity.raw_logs'):
             self.assertFalse(self.check(module, code), module)
         for module in ('clients.service', 'xray.config', 'caddy.model', 'system.unit_sync', 'commands.client'):
             self.assertEqual(self.markers(module, code), Counter({'subprocess': 2, 'sqlite3': 2, 'open': 1}), module)
@@ -442,6 +440,14 @@ from ...clients import credentials, models
 
 
 class PackageArchitectureTests(unittest.TestCase):
+    def test_reality_menu_delegates_writes_to_scenarios(self):
+        path = PACKAGE_ROOT / "commands" / "menu_reality_actions.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        names.update(node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute))
+        names.update(node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.alias)))
+        self.assertFalse(names & {"apply_config", "write_server_env", "update_connection_db"})
+
     def test_package_matches_separate_marker_baseline(self):
         sources = {path.relative_to(PACKAGE_ROOT): path.read_text(encoding='utf-8')
                    for path in sorted(PACKAGE_ROOT.rglob('*.py'))}

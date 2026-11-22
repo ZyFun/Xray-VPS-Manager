@@ -206,6 +206,12 @@ def systemd_unit_state(unit: str, timeout: float = 10) -> dict[str, str]:
     return _systemd_unit_properties(unit, "ActiveState,SubState,NRestarts", timeout)
 
 
+def systemd_unit_activation_state(unit: str, timeout: float = 10, *, include_load_state: bool = False) -> dict[str, str]:
+    """Состояние службы и её автозагрузки через один вызов `systemctl show`."""
+    properties = "LoadState,ActiveState,UnitFileState" if include_load_state else "ActiveState,UnitFileState"
+    return _systemd_unit_properties(unit, properties, timeout)
+
+
 def _systemd_unit_properties(unit: str, properties: str, timeout: float, *, show_empty: bool = False) -> dict[str, str]:
     args = ["show", f"--property={properties}", *(["--all"] if show_empty else []), unit]
     result = _run_systemctl(unit, args, timeout=timeout)

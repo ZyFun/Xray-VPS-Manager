@@ -127,13 +127,6 @@
   },
   {
     "module": "commands.backup",
-    "scope": "restore_caddy_config_if_present",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.backup",
     "scope": "run",
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
@@ -436,97 +429,6 @@
   {
     "module": "commands.menu_backup_actions",
     "scope": "create_backup_download_command",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "<module>",
-    "category": "subprocess",
-    "ast": "Import(names=[alias(name='subprocess')])",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "delete_site",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 2
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "install_caddy",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 2
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "reload_caddy",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "remove_default_http_site",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 2
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "run",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "run_no_check",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
-    "count": 2
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "run_no_check",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_caddy_actions",
-    "scope": "update_site_domain",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 2
-  },
-  {
-    "module": "commands.menu_reality_actions",
-    "scope": "<module>",
-    "category": "subprocess",
-    "ast": "Import(names=[alias(name='subprocess')])",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_reality_actions",
-    "scope": "refresh_initial_link",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='PIPE', ctx=Load())",
-    "count": 2
-  },
-  {
-    "module": "commands.menu_reality_actions",
-    "scope": "refresh_initial_link",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 1
-  },
-  {
-    "module": "commands.menu_reality_actions",
-    "scope": "run",
     "category": "subprocess",
     "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
     "count": 1
@@ -1421,20 +1323,6 @@
     "count": 2
   },
   {
-    "module": "telegram.server_settings",
-    "scope": "<module>",
-    "category": "subprocess",
-    "ast": "Import(names=[alias(name='subprocess')])",
-    "count": 1
-  },
-  {
-    "module": "telegram.server_settings",
-    "scope": "set_tls_site_version",
-    "category": "subprocess",
-    "ast": "Attribute(value=Name(id='subprocess', ctx=Load()), attr='run', ctx=Load())",
-    "count": 2
-  },
-  {
     "module": "telegram.setup",
     "scope": "ask_token_if_missing",
     "category": "input",
@@ -1740,83 +1628,6 @@
     "scope": "test_message",
     "category": "print",
     "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Test message sent.')], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "<module>",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/etc/xray/caddy-random-tls.d')",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "<module>",
-    "category": "/usr/local/",
-    "ast": "Constant(value='/usr/local/etc/xray/caddy-random-tls.env')",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_config_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Certificate cache files are not included; Caddy can issue certificates again.')], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_config_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Contains: /etc/caddy/Caddyfile and /etc/caddy/conf.d when present.')], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_config_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Caddy backup created: '), FormattedValue(value=Name(id='archive', ctx=Load()), conversion=-1)])], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_config_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Size: '), FormattedValue(value=Call(func=Name(id='format_size', ctx=Load()), args=[Attribute(value=Call(func=Attribute(value=Name(id='archive', ctx=Load()), attr='stat', ctx=Load()), args=[], keywords=[]), attr='st_size', ctx=Load())], keywords=[]), conversion=-1)])], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_config_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Name(id='archive', ctx=Load())], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_site_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[Constant(value='Contains: static site files from the selected site root.')], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_site_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Caddy site backup created: '), FormattedValue(value=Name(id='archive', ctx=Load()), conversion=-1)])], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_site_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Site root: '), FormattedValue(value=Name(id='root', ctx=Load()), conversion=-1)])], keywords=[])",
-    "count": 1
-  },
-  {
-    "module": "xray.caddy",
-    "scope": "create_site_backup",
-    "category": "print",
-    "ast": "Call(func=Name(id='print', ctx=Load()), args=[JoinedStr(values=[Constant(value='Size: '), FormattedValue(value=Call(func=Name(id='format_size', ctx=Load()), args=[Attribute(value=Call(func=Attribute(value=Name(id='archive', ctx=Load()), attr='stat', ctx=Load()), args=[], keywords=[]), attr='st_size', ctx=Load())], keywords=[]), conversion=-1)])], keywords=[])",
     "count": 1
   },
   {

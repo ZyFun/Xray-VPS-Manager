@@ -14,7 +14,7 @@ from xray_vps_manager.commands.presenters import apply_error_text, backup_text, 
 from xray_vps_manager.core.errors import ApplyConfigError
 from xray_vps_manager.routing import torrent as torrent_service
 from xray_vps_manager.xray import apply as xray_apply
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import random_tls
 from xray_vps_manager.xray.torrent import torrent_block_enabled
 
 CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
@@ -85,8 +85,8 @@ def check_config(call: CommandRunner) -> None:
 
 
 def check_timers(call: CommandRunner) -> None:
-    configs = caddy.list_random_tls_configs(paths().caddy_random_tls_dir)
-    instances = dict.fromkeys(caddy.random_tls_timer_instance(config.domain) for config in configs)
+    configs = random_tls.list_random_tls_configs(paths().caddy_random_tls_dir)
+    instances = dict.fromkeys(random_tls.random_tls_timer_instance(config.domain) for config in configs)
     call(["systemctl", "status", *MANAGER_UNITS, *instances, "--no-pager"])
 
 

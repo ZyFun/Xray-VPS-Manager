@@ -1,7 +1,7 @@
 """Сценарии изменения клиента и согласование SQLite с конфигурацией Xray."""
 
 from copy import deepcopy
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from itertools import groupby
 from pathlib import Path
@@ -69,7 +69,7 @@ def validate_name(name):
         raise ValidationError("Client name must be 1-64 chars: A-Z a-z 0-9 _ . @ -")
 
 
-def _load_config():
+def load_working_config():
     try:
         return load_config(paths().config)
     except FileNotFoundError as exc:
@@ -77,7 +77,14 @@ def _load_config():
 
 
 def read_state():
-    return _load_config(), repository.load_db_sql()
+    return load_working_config(), repository.load_db_sql()
+
+
+def caddy_connection_options() -> list[dict]:
+    config = load_config()
+    db = repository.load_db_sql()
+    connections.ensure_connections(config, db)
+    return connections.caddy_connection_options(config, db)
 
 
 def _repair_candidates(config, conn):
@@ -86,14 +93,14 @@ def _repair_candidates(config, conn):
 
 
 def preview_repair() -> tuple[credentials.RepairCandidate, ...]:
-    config = _load_config()
+    config = load_working_config()
     with database.report_errors(), database.session() as conn, database.transaction(conn):
         return _repair_candidates(config, conn)
 
 
 def repair_clients(confirmed: tuple[credentials.RepairCandidate, ...]) -> int:
     with manager_lock(purpose="repair"):
-        config = _load_config()
+        config = load_working_config()
         with database.report_errors(), database.write_session() as conn:
             candidates = _repair_candidates(config, conn)
             if candidates != confirmed:
@@ -143,8 +150,8 @@ def _retire_traffic(conn, before, mutation, owner):
 
 def _change(purpose, mutate, *, retires_traffic=False, removes_client=False, before_write=None):
     parser_guard = activity_lock(purpose=purpose) if removes_client else nullcontext()
-    with manager_lock(purpose=purpose), parser_guard:
-        config = _load_config()
+    with manager_lock(purpose=purpose), parser_guard, ExitStack() as undo_resources:
+        config = load_working_config()
         if before_write is not None:
             before_write(config)
         undo = None
@@ -191,7 +198,7 @@ def _change(purpose, mutate, *, retires_traffic=False, removes_client=False, bef
                         handoff_started = _retire_traffic(conn, previous, mutation, owner)
                     reactivation = mutation.reactivation
                     undo = repository.write_client_change(
-                        conn, db, previous, deletions=mutation.deletions,
+                        conn, db, previous, undo_resources=undo_resources, deletions=mutation.deletions,
                         prepare_undo=mutation.apply or reactivation is not None,
                     )
                     if reactivation is not None and reactivation.pending != reactivation.previous:
@@ -249,7 +256,7 @@ def prepare_add_client(name, *, connection_tag=None, protocol="", payment_type="
     try:
         if payment_type:
             payments.normalize_payment_type(payment_type)
-        config, db = _load_config(), repository.load_db_sql()
+        config, db = load_working_config(), repository.load_db_sql()
         existing = crud.client_exists(config, db, name)
         crud.prepare_add_client(config, db, name, connection_tag, protocol=protocol)
         return existing
@@ -303,7 +310,7 @@ def enable_client(name, connection_tag=None, *, limit_status):
     validate_name(name)
     # Проверяем согласованный снимок до pre-sync, который работает без manager.lock.
     with manager_lock(purpose="enable"):
-        _reject_config_only_client(_load_config(), name)
+        _reject_config_only_client(load_working_config(), name)
     sync_traffic()
 
     def mutate(config, db, conn):
@@ -366,7 +373,7 @@ def _sync_connection_records(conn, config):
 def _update_client_entry(purpose, name, update_entry):
     validate_name(name)
     with manager_lock(purpose=purpose):
-        config = _load_config()
+        config = load_working_config()
         try:
             with database.report_errors(), database.write_session() as conn:
                 with database.report_errors(message="SQLite clients cannot be read"):
@@ -422,7 +429,7 @@ def _run_policy(purpose, evaluate):
         return evaluate(config, db, conn)
 
     with manager_lock(_POLICY_LOCK_TIMEOUT, purpose=purpose):
-        config = _load_config()
+        config = load_working_config()
         with database.report_errors(message="SQLite clients cannot be read"), \
                 database.session() as conn, database.transaction(conn):
             db = repository.load_db_from_sqlite(conn)
@@ -514,8 +521,8 @@ def set_route(name, route_value=None):
         tag = client_routes.selected_route_tag(entry)
         return ClientChange(RouteSelection(tag, routes.selected_route_label(db, entry), False), config, db, None)
 
-    with manager_lock(purpose="route"):
-        config = _load_config()
+    with manager_lock(purpose="route"), ExitStack() as undo_resources:
+        config = load_working_config()
         undo = None
         applied = None
         previous_runtime = None
@@ -560,7 +567,7 @@ def set_route(name, route_value=None):
                     ensure_api_rule_first(config)
                     balancer = client_routes.client_balancer_tag(name, entry)
                     repository.db_clients(db)[name] = entry
-                undo = repository.write_client_change(conn, db, previous)
+                undo = repository.write_client_change(conn, db, previous, undo_resources=undo_resources)
             if changed:
                 try:
                     apply_config(config, restart=False, on_applied=remember_apply, before_install=remember_runtime)

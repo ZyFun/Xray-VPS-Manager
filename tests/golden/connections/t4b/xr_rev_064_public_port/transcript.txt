@@ -1,0 +1,252 @@
+
+["2", "1", "2", "2", "TLS", "tls.example", "18100", "1443", "1", "/secure", "", "n", "2", ""]
+exit: 0
+stdout:
+=================== Создать подключение ====================
+
+
+SECURITY: тип входящего подключения.
+  1) reality - текущая схема без своего домена и сертификата
+  2) tls     - XHTTP через Caddy с доменом и автоматическим сертификатом
+SECURITY [reality] (номер или значение): Имя подключения: TLS-XHTTP подключение работает через Caddy: публично api.domain:443, внутри Xray слушает 127.0.0.1:LOCAL_PORT.
+TLS domain/SNI: LOCAL_PORT для Xray [10000]: PUBLIC_PORT для Caddy [443]:
+Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.
+Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.
+  1) chrome
+  2) firefox
+  3) safari
+  4) ios
+  5) android
+  6) edge
+  7) 360
+  8) qq
+  9) random
+  10) randomized
+FINGERPRINT [chrome] (номер или значение): XHTTP path [/vless-xhttp]:
+XHTTP_MODE: режим XHTTP/XMUX.
+  1) auto
+  2) packet-up
+  3) stream-up
+  4) stream-one
+XHTTP_MODE [auto] (номер из списка): Использовать расширенные XHTTP настройки [y/N]:
+TLS: выбери версию протокола для Caddy site.
+  1) Caddy default
+  2) TLS 1.2 (текущий)
+  3) TLS 1.2 + TLS 1.3
+  4) TLS 1.3
+TLS [TLS 1.2] (номер из списка): Установить и настроить Caddy сейчас [Y/n]: Valid configuration
+Added connection: TLS
+Tag: vless-tls
+SECURITY: tls
+PUBLIC_HOST: tls.example
+PUBLIC_PORT: 1443
+LOCAL_PORT: 18100
+FINGERPRINT: chrome
+TLS_MIN_VERSION: tls1.2
+TLS_MAX_VERSION: tls1.2
+CADDY_SITE: <ROOT>/etc/caddy/conf.d/tls.example.caddy
+TRANSPORT: xhttp
+XHTTP_PATH: /secure
+XHTTP_MODE: auto
+XHTTP_EXTRA: default
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000000
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<CADDY_CANDIDATE>/Caddyfile"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "show", "--property=ActiveState,UnitFileState", "caddy"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -6 +6,2 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
++["vless-tls", "TLS", 1443, "tls.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"security\":\"tls\",\"publicPort\":1443,\"localPort\":18100,\"publicHost\":\"tls.example\",\"caddy\":true,\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\",\"transport\":\"xhttp\",\"xhttpPath\":\"/secure\",\"xhttpMode\":\"auto\"}"]
+--- before/config backups
++++ after/config backups
+@@ -0,0 +1 @@
++config.json.bak.20261006120000000000
+--- before/config.json
++++ after/config.json
+@@ -48,0 +49,26 @@
++    },
++    {
++      "listen": "127.0.0.1",
++      "port": 18100,
++      "protocol": "vless",
++      "settings": {
++        "clients": [],
++        "decryption": "none"
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "xhttp",
++        "security": "none",
++        "xhttpSettings": {
++          "mode": "auto",
++          "path": "/secure"
++        }
++      },
++      "tag": "vless-tls"
+@@ -74,0 +101 @@
++    "balancers": [],
+--- before/etc/caddy/Caddyfile
++++ after/etc/caddy/Caddyfile
+@@ -0,0 +1 @@
++import <ROOT>/etc/caddy/conf.d/*.caddy
+--- before/etc/caddy/conf.d/tls.example.caddy
++++ after/etc/caddy/conf.d/tls.example.caddy
+@@ -0,0 +1,7 @@
++tls.example {
++    tls {
++        protocols tls1.2 tls1.2
++    }
++
++    reverse_proxy h2c://127.0.0.1:18100
++}
+
+["2", "2", "2", "Trojan", "18101", "trojan.example", "2443", "/tunnel", "1", "2", ""]
+exit: 0
+stdout:
+============== Создать Trojan TLS подключение ==============
+
+Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.
+Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.
+Имя Trojan-подключения: LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.
+LOCAL_PORT для Xray [10100]: TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.
+TLS_DOMAIN: PUBLIC_PORT для Caddy [443]: WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.
+WS_PATH [/trojan]:
+Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.
+Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.
+  1) chrome
+  2) firefox
+  3) safari
+  4) ios
+  5) android
+  6) edge
+  7) 360
+  8) qq
+  9) random
+  10) randomized
+FINGERPRINT [chrome] (номер или значение):
+TLS: выбери версию протокола для Caddy site.
+  1) Caddy default
+  2) TLS 1.2
+  3) TLS 1.2 + TLS 1.3 (текущий)
+  4) TLS 1.3
+TLS [TLS 1.2 + TLS 1.3] (номер из списка): Установить и настроить Caddy сейчас (production default) [Y/n]: Valid configuration
+Added Trojan connection: Trojan
+Tag: trojan-tls
+PROTOCOL: trojan
+SECURITY: tls
+TLS_DOMAIN: trojan.example
+FINGERPRINT: chrome
+TRANSPORT: ws
+PUBLIC_PORT: 2443
+LOCAL_PORT: 18101
+WS_PATH: /tunnel
+TLS_MIN_VERSION: tls1.2
+TLS_MAX_VERSION: tls1.2
+CADDY_SITE: <ROOT>/etc/caddy/conf.d/trojan.example.caddy
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000001
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "validate", "--config", "<CADDY_CANDIDATE>/Caddyfile"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "show", "--property=ActiveState,UnitFileState", "caddy"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -5,0 +6 @@
++["trojan-tls", "Trojan", 2443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":2443,\"localPort\":18101,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/tunnel\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\"}"]
+--- before/config backups
++++ after/config backups
+@@ -1,0 +2 @@
++config.json.bak.20261006120000000001
+--- before/config.json
++++ after/config.json
+@@ -74,0 +75,24 @@
++    },
++    {
++      "listen": "127.0.0.1",
++      "port": 18101,
++      "protocol": "trojan",
++      "settings": {
++        "clients": []
++      },
++      "sniffing": {
++        "destOverride": [
++          "http",
++          "tls",
++          "quic"
++        ],
++        "enabled": true
++      },
++      "streamSettings": {
++        "network": "ws",
++        "security": "none",
++        "wsSettings": {
++          "path": "/tunnel"
++        }
++      },
++      "tag": "trojan-tls"
+--- before/etc/caddy/conf.d/trojan.example.caddy
++++ after/etc/caddy/conf.d/trojan.example.caddy
+@@ -0,0 +1,20 @@
++trojan.example {
++    tls {
++        protocols tls1.2 tls1.2
++    }
++
++    @xray_path {
++        path /tunnel
++        header Connection *Upgrade*
++        header Upgrade websocket
++    }
++    handle @xray_path {
++        reverse_proxy 127.0.0.1:18101
++    }
++
++    handle {
++        root * /usr/share/caddy
++        try_files {path} /index.html
++        file_server
++    }
++}

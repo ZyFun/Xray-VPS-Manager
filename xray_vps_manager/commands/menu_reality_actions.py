@@ -3,27 +3,22 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
+from contextlib import contextmanager
 from collections.abc import Callable
-from pathlib import Path
 
 from xray_vps_manager.clients import connections as connection_store
-from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql, save_db
-from xray_vps_manager.clients.settings import (
-    fingerprint as server_fingerprint,
-    save_server_env_values,
-    server_env_values,
-)
-from xray_vps_manager.core.errors import ApplyConfigError, LockTimeout
+from xray_vps_manager.clients import connections_service
+from xray_vps_manager.commands import client_connections as connection_output
+from xray_vps_manager.commands.client_arguments import validate_connection_name
+from xray_vps_manager.commands.client_output import client_change_errors
+from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql
+from xray_vps_manager.clients.settings import fingerprint_or_default
+from xray_vps_manager.core.errors import ApplyConfigError, LockTimeout, ManagerError
 from xray_vps_manager.commands.presenters import apply_error_text, backup_text
-from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.paths import CONFIG_PATH
-from xray_vps_manager.core.process import tcp_port_in_use
 from xray_vps_manager.core.terminal import table_border, table_row
-from xray_vps_manager.xray import caddy as xray_caddy
-from xray_vps_manager.xray import apply as xray_apply
+from xray_vps_manager.caddy import model as caddy_model
+from xray_vps_manager.caddy import sites as caddy_sites
 from xray_vps_manager.xray.config import (
     DEFAULT_TROJAN_TLS_LOCAL_PORT,
     DEFAULT_TROJAN_TLS_MAX_VERSION,
@@ -36,15 +31,11 @@ from xray_vps_manager.xray.config import (
     INBOUND_TAG,
     XHTTP_MODES,
     XHTTP_XMUX_KEYS,
-    changed_port_listen,
     connection_name_from_tag,
     connection_settings_from_inbound,
     default_xhttp_advanced_extra,
     default_xhttp_packet_up_extra,
-    ensure_api_rule_first,
-    find_inbound,
     find_inbound_by_tag,
-    inbound_tag,
     load_config as load_xray_config,
     managed_connection_inbounds,
     normalize_xhttp_download_settings,
@@ -54,12 +45,11 @@ from xray_vps_manager.xray.config import (
     normalize_trojan_ws_path,
     normalize_xhttp_mode,
     normalize_xhttp_path,
-    reality_dest,
+    reality_sni,
     reality_inbounds,
     xhttp_extra_json,
 )
 
-CLIENT_LINK_PATH = Path("/root/xray-reality-client.txt")
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 FINGERPRINTS = [
     "chrome",
@@ -74,7 +64,6 @@ FINGERPRINTS = [
     "randomized",
 ]
 TRANSPORTS = ["tcp", "grpc", "xhttp"]
-MANAGER_LOCK_TIMEOUT = 60
 
 CommandRunner = Callable[[list[str]], None]
 ConfirmCallback = Callable[[str], bool]
@@ -82,10 +71,6 @@ ConfirmCallback = Callable[[str], bool]
 
 def die(message: str) -> None:
     raise SystemExit(message)
-
-
-def run(command: list[str], **kwargs) -> None:
-    subprocess.run(command, check=True, **kwargs)
 
 
 def load_config() -> dict:
@@ -159,14 +144,6 @@ def validate_xhttp_mode(value: str) -> str:
         die(str(exc))
 
 
-def current_fingerprint() -> str:
-    try:
-        value = server_fingerprint().strip().lower()
-    except ValueError:
-        return "chrome"
-    return value if value in FINGERPRINTS else "chrome"
-
-
 def connection_rows(
     security_filter: str | None = None,
     protocol_filter: str | None = None,
@@ -192,7 +169,7 @@ def connection_rows(
             "port": entry.get("port") or settings["port"],
             "sni": entry.get("sni") or settings["sni"],
             "transport": entry.get("transport") or settings["transport"],
-            "fingerprint": (entry.get("fingerprint") or current_fingerprint()) if security == "reality" else (entry.get("fingerprint") or "-"),
+            "fingerprint": (entry.get("fingerprint") or fingerprint_or_default()) if security == "reality" else (entry.get("fingerprint") or "-"),
         })
     return rows
 
@@ -274,137 +251,18 @@ def choose_xhttp_connection(action: str, auto_single: bool = True) -> str:
         print("Неизвестное подключение. Выбери номер из списка или 0 для возврата.")
 
 
-def port_used_by_other_inbound(config: dict, port: int, current_tag: str) -> bool:
-    for inbound in config.get("inbounds", []):
-        if inbound.get("port") == port and inbound_tag(inbound) != current_tag:
-            return True
-    return False
-
-
-def current_settings(config: dict, connection_tag: str | None = None) -> tuple[dict, dict, int, str, str]:
-    if connection_tag:
-        inbound = find_inbound_by_tag(config, connection_tag)
-    else:
-        inbound = find_inbound(config)
-    reality = inbound.get("streamSettings", {}).get("realitySettings", {})
-    server_names = reality.get("serverNames") or [""]
-    port = int(inbound.get("port", 443))
-    sni = server_names[0]
-    dest = reality.get("dest", reality_dest(sni))
-    return inbound, reality, port, sni, dest
-
-
-def update_connection_db(
-    tag: str,
-    port=None,
-    sni=None,
-    dest=None,
-    fingerprint=None,
-    transport=None,
-    grpc_service_name=None,
-    xhttp_path=None,
-    xhttp_mode=None,
-) -> None:
-    db = load_db_sql()
-    connections = db_managed_connections(db)
-    entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
-    if port is not None:
-        entry["port"] = port
-    if sni is not None:
-        entry["sni"] = sni
-    if dest is not None:
-        entry["dest"] = dest
-    if fingerprint is not None:
-        entry["fingerprint"] = fingerprint
-    for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode"):
-        if key in entry and (
-            transport is not None or grpc_service_name is not None or xhttp_path is not None or xhttp_mode is not None
-        ):
-            entry.pop(key, None)
-    if transport is not None:
-        entry["transport"] = validate_transport(transport)
-        if entry["transport"] == "grpc":
-            entry["grpcServiceName"] = validate_grpc_service_name(grpc_service_name or "")
-        elif entry["transport"] == "xhttp":
-            entry["xhttpPath"] = validate_xhttp_path(xhttp_path or "")
-            entry["xhttpMode"] = validate_xhttp_mode(xhttp_mode or "")
-    save_db(db)
-
-
-def write_server_env(
-    port: int,
-    sni: str,
-    dest: str,
-    fingerprint: str | None = None,
-    transport: str | None = None,
-    grpc_service_name: str | None = None,
-    xhttp_path: str | None = None,
-    xhttp_mode: str | None = None,
-) -> None:
-    values = server_env_values()
-    values["PORT"] = str(port)
-    values["REALITY_SNI"] = sni
-    values["REALITY_DEST"] = dest
-    values["FINGERPRINT"] = validate_fingerprint(fingerprint) if fingerprint is not None else current_fingerprint()
-    if transport is not None:
-        values["REALITY_TRANSPORT"] = validate_transport(transport)
-        values.pop("GRPC_SERVICE_NAME", None)
-        values.pop("XHTTP_PATH", None)
-        values.pop("XHTTP_MODE", None)
-        if values["REALITY_TRANSPORT"] == "grpc":
-            values["GRPC_SERVICE_NAME"] = validate_grpc_service_name(grpc_service_name or "")
-        elif values["REALITY_TRANSPORT"] == "xhttp":
-            values["XHTTP_PATH"] = validate_xhttp_path(xhttp_path or "")
-            values["XHTTP_MODE"] = validate_xhttp_mode(xhttp_mode or "")
-    values.setdefault("SERVER_ADDR", "")
-    save_server_env_values(values)
-
-
-def apply_config(config: dict) -> Path | None:
+@contextmanager
+def _reality_change_errors():
     try:
-        ensure_api_rule_first(config)
-        return xray_apply.apply_config(config).backup
-    except ApplyConfigError as exc:
+        yield
+    except ManagerError as exc:
         if exc.exit_code == 130:
             raise KeyboardInterrupt from exc
-        die(apply_error_text(exc))
-
-
-def refresh_initial_link() -> None:
-    config = load_config()
-    inbound = find_inbound(config)
-    clients = inbound.get("settings", {}).get("clients", [])
-    if not clients:
-        return
-    name = clients[0].get("email", "starter").split("|created=", 1)[0]
-    result = subprocess.run(
-        ["xray-client", "link", name],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        return
-
-    inbound, _, port, sni, dest = current_settings(config)
-    settings = connection_settings_from_inbound(inbound)
-    fp = current_fingerprint()
-    link = result.stdout.strip()
-    flow = "xtls-rprx-vision" if settings["transport"] == "tcp" else ""
-    content = (
-        f"CLIENT_URI={link}\n"
-        f"PORT={port}\n"
-        "PROTOCOL=VLESS\n"
-        "SECURITY=REALITY\n"
-        f"TRANSPORT={settings['transport']}\n"
-        f"FLOW={flow}\n"
-        f"SNI={sni}\n"
-        f"DEST={dest}\n"
-        f"FINGERPRINT={fp}\n"
-    )
-    CLIENT_LINK_PATH.write_text(content)
-    os.chmod(CLIENT_LINK_PATH, 0o600)
+        if isinstance(exc, ApplyConfigError):
+            die(apply_error_text(exc))
+        if isinstance(exc, LockTimeout):
+            die(f"{exc.message}\n{exc.hint}")
+        die("\n".join(filter(None, (exc.message, exc.hint, exc.detail))))
 
 
 def prompt(default, message: str) -> str:
@@ -623,11 +481,6 @@ def maybe_prompt_xhttp_advanced_settings(
     )
 
 
-def xhttp_extra_cli_arg(extra: dict | None) -> list[str]:
-    encoded = xhttp_extra_json(extra)
-    return ["--xhttp-extra-json", encoded] if encoded else []
-
-
 def print_xhttp_extra_status(extra: dict | None) -> None:
     encoded = xhttp_extra_json(extra)
     print("XHTTP_EXTRA: " + (encoded if encoded else "default"))
@@ -697,137 +550,98 @@ def show_trojan_settings(call: CommandRunner) -> None:
     print_connection_selection_table(rows)
 
 
-def create_connection(call: CommandRunner) -> None:
+def create_connection() -> None:
     security = choose_security("reality")
     name = input("Имя подключения: ").strip()
     if security == "tls":
-        create_tls_xhttp_connection(call, name)
+        create_tls_xhttp_connection(name)
         return
     print("Новое подключение создаёт отдельный VLESS Reality inbound с собственным портом и SNI.")
     print("PORT: публичный TCP-порт для подключения клиентов. Он не должен совпадать с уже занятыми портами.")
-    port = str(validate_port(input("PORT: ").strip()))
+    port = validate_port(input("PORT: ").strip())
     print("REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
     sni = validate_host(input("REALITY_SNI: ").strip(), "REALITY_SNI")
-    fp = choose_fingerprint(current_fingerprint())
+    fp = choose_fingerprint(fingerprint_or_default())
     transport = choose_transport("tcp")
-    command = ["xray-client", "add-connection", name, port, sni, fp, "--transport", transport["transport"]]
-    if transport["transport"] == "grpc":
-        command.extend(["--grpc-service-name", transport["grpc_service_name"]])
-    elif transport["transport"] == "xhttp":
-        command.extend(["--xhttp-path", transport["xhttp_path"], "--xhttp-mode", transport["xhttp_mode"]])
-        command.extend(xhttp_extra_cli_arg(transport.get("xhttp_extra")))
-    call(command)
+    with client_change_errors():
+        change = connections_service.add_connection(validate_connection_name(name), port, sni, fp, **transport)
+    connection_output.print_added_connection(change)
 
 
-def create_trojan_connection(call: CommandRunner) -> None:
+def create_trojan_connection() -> None:
     config = load_config()
     print("Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.")
     print("Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.")
     name = input("Имя Trojan-подключения: ").strip()
     default_local_port = connection_store.next_local_port(config, DEFAULT_TROJAN_TLS_LOCAL_PORT)
     print("LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.")
-    local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
+    local_port = validate_port(prompt(default_local_port, "LOCAL_PORT для Xray"))
     print("TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.")
     domain = validate_host(input("TLS_DOMAIN: ").strip(), "TLS_DOMAIN")
-    public_port = str(validate_port(prompt(DEFAULT_TROJAN_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
+    public_port = validate_port(prompt(DEFAULT_TROJAN_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy"))
     print("WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.")
     ws_path = validate_trojan_ws_path(prompt(DEFAULT_TROJAN_WS_PATH, "WS_PATH"))
-    fp = choose_fingerprint(current_fingerprint())
+    fp = choose_fingerprint(fingerprint_or_default())
     tls_min, tls_max = choose_tls_versions(
         DEFAULT_TROJAN_TLS_MIN_VERSION,
         DEFAULT_TROJAN_TLS_MAX_VERSION,
     )
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас (production default)", True)
     if install_caddy:
-        conflicts = connection_store.public_port_conflicts(config, int(public_port))
+        conflicts = connection_store.public_port_conflicts(config, public_port)
         if conflicts:
             tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
             print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
             print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
             return
         try:
-            xray_caddy.require_site_config_absent(domain)
+            caddy_sites.require_site_config_absent(domain)
         except OSError as exc:
             print(str(exc))
             print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
             return
-    command = [
-        "xray-client",
-        "add-trojan-connection",
-        name,
-        local_port,
-        domain,
-        fp,
-        "--transport",
-        "ws",
-        "--ws-path",
-        ws_path,
-        "--public-port",
-        public_port,
-        "--tls-min-version",
-        tls_min,
-        "--tls-max-version",
-        tls_max,
-    ]
-    if install_caddy:
-        command.append("--install-caddy")
-    else:
-        command.append("--no-caddy")
-    call(command)
+    with client_change_errors():
+        change = connections_service.add_trojan_caddy_connection(
+            validate_connection_name(name), domain, local_port=local_port, public_port=public_port,
+            fingerprint_value=fp, ws_path=ws_path, tls_min_version=tls_min, tls_max_version=tls_max,
+            install_caddy=install_caddy,
+        )
+    connection_output.print_added_trojan_connection(change)
 
 
-def create_tls_xhttp_connection(call: CommandRunner, name: str) -> None:
+def create_tls_xhttp_connection(name: str) -> None:
     config = load_config()
     print("TLS-XHTTP подключение работает через Caddy: публично api.domain:443, внутри Xray слушает 127.0.0.1:LOCAL_PORT.")
     domain = validate_host(input("TLS domain/SNI: ").strip(), "TLS_DOMAIN")
     default_local_port = connection_store.next_local_port(config)
-    local_port = str(validate_port(prompt(default_local_port, "LOCAL_PORT для Xray")))
-    public_port = str(validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy")))
-    fp = choose_fingerprint(current_fingerprint())
+    local_port = validate_port(prompt(default_local_port, "LOCAL_PORT для Xray"))
+    public_port = validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy"))
+    fp = choose_fingerprint(fingerprint_or_default())
     path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
     mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
     xhttp_extra = maybe_prompt_xhttp_advanced_settings(default_xhttp_path=path, default_xhttp_mode=mode)
     tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
     if install_caddy:
-        conflicts = connection_store.public_port_conflicts(config, int(public_port))
+        conflicts = connection_store.public_port_conflicts(config, public_port)
         if conflicts:
             tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
             print(f"Caddy не сможет занять публичный порт {public_port}: сейчас его слушает Xray inbound: {tags}.")
             print("Сначала перенеси существующее Reality-подключение на другой публичный порт, затем повтори настройку Caddy.")
             return
         try:
-            xray_caddy.require_site_config_absent(domain)
+            caddy_sites.require_site_config_absent(domain)
         except OSError as exc:
             print(str(exc))
             print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
             return
-    command = [
-        "xray-client",
-        "add-connection",
-        name,
-        local_port,
-        domain,
-        fp,
-        "--security",
-        "tls",
-        "--transport",
-        "xhttp",
-        "--xhttp-path",
-        path,
-        "--xhttp-mode",
-        mode,
-        "--public-port",
-        public_port,
-        "--tls-min-version",
-        tls_min,
-        "--tls-max-version",
-        tls_max,
-    ]
-    command.extend(xhttp_extra_cli_arg(xhttp_extra))
-    if install_caddy:
-        command.append("--install-caddy")
-    call(command)
+    with client_change_errors():
+        change = connections_service.add_tls_xhttp_connection(
+            validate_connection_name(name), domain, local_port=local_port, public_port=public_port,
+            fingerprint_value=fp, xhttp_path=path, xhttp_mode=mode, xhttp_extra=xhttp_extra,
+            tls_min_version=tls_min, tls_max_version=tls_max, install_caddy=install_caddy,
+        )
+    connection_output.print_added_connection(change)
 
 
 def update_port() -> None:
@@ -836,39 +650,17 @@ def update_port() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    _, _, current_port, _, _ = current_settings(config, tag)
+    inbound = find_inbound_by_tag(config, tag)
     print()
     print("Новый PORT: публичный TCP-порт для подключения клиентов.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
-    port = validate_port(prompt(current_port, "PORT"))
-    if port_used_by_other_inbound(config, port, tag):
-        die(f"PORT is already used by another inbound: {port}")
-    listen = changed_port_listen(config, tag, port)
-    if listen is not None and tcp_port_in_use(port, listen):
-        die(f"PORT is already in use on this server by another process: {port}")
-    try:
-        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port"):
-            # The answers apply to config.json read again under the lock.
-            config = load_config()
-            inbound, reality, _, sni, _ = current_settings(config, tag)
-            if port_used_by_other_inbound(config, port, tag):
-                die(f"PORT is already used by another inbound: {port}")
-            listen = changed_port_listen(config, tag, port)
-            if listen is not None and tcp_port_in_use(port, listen):
-                die(f"PORT is already in use on this server by another process: {port}")
-            dest = reality_dest(sni)
-            inbound["port"] = port
-            reality["dest"] = dest
-            backup = apply_config(config)
-            update_connection_db(tag, port=port, sni=sni, dest=dest)
-            if tag == INBOUND_TAG:
-                write_server_env(port, sni, dest)
-    except LockTimeout as exc:
-        die(f"{exc.message}\n{exc.hint}")
-    refresh_initial_link()
-    print(f"PORT обновлён: {port}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup_text(backup)}")
+    port = validate_port(prompt(int(inbound.get("port", 443)), "PORT"))
+    with _reality_change_errors():
+        connections_service.check_reality_port(config, tag, port)
+        change = connections_service.update_reality_endpoint(tag, port=port)
+    print(f"PORT обновлён: {change.result.port}")
+    print(f"REALITY_DEST обновлён: {change.result.dest}")
+    print(f"Backup: {backup_text(change.backup)}")
 
 
 def update_sni() -> None:
@@ -877,29 +669,17 @@ def update_sni() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    _, _, _, current_sni, _ = current_settings(config, tag)
+    inbound = find_inbound_by_tag(config, tag)
+    current_sni = reality_sni(inbound.get("streamSettings", {}).get("realitySettings", {}))
     print()
     print("Новый REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
     sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    try:
-        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-sni"):
-            # The answers apply to config.json read again under the lock.
-            config = load_config()
-            _, reality, port, _, _ = current_settings(config, tag)
-            dest = reality_dest(sni)
-            reality["serverNames"] = [sni]
-            reality["dest"] = dest
-            backup = apply_config(config)
-            update_connection_db(tag, port=port, sni=sni, dest=dest)
-            if tag == INBOUND_TAG:
-                write_server_env(port, sni, dest)
-    except LockTimeout as exc:
-        die(f"{exc.message}\n{exc.hint}")
-    refresh_initial_link()
-    print(f"REALITY_SNI обновлён: {sni}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup_text(backup)}")
+    with _reality_change_errors():
+        change = connections_service.update_reality_endpoint(tag, sni=sni)
+    print(f"REALITY_SNI обновлён: {change.result.sni}")
+    print(f"REALITY_DEST обновлён: {change.result.dest}")
+    print(f"Backup: {backup_text(change.backup)}")
 
 
 def update_port_and_sni() -> None:
@@ -908,42 +688,20 @@ def update_port_and_sni() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    _, _, current_port, current_sni, _ = current_settings(config, tag)
+    inbound = find_inbound_by_tag(config, tag)
+    current_sni = reality_sni(inbound.get("streamSettings", {}).get("realitySettings", {}))
     print()
     print("Обновление PORT и REALITY_SNI.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
-    port = validate_port(prompt(current_port, "PORT"))
-    if port_used_by_other_inbound(config, port, tag):
-        die(f"PORT is already used by another inbound: {port}")
-    listen = changed_port_listen(config, tag, port)
-    if listen is not None and tcp_port_in_use(port, listen):
-        die(f"PORT is already in use on this server by another process: {port}")
-    sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    try:
-        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port-sni"):
-            # The answers apply to config.json read again under the lock.
-            config = load_config()
-            inbound, reality, _, _, _ = current_settings(config, tag)
-            if port_used_by_other_inbound(config, port, tag):
-                die(f"PORT is already used by another inbound: {port}")
-            listen = changed_port_listen(config, tag, port)
-            if listen is not None and tcp_port_in_use(port, listen):
-                die(f"PORT is already in use on this server by another process: {port}")
-            dest = reality_dest(sni)
-            inbound["port"] = port
-            reality["serverNames"] = [sni]
-            reality["dest"] = dest
-            backup = apply_config(config)
-            update_connection_db(tag, port=port, sni=sni, dest=dest)
-            if tag == INBOUND_TAG:
-                write_server_env(port, sni, dest)
-    except LockTimeout as exc:
-        die(f"{exc.message}\n{exc.hint}")
-    refresh_initial_link()
-    print(f"PORT обновлён: {port}")
-    print(f"REALITY_SNI обновлён: {sni}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup_text(backup)}")
+    port = validate_port(prompt(int(inbound.get("port", 443)), "PORT"))
+    with _reality_change_errors():
+        connections_service.check_reality_port(config, tag, port)
+        sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
+        change = connections_service.update_reality_endpoint(tag, port=port, sni=sni)
+    print(f"PORT обновлён: {change.result.port}")
+    print(f"REALITY_SNI обновлён: {change.result.sni}")
+    print(f"REALITY_DEST обновлён: {change.result.dest}")
+    print(f"Backup: {backup_text(change.backup)}")
 
 
 def choose_fingerprint(default: str) -> str:
@@ -980,26 +738,26 @@ def choose_xhttp_mode(default: str = DEFAULT_XHTTP_MODE) -> str:
 
 def choose_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2") -> tuple[str, str]:
     try:
-        current_key = xray_caddy.tls_version_choice_key(current_min, current_max)
-        current_label = xray_caddy.tls_version_label(current_min, current_max)
+        current_key = caddy_model.tls_version_choice_key(current_min, current_max)
+        current_label = caddy_model.tls_version_label(current_min, current_max)
     except ValueError as exc:
         die(str(exc))
     print()
     print("TLS: выбери версию протокола для Caddy site.")
-    for index, choice in enumerate(xray_caddy.TLS_VERSION_CHOICES, start=1):
+    for index, choice in enumerate(caddy_model.TLS_VERSION_CHOICES, start=1):
         marker = " (текущий)" if choice.key == current_key else ""
         print(f"  {index}) {choice.label}{marker}")
     while True:
         value = input(f"TLS [{current_label}] (номер из списка): ").strip()
         if not value:
-            choice = xray_caddy.tls_version_choice(current_key or "tls12")
+            choice = caddy_model.tls_version_choice(current_key or "tls12")
             return choice.tls_min_version, choice.tls_max_version
         if value.isdigit():
             index = int(value, 10)
-            if 1 <= index <= len(xray_caddy.TLS_VERSION_CHOICES):
-                choice = xray_caddy.TLS_VERSION_CHOICES[index - 1]
+            if 1 <= index <= len(caddy_model.TLS_VERSION_CHOICES):
+                choice = caddy_model.TLS_VERSION_CHOICES[index - 1]
                 return choice.tls_min_version, choice.tls_max_version
-        print(f"Выбери номер 1-{len(xray_caddy.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
+        print(f"Выбери номер 1-{len(caddy_model.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
 
 
 def update_fingerprint() -> None:
@@ -1007,21 +765,20 @@ def update_fingerprint() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    fp = choose_fingerprint(current_fingerprint())
-    try:
-        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-fingerprint"):
-            _, _, port, sni, dest = current_settings(load_config(), tag)
-            update_connection_db(tag, port=port, sni=sni, dest=dest, fingerprint=fp)
-            if tag == INBOUND_TAG:
-                write_server_env(port, sni, dest, fp)
-    except LockTimeout as exc:
-        die(f"{exc.message}\n{exc.hint}")
-    refresh_initial_link()
+    fp = choose_fingerprint(fingerprint_or_default())
+    with _reality_change_errors():
+        connections_service.update_reality_fingerprint(tag, fp)
     print(f"FINGERPRINT обновлён: {fp}")
     print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
 
 
-def update_transport(call: CommandRunner) -> None:
+def show_change_and_link_error(change, present) -> None:
+    present(change)
+    if change.link_error is not None:
+        raise change.link_error
+
+
+def update_transport() -> None:
     config = load_config()
     tag = choose_connection("обновления TRANSPORT", protocol_filter="vless")
     if not tag:
@@ -1034,14 +791,9 @@ def update_transport(call: CommandRunner) -> None:
         str(current.get("xhttpPath") or DEFAULT_XHTTP_PATH),
         str(current.get("xhttpMode") or DEFAULT_XHTTP_MODE),
     )
-    command = ["xray-client", "connection-transport", tag, settings["transport"]]
-    if settings["transport"] == "grpc":
-        command.extend(["--grpc-service-name", settings["grpc_service_name"]])
-    elif settings["transport"] == "xhttp":
-        command.extend(["--xhttp-path", settings["xhttp_path"], "--xhttp-mode", settings["xhttp_mode"]])
-        command.extend(xhttp_extra_cli_arg(settings.get("xhttp_extra")))
-    call(command)
-    refresh_initial_link()
+    with client_change_errors():
+        change = connections_service.update_transport(tag, refresh_link=True, **settings)
+    show_change_and_link_error(change, connection_output.print_transport_change)
 
 
 def current_xhttp_extra(tag: str) -> dict:
@@ -1061,7 +813,7 @@ def current_xhttp_extra(tag: str) -> dict:
     return {}
 
 
-def update_xhttp_advanced(call: CommandRunner) -> None:
+def update_xhttp_advanced() -> None:
     tag = choose_xhttp_connection("расширенных XHTTP настроек", auto_single=False)
     if not tag:
         print("Действие отменено.")
@@ -1080,23 +832,22 @@ def update_xhttp_advanced(call: CommandRunner) -> None:
         print("Действие отменено.")
         return
     if choice == "1":
-        call(["xray-client", "connection-xhttp-extra", tag, "--clear-xhttp-extra"])
-        refresh_initial_link()
-        return
-    if choice != "2":
+        extra = {}
+    elif choice == "2":
+        extra = prompt_xhttp_advanced_settings(
+            current or default_xhttp_advanced_extra(),
+            default_xhttp_path=str(settings.get("xhttpPath") or DEFAULT_XHTTP_PATH),
+            default_xhttp_mode=str(settings.get("xhttpMode") or DEFAULT_XHTTP_MODE),
+        )
+    else:
         print("Неизвестное действие.")
         return
-    extra = prompt_xhttp_advanced_settings(
-        current or default_xhttp_advanced_extra(),
-        default_xhttp_path=str(settings.get("xhttpPath") or DEFAULT_XHTTP_PATH),
-        default_xhttp_mode=str(settings.get("xhttpMode") or DEFAULT_XHTTP_MODE),
-    )
-    call(["xray-client", "connection-xhttp-extra", tag, "--xhttp-extra-json", xhttp_extra_json(extra)])
-    refresh_initial_link()
+    with client_change_errors():
+        change = connections_service.update_xhttp_extra(tag, extra, refresh_link=True)
+    show_change_and_link_error(change, connection_output.print_xhttp_extra_change)
 
 
 def delete_connection(
-    call: CommandRunner,
     confirm: ConfirmCallback,
     protocol_filter: str | None = "vless",
 ) -> None:
@@ -1120,11 +871,12 @@ def delete_connection(
     if not confirm("Продолжить удаление"):
         print("Удаление отменено.")
         return
-    call(["xray-client", "remove-connection", tag])
-    refresh_initial_link()
+    with client_change_errors():
+        change = connections_service.remove_connection(tag, refresh_link=True)
+    show_change_and_link_error(change, connection_output.print_removed_connection)
 
 
-def delete_trojan_connection(call: CommandRunner, confirm: ConfirmCallback) -> None:
+def delete_trojan_connection(confirm: ConfirmCallback) -> None:
     rows = connection_rows(protocol_filter="trojan")
     if not rows:
         print("Trojan-подключений пока нет.")
@@ -1142,10 +894,12 @@ def delete_trojan_connection(call: CommandRunner, confirm: ConfirmCallback) -> N
     if not confirm("Продолжить удаление"):
         print("Удаление отменено.")
         return
-    call(["xray-client", "remove-connection", tag])
+    with client_change_errors():
+        change = connections_service.remove_connection(tag)
+    connection_output.print_removed_connection(change)
 
 
-def rename_connection(call: CommandRunner, protocol_filter: str | None = "vless") -> None:
+def rename_connection(protocol_filter: str | None = "vless") -> None:
     tag = choose_connection("переименования подключения", auto_single=False, protocol_filter=protocol_filter)
     if not tag:
         print("Действие отменено.")
@@ -1157,11 +911,13 @@ def rename_connection(call: CommandRunner, protocol_filter: str | None = "vless"
     if not new_name or new_name == current_name:
         print("Имя не изменено.")
         return
-    call(["xray-client", "connection-rename", tag, new_name])
+    with client_change_errors():
+        result = connections_service.rename_connection(tag, validate_connection_name(new_name))
+    connection_output.print_renamed_connection(result)
 
 
-def rename_trojan_connection(call: CommandRunner) -> None:
+def rename_trojan_connection() -> None:
     if not connection_rows(protocol_filter="trojan"):
         print("Trojan-подключений пока нет.")
         return
-    rename_connection(call, protocol_filter="trojan")
+    rename_connection(protocol_filter="trojan")

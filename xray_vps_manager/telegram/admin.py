@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.telegram import keyboards, messages, notifications, payments, server_settings, subscriptions
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import model as caddy_model
+from xray_vps_manager.core import process
 
 ADMIN_CALLBACK_GUARDS_KEY = "callbackGuards"
 ADMIN_CONSUMED_CALLBACK_LIMIT = 40
@@ -33,7 +35,7 @@ class AdminContext:
     xray_client: Path = Path("/usr/local/sbin/xray-client")
     server_name_fragment: Callable[[], str] = default_server_name_fragment
     list_tls_sites: Callable[[], list[dict[str, Any]]] = server_settings.tls_site_rows
-    set_tls_site_version: Callable[..., Any] = server_settings.set_tls_site_version
+    set_tls_site_version: Callable[..., Any] = partial(server_settings.set_tls_site_version, runner=process.run_stream)
 
 
 def normalize_message_id(value):
@@ -306,7 +308,7 @@ def handle_server_tls_set(ctx: AdminContext, db, chat_id, index_value, choice_ke
         send_admin_server_tls_menu(ctx, db, chat_id, "Список TLS site configs устарел. Открой TLS заново.")
         return True
     try:
-        choice = caddy.tls_version_choice(choice_key)
+        choice = caddy_model.tls_version_choice(choice_key)
     except ValueError:
         send_admin_server_tls_site_menu(ctx, db, chat_id, index_value, "Неизвестный TLS-профиль.")
         return True

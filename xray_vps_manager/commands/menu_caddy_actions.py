@@ -9,11 +9,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.system import units as system_units
-from xray_vps_manager.clients import connections as connection_store
-from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql
+from xray_vps_manager.clients import service as client_service
+from xray_vps_manager.core import process
 from xray_vps_manager.core.terminal import print_table
-from xray_vps_manager.xray import caddy
-from xray_vps_manager.xray.config import find_inbound_by_tag, load_config as load_xray_config
+from xray_vps_manager.caddy import model as caddy_model
+from xray_vps_manager.caddy import random_tls
+from xray_vps_manager.caddy import service as caddy_service
+from xray_vps_manager.caddy import sites as caddy_sites
+from xray_vps_manager.core.paths import paths
 
 ConfirmCallback = Callable[[str], bool]
 
@@ -22,62 +25,49 @@ def die(message: str) -> None:
     raise SystemExit(message)
 
 
-def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(command, check=True, text=True, **kwargs)
-
-
-def run_no_check(command: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
-    return subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-
-
 def compact_output(result: subprocess.CompletedProcess) -> str:
     return (result.stdout or result.stderr or f"exit {result.returncode}").strip()
 
 
 def installed() -> bool:
-    result = run_no_check(["sh", "-c", "command -v caddy"], timeout=5)
-    return result.returncode == 0
+    return caddy_service.installed()
 
 
 def caddy_status() -> None:
-    run(["systemctl", "--no-pager", "--full", "status", "caddy.service"])
+    caddy_service.status(runner=process.run_stream)
 
 
 def install_caddy() -> None:
-    installed_now = caddy.install_caddy_if_needed(subprocess.run)
-    caddy.ensure_caddyfile_import()
-    caddy.validate_and_reload_caddy(subprocess.run)
-    if installed_now:
+    if caddy_service.install_and_reload(runner=process.run_stream):
         print("Caddy installed and started.")
     else:
         print("Caddy is already installed. Config import is present.")
 
 
 def validate_config() -> None:
-    run(["caddy", "validate", "--config", str(caddy.CADDYFILE_PATH)])
+    caddy_service.validate_config(runner=process.run_stream)
 
 
 def reload_caddy() -> None:
-    caddy.validate_and_reload_caddy(subprocess.run)
+    caddy_service.validate_and_reload_caddy(runner=process.run_stream)
     print("Caddy reloaded.")
 
 
 def restart_caddy() -> None:
-    validate_config()
-    run(["systemctl", "restart", "caddy"])
+    caddy_service.restart(runner=process.run_stream)
     print("Caddy restarted.")
 
 
 def show_caddyfile() -> None:
-    path = caddy.CADDYFILE_PATH
+    path = paths().caddyfile
     if not path.exists():
         print(f"Caddyfile not found: {path}")
         return
     print(path.read_text())
 
 
-def site_rows() -> list[caddy.SiteConfig]:
-    return caddy.list_site_configs()
+def site_rows() -> list[caddy_model.SiteConfig]:
+    return caddy_sites.list_site_configs()
 
 
 def show_sites() -> None:
@@ -95,11 +85,11 @@ def show_sites() -> None:
 
 
 def list_config_backups() -> None:
-    print_table(["PATH", "CREATED", "SIZE"], caddy.config_backup_rows(), empty_message="Caddy backups not found.")
+    print_table(["PATH", "CREATED", "SIZE"], caddy_sites.config_backup_rows(), empty_message="Caddy backups not found.")
 
 
 def choose_config_backup(action: str) -> str | None:
-    rows = caddy.config_backup_rows()
+    rows = caddy_sites.config_backup_rows()
     if not rows:
         print("Caddy backups not found.")
         return None
@@ -120,9 +110,13 @@ def choose_config_backup(action: str) -> str | None:
 
 def create_config_backup() -> None:
     try:
-        caddy.create_config_backup()
+        archive = caddy_sites.create_config_backup()
     except FileNotFoundError as exc:
         die(str(exc))
+    print(f"Caddy backup created: {archive}")
+    print(f"Size: {caddy_model.format_size(archive.stat().st_size)}")
+    print("Contains: /etc/caddy/Caddyfile and /etc/caddy/conf.d when present.")
+    print("Certificate cache files are not included; Caddy can issue certificates again.")
 
 
 def restore_config_backup(confirm: ConfirmCallback) -> None:
@@ -136,7 +130,7 @@ def restore_config_backup(confirm: ConfirmCallback) -> None:
         print("Восстановление отменено.")
         return
     try:
-        restored_from, pre_backup, restored = caddy.restore_config_backup(archive)
+        restored_from, pre_backup, restored = caddy_service.restore_config_backup(archive, runner=process.run_stream)
     except Exception as exc:
         die(f"Caddy restore failed. Previous config was restored from pre-restore backup if possible. Detail: {exc}")
     print(f"Restored from: {restored_from}")
@@ -155,17 +149,17 @@ def delete_config_backup(confirm: ConfirmCallback) -> None:
         print("Удаление отменено.")
         return
     try:
-        removed = caddy.delete_config_backup(archive)
+        removed = caddy_sites.delete_config_backup(archive)
     except (FileNotFoundError, ValueError) as exc:
         die(str(exc))
     print(f"Deleted Caddy backup: {removed}")
 
 
 def choose_site_root(action: str, default: str = "") -> str:
-    candidates = caddy.site_root_candidates()
+    candidates = caddy_sites.site_root_candidates()
     print(f"Выбери папку сайта для действия: {action}.")
     if candidates:
-        rows = [[str(index), str(path), caddy.format_size(caddy.tree_size(path))] for index, path in enumerate(candidates, start=1)]
+        rows = [[str(index), str(path), caddy_model.format_size(caddy_sites.tree_size(path))] for index, path in enumerate(candidates, start=1)]
         rows.append(["M", "Ввести путь вручную", ""])
         rows.append(["0", "Назад", ""])
         print_table(["№", "SITE ROOT", "SIZE"], rows, empty_message=None)
@@ -200,17 +194,21 @@ def create_site_backup() -> None:
         print("Действие отменено.")
         return
     try:
-        caddy.create_site_backup(site_root)
+        archive, root = caddy_sites.create_site_backup(site_root)
     except (FileNotFoundError, ValueError) as exc:
         die(str(exc))
+    print(f"Caddy site backup created: {archive}")
+    print(f"Site root: {root}")
+    print(f"Size: {caddy_model.format_size(archive.stat().st_size)}")
+    print("Contains: static site files from the selected site root.")
 
 
 def list_site_backups() -> None:
-    print_table(["PATH", "SITE ROOT", "CREATED", "SIZE"], caddy.site_backup_rows(), empty_message="Caddy site backups not found.")
+    print_table(["PATH", "SITE ROOT", "CREATED", "SIZE"], caddy_sites.site_backup_rows(), empty_message="Caddy site backups not found.")
 
 
 def choose_site_backup(action: str) -> str | None:
-    rows = caddy.site_backup_rows()
+    rows = caddy_sites.site_backup_rows()
     if not rows:
         print("Caddy site backups not found.")
         return None
@@ -233,7 +231,7 @@ def restore_site_backup(confirm: ConfirmCallback) -> None:
     archive = choose_site_backup("восстановления")
     if not archive:
         return
-    manifest = caddy.backup_manifest(caddy.resolve_site_backup(archive))
+    manifest = caddy_sites.backup_manifest(caddy_sites.resolve_site_backup(archive))
     default_root = str(manifest.get("siteRoot") or "")
     target_root = choose_site_root("restore", default=default_root)
     if not target_root:
@@ -246,7 +244,7 @@ def restore_site_backup(confirm: ConfirmCallback) -> None:
         print("Восстановление отменено.")
         return
     try:
-        restored_from, pre_backup, restored_root = caddy.restore_site_backup(archive, target_root=target_root)
+        restored_from, pre_backup, restored_root = caddy_sites.restore_site_backup(archive, target_root=target_root)
     except (FileNotFoundError, ValueError, OSError) as exc:
         die(f"Caddy site restore failed. Previous site files were restored from pre-restore backup if possible. Detail: {exc}")
     print(f"Restored from: {restored_from}")
@@ -265,13 +263,13 @@ def delete_site_backup(confirm: ConfirmCallback) -> None:
         print("Удаление отменено.")
         return
     try:
-        removed = caddy.delete_site_backup(archive)
+        removed = caddy_sites.delete_site_backup(archive)
     except (FileNotFoundError, ValueError) as exc:
         die(str(exc))
     print(f"Deleted Caddy site backup: {removed}")
 
 
-def choose_site(action: str, auto_single: bool = False) -> caddy.SiteConfig | None:
+def choose_site(action: str, auto_single: bool = False) -> caddy_model.SiteConfig | None:
     sites = site_rows()
     if not sites:
         print("Caddy site configs not found.")
@@ -327,26 +325,26 @@ def validate_port(value: str) -> int:
 
 def prompt_tls_versions(current_min: str = "tls1.2", current_max: str = "tls1.2") -> tuple[str, str]:
     try:
-        current_key = caddy.tls_version_choice_key(current_min, current_max)
-        current_label = caddy.tls_version_label(current_min, current_max)
+        current_key = caddy_model.tls_version_choice_key(current_min, current_max)
+        current_label = caddy_model.tls_version_label(current_min, current_max)
     except ValueError as exc:
         die(str(exc))
     print()
     print("TLS: выбери версию протокола для Caddy site.")
-    for index, choice in enumerate(caddy.TLS_VERSION_CHOICES, start=1):
+    for index, choice in enumerate(caddy_model.TLS_VERSION_CHOICES, start=1):
         marker = " (текущий)" if choice.key == current_key else ""
         print(f"  {index}) {choice.label}{marker}")
     while True:
         value = input(f"TLS [{current_label}] (номер из списка): ").strip()
         if not value:
-            choice = caddy.tls_version_choice(current_key or "tls12")
+            choice = caddy_model.tls_version_choice(current_key or "tls12")
             return choice.tls_min_version, choice.tls_max_version
         if value.isdigit():
             index = int(value, 10)
-            if 1 <= index <= len(caddy.TLS_VERSION_CHOICES):
-                choice = caddy.TLS_VERSION_CHOICES[index - 1]
+            if 1 <= index <= len(caddy_model.TLS_VERSION_CHOICES):
+                choice = caddy_model.TLS_VERSION_CHOICES[index - 1]
                 return choice.tls_min_version, choice.tls_max_version
-        print(f"Выбери номер 1-{len(caddy.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
+        print(f"Выбери номер 1-{len(caddy_model.TLS_VERSION_CHOICES)} или нажми Enter для {current_label}.")
 
 
 def apply_site_write(
@@ -359,65 +357,32 @@ def apply_site_write(
     route_path: str = "",
 ) -> None:
     try:
-        result = caddy.update_site_config(
+        result = caddy_service.update_site_config(
             domain,
             local_port,
             tls_min_version=tls_min,
             tls_max_version=tls_max,
             upstream_transport=upstream_transport,
             route_path=route_path,
+            runner=process.run_stream,
         )
     except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError) as exc:
         die(f"Caddy config failed. Previous site config was restored. Detail: {exc}")
     print(f"Caddy site updated: {result.path}")
 
 
-def apply_site_tls_write(site: caddy.SiteConfig, tls_min: str, tls_max: str) -> None:
+def apply_site_tls_write(site: caddy_model.SiteConfig, tls_min: str, tls_max: str) -> None:
     try:
-        result = caddy.update_site_tls_config(site.path, tls_min_version=tls_min, tls_max_version=tls_max)
+        result = caddy_service.update_site_tls_config(
+            site.path, tls_min_version=tls_min, tls_max_version=tls_max, runner=process.run_stream,
+        )
     except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError) as exc:
         die(f"Caddy config failed. Previous site config was restored. Detail: {exc}")
     print(f"Caddy site TLS updated: {result.path}")
 
 
-def tls_connection_options() -> list[dict]:
-    config = load_xray_config()
-    db = load_db_sql()
-    connection_store.ensure_connections(config, db)
-    options = []
-    for tag, entry in db_managed_connections(db).items():
-        if (entry.get("security") or "reality") != "tls":
-            continue
-        inbound = find_inbound_by_tag(config, tag)
-        protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
-        transport = entry.get("transport") or inbound.get("streamSettings", {}).get("network") or "xhttp"
-        if not ((protocol == "vless" and transport == "xhttp") or (protocol == "trojan" and transport == "ws")):
-            continue
-        route_path = ""
-        if protocol == "trojan" and transport == "ws":
-            route_path = entry.get("wsPath") or ""
-        elif protocol == "vless" and transport == "xhttp":
-            route_path = entry.get("xhttpPath") or ""
-        options.append(
-            {
-                "tag": tag,
-                "name": entry.get("name") or tag,
-                "protocol": protocol,
-                "transport": transport,
-                "domain": entry.get("publicHost") or entry.get("sni") or "",
-                "publicPort": int(entry.get("publicPort") or entry.get("port") or 443),
-                "localPort": int(entry.get("localPort") or inbound.get("port") or 0),
-                "tlsMin": entry.get("tlsMinVersion") or "tls1.2",
-                "tlsMax": entry.get("tlsMaxVersion") or "tls1.2",
-                "routePath": route_path,
-                "upstreamTransport": "http" if protocol == "trojan" and transport == "ws" else "xhttp",
-            }
-        )
-    return options
-
-
 def choose_tls_connection() -> dict | None:
-    options = tls_connection_options()
+    options = client_service.caddy_connection_options()
     if not options:
         print("TLS connections not found.")
         return None
@@ -451,7 +416,7 @@ def create_site_from_tls_connection() -> None:
     item = choose_tls_connection()
     if not item:
         return
-    domain = caddy.validate_domain(item["domain"])
+    domain = caddy_model.validate_domain(item["domain"])
     tls_min, tls_max = prompt_tls_versions(item["tlsMin"], item["tlsMax"])
     apply_site_write(
         domain,
@@ -465,7 +430,7 @@ def create_site_from_tls_connection() -> None:
 
 def create_site_manual() -> None:
     try:
-        domain = caddy.validate_domain(input("DOMAIN: ").strip())
+        domain = caddy_model.validate_domain(input("DOMAIN: ").strip())
     except ValueError as exc:
         die(str(exc))
     local_port = validate_port(prompt("10300", "LOCAL_PORT upstream"))
@@ -505,38 +470,17 @@ def update_site_domain() -> None:
         print("Не удалось определить upstream local port в site config.")
         return
     try:
-        new_domain = caddy.validate_domain(prompt(site.domain, "NEW_DOMAIN"))
+        new_domain = caddy_model.validate_domain(prompt(site.domain, "NEW_DOMAIN"))
     except ValueError as exc:
         die(str(exc))
     if new_domain == site.domain:
         print("Домен не изменён.")
         return
 
-    old_path = site.path
-    new_path = caddy.site_config_path(new_domain)
-    old_backup = caddy.backup_file(old_path)
-    new_backup = caddy.backup_file(new_path)
     try:
-        caddy.write_site_config(
-            new_domain,
-            site.local_port,
-            tls_min_version=site.tls_min_version,
-            tls_max_version=site.tls_max_version,
-            upstream_transport=site.upstream_transport,
-            route_path=site.match_path,
-        )
-        if old_path.exists():
-            old_path.unlink()
-        caddy.validate_and_reload_caddy(subprocess.run)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        caddy.restore_file(old_backup, old_path)
-        caddy.restore_file(new_backup, new_path)
-        try:
-            caddy.validate_and_reload_caddy(subprocess.run)
-        except Exception:
-            pass
+        caddy_service.rename_site(site, new_domain, local_port=site.local_port, runner=process.run_stream)
+    except caddy_service.SiteChangeError as exc:
         die(f"Caddy config failed. Restored backups. Detail: {exc}")
-    caddy.prune_site_backups(old_path, new_path, protect=(old_backup, new_backup))
     print(f"Caddy site domain changed: {site.domain} -> {new_domain}")
     print("Важно: это не меняет VLESS-подключение в manager.db и не перевыпускает клиентские ссылки.")
 
@@ -550,19 +494,10 @@ def delete_site(confirm: ConfirmCallback) -> None:
     if not confirm("Удалить Caddy site"):
         print("Удаление отменено.")
         return
-    backup = caddy.backup_file(site.path)
     try:
-        if site.path.exists():
-            site.path.unlink()
-        caddy.validate_and_reload_caddy(subprocess.run)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        caddy.restore_file(backup, site.path)
-        try:
-            caddy.validate_and_reload_caddy(subprocess.run)
-        except Exception:
-            pass
-        die(f"Caddy config failed. Restored backup: {backup}. Detail: {exc}")
-    caddy.prune_site_backups(site.path, protect=(backup,))
+        backup = caddy_service.remove_site(site.path, runner=process.run_stream)
+    except caddy_service.SiteChangeError as exc:
+        die(f"Caddy config failed. Restored backup: {exc.backup}. Detail: {exc}")
     print(f"Caddy site removed. Backup: {backup}")
 
 
@@ -572,60 +507,38 @@ def remove_default_http_site(confirm: ConfirmCallback) -> None:
     if not confirm("Удалить дефолтный :80 site"):
         print("Действие отменено.")
         return
-    backup = caddy.backup_file(caddy.CADDYFILE_PATH)
     try:
-        changed = caddy.remove_site_block_from_caddyfile(":80")
-        if not changed:
-            print("Блок :80 не найден.")
-            return
-        caddy.validate_and_reload_caddy(subprocess.run)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        caddy.restore_file(backup, caddy.CADDYFILE_PATH)
-        try:
-            caddy.validate_and_reload_caddy(subprocess.run)
-        except Exception:
-            pass
-        die(f"Caddy config failed. Restored backup: {backup}. Detail: {exc}")
-    caddy.prune_site_backups(caddy.CADDYFILE_PATH, protect=(backup,))
+        changed, backup = caddy_service.remove_default_http_site(runner=process.run_stream)
+    except caddy_service.SiteChangeError as exc:
+        die(f"Caddy config failed. Restored backup: {exc.backup}. Detail: {exc}")
+    if not changed:
+        print("Блок :80 не найден.")
+        return
     print(f"Default :80 site removed. Backup: {backup}")
 
 
 def show_logs() -> None:
-    run(["journalctl", "-u", "caddy", "-n", "120", "--no-pager"])
+    caddy_service.show_logs(runner=process.run_stream)
 
 
 def tls_handshake_check() -> None:
     site = choose_site("проверки TLS handshake", auto_single=True)
     domain = site.domain if site else input("DOMAIN: ").strip()
     try:
-        domain = caddy.validate_domain(domain)
+        domain = caddy_model.validate_domain(domain)
     except ValueError as exc:
         die(str(exc))
     for version in ("tls1_2", "tls1_3"):
         print()
         print(f"Проверка {version.replace('_', '.')}:")
-        result = run_no_check(
-            [
-                "timeout",
-                "10",
-                "openssl",
-                "s_client",
-                "-connect",
-                f"{domain}:443",
-                "-servername",
-                domain,
-                f"-{version}",
-                "-brief",
-            ],
-            timeout=15,
-        )
+        result = caddy_service.check_tls_handshake(domain, version)
         output = (result.stdout or "") + (result.stderr or "")
         print(output.strip() or f"exit {result.returncode}")
 
 
 def systemctl_value(*args: str) -> str:
     try:
-        result = run_no_check(["systemctl", *args], timeout=10)
+        result = caddy_service.query_systemctl(*args)
     except FileNotFoundError:
         return "systemctl not found"
     value = compact_output(result)
@@ -636,18 +549,18 @@ def systemctl_value(*args: str) -> str:
 
 def random_tls_current_label(domain: str) -> str:
     try:
-        site = caddy.site_config_for_domain(domain)
+        site = caddy_sites.site_config_for_domain(domain)
     except (FileNotFoundError, ValueError):
         return "-"
-    return caddy.tls_version_label(site.tls_min_version, site.tls_max_version)
+    return caddy_model.tls_version_label(site.tls_min_version, site.tls_max_version)
 
 
 def random_tls_next_label(domain: str) -> str:
     try:
-        site = caddy.site_config_for_domain(domain)
+        site = caddy_sites.site_config_for_domain(domain)
     except (FileNotFoundError, ValueError):
         return "-"
-    return caddy.next_random_tls_label(site.tls_min_version, site.tls_max_version)
+    return random_tls.next_random_tls_label(site.tls_min_version, site.tls_max_version)
 
 
 def format_timer_eta(seconds: int) -> str:
@@ -716,7 +629,7 @@ def timer_line_next_and_left(line: str) -> tuple[str, str]:
 
 def random_tls_timer_left_rows(timer_name: str) -> list[list[str]]:
     try:
-        result = run_no_check(["systemctl", "list-timers", "--all", "--no-legend", "--no-pager", timer_name], timeout=10)
+        result = caddy_service.query_systemctl("list-timers", "--all", "--no-legend", "--no-pager", timer_name)
     except FileNotFoundError:
         return [["NEXT RUN", "systemctl not found"], ["NEXT RUN IN", "-"]]
     if result.returncode != 0:
@@ -730,10 +643,7 @@ def random_tls_timer_left_rows(timer_name: str) -> list[list[str]]:
 
 def random_tls_next_timer_rows(timer_name: str) -> list[list[str]]:
     try:
-        result = run_no_check(
-            ["systemctl", "show", timer_name, "--property=NextElapseUSecRealtime", "--value"],
-            timeout=10,
-        )
+        result = caddy_service.query_systemctl("show", timer_name, "--property=NextElapseUSecRealtime", "--value")
     except FileNotFoundError:
         return [["NEXT RUN", "systemctl not found"], ["NEXT RUN IN", "-"]]
     if result.returncode != 0:
@@ -744,7 +654,7 @@ def random_tls_next_timer_rows(timer_name: str) -> list[list[str]]:
         return random_tls_timer_left_rows(timer_name)
 
     try:
-        parsed = run_no_check(["date", "-d", next_run, "+%s"], timeout=5)
+        parsed = process.run(["date", "-d", next_run, "+%s"], timeout=5)
     except FileNotFoundError:
         return [["NEXT RUN", next_run], ["NEXT RUN IN", "-"]]
     if parsed.returncode != 0:
@@ -762,9 +672,9 @@ def random_tls_next_timer_values(timer_name: str) -> tuple[str, str]:
     return values.get("NEXT RUN", "-"), values.get("NEXT RUN IN", "-")
 
 
-def print_random_tls_result(result: caddy.RandomTlsApplyResult) -> None:
-    previous = caddy.tls_version_label(result.previous_tls_min_version, result.previous_tls_max_version)
-    current = caddy.tls_version_label(result.tls_min_version, result.tls_max_version)
+def print_random_tls_result(result: random_tls.RandomTlsApplyResult) -> None:
+    previous = caddy_model.tls_version_label(result.previous_tls_min_version, result.previous_tls_max_version)
+    current = caddy_model.tls_version_label(result.tls_min_version, result.tls_max_version)
     print(f"Caddy TLS randomized for {result.domain}: {previous} -> {current}")
     print(f"Site config: {result.path}")
     if result.backup:
@@ -773,21 +683,21 @@ def print_random_tls_result(result: caddy.RandomTlsApplyResult) -> None:
 
 def random_tls_status() -> None:
     rows = [
-        ["CONFIG DIR", str(caddy.CADDY_RANDOM_TLS_CONFIG_DIR if caddy.CADDY_RANDOM_TLS_CONFIG_DIR.exists() else "missing")],
-        ["SERVICE TEMPLATE", str(caddy.SYSTEMD_DIR / caddy.RANDOM_TLS_SERVICE_TEMPLATE)],
-        ["TIMER TEMPLATE", str(caddy.SYSTEMD_DIR / caddy.RANDOM_TLS_TIMER_TEMPLATE)],
+        ["CONFIG DIR", str(paths().caddy_random_tls_dir if paths().caddy_random_tls_dir.exists() else "missing")],
+        ["SERVICE TEMPLATE", str(paths().systemd_dir / random_tls.RANDOM_TLS_SERVICE_TEMPLATE)],
+        ["TIMER TEMPLATE", str(paths().systemd_dir / random_tls.RANDOM_TLS_TIMER_TEMPLATE)],
     ]
-    legacy_enabled = systemctl_value("is-enabled", caddy.LEGACY_RANDOM_TLS_TIMER)
+    legacy_enabled = systemctl_value("is-enabled", random_tls.LEGACY_RANDOM_TLS_TIMER)
     if legacy_enabled not in ("-", "disabled (exit 1)"):
-        rows.append(["LEGACY TIMER", f"{caddy.LEGACY_RANDOM_TLS_TIMER}: {legacy_enabled}"])
+        rows.append(["LEGACY TIMER", f"{random_tls.LEGACY_RANDOM_TLS_TIMER}: {legacy_enabled}"])
     print_table(["ITEM", "VALUE"], rows)
     print()
 
-    configs = caddy.list_random_tls_configs()
+    configs = random_tls.list_random_tls_configs()
     table_rows = []
     for config in configs:
-        timer = caddy.random_tls_timer_instance(config.domain)
-        service = caddy.random_tls_service_instance(config.domain)
+        timer = random_tls.random_tls_timer_instance(config.domain)
+        service = random_tls.random_tls_service_instance(config.domain)
         next_run, next_in = random_tls_next_timer_values(timer)
         table_rows.append(
             [
@@ -809,11 +719,11 @@ def random_tls_status() -> None:
     )
 
 
-def choose_random_tls_config(action: str, auto_single: bool = False) -> caddy.RandomTlsConfig | None:
-    configs = caddy.list_random_tls_configs()
-    if not configs and caddy.CADDY_RANDOM_TLS_ENV_PATH.exists():
+def choose_random_tls_config(action: str, auto_single: bool = False) -> random_tls.RandomTlsConfig | None:
+    configs = random_tls.list_random_tls_configs()
+    if not configs and paths().caddy_random_tls_env.exists():
         try:
-            configs = [caddy.read_random_tls_config(caddy.CADDY_RANDOM_TLS_ENV_PATH)]
+            configs = [random_tls.read_random_tls_config(paths().caddy_random_tls_env)]
         except (RuntimeError, ValueError):
             configs = []
     if not configs:
@@ -823,7 +733,7 @@ def choose_random_tls_config(action: str, auto_single: bool = False) -> caddy.Ra
         return configs[0]
     rows = []
     for index, config in enumerate(configs, start=1):
-        timer = caddy.random_tls_timer_instance(config.domain)
+        timer = random_tls.random_tls_timer_instance(config.domain)
         rows.append(
             [
                 str(index),
@@ -862,12 +772,10 @@ def enable_random_tls(confirm: ConfirmCallback) -> None:
         print("Действие отменено.")
         return
     try:
-        config = caddy.write_random_tls_config(site.domain, site.local_port)
-        units = system_units.write_random_tls_systemd_units()
-        run(["systemctl", "daemon-reload"])
-        run_no_check(["systemctl", "disable", "--now", caddy.LEGACY_RANDOM_TLS_TIMER], timeout=20)
-        run_no_check(["systemctl", "stop", caddy.LEGACY_RANDOM_TLS_SERVICE], timeout=10)
-        run(["systemctl", "enable", "--now", caddy.random_tls_timer_instance(config.domain)])
+        config, units = random_tls.enable_random_tls(
+            site.domain, site.local_port,
+            write_units=system_units.write_random_tls_systemd_units, runner=process.run_stream,
+        )
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         die(f"Не удалось включить TLS randomizer: {exc}")
     print(f"TLS randomizer enabled for {config.domain}:{config.local_port}.")
@@ -884,21 +792,15 @@ def disable_random_tls(confirm: ConfirmCallback) -> None:
     if not confirm(f"Отключить TLS randomizer для {config.domain}"):
         print("Действие отменено.")
         return
-    timer = caddy.random_tls_timer_instance(config.domain)
-    service = caddy.random_tls_service_instance(config.domain)
-    for command in (
-        ["systemctl", "disable", "--now", timer],
-        ["systemctl", "stop", service],
-    ):
-        try:
-            result = run_no_check(command, timeout=20)
-        except FileNotFoundError:
-            print("systemctl not found.")
-            return
-        if result.returncode != 0:
-            print(f"{' '.join(command)}: {compact_output(result)}")
+    try:
+        for command, result in random_tls.disable_random_tls(config):
+            if result.returncode != 0:
+                print(f"{' '.join(command)}: {compact_output(result)}")
+    except FileNotFoundError:
+        print("systemctl not found.")
+        return
     print("TLS randomizer disabled.")
-    print(f"Config left in place: {caddy.random_tls_env_path(config.domain)}")
+    print(f"Config left in place: {random_tls.random_tls_env_path(config.domain)}")
 
 
 def random_tls_run_now() -> None:
@@ -906,7 +808,7 @@ def random_tls_run_now() -> None:
     if not config:
         return
     try:
-        result = caddy.apply_random_tls_switch(config)
+        result = random_tls.apply_random_tls_switch(config, runner=process.run_stream)
     except (FileNotFoundError, RuntimeError, ValueError, OSError, subprocess.CalledProcessError) as exc:
         die(f"TLS randomizer failed: {exc}")
     print_random_tls_result(result)

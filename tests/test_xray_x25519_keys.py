@@ -2,11 +2,13 @@
 
 import re
 import subprocess
+import traceback
 import unittest
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
+from tests.support.sandbox import Sandbox
 from xray_vps_manager.clients import connections as client_connections
 from xray_vps_manager.clients import links as client_links
 from xray_vps_manager.xray import crypto
@@ -83,7 +85,22 @@ class X25519CommandTests(unittest.TestCase):
         for label, name in FORMATS.items():
             with self.subTest(label), mock.patch.object(crypto.subprocess, "check_output", return_value=fixture(name)) as check_output:
                 self.assertEqual(crypto.reality_public_key(PRIVATE_KEY), PUBLIC_KEY)
-            check_output.assert_called_once_with(["/usr/local/bin/xray", "x25519", "-i", PRIVATE_KEY], text=True)
+            check_output.assert_called_once_with(
+                ["/usr/local/bin/xray", "x25519", "-i", PRIVATE_KEY], text=True, stderr=subprocess.PIPE,
+            )
+
+    def test_public_key_process_failure_does_not_expose_secret_in_traceback(self) -> None:
+        with Sandbox() as box:
+            command = ("/usr/local/bin/xray", "x25519", "-i", PRIVATE_KEY)
+            box.processes.script({command: box.processes.result(1, stdout=PRIVATE_KEY, stderr=PRIVATE_KEY)})
+            try:
+                crypto.reality_public_key(PRIVATE_KEY)
+            except RuntimeError as exc:
+                self.assertIn("Failed to derive Reality public key.", str(exc))
+                self.assertIn("Xray exit code: 1.", str(exc))
+                self.assertNotIn(PRIVATE_KEY, "".join(traceback.format_exception(exc)))
+            else:
+                self.fail("Expected a safe error when Xray fails to derive the public key")
 
     def test_key_pair_error_contains_raw_output_without_private_key(self) -> None:
         output = f"PrivateKey: {PRIVATE_KEY}\nPassword: short\nHash32: {HASH32}\n"
@@ -185,7 +202,9 @@ class RealityLinkPublicKeyTests(unittest.TestCase):
             link = self.link(self.config(), db)
 
         self.assertEqual(parse_qs(urlsplit(link).query)["pbk"], [PUBLIC_KEY])
-        check_output.assert_called_once_with(["/usr/local/bin/xray", "x25519", "-i", PRIVATE_KEY], text=True)
+        check_output.assert_called_once_with(
+            ["/usr/local/bin/xray", "x25519", "-i", PRIVATE_KEY], text=True, stderr=subprocess.PIPE,
+        )
         self.assertEqual(db["connections"]["vless-reality"]["publicKey"], "")
 
     def test_link_derives_public_key_when_stored_one_is_malformed(self) -> None:

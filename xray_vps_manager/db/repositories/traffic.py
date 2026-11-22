@@ -181,6 +181,12 @@ def credential_traffic_keys(connection: sqlite3.Connection) -> set[tuple[str, st
     return {(row["client_name"], row["connection_tag"]) for row in rows}
 
 
+def has_credential_traffic_totals(connection: sqlite3.Connection, name: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM credential_traffic_totals WHERE client_name = ? LIMIT 1", (name,),
+    ).fetchone() is not None
+
+
 def list_traffic_entries(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     rows = connection.execute("SELECT client_name FROM traffic_totals ORDER BY client_name").fetchall()
     return {row["client_name"]: get_traffic_entry(connection, row["client_name"]) for row in rows}

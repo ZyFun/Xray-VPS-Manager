@@ -10,7 +10,7 @@ from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
 from xray_vps_manager.core.time import utc_stamp
-from xray_vps_manager.xray import caddy as xray_caddy
+from xray_vps_manager.caddy import model as caddy_model
 from xray_vps_manager.xray import crypto as xray_crypto
 from xray_vps_manager.xray.config import (
     DEFAULT_XHTTP_MODE,
@@ -80,7 +80,6 @@ class RemoveConnectionResult:
     detached_client_names: list[str] = field(default_factory=list)
     env_switch_tag: str = ""
     env_switch_name: str = ""
-    env_update: dict[str, str] | None = None
 
 
 @dataclass
@@ -93,7 +92,6 @@ class UpdateConnectionTransportResult:
     xhttp_mode: str = ""
     xhttp_extra: dict[str, Any] | None = None
     updated_clients: list[str] | None = None
-    env_update: dict[str, str] | None = None
 
 
 @dataclass
@@ -131,8 +129,11 @@ class RenameConnectionResult:
     new_name: str
 
 
-def refresh_connection_records(config: dict[str, Any], connections: dict[str, Any]) -> None:
-    env = server_env_values()
+def refresh_connection_records(
+    config: dict[str, Any], connections: dict[str, Any], *, default_fingerprint: str | None = None,
+) -> None:
+    if default_fingerprint is None:
+        default_fingerprint = server_env_values().get("FINGERPRINT") or "chrome"
     now_stamp = utc_stamp()
     for inbound in reality_inbounds(config):
         settings = connection_settings_from_inbound(inbound)
@@ -165,7 +166,7 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
                 if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra")
             }
         )
-        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry.setdefault("fingerprint", default_fingerprint)
         entry["security"] = "reality"
 
     for inbound in tls_xhttp_inbounds(config):
@@ -199,7 +200,7 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
         entry["port"] = int(entry.get("publicPort") or DEFAULT_XHTTP_TLS_PUBLIC_PORT)
         entry["sni"] = entry.get("publicHost") or entry.get("sni") or ""
         entry.setdefault("dest", "")
-        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry.setdefault("fingerprint", default_fingerprint)
         settings = connection_transport_settings_from_inbound(inbound)
         if isinstance(settings.get("xhttpExtra"), dict):
             merged_extra = normalize_xhttp_extra(entry.get("xhttpExtra") if isinstance(entry.get("xhttpExtra"), dict) else {})
@@ -227,7 +228,7 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
                 "port": int(inbound.get("port", 0) or 0),
                 "sni": "",
                 "dest": "",
-                "fingerprint": env.get("FINGERPRINT") or "chrome",
+                "fingerprint": default_fingerprint,
                 "publicKey": "",
                 "shortId": "",
             }
@@ -256,7 +257,7 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
             entry.pop("wsPath", None)
         entry.setdefault("sni", "")
         entry.setdefault("dest", "")
-        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry.setdefault("fingerprint", default_fingerprint)
         entry.setdefault("publicKey", "")
         entry.setdefault("shortId", "")
         if certificate.get("certificateFile"):
@@ -265,8 +266,8 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
             entry["keyFile"] = certificate["keyFile"]
 
 
-def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
-    refresh_connection_records(config, db_managed_connections(db))
+def ensure_connections(config: dict[str, Any], db: dict[str, Any], *, default_fingerprint: str | None = None) -> None:
+    refresh_connection_records(config, db_managed_connections(db), default_fingerprint=default_fingerprint)
     default_tag = default_connection_tag(config)
     for inbound in managed_connection_inbounds(config):
         tag = inbound_tag(inbound)
@@ -279,8 +280,10 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
         entry.setdefault("connection", default_tag)
 
 
-def connection_entry(config: dict[str, Any], db: dict[str, Any], tag: str) -> dict[str, Any]:
-    ensure_connections(config, db)
+def connection_entry(
+    config: dict[str, Any], db: dict[str, Any], tag: str, *, default_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    ensure_connections(config, db, default_fingerprint=default_fingerprint)
     entry = db_managed_connections(db).get(tag)
     if not entry:
         raise ValueError(f"Connection not found: {tag}")
@@ -291,8 +294,11 @@ def connection_display_name(config: dict[str, Any], db: dict[str, Any], tag: str
     return connection_entry(config, db, tag).get("name") or connection_name_from_tag(tag)
 
 
-def connection_fingerprint(config: dict[str, Any], db: dict[str, Any], tag: str) -> str:
-    value = (connection_entry(config, db, tag).get("fingerprint") or fingerprint()).strip().lower()
+def connection_fingerprint(
+    config: dict[str, Any], db: dict[str, Any], tag: str, *, default_fingerprint: str | None = None,
+) -> str:
+    entry = connection_entry(config, db, tag, default_fingerprint=default_fingerprint)
+    value = (entry.get("fingerprint") or default_fingerprint or fingerprint()).strip().lower()
     if value not in FINGERPRINTS:
         raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
     return value
@@ -881,7 +887,6 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
             db_clients(db).pop(name, None)
             removed_client_names.append(name)
 
-    env_update = None
     env_switch_tag = ""
     env_switch_name = ""
     if tag == INBOUND_TAG:
@@ -889,7 +894,6 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
         if remaining:
             env_switch_tag = inbound_tag(remaining[0])
             env_switch_name = connection_display_name(config, db, env_switch_tag)
-            env_update = server_env_values_for_connection(config, db, env_switch_tag)
 
     return RemoveConnectionResult(
         tag=tag,
@@ -898,7 +902,6 @@ def remove_connection(config: dict[str, Any], db: dict[str, Any], identifier: st
         detached_client_names=detached_client_names,
         env_switch_tag=env_switch_tag,
         env_switch_name=env_switch_name,
-        env_update=env_update,
     )
 
 
@@ -957,7 +960,6 @@ def update_connection_transport(
                 credential["transport"] = settings["transport"]
                 client_credentials.sync_legacy_fields(client_entry)
 
-    env_update = server_env_values_for_connection(config, db, tag) if tag == INBOUND_TAG else None
     return UpdateConnectionTransportResult(
         tag=tag,
         display_name=connection_display_name(config, db, tag),
@@ -967,7 +969,6 @@ def update_connection_transport(
         xhttp_mode=settings.get("xhttpMode", ""),
         xhttp_extra=settings.get("xhttpExtra"),
         updated_clients=sorted(updated_clients),
-        env_update=env_update,
     )
 
 
@@ -1050,7 +1051,7 @@ def update_trojan_connection(
     previous_tls_min = str(entry.get("tlsMinVersion") or DEFAULT_TROJAN_TLS_MIN_VERSION)
     previous_tls_max = str(entry.get("tlsMaxVersion") or DEFAULT_TROJAN_TLS_MAX_VERSION)
 
-    next_public_host = xray_caddy.validate_domain(domain or previous_public_host)
+    next_public_host = caddy_model.validate_domain(domain or previous_public_host)
     next_public_port = public_port if public_port is not None else previous_public_port
     next_local_port = local_port if local_port is not None else previous_local_port
     next_ws_path = normalize_trojan_ws_path(ws_path) if ws_path is not None else previous_ws_path
@@ -1061,7 +1062,7 @@ def update_trojan_connection(
     )
     next_tls_min = tls_min_version if tls_min_version is not None else previous_tls_min
     next_tls_max = tls_max_version if tls_max_version is not None else previous_tls_max
-    next_tls_min, next_tls_max = xray_caddy.normalize_tls_version_pair(next_tls_min, next_tls_max)
+    next_tls_min, next_tls_max = caddy_model.normalize_tls_version_pair(next_tls_min, next_tls_max)
 
     if port_used_by_other_inbound(config, tag, next_local_port):
         raise ValueError(f"LOCAL_PORT is already used by another inbound: {next_local_port}")
@@ -1143,27 +1144,6 @@ def connection_client_names(config: dict[str, Any], db: dict[str, Any], tag: str
     return sorted(names)
 
 
-def server_env_values_for_connection(config: dict[str, Any], db: dict[str, Any], tag: str) -> dict[str, str]:
-    inbound = find_inbound_by_tag(config, tag)
-    settings = connection_settings_from_inbound(inbound)
-    values = server_env_values()
-    values.setdefault("SERVER_ADDR", "")
-    values["PORT"] = str(settings["port"])
-    values["REALITY_SNI"] = settings["sni"]
-    values["REALITY_DEST"] = settings["dest"]
-    values["FINGERPRINT"] = connection_fingerprint(config, db, tag)
-    values["REALITY_TRANSPORT"] = settings["transport"]
-    values.pop("GRPC_SERVICE_NAME", None)
-    values.pop("XHTTP_PATH", None)
-    values.pop("XHTTP_MODE", None)
-    if settings["transport"] == "grpc":
-        values["GRPC_SERVICE_NAME"] = settings["grpcServiceName"]
-    elif settings["transport"] == "xhttp":
-        values["XHTTP_PATH"] = settings["xhttpPath"]
-        values["XHTTP_MODE"] = settings["xhttpMode"]
-    return values
-
-
 def resolve_connection_identifier(config: dict[str, Any], db: dict[str, Any], value: str) -> str:
     identifier = (value or "").strip()
     if not identifier:
@@ -1183,3 +1163,36 @@ def resolve_connection_identifier(config: dict[str, Any], db: dict[str, Any], va
     if len(matches) > 1:
         raise ValueError(f"Connection name is ambiguous: {identifier}. Use TAG instead.")
     raise ValueError(f"Connection not found: {identifier}")
+
+
+def caddy_connection_options(config: dict, db: dict) -> list[dict]:
+    options = []
+    for tag, entry in db.get("connections", {}).items():
+        if (entry.get("security") or "reality") != "tls":
+            continue
+        inbound = find_inbound_by_tag(config, tag)
+        protocol = entry.get("protocol") or inbound.get("protocol") or "vless"
+        transport = entry.get("transport") or inbound.get("streamSettings", {}).get("network") or "xhttp"
+        if not ((protocol == "vless" and transport == "xhttp") or (protocol == "trojan" and transport == "ws")):
+            continue
+        route_path = ""
+        if protocol == "trojan" and transport == "ws":
+            route_path = entry.get("wsPath") or ""
+        elif protocol == "vless" and transport == "xhttp":
+            route_path = entry.get("xhttpPath") or ""
+        options.append(
+            {
+                "tag": tag,
+                "name": entry.get("name") or tag,
+                "protocol": protocol,
+                "transport": transport,
+                "domain": entry.get("publicHost") or entry.get("sni") or "",
+                "publicPort": int(entry.get("publicPort") or entry.get("port") or 443),
+                "localPort": int(entry.get("localPort") or inbound.get("port") or 0),
+                "tlsMin": entry.get("tlsMinVersion") or "tls1.2",
+                "tlsMax": entry.get("tlsMaxVersion") or "tls1.2",
+                "routePath": route_path,
+                "upstreamTransport": "http" if protocol == "trojan" and transport == "ws" else "xhttp",
+            }
+        )
+    return options

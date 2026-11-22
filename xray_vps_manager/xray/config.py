@@ -284,6 +284,10 @@ def reality_dest(sni: str) -> str:
     return f"{sni}:443" if sni else ""
 
 
+def reality_sni(reality_settings: dict[str, Any]) -> str:
+    return (reality_settings.get("serverNames") or [""])[0]
+
+
 def normalize_reality_transport(value: str | None) -> str:
     transport = (value or DEFAULT_REALITY_TRANSPORT).strip().lower()
     if transport not in REALITY_TRANSPORTS:
@@ -754,7 +758,7 @@ def connection_settings_from_inbound(inbound: dict[str, Any]) -> dict[str, Any]:
     settings = {"tag": inbound_tag(inbound), "security": security, "port": port, "sni": "", "dest": ""}
     if security == "reality":
         reality = stream.get("realitySettings", {})
-        sni = (reality.get("serverNames") or [""])[0]
+        sni = reality_sni(reality)
         settings.update(
             {
                 "sni": sni,

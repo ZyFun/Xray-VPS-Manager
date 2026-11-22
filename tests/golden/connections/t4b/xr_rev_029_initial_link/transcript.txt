@@ -1,0 +1,113 @@
+
+["2", "1", "5", "5443", "updated.example"]
+exit: 0
+stdout:
+======== Обновить PORT, REALITY_SNI и REALITY_DEST =========
+
+
+Обновление PORT и REALITY_SNI.
+DEST будет автоматически пересчитан как REALITY_SNI:443.
+PORT [443]: REALITY_SNI [www.example.com]: PORT обновлён: 5443
+REALITY_SNI обновлён: updated.example
+REALITY_DEST обновлён: updated.example:443
+Backup: <ROOT>/usr/local/etc/xray/config.json.bak.20261006120000000002
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["<ROOT>/usr/local/bin/xray", "run", "-test", "-format", "json", "-config", "<ROOT>/usr/local/etc/xray/config.json.tmp"]
+["systemctl", "stop", "xray"]
+["systemctl", "reset-failed", "xray"]
+["systemctl", "restart", "xray"]
+["systemctl", "show", "--property=ActiveState,SubState,NRestarts", "xray"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/SQLite
++++ after/SQLite
+@@ -8 +8 @@
+-["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
++["vless-reality", "Reality", 5443, "updated.example", "updated.example:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+--- before/config backups
++++ after/config backups
+@@ -2,0 +3 @@
++config.json.bak.20261006120000000002
+--- before/config.json
++++ after/config.json
+@@ -20 +20 @@
+-      "port": 443,
++      "port": 5443,
+@@ -35 +35 @@
+-          "dest": "www.example.com:443",
++          "dest": "updated.example:443",
+@@ -38 +38 @@
+-            "www.example.com"
++            "updated.example"
+--- before/root/xray-reality-client.txt
++++ after/root/xray-reality-client.txt
+@@ -1,5 +1,12 @@
+-INITIAL_PROTOCOL=both
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+-TROJAN_CLIENT_URI=trojan://X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
+-UUID=00000000-0000-4000-8000-000000000001
++CLIENT_URI=[trojan trojan-tls]
++trojan://X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
++[vless vless-reality]
++vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=updated.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++PORT=5443
++PROTOCOL=VLESS
++SECURITY=REALITY
++TRANSPORT=tcp
++FLOW=xtls-rprx-vision
++SNI=updated.example
++DEST=updated.example:443
++FINGERPRINT=chrome
+--- before/server.env
++++ after/server.env
+@@ -3,3 +3,3 @@
+-PORT=443
+-REALITY_SNI=www.example.com
+-REALITY_DEST=www.example.com:443
++PORT=5443
++REALITY_SNI=updated.example
++REALITY_DEST=updated.example:443
+@@ -7,0 +8,4 @@
++GRPC_SERVICE_NAME=
++XHTTP_PATH=
++XHTTP_MODE=
++MANAGER_TIMEZONE=Europe/Moscow
+@@ -9 +12,0 @@
+-MANAGER_TIMEZONE=Europe/Moscow
+
+["2", "3"]
+exit: 0
+stdout:
+================= Вывести стартовую ссылку =================
+
+CLIENT_URI=[trojan trojan-tls]
+trojan://X1fH-ZM9TBrKrmGsNmjQ8mT3OA94HhblZa_QFPiyCEs@trojan.example:443?security=tls&type=ws&sni=trojan.example&path=%2Ftrojan&host=trojan.example&fp=chrome#fixture
+[vless vless-reality]
+vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=updated.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+PORT=5443
+PROTOCOL=VLESS
+SECURITY=REALITY
+TRANSPORT=tcp
+FLOW=xtls-rprx-vision
+SNI=updated.example
+DEST=updated.example:443
+FINGERPRINT=chrome
+
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:

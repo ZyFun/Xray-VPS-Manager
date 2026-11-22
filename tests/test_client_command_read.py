@@ -1,20 +1,19 @@
 import unittest
 from contextlib import redirect_stderr
 from io import StringIO
-from types import SimpleNamespace
 from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
-from tests.test_client_characterization import ALICE_KEY, script_processes, write_config
+from tests.test_client_characterization import ALICE_KEY, script_connection_caddy_checks, script_processes, write_config
 from xray_vps_manager.clients import links, repository
 from xray_vps_manager.commands import client_arguments
-from xray_vps_manager.commands.client_connections import update_trojan_caddy_site
 from xray_vps_manager.db import database
-from xray_vps_manager.xray import caddy
+from xray_vps_manager.caddy import sites
 
 
 def script_caddy(box):
+    script_connection_caddy_checks(box)
     box.processes.executables["caddy"] = "/usr/bin/caddy"
     ok = box.processes.ok()
     box.processes.script({
@@ -379,34 +378,30 @@ class TrojanCaddySiteBackupRotationTests(unittest.TestCase):
     """Смена домена сайта Caddy в `xray-client` оставляет не больше N копий (VIREI-241)."""
 
     def test_update_trojan_caddy_site_domain_change_prunes_copies(self) -> None:
-        with Sandbox() as box:
+        with Sandbox() as box, running_xray(box):
+            script_processes(box)
             script_caddy(box)
+            setup = box.run_cli(
+                "client", "add-trojan-connection", "Trojan", "10100", "old.example.com", "--public-port", "1443",
+            )
+            self.assertEqual((setup.exit_code, setup.stderr), (0, ""))
             conf_dir = box.paths.caddy_conf_dir
-            conf_dir.mkdir(parents=True)
             old_path = conf_dir / "old.example.com.caddy"
             new_path = conf_dir / "new.example.com.caddy"
-            old_path.write_text(caddy.caddy_site_block("old.example.com", 10100))
+            old_site = old_path.read_text()
             for path in (old_path, new_path):
                 for index in range(7):
                     path.with_name(f"{path.name}.bak.2026010100000000{index:04d}").write_text("old\n")
-            result = SimpleNamespace(
-                caddy_enabled=True,
-                public_host="new.example.com",
-                previous_public_host="old.example.com",
-                local_port=10100,
-                tls_min_version="tls1.2",
-                tls_max_version="tls1.3",
-                ws_path="/trojan",
-            )
-            written = update_trojan_caddy_site(result)
+            update = box.run_cli("client", "update-trojan-connection", "Trojan", "--domain", "new.example.com")
+            self.assertEqual((update.exit_code, update.stderr), (0, ""))
 
             old_copies = sorted(conf_dir.glob("old.example.com.caddy.bak.*"))
             new_copies = sorted(conf_dir.glob("new.example.com.caddy.bak.*"))
             self.assertFalse(old_path.exists())
             self.assertTrue(new_path.exists())
-            self.assertEqual(len(old_copies), caddy.SITE_BACKUP_KEEP)
-            self.assertEqual(old_copies[-1], written.backup)
-            self.assertEqual(len(new_copies), caddy.SITE_BACKUP_KEEP)
+            self.assertEqual(len(old_copies), sites.SITE_BACKUP_KEEP)
+            self.assertEqual(old_copies[-1].read_text(), old_site)
+            self.assertEqual(len(new_copies), sites.SITE_BACKUP_KEEP)
 
 if __name__ == "__main__":
     unittest.main()

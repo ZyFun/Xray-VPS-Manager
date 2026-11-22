@@ -13,11 +13,12 @@ from unittest import mock
 import zipfile
 
 from tests.support.sandbox import Sandbox
+from tests.test_apply_characterization import apply_legacy_client_snapshot
 from tests.test_client_manager_lock import foreign_lock_holder, lock_is_free, script_apply
 from tests.test_restart_verification import FakeClock, FakeSocket
 from tests.test_routing_apply_compensation import legacy_telegram_config
 from xray_vps_manager.clients import repository, routes, service
-from xray_vps_manager.commands import backup, client_connections as client, menu_reality_actions, menu_xray_actions, update
+from xray_vps_manager.commands import backup, menu_reality_actions, menu_xray_actions, update
 from xray_vps_manager.core import fs, systemd
 from xray_vps_manager.core.errors import ApplyConfigError, StateError, LockTimeout
 from xray_vps_manager.routing import torrent
@@ -71,18 +72,23 @@ class WriterAdaptersTests(unittest.TestCase):
         return config
 
     def test_noop_writers_do_not_backup_or_restart_but_client_saves_metadata(self):
-        for module in (client, menu_reality_actions, menu_xray_actions):
+        for module in (service, menu_reality_actions, menu_xray_actions):
             with self.subTest(module=module.__name__), Sandbox() as box, live(box):
                 config = self.normalized(box)
                 original = box.paths.config.read_bytes()
-                if module is client:
+                if module is service:
                     db = repository.load_db()
                     db["clients"]["alice"]["paymentType"] = "paid"
-                    result = client.save_config_restart_xray_and_db(config, db)
+                    self.assertIsNone(apply_legacy_client_snapshot(config, db))
                     self.assertEqual(repository.load_db()["clients"]["alice"]["paymentType"], "paid")
+                elif module is menu_reality_actions:
+                    stdout = StringIO()
+                    with mock.patch("builtins.input", return_value=""), redirect_stdout(stdout):
+                        menu_reality_actions.update_sni()
+                    self.assertIn("Backup: not created; config is unchanged.", stdout.getvalue())
                 else:
                     result = module.apply_config(config)
-                self.assertIsNone(result)
+                    self.assertIsNone(result)
                 self.assertEqual(box.paths.config.read_bytes(), original)
                 self.assertEqual(list(box.paths.config_dir.glob("config.json.bak.*")), [])
                 box.assert_restarted(times=0)
@@ -112,7 +118,7 @@ class WriterAdaptersTests(unittest.TestCase):
                 replies.extend([replies[-1]] * 20)
                 box.processes.script({command: replies})
                 with self.assertRaises(KeyboardInterrupt):
-                    client.save_config_restart_xray_and_db(config, db)
+                    apply_legacy_client_snapshot(config, db)
                 self.assertEqual(box.paths.config.read_bytes(), original)
                 self.assertEqual(repository.load_db()["clients"]["alice"]["paymentType"], "free")
                 self.assertEqual(len(list(box.paths.config_dir.glob("config.json.bak.*"))), 1)
@@ -188,8 +194,8 @@ class LegacyTelegramWriterTests(unittest.TestCase):
             original = box.paths.config.read_bytes()
             others = deepcopy([rule for rule in config["routing"]["rules"]
                                if rule.get("outboundTag") != "api"])
-            config["log"]["loglevel"] = "debug"
-            menu_reality_actions.apply_config(config)
+            with mock.patch("builtins.input", return_value="changed.example"), redirect_stdout(StringIO()):
+                menu_reality_actions.update_sni()
             self.assert_applied(box, original, others)
 
     def test_torrent_toggle_accepts_legacy_telegram_order(self):
@@ -224,9 +230,9 @@ class LegacyTelegramWriterTests(unittest.TestCase):
                     self.assertEqual(result.exit_code, 1)
                     self.assertIn("Restored backup", result.stderr)
                 elif writer == "reality":
-                    config["log"]["loglevel"] = "debug"
-                    with self.assertRaises(SystemExit) as raised:
-                        menu_reality_actions.apply_config(config)
+                    with mock.patch("builtins.input", return_value="changed.example"), redirect_stdout(StringIO()), \
+                            self.assertRaises(SystemExit) as raised:
+                        menu_reality_actions.update_sni()
                     self.assertIn("Restored backup", str(raised.exception))
                 else:
                     with self.assertRaises(ApplyConfigError) as raised:

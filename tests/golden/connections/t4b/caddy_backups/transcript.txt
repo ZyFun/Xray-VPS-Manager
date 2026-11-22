@@ -1,0 +1,260 @@
+
+["2", "4", "4", "1"]
+exit: 0
+stdout:
+=============== Создать backup Caddy config ================
+
+Caddy backup created: <ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000Z.tar.gz
+Size: <SIZE>
+Contains: /etc/caddy/Caddyfile and /etc/caddy/conf.d when present.
+Certificate cache files are not included; Caddy can issue certificates again.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/xray_caddy_backups
++++ after/xray_caddy_backups
+@@ -0,0 +1 @@
++caddy-backup-20261006-120000Z.tar.gz
+
+["2", "4", "4", "2"]
+exit: 0
+stdout:
+============== Показать backups Caddy config ===============
+
++-+-+-+
+|PATH|CREATED|SIZE|
++-+-+-+
+|<ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000Z.tar.gz|<MTIME>|<SIZE>|
++-+-+-+
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "4", "3", "1", "y"]
+exit: 0
+stdout:
+=========== Восстановить Caddy config из backup ============
+
+Выбери Caddy backup для действия: восстановления.
++-+-+-+-+
+|№|PATH|CREATED|SIZE|
++-+-+-+-+
+|1|<ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000Z.tar.gz|<MTIME>|<SIZE>|
+|0|Назад|||
++-+-+-+-+
+Backup: Будут восстановлены настройки Caddy из backup.
+Это заменит /etc/caddy/Caddyfile и /etc/caddy/conf.d, если conf.d есть в архиве.
+Перед восстановлением будет создан pre-restore backup текущих настроек Caddy.
+Восстановить Caddy config [y/N]: Valid configuration
+Restored from: <ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000Z.tar.gz
+Pre-restore backup: <ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000000000Z.tar.gz
+Restored paths:
+  <ROOT>/etc/caddy/Caddyfile
+Caddy config validated and reloaded.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["caddy", "version"]
+["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "enable", "--now", "caddy"]
+["systemctl", "reload", "caddy"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/etc/caddy/Caddyfile
++++ after/etc/caddy/Caddyfile
+@@ -1 +1 @@
+-changed.example {
++backup.example {
+--- before/xray_caddy_backups
++++ after/xray_caddy_backups
+@@ -0,0 +1 @@
++caddy-backup-20261006-120000000000Z.tar.gz
+
+["2", "4", "4", "4", "1", "y"]
+exit: 0
+stdout:
+=============== Удалить backup Caddy config ================
+
+Выбери Caddy backup для действия: удаления.
++-+-+-+-+
+|№|PATH|CREATED|SIZE|
++-+-+-+-+
+|1|<ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000Z.tar.gz|<MTIME>|<SIZE>|
+|2|<ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000000000Z.tar.gz|<MTIME>|<SIZE>|
+|0|Назад|||
++-+-+-+-+
+Backup: Удалить Caddy backup <ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000Z.tar.gz [y/N]: Deleted Caddy backup: <ROOT>/root/xray_caddy_backups/caddy-backup-20261006-120000Z.tar.gz
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/xray_caddy_backups
++++ after/xray_caddy_backups
+@@ -2 +1,0 @@
+-caddy-backup-20261006-120000Z.tar.gz
+
+["2", "4", "4", "5", "M", "<ROOT>/var/www/fixture"]
+exit: 0
+stdout:
+=================== Создать backup сайта ===================
+
+Выбери папку сайта для действия: backup.
+Автоматически найденных site root нет. Можно ввести путь вручную.
+Site root: Абсолютный путь к папке сайта: Caddy site backup created: <ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz
+Site root: <ROOT>/var/www/fixture
+Size: <SIZE>
+Contains: static site files from the selected site root.
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/xray_caddy_site_backups
++++ after/xray_caddy_site_backups
+@@ -0,0 +1 @@
++caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz
+
+["2", "4", "4", "6"]
+exit: 0
+stdout:
+================== Показать backups сайта ==================
+
++-+-+-+-+
+|PATH|SITE ROOT|CREATED|SIZE|
++-+-+-+-+
+|<ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz|<ROOT>/var/www/fixture|<MTIME>|<SIZE>|
++-+-+-+-+
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+
+["2", "4", "4", "7", "1", "", "y"]
+exit: 0
+stdout:
+=============== Восстановить сайт из backup ================
+
+Выбери Caddy site backup для действия: восстановления.
++-+-+-+-+-+
+|№|PATH|SITE ROOT|CREATED|SIZE|
++-+-+-+-+-+
+|1|<ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz|<ROOT>/var/www/fixture|<MTIME>|<SIZE>|
+|0|Назад||||
++-+-+-+-+-+
+Backup: Выбери папку сайта для действия: restore.
+Автоматически найденных site root нет. Можно ввести путь вручную.
+Site root [<ROOT>/var/www/fixture]: Будут восстановлены файлы сайта из backup.
+Target root: <ROOT>/var/www/fixture
+Перед заменой существующей папки сайта будет создан pre-restore backup, если папка уже существует.
+Восстановить сайт Caddy [y/N]: Restored from: <ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz
+Pre-restore site backup: <ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000000000Z.tar.gz
+Restored site root: <ROOT>/var/www/fixture
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/var/www/fixture/index.html
++++ after/var/www/fixture/index.html
+@@ -1 +1 @@
+-changed page
++original page
+--- before/xray_caddy_site_backups
++++ after/xray_caddy_site_backups
+@@ -0,0 +1 @@
++caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000000000Z.tar.gz
+
+["2", "4", "4", "8", "1", "y"]
+exit: 0
+stdout:
+=================== Удалить backup сайта ===================
+
+Выбери Caddy site backup для действия: удаления.
++-+-+-+-+-+
+|№|PATH|SITE ROOT|CREATED|SIZE|
++-+-+-+-+-+
+|1|<ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz|<ROOT>/var/www/fixture|<MTIME>|<SIZE>|
+|2|<ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000000000Z.tar.gz|<ROOT>/var/www/fixture|<MTIME>|<SIZE>|
+|0|Назад||||
++-+-+-+-+-+
+Backup: Удалить Caddy site backup <ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz [y/N]: Deleted Caddy site backup: <ROOT>/root/xray_caddy_site_backups/caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz
+
+============================================================
+stderr:
+processes:
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+["/usr/local/bin/xray", "version"]
+state:
+--- before/xray_caddy_site_backups
++++ after/xray_caddy_site_backups
+@@ -2 +1,0 @@
+-caddy-site-backup-<ROOT>_var_www_fixture-20261006-120000Z.tar.gz

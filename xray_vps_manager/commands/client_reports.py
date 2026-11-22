@@ -7,7 +7,7 @@ import sys
 
 from xray_vps_manager.clients import access as client_access
 from xray_vps_manager.clients import crud as client_crud
-from xray_vps_manager.clients import listing as client_listing
+from xray_vps_manager.clients import links, listing as client_listing
 from xray_vps_manager.clients import repository as client_repository
 from xray_vps_manager.clients import runtime as client_runtime
 from xray_vps_manager.clients import service as client_service
@@ -15,7 +15,7 @@ from xray_vps_manager.clients import settings as client_settings
 from xray_vps_manager.clients.service import sync_traffic
 from xray_vps_manager.commands.client_arguments import parse_date_value, parse_month_value
 from xray_vps_manager.commands.client_output import (
-    access_key_for_client_id, connection_display_name, ensure_connections, format_traffic, link_for, validate_name,
+    access_key_for_client_id, connection_display_name, ensure_connections, format_traffic, validate_name,
 )
 from xray_vps_manager.core.paths import paths
 from xray_vps_manager.core.process import run_capture
@@ -288,24 +288,11 @@ def cmd_limit_list():
 def cmd_link(name, connection_tag=None):
     validate_name(name)
     config, db = client_service.read_state()
-    ensure_connections(config, db)
-    links = []
-    for row in client_listing.credential_rows(config, db):
-        if row["name"] != name:
-            continue
-        if connection_tag and row["connection"] != connection_tag:
-            continue
-        links.append(row)
-    if links:
-        if len(links) == 1:
-            row = links[0]
-            print(link_for(config, row["id"], name, row["connection"], db))
-            return
-        for row in links:
-            print(f"[{row['protocol']} {row['connection']}]")
-            print(link_for(config, row["id"], name, row["connection"], db))
-        return
-    fail(f"Client not found: {name}")
+    try:
+        for line in links.client_link_lines(config, db, name, connection_tag):
+            print(line)
+    except (RuntimeError, ValueError) as exc:
+        fail(str(exc))
 
 
 def cmd_key(name):

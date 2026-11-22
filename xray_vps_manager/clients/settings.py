@@ -7,7 +7,7 @@ from pathlib import Path
 
 from xray_vps_manager.core import clock
 from xray_vps_manager.core.paths import SERVER_ENV_PATH
-from xray_vps_manager.core.settings import read_env as read_server_env, write_env as write_server_env, env_value
+from xray_vps_manager.core.settings import env_value, read_env as read_server_env, update_env, write_env as write_server_env
 
 DEFAULT_SERVER_ADDR = ""
 DEFAULT_SERVER_NAME = "Xray"
@@ -24,6 +24,19 @@ FINGERPRINTS = {
     "randomized",
 }
 SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
+_SERVER_ENV_ORDER = [
+    "SERVER_ADDR",
+    "SERVER_NAME",
+    "PORT",
+    "REALITY_SNI",
+    "REALITY_DEST",
+    "FINGERPRINT",
+    "REALITY_TRANSPORT",
+    "GRPC_SERVICE_NAME",
+    "XHTTP_PATH",
+    "XHTTP_MODE",
+    "MANAGER_TIMEZONE",
+]
 
 
 def server_env_values(path: Path | None = None) -> dict[str, str]:
@@ -35,23 +48,14 @@ def server_env_value(key: str, default: str = "", path: Path | None = None) -> s
 
 
 def save_server_env_values(values: dict[str, str], path: Path | None = None) -> None:
-    ordered = [
-        "SERVER_ADDR",
-        "SERVER_NAME",
-        "PORT",
-        "REALITY_SNI",
-        "REALITY_DEST",
-        "FINGERPRINT",
-        "REALITY_TRANSPORT",
-        "GRPC_SERVICE_NAME",
-        "XHTTP_PATH",
-        "XHTTP_MODE",
-        "MANAGER_TIMEZONE",
-    ]
     updated = dict(values)
-    for key in ordered:
+    for key in _SERVER_ENV_ORDER:
         updated.setdefault(key, "")
-    write_server_env(updated, path=path, ordered_keys=ordered)
+    write_server_env(updated, path=path, ordered_keys=_SERVER_ENV_ORDER)
+
+
+def update_server_env_values(changes: dict[str, str]) -> None:
+    update_env(changes, defaults=dict.fromkeys(_SERVER_ENV_ORDER, ""), ordered_keys=_SERVER_ENV_ORDER)
 
 
 def normalize_timezone(value: str | None) -> str:
@@ -101,3 +105,10 @@ def fingerprint() -> str:
     if value not in FINGERPRINTS:
         raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
     return value
+
+
+def fingerprint_or_default() -> str:
+    try:
+        return fingerprint()
+    except ValueError:
+        return "chrome"

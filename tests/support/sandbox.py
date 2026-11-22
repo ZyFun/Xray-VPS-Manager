@@ -81,8 +81,6 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.commands.manager_update', 'MANAGER_LIB_DIR'),
     ('xray_vps_manager.commands.manager_update', 'MANAGER_PACKAGE_DIR'),
     ('xray_vps_manager.commands.manager_update', 'BACKUP_DIR'),
-    ('xray_vps_manager.commands.menu_reality_actions', 'CONFIG_PATH'),
-    ('xray_vps_manager.commands.menu_reality_actions', 'CLIENT_LINK_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_CONFIG_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_DROPIN_PATH'),
     ('xray_vps_manager.commands.menu_security_actions', 'SSHD_LEGACY_DROPIN_PATH'),
@@ -128,20 +126,12 @@ LEGACY_PATH_ATTRS = (
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PATH'),
     ('xray_vps_manager.telegram.notifications', 'REBOOT_REQUIRED_PACKAGES_PATH'),
     ('xray_vps_manager.telegram.setup', 'CONFIG_PATH'),
-    ('xray_vps_manager.xray.caddy', 'CADDYFILE_PATH'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_CONF_DIR'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_BACKUP_DIR'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_SITE_BACKUP_DIR'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_RANDOM_TLS_ENV_PATH'),
-    ('xray_vps_manager.xray.caddy', 'CADDY_RANDOM_TLS_CONFIG_DIR'),
-    ('xray_vps_manager.xray.caddy', 'RANDOM_TLS_LOCK_PATH'),
-    ('xray_vps_manager.xray.caddy', 'SYSTEMD_DIR'),
     ('xray_vps_manager.xray.config', 'CONFIG_PATH'),
 )
 
 # Защитные списки сохраняют исходные запреты, а не только временные пути.
 LEGACY_GUARD_PATH_ATTRS = (
-    ('xray_vps_manager.xray.caddy', 'DANGEROUS_SITE_ROOTS'),
+    ('xray_vps_manager.caddy.sites', 'DANGEROUS_SITE_ROOTS'),
 )
 
 LEGACY_CACHE_ATTRS = (
@@ -168,6 +158,7 @@ class FakeProcesses:
         self.unexpected = []
         self.executables = {}
         self._scripts = {}
+        self._programs = {}
 
     def _reject(self, message):
         self.unexpected.append(message)
@@ -193,13 +184,17 @@ class FakeProcesses:
             key = tuple(shlex.split(command)) if isinstance(command, str) else tuple(map(str, command))
             self._scripts[key] = list(response) if isinstance(response, list) else response
 
+    def script_program(self, executable, handler):
+        """Обработчик argv конкретного исполняемого файла внутри Sandbox."""
+        self._programs[executable] = handler
+
     def run(self, args, *positional, **kwargs):
         if isinstance(args, (str, bytes)) or kwargs.get('shell') or positional:
             self._reject('Sandbox запрещает shell и неоднозначный запуск: '+repr(args))
         key = tuple(map(str, args))
         self.calls.append(key)
         self.requests.append((key, dict(kwargs)))
-        response = self._scripts.get(key)
+        response = self._scripts.get(key, self._programs.get(key[0]) if key else None)
         if isinstance(response, list):
             response = response.pop(0) if response else None
         if response is None:

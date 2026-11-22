@@ -735,35 +735,28 @@ class BackupSQLiteTests(unittest.TestCase):
             self.assertEqual(messages[-1], "Caddy TLS randomizer timer restored for api.example.com: enabled")
 
     def test_restore_caddy_random_tls_state_ignores_old_archives_without_state(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            temp_dir = Path(tmp_dir)
-            calls = []
+        with Sandbox() as box:
+            temp_dir = box.root / "archive"
+            temp_dir.mkdir()
 
-            with mock.patch.object(backup, "run_systemctl", side_effect=lambda args, timeout=20: calls.append(args)):
-                messages = backup.restore_caddy_random_tls_state(temp_dir)
+            messages = backup.restore_caddy_random_tls_state(temp_dir)
 
             self.assertEqual(messages, [])
-            self.assertEqual(calls, [])
+            self.assertEqual(box.processes.calls, [])
 
     def test_restore_caddy_random_tls_state_treats_missing_legacy_unit_as_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            temp_dir = Path(tmp_dir)
+        with Sandbox() as box:
+            temp_dir = box.root / "archive"
+            temp_dir.mkdir()
             (temp_dir / "manifest.json").write_text(json.dumps({"caddyRandomTls": {"configured": False}}))
+            box.processes.script({
+                "systemctl disable --now xray-caddy-random-tls.timer": box.processes.result(
+                    1, stderr="Failed to disable unit: Unit file xray-caddy-random-tls.timer does not exist.",
+                ),
+                "systemctl stop xray-caddy-random-tls.service": box.processes.ok(),
+            })
 
-            def fake_systemctl(args, timeout=20):
-                if args == ["disable", "--now", "xray-caddy-random-tls.timer"]:
-                    return backup.subprocess.CompletedProcess(
-                        ["systemctl", *args],
-                        1,
-                        "",
-                        "Failed to disable unit: Unit file xray-caddy-random-tls.timer does not exist.",
-                    )
-                return backup.subprocess.CompletedProcess(["systemctl", *args], 0, "", "")
-
-            with mock.patch.object(backup.xray_caddy, "list_random_tls_configs", return_value=[]), mock.patch.object(
-                backup, "run_systemctl", side_effect=fake_systemctl
-            ):
-                messages = backup.restore_caddy_random_tls_state(temp_dir)
+            messages = backup.restore_caddy_random_tls_state(temp_dir)
 
             self.assertEqual(messages, ["Caddy TLS randomizer timer restored: disabled"])
 

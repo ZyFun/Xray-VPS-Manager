@@ -20,12 +20,16 @@ from xray_vps_manager.core.process import (
     WRITER_RESTART_UNITS,
     active_units,
     restart_units,
+    run_stream,
     stop_systemd_unit,
     stop_writer_units,
 )
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.db import database as sqlite_database
-from xray_vps_manager.xray import caddy as xray_caddy
+from xray_vps_manager.caddy import random_tls
+from xray_vps_manager.caddy import service as caddy_service
+from xray_vps_manager.caddy import sites as caddy_sites
+from xray_vps_manager.core.paths import paths
 from xray_vps_manager.xray import apply as xray_apply
 
 from xray_vps_manager.runner import command_entry, fail as _fail, require_root as _require_root
@@ -37,14 +41,14 @@ SERVER_ENV_PATH = CONFIG_DIR / "server.env"
 MANAGER_DB_PATH = CONFIG_DIR / "manager.db"
 SERVER_ENV_ARCNAME = "usr/local/etc/xray/server.env"
 MANAGER_DB_ARCNAME = "usr/local/etc/xray/manager.db"
-CADDY_RANDOM_TLS_ENV_PATH = xray_caddy.CADDY_RANDOM_TLS_ENV_PATH
+CADDY_RANDOM_TLS_ENV_PATH = paths().caddy_random_tls_env
 CADDY_RANDOM_TLS_ENV_ARCNAME = "usr/local/etc/xray/caddy-random-tls.env"
-CADDY_RANDOM_TLS_CONFIG_DIR = xray_caddy.CADDY_RANDOM_TLS_CONFIG_DIR
+CADDY_RANDOM_TLS_CONFIG_DIR = paths().caddy_random_tls_dir
 CADDY_RANDOM_TLS_CONFIG_DIR_ARCNAME = "usr/local/etc/xray/caddy-random-tls.d"
-CADDYFILE_PATH = xray_caddy.CADDYFILE_PATH
-CADDYFILE_ARCNAME = xray_caddy.CADDYFILE_ARCNAME
-CADDY_CONF_DIR = xray_caddy.CADDY_CONF_DIR
-CADDY_CONF_DIR_ARCNAME = xray_caddy.CADDY_CONF_DIR_ARCNAME
+CADDYFILE_PATH = paths().caddyfile
+CADDYFILE_ARCNAME = caddy_sites.CADDYFILE_ARCNAME
+CADDY_CONF_DIR = paths().caddy_conf_dir
+CADDY_CONF_DIR_ARCNAME = caddy_sites.CADDY_CONF_DIR_ARCNAME
 # MANAGER_PYTHON — интерпретатор обёрток этого сервера (шаг 0a): restore оставляет значение целевого сервера.
 HOST_SPECIFIC_SERVER_ENV_KEYS = ("SERVER_ADDR", "SECURITY_AUDIT_LAST_RUN", "MANAGER_PYTHON")
 MANAGER_LOCK_TIMEOUT = 60
@@ -216,36 +220,28 @@ def restore_direct_tls_certificate_permissions(config_path=CONFIG_PATH):
     return messages
 
 
-def run_systemctl(args, timeout=20):
-    command = ["systemctl", *args]
-    try:
-        return run_capture(command, timeout=timeout)
-    except FileNotFoundError:
-        return subprocess.CompletedProcess(command, 127, "", "systemctl not found")
-
-
 def systemctl_is_enabled(unit):
-    result = run_systemctl(["is-enabled", unit], timeout=10)
+    result = caddy_service.run_systemctl("is-enabled", unit, timeout=10)
     return result.returncode == 0
 
 
 def caddy_random_tls_backup_state():
     sites = []
-    for config in xray_caddy.list_random_tls_configs(CADDY_RANDOM_TLS_CONFIG_DIR):
+    for config in random_tls.list_random_tls_configs(CADDY_RANDOM_TLS_CONFIG_DIR):
         sites.append(
             {
                 "domain": config.domain,
                 "localPort": config.local_port,
-                "enabled": systemctl_is_enabled(xray_caddy.random_tls_timer_instance(config.domain)),
+                "enabled": systemctl_is_enabled(random_tls.random_tls_timer_instance(config.domain)),
                 "envArchive": f"{CADDY_RANDOM_TLS_CONFIG_DIR_ARCNAME}/{config.domain}.env",
-                "service": xray_caddy.random_tls_service_instance(config.domain),
-                "timer": xray_caddy.random_tls_timer_instance(config.domain),
+                "service": random_tls.random_tls_service_instance(config.domain),
+                "timer": random_tls.random_tls_timer_instance(config.domain),
             }
         )
     legacy_configured = CADDY_RANDOM_TLS_ENV_PATH.exists()
     if legacy_configured and not sites:
         try:
-            legacy_config = xray_caddy.read_random_tls_config(CADDY_RANDOM_TLS_ENV_PATH)
+            legacy_config = random_tls.read_random_tls_config(CADDY_RANDOM_TLS_ENV_PATH)
         except (RuntimeError, ValueError):
             legacy_config = None
         if legacy_config:
@@ -253,10 +249,10 @@ def caddy_random_tls_backup_state():
                 {
                     "domain": legacy_config.domain,
                     "localPort": legacy_config.local_port,
-                    "enabled": systemctl_is_enabled(xray_caddy.LEGACY_RANDOM_TLS_TIMER),
+                    "enabled": systemctl_is_enabled(random_tls.LEGACY_RANDOM_TLS_TIMER),
                     "envArchive": CADDY_RANDOM_TLS_ENV_ARCNAME,
-                    "service": xray_caddy.LEGACY_RANDOM_TLS_SERVICE,
-                    "timer": xray_caddy.LEGACY_RANDOM_TLS_TIMER,
+                    "service": random_tls.LEGACY_RANDOM_TLS_SERVICE,
+                    "timer": random_tls.LEGACY_RANDOM_TLS_TIMER,
                     "legacy": True,
                 }
             )
@@ -266,8 +262,8 @@ def caddy_random_tls_backup_state():
         "enabled": any(bool(item.get("enabled")) for item in sites),
         "envArchive": CADDY_RANDOM_TLS_ENV_ARCNAME if legacy_configured else "",
         "configsArchive": CADDY_RANDOM_TLS_CONFIG_DIR_ARCNAME if CADDY_RANDOM_TLS_CONFIG_DIR.exists() else "",
-        "service": xray_caddy.RANDOM_TLS_SERVICE_TEMPLATE,
-        "timer": xray_caddy.RANDOM_TLS_TIMER_TEMPLATE,
+        "service": random_tls.RANDOM_TLS_SERVICE_TEMPLATE,
+        "timer": random_tls.RANDOM_TLS_TIMER_TEMPLATE,
         "sites": sites,
     }
 
@@ -377,7 +373,7 @@ def create_backup(path_only=False, quiet=False, sync=True):
                         die(f"Required Caddy directory not found: {source}")
                     continue
                 tar.add(source, arcname=arcname, recursive=True)
-                size = xray_caddy.tree_size(source)
+                size = caddy_sites.tree_size(source)
                 files.append({
                     "source": str(source),
                     "archive": arcname,
@@ -586,30 +582,26 @@ def restore_caddy_config_if_present(temp_dir, validator=None):
         return []
     if not source_caddyfile.exists():
         raise FileNotFoundError(f"Backup contains {CADDY_CONF_DIR_ARCNAME} but not {CADDYFILE_ARCNAME}.")
-    restored = xray_caddy.apply_config_restore(
+    restored = caddy_sites.apply_config_restore(
         temp_dir,
         caddyfile_path=CADDYFILE_PATH,
         conf_dir=CADDY_CONF_DIR,
     )
-    validate = validator or (lambda: xray_caddy.validate_and_reload_caddy(subprocess.run))
+    validate = validator or (lambda: caddy_service.validate_and_reload_caddy(run_stream))
     validate()
     return [str(path) for path in restored]
 
 
 def set_caddy_random_tls_enabled(domain, enabled):
-    timer = xray_caddy.random_tls_timer_instance(domain)
-    service = xray_caddy.random_tls_service_instance(domain)
-    if enabled:
-        return run_systemctl(["enable", "--now", timer], timeout=20)
-    disable = run_systemctl(["disable", "--now", timer], timeout=20)
-    run_systemctl(["stop", service], timeout=10)
-    return disable
+    timer = random_tls.random_tls_timer_instance(domain)
+    unit = random_tls.random_tls_service_instance(domain)
+    return caddy_service.restore_random_tls_timer(timer, unit, enabled)
 
 
 def disable_legacy_caddy_random_tls():
-    disable = run_systemctl(["disable", "--now", xray_caddy.LEGACY_RANDOM_TLS_TIMER], timeout=20)
-    run_systemctl(["stop", xray_caddy.LEGACY_RANDOM_TLS_SERVICE], timeout=10)
-    return disable
+    return caddy_service.restore_random_tls_timer(
+        random_tls.LEGACY_RANDOM_TLS_TIMER, random_tls.LEGACY_RANDOM_TLS_SERVICE, False,
+    )
 
 
 def restored_random_tls_sites(state):
@@ -620,7 +612,7 @@ def restored_random_tls_sites(state):
         source = CADDY_RANDOM_TLS_ENV_PATH
         if source.exists():
             try:
-                config = xray_caddy.read_random_tls_config(source)
+                config = random_tls.read_random_tls_config(source)
             except (RuntimeError, ValueError):
                 return []
             return [
@@ -642,15 +634,15 @@ def ensure_restored_random_tls_site_config(site):
         env_archive = str(site.get("envArchive") or "")
         source = CADDY_RANDOM_TLS_ENV_PATH if env_archive == CADDY_RANDOM_TLS_ENV_ARCNAME else CADDY_RANDOM_TLS_CONFIG_DIR / Path(env_archive).name
         if source.exists():
-            config = xray_caddy.read_random_tls_config(source)
+            config = random_tls.read_random_tls_config(source)
             domain = config.domain
             local_port = config.local_port
     if not domain or not local_port:
         raise ValueError("Caddy TLS randomizer site state is missing domain or localPort")
-    config_path = xray_caddy.random_tls_env_path(str(domain), CADDY_RANDOM_TLS_CONFIG_DIR)
+    config_path = random_tls.random_tls_env_path(str(domain), CADDY_RANDOM_TLS_CONFIG_DIR)
     if not config_path.exists():
-        xray_caddy.write_random_tls_config(str(domain), local_port, config_path)
-    return xray_caddy.read_random_tls_config(config_path)
+        random_tls.write_random_tls_config(str(domain), local_port, config_path)
+    return random_tls.read_random_tls_config(config_path)
 
 
 def restore_caddy_random_tls_state(temp_dir):
@@ -668,7 +660,7 @@ def restore_caddy_random_tls_state(temp_dir):
             messages.append(f"Removed Caddy TLS randomizer config: {CADDY_RANDOM_TLS_ENV_PATH}")
         except FileNotFoundError:
             pass
-        for config in xray_caddy.list_random_tls_configs(CADDY_RANDOM_TLS_CONFIG_DIR):
+        for config in random_tls.list_random_tls_configs(CADDY_RANDOM_TLS_CONFIG_DIR):
             set_caddy_random_tls_enabled(config.domain, False)
         result = disable_legacy_caddy_random_tls()
         if result.returncode == 0 or systemctl_unit_missing(result):
@@ -689,7 +681,7 @@ def restore_caddy_random_tls_state(temp_dir):
         messages.append(f"Caddy TLS randomizer unit restore failed: {exc}")
         return messages
 
-    daemon_reload = run_systemctl(["daemon-reload"], timeout=20)
+    daemon_reload = caddy_service.run_systemctl("daemon-reload")
     if daemon_reload.returncode != 0:
         messages.append(f"systemctl daemon-reload failed for Caddy TLS randomizer: {compact_output(daemon_reload)}")
 
