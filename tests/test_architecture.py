@@ -17,9 +17,7 @@ AREA_ORDER = (
 )
 # Исходный список R1.0; следующие задачи только удаляют устранённые пары.
 # Идентичность исключения — модуль-источник и модуль-цель, без номеров строк.
-ALLOWED_IMPORTS = frozenset({
-    # Клиентские операции пока читают трафик до его отдельного шага миграции.
-})
+ALLOWED_IMPORTS = frozenset()
 
 
 def module_name(path: Path) -> str:
@@ -442,6 +440,14 @@ from ...clients import credentials, models
 
 
 class PackageArchitectureTests(unittest.TestCase):
+    def test_reality_menu_delegates_writes_to_scenarios(self):
+        path = PACKAGE_ROOT / "commands" / "menu_reality_actions.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        names.update(node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute))
+        names.update(node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.alias)))
+        self.assertFalse(names & {"apply_config", "write_server_env", "update_connection_db"})
+
     def test_package_matches_separate_marker_baseline(self):
         sources = {path.relative_to(PACKAGE_ROOT): path.read_text(encoding='utf-8')
                    for path in sorted(PACKAGE_ROOT.rglob('*.py'))}

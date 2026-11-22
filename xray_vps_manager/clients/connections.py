@@ -129,8 +129,11 @@ class RenameConnectionResult:
     new_name: str
 
 
-def refresh_connection_records(config: dict[str, Any], connections: dict[str, Any]) -> None:
-    env = server_env_values()
+def refresh_connection_records(
+    config: dict[str, Any], connections: dict[str, Any], *, default_fingerprint: str | None = None,
+) -> None:
+    if default_fingerprint is None:
+        default_fingerprint = server_env_values().get("FINGERPRINT") or "chrome"
     now_stamp = utc_stamp()
     for inbound in reality_inbounds(config):
         settings = connection_settings_from_inbound(inbound)
@@ -163,7 +166,7 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
                 if key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode", "xhttpExtra")
             }
         )
-        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry.setdefault("fingerprint", default_fingerprint)
         entry["security"] = "reality"
 
     for inbound in tls_xhttp_inbounds(config):
@@ -197,7 +200,7 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
         entry["port"] = int(entry.get("publicPort") or DEFAULT_XHTTP_TLS_PUBLIC_PORT)
         entry["sni"] = entry.get("publicHost") or entry.get("sni") or ""
         entry.setdefault("dest", "")
-        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry.setdefault("fingerprint", default_fingerprint)
         settings = connection_transport_settings_from_inbound(inbound)
         if isinstance(settings.get("xhttpExtra"), dict):
             merged_extra = normalize_xhttp_extra(entry.get("xhttpExtra") if isinstance(entry.get("xhttpExtra"), dict) else {})
@@ -225,7 +228,7 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
                 "port": int(inbound.get("port", 0) or 0),
                 "sni": "",
                 "dest": "",
-                "fingerprint": env.get("FINGERPRINT") or "chrome",
+                "fingerprint": default_fingerprint,
                 "publicKey": "",
                 "shortId": "",
             }
@@ -254,7 +257,7 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
             entry.pop("wsPath", None)
         entry.setdefault("sni", "")
         entry.setdefault("dest", "")
-        entry.setdefault("fingerprint", env.get("FINGERPRINT") or "chrome")
+        entry.setdefault("fingerprint", default_fingerprint)
         entry.setdefault("publicKey", "")
         entry.setdefault("shortId", "")
         if certificate.get("certificateFile"):
@@ -263,8 +266,8 @@ def refresh_connection_records(config: dict[str, Any], connections: dict[str, An
             entry["keyFile"] = certificate["keyFile"]
 
 
-def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
-    refresh_connection_records(config, db_managed_connections(db))
+def ensure_connections(config: dict[str, Any], db: dict[str, Any], *, default_fingerprint: str | None = None) -> None:
+    refresh_connection_records(config, db_managed_connections(db), default_fingerprint=default_fingerprint)
     default_tag = default_connection_tag(config)
     for inbound in managed_connection_inbounds(config):
         tag = inbound_tag(inbound)
@@ -277,8 +280,10 @@ def ensure_connections(config: dict[str, Any], db: dict[str, Any]) -> None:
         entry.setdefault("connection", default_tag)
 
 
-def connection_entry(config: dict[str, Any], db: dict[str, Any], tag: str) -> dict[str, Any]:
-    ensure_connections(config, db)
+def connection_entry(
+    config: dict[str, Any], db: dict[str, Any], tag: str, *, default_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    ensure_connections(config, db, default_fingerprint=default_fingerprint)
     entry = db_managed_connections(db).get(tag)
     if not entry:
         raise ValueError(f"Connection not found: {tag}")
@@ -289,8 +294,11 @@ def connection_display_name(config: dict[str, Any], db: dict[str, Any], tag: str
     return connection_entry(config, db, tag).get("name") or connection_name_from_tag(tag)
 
 
-def connection_fingerprint(config: dict[str, Any], db: dict[str, Any], tag: str) -> str:
-    value = (connection_entry(config, db, tag).get("fingerprint") or fingerprint()).strip().lower()
+def connection_fingerprint(
+    config: dict[str, Any], db: dict[str, Any], tag: str, *, default_fingerprint: str | None = None,
+) -> str:
+    entry = connection_entry(config, db, tag, default_fingerprint=default_fingerprint)
+    value = (entry.get("fingerprint") or default_fingerprint or fingerprint()).strip().lower()
     if value not in FINGERPRINTS:
         raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
     return value

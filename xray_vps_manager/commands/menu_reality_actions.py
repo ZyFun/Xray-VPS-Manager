@@ -4,30 +4,21 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import contextmanager
 from collections.abc import Callable
-from pathlib import Path
 
 from xray_vps_manager.clients import connections as connection_store
 from xray_vps_manager.clients import connections_service
-from xray_vps_manager.clients.connections_service import refresh_initial_link
 from xray_vps_manager.commands import client_connections as connection_output
 from xray_vps_manager.commands.client_arguments import validate_connection_name
 from xray_vps_manager.commands.client_output import client_change_errors
-from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql, save_db
-from xray_vps_manager.clients.settings import (
-    fingerprint as server_fingerprint,
-    save_server_env_values,
-    server_env_values,
-)
-from xray_vps_manager.core.errors import ApplyConfigError, LockTimeout
+from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql
+from xray_vps_manager.clients.settings import fingerprint_or_default
+from xray_vps_manager.core.errors import ApplyConfigError, LockTimeout, ManagerError
 from xray_vps_manager.commands.presenters import apply_error_text, backup_text
-from xray_vps_manager.core.locks import manager_lock
-from xray_vps_manager.core.paths import CONFIG_PATH
-from xray_vps_manager.core.process import tcp_port_in_use
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.caddy import model as caddy_model
 from xray_vps_manager.caddy import sites as caddy_sites
-from xray_vps_manager.xray import apply as xray_apply
 from xray_vps_manager.xray.config import (
     DEFAULT_TROJAN_TLS_LOCAL_PORT,
     DEFAULT_TROJAN_TLS_MAX_VERSION,
@@ -40,15 +31,11 @@ from xray_vps_manager.xray.config import (
     INBOUND_TAG,
     XHTTP_MODES,
     XHTTP_XMUX_KEYS,
-    changed_port_listen,
     connection_name_from_tag,
     connection_settings_from_inbound,
     default_xhttp_advanced_extra,
     default_xhttp_packet_up_extra,
-    ensure_api_rule_first,
-    find_inbound,
     find_inbound_by_tag,
-    inbound_tag,
     load_config as load_xray_config,
     managed_connection_inbounds,
     normalize_xhttp_download_settings,
@@ -58,7 +45,7 @@ from xray_vps_manager.xray.config import (
     normalize_trojan_ws_path,
     normalize_xhttp_mode,
     normalize_xhttp_path,
-    reality_dest,
+    reality_sni,
     reality_inbounds,
     xhttp_extra_json,
 )
@@ -77,7 +64,6 @@ FINGERPRINTS = [
     "randomized",
 ]
 TRANSPORTS = ["tcp", "grpc", "xhttp"]
-MANAGER_LOCK_TIMEOUT = 60
 
 CommandRunner = Callable[[list[str]], None]
 ConfirmCallback = Callable[[str], bool]
@@ -158,14 +144,6 @@ def validate_xhttp_mode(value: str) -> str:
         die(str(exc))
 
 
-def current_fingerprint() -> str:
-    try:
-        value = server_fingerprint().strip().lower()
-    except ValueError:
-        return "chrome"
-    return value if value in FINGERPRINTS else "chrome"
-
-
 def connection_rows(
     security_filter: str | None = None,
     protocol_filter: str | None = None,
@@ -191,7 +169,7 @@ def connection_rows(
             "port": entry.get("port") or settings["port"],
             "sni": entry.get("sni") or settings["sni"],
             "transport": entry.get("transport") or settings["transport"],
-            "fingerprint": (entry.get("fingerprint") or current_fingerprint()) if security == "reality" else (entry.get("fingerprint") or "-"),
+            "fingerprint": (entry.get("fingerprint") or fingerprint_or_default()) if security == "reality" else (entry.get("fingerprint") or "-"),
         })
     return rows
 
@@ -273,100 +251,18 @@ def choose_xhttp_connection(action: str, auto_single: bool = True) -> str:
         print("Неизвестное подключение. Выбери номер из списка или 0 для возврата.")
 
 
-def port_used_by_other_inbound(config: dict, port: int, current_tag: str) -> bool:
-    for inbound in config.get("inbounds", []):
-        if inbound.get("port") == port and inbound_tag(inbound) != current_tag:
-            return True
-    return False
-
-
-def current_settings(config: dict, connection_tag: str | None = None) -> tuple[dict, dict, int, str, str]:
-    if connection_tag:
-        inbound = find_inbound_by_tag(config, connection_tag)
-    else:
-        inbound = find_inbound(config)
-    reality = inbound.get("streamSettings", {}).get("realitySettings", {})
-    server_names = reality.get("serverNames") or [""]
-    port = int(inbound.get("port", 443))
-    sni = server_names[0]
-    dest = reality.get("dest", reality_dest(sni))
-    return inbound, reality, port, sni, dest
-
-
-def update_connection_db(
-    tag: str,
-    port=None,
-    sni=None,
-    dest=None,
-    fingerprint=None,
-    transport=None,
-    grpc_service_name=None,
-    xhttp_path=None,
-    xhttp_mode=None,
-) -> None:
-    db = load_db_sql()
-    connections = db_managed_connections(db)
-    entry = connections.setdefault(tag, {"tag": tag, "name": connection_name_from_tag(tag)})
-    if port is not None:
-        entry["port"] = port
-    if sni is not None:
-        entry["sni"] = sni
-    if dest is not None:
-        entry["dest"] = dest
-    if fingerprint is not None:
-        entry["fingerprint"] = fingerprint
-    for key in ("transport", "grpcServiceName", "xhttpPath", "xhttpMode"):
-        if key in entry and (
-            transport is not None or grpc_service_name is not None or xhttp_path is not None or xhttp_mode is not None
-        ):
-            entry.pop(key, None)
-    if transport is not None:
-        entry["transport"] = validate_transport(transport)
-        if entry["transport"] == "grpc":
-            entry["grpcServiceName"] = validate_grpc_service_name(grpc_service_name or "")
-        elif entry["transport"] == "xhttp":
-            entry["xhttpPath"] = validate_xhttp_path(xhttp_path or "")
-            entry["xhttpMode"] = validate_xhttp_mode(xhttp_mode or "")
-    save_db(db)
-
-
-def write_server_env(
-    port: int,
-    sni: str,
-    dest: str,
-    fingerprint: str | None = None,
-    transport: str | None = None,
-    grpc_service_name: str | None = None,
-    xhttp_path: str | None = None,
-    xhttp_mode: str | None = None,
-) -> None:
-    values = server_env_values()
-    values["PORT"] = str(port)
-    values["REALITY_SNI"] = sni
-    values["REALITY_DEST"] = dest
-    values["FINGERPRINT"] = validate_fingerprint(fingerprint) if fingerprint is not None else current_fingerprint()
-    if transport is not None:
-        values["REALITY_TRANSPORT"] = validate_transport(transport)
-        values.pop("GRPC_SERVICE_NAME", None)
-        values.pop("XHTTP_PATH", None)
-        values.pop("XHTTP_MODE", None)
-        if values["REALITY_TRANSPORT"] == "grpc":
-            values["GRPC_SERVICE_NAME"] = validate_grpc_service_name(grpc_service_name or "")
-        elif values["REALITY_TRANSPORT"] == "xhttp":
-            values["XHTTP_PATH"] = validate_xhttp_path(xhttp_path or "")
-            values["XHTTP_MODE"] = validate_xhttp_mode(xhttp_mode or "")
-    values.setdefault("SERVER_ADDR", "")
-    save_server_env_values(values)
-
-
-def apply_config(config: dict) -> Path | None:
+@contextmanager
+def _reality_change_errors():
     try:
-        ensure_api_rule_first(config)
-        return xray_apply.apply_config(config).backup
-    except ApplyConfigError as exc:
+        yield
+    except ManagerError as exc:
         if exc.exit_code == 130:
             raise KeyboardInterrupt from exc
-        die(apply_error_text(exc))
+        if isinstance(exc, ApplyConfigError):
+            die(apply_error_text(exc))
+        if isinstance(exc, LockTimeout):
+            die(f"{exc.message}\n{exc.hint}")
+        die("\n".join(filter(None, (exc.message, exc.hint, exc.detail))))
 
 
 def prompt(default, message: str) -> str:
@@ -665,7 +561,7 @@ def create_connection() -> None:
     port = validate_port(input("PORT: ").strip())
     print("REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
     sni = validate_host(input("REALITY_SNI: ").strip(), "REALITY_SNI")
-    fp = choose_fingerprint(current_fingerprint())
+    fp = choose_fingerprint(fingerprint_or_default())
     transport = choose_transport("tcp")
     with client_change_errors():
         change = connections_service.add_connection(validate_connection_name(name), port, sni, fp, **transport)
@@ -685,7 +581,7 @@ def create_trojan_connection() -> None:
     public_port = validate_port(prompt(DEFAULT_TROJAN_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy"))
     print("WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.")
     ws_path = validate_trojan_ws_path(prompt(DEFAULT_TROJAN_WS_PATH, "WS_PATH"))
-    fp = choose_fingerprint(current_fingerprint())
+    fp = choose_fingerprint(fingerprint_or_default())
     tls_min, tls_max = choose_tls_versions(
         DEFAULT_TROJAN_TLS_MIN_VERSION,
         DEFAULT_TROJAN_TLS_MAX_VERSION,
@@ -720,7 +616,7 @@ def create_tls_xhttp_connection(name: str) -> None:
     default_local_port = connection_store.next_local_port(config)
     local_port = validate_port(prompt(default_local_port, "LOCAL_PORT для Xray"))
     public_port = validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy"))
-    fp = choose_fingerprint(current_fingerprint())
+    fp = choose_fingerprint(fingerprint_or_default())
     path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
     mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
     xhttp_extra = maybe_prompt_xhttp_advanced_settings(default_xhttp_path=path, default_xhttp_mode=mode)
@@ -754,39 +650,17 @@ def update_port() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    _, _, current_port, _, _ = current_settings(config, tag)
+    inbound = find_inbound_by_tag(config, tag)
     print()
     print("Новый PORT: публичный TCP-порт для подключения клиентов.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
-    port = validate_port(prompt(current_port, "PORT"))
-    if port_used_by_other_inbound(config, port, tag):
-        die(f"PORT is already used by another inbound: {port}")
-    listen = changed_port_listen(config, tag, port)
-    if listen is not None and tcp_port_in_use(port, listen):
-        die(f"PORT is already in use on this server by another process: {port}")
-    try:
-        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port"):
-            # The answers apply to config.json read again under the lock.
-            config = load_config()
-            inbound, reality, _, sni, _ = current_settings(config, tag)
-            if port_used_by_other_inbound(config, port, tag):
-                die(f"PORT is already used by another inbound: {port}")
-            listen = changed_port_listen(config, tag, port)
-            if listen is not None and tcp_port_in_use(port, listen):
-                die(f"PORT is already in use on this server by another process: {port}")
-            dest = reality_dest(sni)
-            inbound["port"] = port
-            reality["dest"] = dest
-            backup = apply_config(config)
-            update_connection_db(tag, port=port, sni=sni, dest=dest)
-            if tag == INBOUND_TAG:
-                write_server_env(port, sni, dest)
-    except LockTimeout as exc:
-        die(f"{exc.message}\n{exc.hint}")
-    refresh_initial_link()
-    print(f"PORT обновлён: {port}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup_text(backup)}")
+    port = validate_port(prompt(int(inbound.get("port", 443)), "PORT"))
+    with _reality_change_errors():
+        connections_service.check_reality_port(config, tag, port)
+        change = connections_service.update_reality_endpoint(tag, port=port)
+    print(f"PORT обновлён: {change.result.port}")
+    print(f"REALITY_DEST обновлён: {change.result.dest}")
+    print(f"Backup: {backup_text(change.backup)}")
 
 
 def update_sni() -> None:
@@ -795,29 +669,17 @@ def update_sni() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    _, _, _, current_sni, _ = current_settings(config, tag)
+    inbound = find_inbound_by_tag(config, tag)
+    current_sni = reality_sni(inbound.get("streamSettings", {}).get("realitySettings", {}))
     print()
     print("Новый REALITY_SNI: реальный HTTPS-домен без https:// и без порта.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
     sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    try:
-        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-sni"):
-            # The answers apply to config.json read again under the lock.
-            config = load_config()
-            _, reality, port, _, _ = current_settings(config, tag)
-            dest = reality_dest(sni)
-            reality["serverNames"] = [sni]
-            reality["dest"] = dest
-            backup = apply_config(config)
-            update_connection_db(tag, port=port, sni=sni, dest=dest)
-            if tag == INBOUND_TAG:
-                write_server_env(port, sni, dest)
-    except LockTimeout as exc:
-        die(f"{exc.message}\n{exc.hint}")
-    refresh_initial_link()
-    print(f"REALITY_SNI обновлён: {sni}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup_text(backup)}")
+    with _reality_change_errors():
+        change = connections_service.update_reality_endpoint(tag, sni=sni)
+    print(f"REALITY_SNI обновлён: {change.result.sni}")
+    print(f"REALITY_DEST обновлён: {change.result.dest}")
+    print(f"Backup: {backup_text(change.backup)}")
 
 
 def update_port_and_sni() -> None:
@@ -826,42 +688,20 @@ def update_port_and_sni() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    _, _, current_port, current_sni, _ = current_settings(config, tag)
+    inbound = find_inbound_by_tag(config, tag)
+    current_sni = reality_sni(inbound.get("streamSettings", {}).get("realitySettings", {}))
     print()
     print("Обновление PORT и REALITY_SNI.")
     print("DEST будет автоматически пересчитан как REALITY_SNI:443.")
-    port = validate_port(prompt(current_port, "PORT"))
-    if port_used_by_other_inbound(config, port, tag):
-        die(f"PORT is already used by another inbound: {port}")
-    listen = changed_port_listen(config, tag, port)
-    if listen is not None and tcp_port_in_use(port, listen):
-        die(f"PORT is already in use on this server by another process: {port}")
-    sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
-    try:
-        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-port-sni"):
-            # The answers apply to config.json read again under the lock.
-            config = load_config()
-            inbound, reality, _, _, _ = current_settings(config, tag)
-            if port_used_by_other_inbound(config, port, tag):
-                die(f"PORT is already used by another inbound: {port}")
-            listen = changed_port_listen(config, tag, port)
-            if listen is not None and tcp_port_in_use(port, listen):
-                die(f"PORT is already in use on this server by another process: {port}")
-            dest = reality_dest(sni)
-            inbound["port"] = port
-            reality["serverNames"] = [sni]
-            reality["dest"] = dest
-            backup = apply_config(config)
-            update_connection_db(tag, port=port, sni=sni, dest=dest)
-            if tag == INBOUND_TAG:
-                write_server_env(port, sni, dest)
-    except LockTimeout as exc:
-        die(f"{exc.message}\n{exc.hint}")
-    refresh_initial_link()
-    print(f"PORT обновлён: {port}")
-    print(f"REALITY_SNI обновлён: {sni}")
-    print(f"REALITY_DEST обновлён: {dest}")
-    print(f"Backup: {backup_text(backup)}")
+    port = validate_port(prompt(int(inbound.get("port", 443)), "PORT"))
+    with _reality_change_errors():
+        connections_service.check_reality_port(config, tag, port)
+        sni = validate_host(prompt(current_sni, "REALITY_SNI"), "REALITY_SNI")
+        change = connections_service.update_reality_endpoint(tag, port=port, sni=sni)
+    print(f"PORT обновлён: {change.result.port}")
+    print(f"REALITY_SNI обновлён: {change.result.sni}")
+    print(f"REALITY_DEST обновлён: {change.result.dest}")
+    print(f"Backup: {backup_text(change.backup)}")
 
 
 def choose_fingerprint(default: str) -> str:
@@ -925,16 +765,9 @@ def update_fingerprint() -> None:
     if not tag:
         print("Действие отменено.")
         return
-    fp = choose_fingerprint(current_fingerprint())
-    try:
-        with manager_lock(MANAGER_LOCK_TIMEOUT, purpose="update-fingerprint"):
-            _, _, port, sni, dest = current_settings(load_config(), tag)
-            update_connection_db(tag, port=port, sni=sni, dest=dest, fingerprint=fp)
-            if tag == INBOUND_TAG:
-                write_server_env(port, sni, dest, fp)
-    except LockTimeout as exc:
-        die(f"{exc.message}\n{exc.hint}")
-    refresh_initial_link()
+    fp = choose_fingerprint(fingerprint_or_default())
+    with _reality_change_errors():
+        connections_service.update_reality_fingerprint(tag, fp)
     print(f"FINGERPRINT обновлён: {fp}")
     print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
 

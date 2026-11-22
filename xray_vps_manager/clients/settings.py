@@ -105,3 +105,10 @@ def fingerprint() -> str:
     if value not in FINGERPRINTS:
         raise ValueError("FINGERPRINT must be one of: " + ", ".join(sorted(FINGERPRINTS)))
     return value
+
+
+def fingerprint_or_default() -> str:
+    try:
+        return fingerprint()
+    except ValueError:
+        return "chrome"

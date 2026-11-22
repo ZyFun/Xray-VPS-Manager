@@ -79,11 +79,16 @@ class WriterAdaptersTests(unittest.TestCase):
                 if module is service:
                     db = repository.load_db()
                     db["clients"]["alice"]["paymentType"] = "paid"
-                    result = apply_legacy_client_snapshot(config, db)
+                    self.assertIsNone(apply_legacy_client_snapshot(config, db))
                     self.assertEqual(repository.load_db()["clients"]["alice"]["paymentType"], "paid")
+                elif module is menu_reality_actions:
+                    stdout = StringIO()
+                    with mock.patch("builtins.input", return_value=""), redirect_stdout(stdout):
+                        menu_reality_actions.update_sni()
+                    self.assertIn("Backup: not created; config is unchanged.", stdout.getvalue())
                 else:
                     result = module.apply_config(config)
-                self.assertIsNone(result)
+                    self.assertIsNone(result)
                 self.assertEqual(box.paths.config.read_bytes(), original)
                 self.assertEqual(list(box.paths.config_dir.glob("config.json.bak.*")), [])
                 box.assert_restarted(times=0)
@@ -189,8 +194,8 @@ class LegacyTelegramWriterTests(unittest.TestCase):
             original = box.paths.config.read_bytes()
             others = deepcopy([rule for rule in config["routing"]["rules"]
                                if rule.get("outboundTag") != "api"])
-            config["log"]["loglevel"] = "debug"
-            menu_reality_actions.apply_config(config)
+            with mock.patch("builtins.input", return_value="changed.example"), redirect_stdout(StringIO()):
+                menu_reality_actions.update_sni()
             self.assert_applied(box, original, others)
 
     def test_torrent_toggle_accepts_legacy_telegram_order(self):
@@ -225,9 +230,9 @@ class LegacyTelegramWriterTests(unittest.TestCase):
                     self.assertEqual(result.exit_code, 1)
                     self.assertIn("Restored backup", result.stderr)
                 elif writer == "reality":
-                    config["log"]["loglevel"] = "debug"
-                    with self.assertRaises(SystemExit) as raised:
-                        menu_reality_actions.apply_config(config)
+                    with mock.patch("builtins.input", return_value="changed.example"), redirect_stdout(StringIO()), \
+                            self.assertRaises(SystemExit) as raised:
+                        menu_reality_actions.update_sni()
                     self.assertIn("Restored backup", str(raised.exception))
                 else:
                     with self.assertRaises(ApplyConfigError) as raised:

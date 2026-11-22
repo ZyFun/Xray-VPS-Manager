@@ -1,6 +1,6 @@
 """T3. Контракты VIREI-124/125 (вариант В) и ротация VIREI-126."""
 
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from copy import deepcopy
 from io import StringIO
 from itertools import count
@@ -19,6 +19,7 @@ from xray_vps_manager.commands import (
 )
 from xray_vps_manager.telegram import setup
 from xray_vps_manager.commands.client_output import client_change_errors
+from xray_vps_manager.core import process
 from xray_vps_manager.core.errors import ApplyConfigError
 
 def apply_legacy_client_snapshot(config, db):
@@ -102,6 +103,11 @@ class ApplyCharacterizationTests(unittest.TestCase):
 
     def check_writer(self, box, module, error, attempts, failure):
         path = box.paths.config
+        if module is menu_reality_actions:
+            # Через меню меняется PORT. Остальные поля кандидата уже есть в рабочем конфиге.
+            current = box.config()
+            current["log"]["loglevel"] = "debug"
+            path.write_text(json.dumps(current))
         original = path.read_bytes()
         candidate = json.loads(original)
         candidate["log"]["loglevel"] = "debug"
@@ -139,6 +145,13 @@ class ApplyCharacterizationTests(unittest.TestCase):
                 db = repository.load_db()
                 db["clients"]["alice"]["paymentType"] = "paid"
                 return apply_legacy_client_snapshot(candidate, db)
+            if module is menu_reality_actions:
+                stdout = StringIO()
+                with mock.patch("builtins.input", return_value="8443"), redirect_stdout(stdout), \
+                        mock.patch.object(process, "tcp_port_in_use", return_value=False):
+                    menu_reality_actions.update_port()
+                return Path(next(line.removeprefix("Backup: ") for line in stdout.getvalue().splitlines()
+                                 if line.startswith("Backup: ")))
             if restore_dict:
                 return module.apply_config(candidate, before)
             return module.apply_config(candidate)

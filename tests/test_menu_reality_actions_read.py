@@ -9,34 +9,36 @@ from tests.test_apply_characterization import running_xray
 from tests.test_client_characterization import write_config
 from tests.test_connection_menu_characterization import script_menu_processes
 from xray_vps_manager.caddy import sites
+from xray_vps_manager.clients import repository
 
 
 class MenuRealityActionsReadTests(unittest.TestCase):
-    def test_update_connection_db_uses_runtime_read_layer(self) -> None:
-        db = {"connections": {}}
-        with mock.patch.object(menu_reality_actions, "load_db_sql", return_value=db) as load_db_sql, \
-            mock.patch.object(menu_reality_actions, "save_db") as save_db:
-            menu_reality_actions.update_connection_db(
-                "vless-reality",
-                port=443,
-                sni="example.com",
-                dest="example.com:443",
-                fingerprint="chrome",
-            )
+    def test_fingerprint_edit_creates_metadata_for_config_only_connection(self) -> None:
+        with Sandbox(db=None) as box:
+            script_menu_processes(box)
+            config = box.config()
+            inbound = next(row for row in config["inbounds"] if row["tag"] == "vless-reality")
+            reality = inbound["streamSettings"]["realitySettings"]
+            reality.update(serverNames=["example.com"], dest="example.com:443")
+            write_config(box, config)
+            before = box.paths.config.read_bytes()
 
-        load_db_sql.assert_called_once_with()
-        save_db.assert_called_once_with(db)
-        self.assertEqual(
-            db["connections"]["vless-reality"],
-            {
+            result = box.run_menu(["2", "1", "6", "1", "0", "0", "0"])
+
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            records = repository.load_db_sql()["connections"]
+            self.assertEqual(list(records), ["vless-reality"])
+            expected = {
                 "tag": "vless-reality",
                 "name": "default",
                 "port": 443,
                 "sni": "example.com",
                 "dest": "example.com:443",
                 "fingerprint": "chrome",
-            },
-        )
+            }
+            self.assertEqual({key: records["vless-reality"][key] for key in expected}, expected)
+            self.assertEqual(box.paths.config.read_bytes(), before)
+            box.assert_restarted(times=0)
 
     def test_choose_xhttp_mode_selects_mode_by_number(self) -> None:
         inputs = iter(["3"])
