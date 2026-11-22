@@ -27,7 +27,7 @@ from xray_vps_manager import __version__
 from xray_vps_manager.runner import command_entry, fail as _fail
 
 MENU_VERSION = f"v{__version__}"
-MENU_UPDATED = "2026-11-20 18:05 UTC"
+MENU_UPDATED = "2026-11-22 18:02 UTC"
 
 
 def die(message):
