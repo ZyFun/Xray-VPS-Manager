@@ -1,5 +1,6 @@
 """Операции с процессом Caddy и применение конфигурации."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -246,29 +247,62 @@ class SiteCandidate:
 
     def validate(self, *, binary: str | Path = "caddy") -> None:
         """Проверить будущий site-файл без изменения рабочих файлов Caddy."""
+        self._inspect("validate", binary=binary)
+
+    def validated_rename_routes(
+        self, source: sites.SiteRenameSource, previous_domain: str, *, public_port: int | None = None,
+    ) -> tuple[model.SiteProxyRoute, tuple[model.SiteProxyRoute, ...]]:
+        adapted = self._inspect("adapt", "--validate", rename_source=source)
+        try:
+            return model.site_rename_routes(
+                json.loads(adapted.stdout), self.domain, previous_domain, public_port=public_port,
+            )
+        except (TypeError, AttributeError, json.JSONDecodeError) as exc:
+            raise StateError("Не удалось прочитать маршруты из проверенной конфигурации Caddy.") from exc
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+
+    def _inspect(
+        self, command: str, *args: str, binary: str | Path = "caddy",
+        rename_source: sites.SiteRenameSource | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         try:
             with TemporaryDirectory(prefix="xray-caddy-candidate-") as directory:
-                candidate = Path(directory) / "Caddyfile"
-                candidate.write_text(self.content)
-                process.run([str(binary), "validate", "--config", str(candidate)], check=True)
+                work_dir = Path(directory)
+                if rename_source is None:
+                    candidate = work_dir / "Caddyfile"
+                    candidate.write_text(self.content)
+                else:
+                    candidate = sites.stage_site_rename(work_dir, rename_source, self.domain, self.content)
+                return process.run([str(binary), command, "--config", str(candidate), *args], check=True)
         except (OSError, subprocess.SubprocessError) as exc:
             raise StateError("Caddy site validation failed before applying the connection.",
                              detail=getattr(exc, "detail", "") or str(exc)) from exc
 
-    def prepare_update(self, *, runner: CaddyCommandRunner | None = None) -> "SiteUpdate":
+    def prepare_update(
+        self, *, runner: CaddyCommandRunner | None = None, rename_source: sites.SiteRenameSource | None = None,
+    ) -> "SiteUpdate":
         target = sites.site_config_path(self.domain)
-        previous_domain = self.previous_domain or None
-        previous = sites.site_config_path(previous_domain) if previous_domain is not None else target
-        creates_site = previous_domain is None or previous != target
+        previous = None
+        if rename_source is not None:
+            previous = rename_source.path
+        elif self.previous_domain:
+            previous = sites.site_config_path(self.previous_domain)
+        creates_site = previous != target
         if creates_site:
             # Сценарий уже держит общую блокировку. После применения Xray
             # домен проверяется ещё раз, включая конфликт под другим именем файла.
             sites.require_site_config_absent(self.domain)
-        paths_to_backup = (previous,) if previous_domain is not None else ()
-        backups = {path: sites.backup_file(path) for path in paths_to_backup}
+        planned_backup = None
+        if rename_source is not None:
+            rename_source.require_current()
+            planned_backup = rename_source.backup
+        backups = {previous: sites.backup_file(previous, destination=planned_backup)} if previous is not None else {}
         backups.setdefault(target, None)
         caddyfile = paths().caddyfile
-        return SiteUpdate(self, target, previous, backups, caddyfile, runner, creates_site)
+        return SiteUpdate(
+            self, target, previous or target, backups, caddyfile, runner, creates_site, rename_source=rename_source,
+        )
 
 
 @dataclass
@@ -287,6 +321,7 @@ class SiteUpdate:
     site_overwrite_started: bool = False
     previous_delete_started: bool = False
     initial_activation: _CaddyActivation | None = None
+    rename_source: sites.SiteRenameSource | None = None
 
     def _prepare_created_site(self, path: Path) -> None:
         path.chmod(0o644)
@@ -298,11 +333,37 @@ class SiteUpdate:
             info = self.target.lstat()
         except FileNotFoundError:
             return
-        if (info.st_dev, info.st_ino) == self.new_site_identity:
+        is_created_site = (info.st_dev, info.st_ino) == self.new_site_identity
+        if self.rename_source is not None:
+            if not is_created_site:
+                raise ConflictError("Сохранён файл, появившийся по новому пути Caddy site.")
+            sites.replace_caddyfile(
+                self.target, None, expected=self.candidate.content.encode(), regular_only=True,
+            )
+        elif is_created_site:
             sites.delete_site_config(self.target, keep_backup=False)
 
     def _remember_caddyfile_write(self, before: bytes | None, after: bytes) -> None:
         self.caddyfile_change = before, after
+
+    def _ensure_caddyfile_import(self) -> None:
+        try:
+            sites.ensure_caddyfile_import(self.caddyfile, before_write=self._remember_caddyfile_write)
+        except ConflictError:
+            self.caddyfile_change = None
+            raise
+
+    def _overwrite_site(self) -> None:
+        self.site_overwrite_started = True
+        try:
+            sites.write_site_text(
+                self.candidate.domain, self.candidate.content, caddyfile_path=self.caddyfile,
+                before_caddyfile_write=self._remember_caddyfile_write,
+            )
+        except ConflictError:
+            self.caddyfile_change = None
+            self.site_overwrite_started = False
+            raise
 
     def _activate_caddy(self) -> None:
         self.initial_activation = _CaddyActivation.read()
@@ -311,27 +372,45 @@ class SiteUpdate:
         else:
             _run(["systemctl", "start", "caddy"], runner=self.runner)
 
-    def apply(self) -> None:
+    def apply(self, *, restart_on_reload_failure: bool = False) -> None:
         try:
+            source = self.rename_source
+            if source is not None:
+                source.require_current()
             if self.creates_site:
                 fs.create_file(self.target, self.candidate.content.encode(), prepare=self._prepare_created_site)
-                sites.ensure_caddyfile_import(self.caddyfile, before_write=self._remember_caddyfile_write)
-            else:
+                self._ensure_caddyfile_import()
+            elif source is not None:
+                self._ensure_caddyfile_import()
+                source.require_current()
                 self.site_overwrite_started = True
-                sites.write_site_text(
-                    self.candidate.domain, self.candidate.content, caddyfile_path=self.caddyfile,
-                    before_caddyfile_write=self._remember_caddyfile_write,
-                )
+                try:
+                    sites.replace_caddyfile(
+                        self.target, self.candidate.content.encode(), expected=source.content, regular_only=True,
+                    )
+                except ConflictError:
+                    self.site_overwrite_started = False
+                    raise
+            else:
+                self._overwrite_site()
             if self.previous != self.target:
-                self.previous_delete_started = True
-                sites.delete_site_config(self.previous, keep_backup=False)
+                if source is not None:
+                    source.require_current()
+                    self.previous_delete_started = True
+                    try:
+                        sites.replace_caddyfile(self.previous, None, expected=source.content, regular_only=True)
+                    except ConflictError:
+                        self.previous_delete_started = False
+                        raise
+                else:
+                    self.previous_delete_started = True
+                    sites.delete_site_config(self.previous, keep_backup=False)
             validate_config(runner=self.runner)
             self._activate_caddy()
-            _run(["systemctl", "reload", "caddy"], runner=self.runner)
-        except ConflictError:
-            # Проверка ожидаемых байтов отказала до публикации Caddyfile.
-            self.caddyfile_change = None
-            raise
+            if restart_on_reload_failure:
+                _reload_caddy_with_restart_fallback(self.runner)
+            else:
+                _run(["systemctl", "reload", "caddy"], runner=self.runner)
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             raise StateError("Caddy could not apply the connection site.", detail=str(exc)) from exc
 
@@ -346,13 +425,21 @@ class SiteUpdate:
             if self.new_site_identity is not None:
                 actions.append((f"Caddy site {self.target.name}", self._remove_created_site))
             if self.previous_delete_started:
-                actions.append((f"Caddy site {self.previous.name}", lambda: sites.restore_file(
-                    self.backups[self.previous], self.previous,
-                )))
+                if self.rename_source is not None:
+                    actions.append((f"Caddy site {self.previous.name}", self.rename_source.restore_if_absent))
+                else:
+                    actions.append((f"Caddy site {self.previous.name}", lambda: sites.restore_file(
+                        self.backups[self.previous], self.previous,
+                    )))
         elif self.site_overwrite_started:
-            actions.append((f"Caddy site {self.target.name}", lambda: sites.restore_file(
-                self.backups[self.target], self.target,
-            )))
+            if self.rename_source is not None:
+                actions.append((f"Caddy site {self.target.name}", lambda: self.rename_source.restore_if_replaced(
+                    self.candidate.content.encode(),
+                )))
+            else:
+                actions.append((f"Caddy site {self.target.name}", lambda: sites.restore_file(
+                    self.backups[self.target], self.target,
+                )))
         if self.caddyfile_change is not None:
             actions.append(("Caddyfile", self._restore_caddyfile))
         if restore_activation and self.initial_activation is not None:
@@ -496,31 +583,6 @@ def _restore_and_reload(*backups: tuple[Path | None, Path], runner: CaddyCommand
         validate_and_reload_caddy(runner)
     except Exception:
         pass
-
-
-@manager_lock(purpose="rename Caddy site")
-def rename_site(
-    site: model.SiteConfig, new_domain: str, *, local_port: int, runner: CaddyCommandRunner | None = None,
-) -> None:
-    old_path = site.path
-    new_path = sites.site_config_path(new_domain)
-    old_backup = sites.backup_file(old_path)
-    new_backup = sites.backup_file(new_path)
-    try:
-        sites.write_site_config(
-            new_domain,
-            local_port,
-            tls_min_version=site.tls_min_version,
-            tls_max_version=site.tls_max_version,
-            upstream_transport=site.upstream_transport,
-            route_path=site.match_path,
-        )
-        sites.delete_site_config(old_path, keep_backup=False)
-        validate_and_reload_caddy(runner)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        _restore_and_reload((old_backup, old_path), (new_backup, new_path), runner=runner)
-        raise SiteChangeError(exc, old_backup) from exc
-    sites.prune_site_backups(old_path, new_path, protect=(old_backup, new_backup))
 
 
 @manager_lock(purpose="remove Caddy site")

@@ -2,6 +2,8 @@
 
 import re
 from dataclasses import dataclass
+from enum import Enum, auto
+from ipaddress import IPv6Address, ip_address
 from pathlib import Path
 
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -39,6 +41,62 @@ class TlsVersionChoice:
 class SiteWriteResult:
     path: Path
     backup: Path | None
+
+
+class PublicListener(Enum):
+    ABSENT = auto()
+    UNVERIFIED = auto()
+    CONFIRMED = auto()
+
+
+@dataclass(frozen=True)
+class SiteProxyRoute:
+    listeners: tuple[str, ...]
+    upstream_ports: frozenset[int]
+    incomplete: bool
+
+    def listens_on(self, port: int) -> bool:
+        return any(address.rpartition(":")[2] == str(port) for address in self.listeners)
+
+    def public_listener(self, port: int, public_host: str) -> PublicListener:
+        """Оценивает привязку TCP для адреса ссылки без запроса DNS."""
+        try:
+            public_ip = ip_address(public_host)
+        except ValueError:
+            public_ip = None
+        if isinstance(public_ip, IPv6Address) and public_ip.ipv4_mapped is not None:
+            public_ip = public_ip.ipv4_mapped
+
+        result = PublicListener.ABSENT
+        for address in self.listeners:
+            listener = re.fullmatch(r"(?:tcp(?P<version>[46])?/)?(?P<host>[^/]*):(?P<port>[0-9]+)", address)
+            if listener is None or listener["port"] != str(port):
+                continue
+            version = listener["version"]
+            if version is not None and public_ip is not None and public_ip.version != int(version):
+                continue
+            wildcard_matches = version is None or public_ip is not None
+            host = listener["host"]
+            if not host:
+                if wildcard_matches:
+                    return PublicListener.CONFIRMED
+                result = PublicListener.UNVERIFIED
+                continue
+            if host.lower().rstrip(".") == "localhost":
+                continue
+            try:
+                ip = ip_address(host.removeprefix("[").removesuffix("]"))
+            except ValueError:
+                result = PublicListener.UNVERIFIED
+                continue
+            if isinstance(ip, IPv6Address) and ip.ipv4_mapped is not None:
+                ip = ip.ipv4_mapped
+            if ip.is_loopback:
+                continue
+            if ip == public_ip or (ip.is_unspecified and wildcard_matches):
+                return PublicListener.CONFIRMED
+            result = PublicListener.UNVERIFIED
+        return result
 
 
 TLS_VERSION_CHOICES: tuple[TlsVersionChoice, ...] = (
@@ -249,14 +307,104 @@ def format_size(value: int) -> str:
     return f"{value}B"
 
 
-def first_site_address(text: str) -> str:
-    for line in text.splitlines():
+def _first_site_address_span(text: str) -> tuple[int, int] | None:
+    offset = 0
+    for line in text.splitlines(keepends=True):
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if stripped.endswith("{") and not stripped.startswith("#"):
+            start = offset + len(line) - len(line.lstrip())
+            address = stripped[:-1].rstrip()
+            return start, start + len(address)
+        offset += len(line)
+    return None
+
+
+def first_site_address(text: str) -> str:
+    span = _first_site_address_span(text)
+    return text[span[0]:span[1]] if span is not None else ""
+
+
+def parse_site_address(address: str) -> tuple[str, int | None]:
+    match = re.fullmatch(r"([^:]+)(?::([0-9]{1,5}))?", address)
+    if match and DOMAIN_RE.fullmatch(match[1]):
+        port = int(match[2]) if match[2] else None
+        if port is None or 1 <= port <= 65535:
+            return match[1].lower(), port
+    raise ValueError("Формат адреса Caddy site не поддерживается. Ожидается DOMAIN или DOMAIN:PORT.")
+
+
+def replace_site_address(text: str, address: str, new_address: str) -> str:
+    span = _first_site_address_span(text)
+    if span is None or not address or text[span[0]:span[1]] != address:
+        raise ValueError("Не удалось определить адрес выбранного блока Caddy.")
+    start, end = span
+    return text[:start] + new_address + text[end:]
+
+
+def _route_handlers(routes):
+    for route in routes:
+        for handler in route.get("handle", []):
+            if handler.get("handler") == "subroute":
+                yield from _route_handlers(handler.get("routes", []))
+            else:
+                yield handler
+
+
+def _site_proxy_route(listeners, route) -> SiteProxyRoute:
+    ports = set()
+    incomplete = False
+    for handler in _route_handlers((route,)):
+        if handler.get("handler") == "invoke":
+            incomplete = True
+        if handler.get("handler") != "reverse_proxy":
             continue
-        if stripped.endswith("{"):
-            return stripped[:-1].strip()
-    return ""
+        if handler.get("dynamic_upstreams") or handler.get("handle_response"):
+            incomplete = True
+        for upstream in handler.get("upstreams", []):
+            dial = re.fullmatch(r"(?:tcp/)?127\.0\.0\.1:([0-9]+)", upstream.get("dial", ""))
+            if dial:
+                ports.add(int(dial[1]))
+            else:
+                incomplete = True
+    return SiteProxyRoute(tuple(listeners), frozenset(ports), incomplete)
+
+
+def _matches_host(pattern: str, domain: str) -> bool:
+    labels = pattern.lower().split(".")
+    domain_labels = domain.lower().split(".")
+    return len(labels) == len(domain_labels) and all(
+        label == "*" or label == expected for label, expected in zip(labels, domain_labels)
+    )
+
+
+def _site_proxy_routes(adapted: dict, domain: str, *, include_fallbacks: bool = False):
+    servers = adapted.get("apps", {}).get("http", {}).get("servers", {})
+    for server in servers.values():
+        for route in server.get("routes", []):
+            matchers = route.get("match") or ({},)
+            if include_fallbacks:
+                matched = any(
+                    "host" not in matcher or any(_matches_host(host, domain) for host in matcher["host"])
+                    for matcher in matchers
+                )
+            else:
+                matched = any(domain in matcher.get("host", []) for matcher in matchers)
+            if matched:
+                yield _site_proxy_route(server.get("listen", []), route)
+
+
+def site_rename_routes(
+    adapted: dict, domain: str, previous_domain: str, *, public_port: int | None = None,
+) -> tuple[SiteProxyRoute, tuple[SiteProxyRoute, ...]]:
+    """Маршруты переименованного site и оставшихся блоков прежнего домена."""
+    selected = [
+        route for route in _site_proxy_routes(adapted, domain)
+        if public_port is None or route.listens_on(public_port)
+    ]
+    if len(selected) > 1:
+        raise ValueError(f"Новый домен {domain} используется в нескольких блоках Caddy.")
+    renamed = selected[0] if selected else SiteProxyRoute((), frozenset(), incomplete=True)
+    return renamed, tuple(_site_proxy_routes(adapted, previous_domain, include_fallbacks=True))
 
 
 def first_path_matcher_path(text: str) -> str:

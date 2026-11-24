@@ -9,7 +9,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from xray_vps_manager.system import units as system_units
+from xray_vps_manager.clients import connections_service
 from xray_vps_manager.clients import service as client_service
+from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core import process
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.caddy import model as caddy_model
@@ -469,20 +471,20 @@ def update_site_domain() -> None:
     if site.local_port is None:
         print("Не удалось определить upstream local port в site config.")
         return
+    new_domain = prompt(site.domain, "NEW_DOMAIN")
     try:
-        new_domain = caddy_model.validate_domain(prompt(site.domain, "NEW_DOMAIN"))
-    except ValueError as exc:
-        die(str(exc))
-    if new_domain == site.domain:
+        change = connections_service.rename_caddy_site(site, new_domain)
+    except ManagerError as exc:
+        if exc.exit_code == 130:
+            raise KeyboardInterrupt from exc
+        die("\n".join(filter(None, (exc.message, exc.hint, exc.detail))))
+    if change is None:
         print("Домен не изменён.")
         return
-
-    try:
-        caddy_service.rename_site(site, new_domain, local_port=site.local_port, runner=process.run_stream)
-    except caddy_service.SiteChangeError as exc:
-        die(f"Caddy config failed. Restored backups. Detail: {exc}")
-    print(f"Caddy site domain changed: {site.domain} -> {new_domain}")
-    print("Важно: это не меняет VLESS-подключение в manager.db и не перевыпускает клиентские ссылки.")
+    print(f"Caddy site domain changed: {site.domain} -> {change.address}")
+    if change.updated_connections:
+        print("Важно: перевыпустите и выдайте клиентам новые ссылки VLESS/TLS/xHTTP и Trojan-WS "
+              "для изменённых подключений.")
 
 
 def delete_site(confirm: ConfirmCallback) -> None:

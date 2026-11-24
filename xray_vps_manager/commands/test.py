@@ -1476,10 +1476,11 @@ def check_tls_diagnostics(diag, now=None, *, deep=False):
             issues.append(str(exc))
         checked_direct += 1
 
-    site_by_domain = {site.domain.lower(): site for site in caddy_sites.list_site_configs()}
+    site_by_address = {site.domain.lower(): site for site in caddy_sites.list_site_configs()}
     for item in caddy_expectations(diag):
         domain = item["domain"]
-        site = site_by_domain.get(domain.lower())
+        address = f"{domain.lower()}:{item['publicPort']}"
+        site = site_by_address.get(address) or site_by_address.get(domain.lower())
         if not site:
             issues.append(f"{item['tag']}: Caddy site config not found for {domain}")
             checked_caddy += 1
