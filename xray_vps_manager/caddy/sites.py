@@ -9,7 +9,9 @@ import stat
 import tarfile
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from glob import glob, has_magic
 from pathlib import Path
 from subprocess import TimeoutExpired
 
@@ -59,10 +61,10 @@ def backup_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.bak.{timestamp}")
 
 
-def backup_file(path: Path) -> Path | None:
+def backup_file(path: Path, *, destination: Path | None = None) -> Path | None:
     if not path.exists():
         return None
-    backup = backup_path(path)
+    backup = destination if destination is not None else backup_path(path)
     shutil.copy2(path, backup)
     return backup
 
@@ -523,6 +525,146 @@ def parse_site_config(path: Path) -> model.SiteConfig:
     )
 
 
+@dataclass(frozen=True)
+class SiteRenameSource:
+    path: Path
+    content: bytes
+    backup: Path
+
+    def _is_current(self) -> bool:
+        return not self.path.is_symlink() and self.path.is_file() and read_caddyfile(self.path) == self.content
+
+    def require_current(self) -> None:
+        if not self._is_current():
+            raise ConflictError("Caddy site изменился. Выберите его заново.")
+
+    def restore_if_absent(self) -> None:
+        if self._is_current():
+            return
+        try:
+            fs.create_file(self.path, self.content, prepare=lambda path: shutil.copystat(self.backup, path))
+        except FileExistsError as exc:
+            raise ConflictError("Сохранён файл, появившийся по прежнему пути Caddy site.") from exc
+
+    def restore_if_replaced(self, replacement: bytes) -> None:
+        if not self._is_current():
+            replace_caddyfile(self.path, self.content, expected=replacement, regular_only=True)
+
+
+_CADDY_IMPORT_TOKENS = re.compile(
+    r'^(?:\ufeff)?[^\S\r\n]*(?:'
+    r'(?:import|"import"|`import`)[^\S\r\n]+(?P<pattern>"[^"\r\n]*"|`[^`\r\n]*`|\S+)'
+    r'|(?P<dynamic>\{(?:args[.\[]|blocks?[.}])|(?:import|"import"|`import`)\\\r?$))'
+    r'|(?<!\S)#[^\r\n]*'
+    r'|(?<!\S)"(?:\\[\s\S]|[^"\\])*"'
+    r'|(?<!\S)`[^`]*`'
+    r'|(?<!\S)<<(?P<marker>[A-Za-z0-9_-]+)\r?\n(?s:.*?)^[ \t]*(?P=marker)',
+    re.MULTILINE,
+)
+_CADDY_ENV = re.compile(r"\{\$([^}]+)\}")
+
+
+def _stage_caddy_imports(caddyfile: Path, directory: Path, live_directory: Path) -> None:
+    pending = [caddyfile]
+    staged = set()
+    while pending:
+        path = pending.pop()
+        if path in staged:
+            continue
+        staged.add(path)
+        data = path.read_bytes().decode("utf-8")
+        live_path = live_directory / path.relative_to(directory)
+
+        def unsupported_import() -> ConflictError:
+            return ConflictError(
+                "Не удалось безопасно подготовить импорты Caddy для проверки смены домена.",
+                detail=f"Проверьте директивы import в {live_path}.",
+            )
+
+        def expand_env(match: re.Match[str]) -> str:
+            name, _, default = match[1].partition(":")
+            return os.environ.get(name, default)
+
+        expanded = _CADDY_ENV.sub(expand_env, data)
+        imports = [match["pattern"] for match in _CADDY_IMPORT_TOKENS.finditer(data) if match["pattern"] is not None]
+        expanded_imports = []
+        for match in _CADDY_IMPORT_TOKENS.finditer(expanded):
+            if match["dynamic"] is not None:
+                raise unsupported_import()
+            if match["pattern"] is not None:
+                expanded_imports.append(match["pattern"])
+        if imports != expanded_imports:
+            raise unsupported_import()
+
+        def redirect_import(match: re.Match[str]) -> str:
+            token = match["pattern"]
+            if token is None:
+                return match[0]
+            quote = token[:1] if token.startswith(('"', '`')) else ""
+            raw = token[1:-1] if quote else token
+            if not raw or any(char in raw for char in "{}\\\"`"):
+                raise unsupported_import()
+            pattern = Path(raw)
+            if pattern.is_absolute() and ".." in pattern.parts:
+                raise unsupported_import()
+            normalized = Path(os.path.normpath(live_path.parent / pattern))
+            if not normalized.is_relative_to(live_directory) or has_magic(str(normalized.parent)):
+                raise unsupported_import()
+            relative = normalized.relative_to(live_directory)
+            for parent in relative.parents:
+                if (live_directory / parent).is_symlink():
+                    raise unsupported_import()
+            staged_pattern = directory / relative
+            for name in glob(str(staged_pattern), include_hidden=True):
+                imported = Path(name)
+                if staged_pattern.name.startswith("*") and imported.name.startswith("."):
+                    continue
+                if not imported.is_file() or (live_directory / imported.relative_to(directory)).is_symlink():
+                    raise unsupported_import()
+                pending.append(imported)
+            if not pattern.is_absolute():
+                return match[0]
+            redirected = str(staged_pattern)
+            if not quote and any(char.isspace() for char in redirected):
+                quote = '"'
+            if quote and quote in redirected:
+                raise unsupported_import()
+            return match[0][:match.start("pattern") - match.start()] + quote + redirected + quote
+
+        rewritten = _CADDY_IMPORT_TOKENS.sub(redirect_import, data)
+        # Импортируемый файл мог быть связан с рабочим файлом для экономии места.
+        if path.is_symlink():
+            path.unlink()
+        path.write_bytes(rewritten.encode("utf-8"))
+
+
+def stage_site_rename(directory: Path, source: SiteRenameSource, domain: str, content: str) -> Path:
+    """Подготовить дерево импортов, которое увидит Caddy после переименования."""
+    caddyfile = paths().caddyfile
+    conf_dir = paths().caddy_conf_dir
+    if conf_dir.parent != caddyfile.parent or conf_dir.is_symlink() or source.path.is_symlink():
+        raise ConflictError("Не удалось подготовить рабочий каталог Caddy для проверки смены домена.")
+    # copytree сохраняет права каталогов. Внешняя временная папка остаётся приватной.
+    directory = directory / directory.name
+    staged_caddyfile = directory / caddyfile.name
+    staged_conf_dir = directory / conf_dir.name
+    target = site_config_path(domain, conf_dir)
+    replaced = (caddyfile, source.path, target, source.backup)
+
+    def exclude(source: str, names: list[str]) -> set[str]:
+        return {name for name in names if Path(source) / name in replaced}
+
+    shutil.copytree(caddyfile.parent, directory, symlinks=True, copy_function=os.symlink, ignore=exclude)
+    (staged_conf_dir / target.name).write_text(content, encoding="utf-8")
+    (staged_conf_dir / source.backup.name).write_bytes(source.content)
+    current = read_caddyfile(caddyfile)
+    if current is not None:
+        staged_caddyfile.write_bytes(current)
+    ensure_caddyfile_import(staged_caddyfile, conf_dir)
+    _stage_caddy_imports(staged_caddyfile, directory, caddyfile.parent)
+    return staged_caddyfile
+
+
 def list_site_configs(conf_dir: Path | None = None) -> list[model.SiteConfig]:
     conf_dir = paths().caddy_conf_dir if conf_dir is None else conf_dir
     return [parse_site_config(path) for path in list_site_config_paths(conf_dir)]
@@ -555,10 +697,12 @@ def site_config_conflicts_for_domain(domain: str, conf_dir: Path | None = None) 
     return matches
 
 
-def require_site_config_absent(domain: str, conf_dir: Path | None = None) -> None:
+def require_site_config_absent(
+    domain: str, conf_dir: Path | None = None, *, replacing: Path | None = None,
+) -> None:
     conf_dir = paths().caddy_conf_dir if conf_dir is None else conf_dir
     domain = model.validate_domain(domain)
-    conflicts = site_config_conflicts_for_domain(domain, conf_dir)
+    conflicts = [site for site in site_config_conflicts_for_domain(domain, conf_dir) if site.path != replacing]
     if not conflicts:
         return
     details = "; ".join(model.format_site_config_conflict(site) for site in conflicts)
@@ -576,12 +720,15 @@ def read_caddyfile(path: Path) -> bytes | None:
         return None
 
 
-def replace_caddyfile(path: Path, content: bytes | None, *, expected: bytes | None) -> None:
+def replace_caddyfile(
+    path: Path, content: bytes | None, *, expected: bytes | None, regular_only: bool = False,
+) -> None:
     """Меняет файл через атомарную запись с проверкой ожидаемых байтов."""
     target = path.resolve()
 
     def check_expected() -> None:
-        if path.resolve() != target or read_caddyfile(target) != expected:
+        invalid_type = regular_only and (path.is_symlink() or (expected is not None and not path.is_file()))
+        if invalid_type or path.resolve() != target or read_caddyfile(target) != expected:
             raise ConflictError("Файл изменился после начала операции. Сохранена его текущая версия.")
 
     check_expected()

@@ -38,6 +38,12 @@ class RealityEndpoint:
 
 
 @dataclass(frozen=True)
+class CaddySiteDomainChange:
+    address: str
+    updated_connections: int
+
+
+@dataclass(frozen=True)
 class _Edit[T]:
     result: T
     deletions: repository.Deletions | None = None
@@ -422,6 +428,134 @@ def update_trojan_connection(identifier, **options):
         return _Edit(result, caddy_site=site)
 
     return _change("update-trojan-connection", edit, precheck_caddy=True)
+
+
+def _connections_routed_by_site(
+    matching, config, selected: caddy_model.SiteProxyRoute, remaining: tuple[caddy_model.SiteProxyRoute, ...],
+    *, old_public_host: str, new_public_host: str,
+):
+    inbounds = xray.tls_xhttp_inbounds(config) + [
+        inbound for inbound in xray.trojan_connection_inbounds(config)
+        if xray.inbound_tag(inbound) in matching
+        and xray.connection_transport_settings_from_inbound(inbound)["transport"] == "ws"
+    ]
+    linked = {}
+    unresolved = set()
+    for inbound in inbounds:
+        tag = xray.inbound_tag(inbound)
+        if tag not in matching:
+            continue
+        try:
+            local_port = xray.normalize_port(inbound.get("port"), "LOCAL_PORT")
+        except ValueError:
+            unresolved.add(tag)
+            continue
+        known_selected_upstream = local_port in selected.upstream_ports
+        if not known_selected_upstream and not selected.incomplete:
+            continue
+        if inbound.get("listen") not in ("127.0.0.1", "0.0.0.0", None, ""):
+            unresolved.add(tag)
+            continue
+        record = matching[tag]
+        try:
+            public_port = xray.normalize_port(record.get("publicPort") or record["port"], "PUBLIC_PORT")
+        except ValueError:
+            unresolved.add(tag)
+            continue
+        alternative_listeners = [
+            (route.public_listener(public_port, old_public_host), local_port in route.upstream_ports)
+            for route in remaining if local_port in route.upstream_ports or route.incomplete
+        ]
+        selected_listener = selected.public_listener(public_port, old_public_host)
+        if (
+            selected_listener is caddy_model.PublicListener.ABSENT
+            and (caddy_model.PublicListener.CONFIRMED, True) in alternative_listeners
+        ):
+            continue
+        has_possible_alternate = any(
+            listener is not caddy_model.PublicListener.ABSENT for listener, _ in alternative_listeners
+        )
+        if (
+            selected_listener is caddy_model.PublicListener.CONFIRMED
+            and known_selected_upstream
+            and not has_possible_alternate
+            and selected.public_listener(public_port, new_public_host) is caddy_model.PublicListener.CONFIRMED
+        ):
+            linked[tag] = record
+        else:
+            unresolved.add(tag)
+    if unresolved:
+        raise ConflictError(
+            "Не удалось определить, какие подключения обслуживает выбранный Caddy site.",
+            detail=f"Проверьте маршруты для подключений: {', '.join(sorted(unresolved))}",
+        )
+    return linked
+
+
+def rename_caddy_site(
+    site: caddy_model.SiteConfig, new_domain: str,
+) -> CaddySiteDomainChange | None:
+    try:
+        old_domain, public_port = caddy_model.parse_site_address(site.domain)
+        domain = old_domain if new_domain == site.domain else caddy_model.validate_domain(new_domain)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    if domain == old_domain:
+        return None
+    if site.local_port is None:
+        raise ValidationError("Не удалось определить upstream local port в site config.")
+    new_address = f"{domain}:{public_port}" if public_port is not None else domain
+
+    with manager_lock(purpose="rename Caddy site"), ExitStack() as resources:
+        if not site.path.is_file() or caddy_sites.parse_site_config(site.path) != site:
+            raise ConflictError("Caddy site изменился. Выберите его заново.")
+        try:
+            caddy_sites.require_site_config_absent(domain, replacing=site.path)
+        except FileExistsError as exc:
+            raise ConflictError(str(exc)) from exc
+        original = caddy_sites.read_caddyfile(site.path)
+        if original is None:
+            raise ConflictError("Caddy site изменился. Выберите его заново.")
+        try:
+            content = caddy_model.replace_site_address(original.decode("utf-8"), site.domain, new_address)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        candidate = caddy_service.SiteCandidate(domain, content)
+        source = caddy_sites.SiteRenameSource(site.path, original, caddy_sites.backup_path(site.path))
+        selected, remaining = candidate.validated_rename_routes(source, old_domain, public_port=public_port)
+        source.require_current()
+
+        undo = None
+        site_update = None
+
+        def restore_connections():
+            with database.report_errors(), database.write_session() as conn:
+                undo.restore(conn)
+
+        try:
+            with database.report_errors(), database.write_session() as conn:
+                matching = repository.connections_for_public_host(conn, old_domain)
+                linked = {}
+                if matching:
+                    config = service.load_working_config()
+                    linked = _connections_routed_by_site(
+                        matching, config, selected, remaining, old_public_host=old_domain, new_public_host=domain,
+                    )
+                if linked:
+                    previous = {"connections": linked, "clients": {}, "cascadeRoutes": {}}
+                    updated = {tag: dict(record, publicHost=domain, sni=domain) for tag, record in linked.items()}
+                    changed = {**previous, "connections": updated}
+                    undo = repository.write_client_change(conn, changed, previous, undo_resources=resources)
+            site_update = candidate.prepare_update(rename_source=source, runner=process.run_stream)
+            site_update.apply(restart_on_reload_failure=not linked)
+        except BaseException as error:
+            actions = site_update.rollback_actions() if site_update is not None else []
+            if undo is not None:
+                actions.append(("Данные подключений SQLite", restore_connections))
+            compensate(error, actions)
+
+        site_update.prune_backups()
+        return CaddySiteDomainChange(new_address, len(linked))
 
 
 def rename_connection(identifier, new_name):

@@ -386,7 +386,7 @@ def _normalize_non_negative_integer(value: Any, label: str) -> int:
     return number
 
 
-def _normalize_port(value: Any, label: str = "port") -> int:
+def normalize_port(value: Any, label: str = "port") -> int:
     port = _normalize_integer(value, label)
     if port < 1 or port > 65535:
         raise ValueError(f"{label} must be a number from 1 to 65535.")
@@ -560,7 +560,7 @@ def normalize_xhttp_download_settings(value: Any) -> dict[str, Any]:
         raise ValueError("Unsupported downloadSettings field(s): " + ", ".join(unknown))
     result: dict[str, Any] = {
         "address": _normalize_host_like(value.get("address"), "downloadSettings.address", required=True),
-        "port": _normalize_port(value.get("port") or 443, "downloadSettings.port"),
+        "port": normalize_port(value.get("port") or 443, "downloadSettings.port"),
         "network": "xhttp",
     }
     network = str(value.get("network") or "xhttp").strip().lower()

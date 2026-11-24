@@ -11,6 +11,59 @@ from xray_vps_manager.caddy import model, random_tls, service, sites
 
 
 class CaddyConfigTests(unittest.TestCase):
+    def test_public_listener_checks_bound_ip_against_connection_address(self) -> None:
+        for bind, public_host, expected in (
+            (":8443", "old.example", model.PublicListener.CONFIRMED),
+            ("tcp4/0.0.0.0:8443", "192.0.2.10", model.PublicListener.CONFIRMED),
+            ("tcp6/[::]:8443", "2001:db8::10", model.PublicListener.CONFIRMED),
+            ("tcp6/[::]:8443", "192.0.2.10", model.PublicListener.ABSENT),
+            ("tcp6/:8443", "192.0.2.10", model.PublicListener.ABSENT),
+            ("tcp4/0.0.0.0:8443", "old.example", model.PublicListener.UNVERIFIED),
+            ("tcp6/[::]:8443", "old.example", model.PublicListener.UNVERIFIED),
+            ("tcp4/0.0.0.0:8443", "2001:db8::10", model.PublicListener.ABSENT),
+            ("192.0.2.10:8443", "old.example", model.PublicListener.UNVERIFIED),
+            ("192.0.2.10:8443", "192.0.2.11", model.PublicListener.UNVERIFIED),
+            ("192.0.2.10:8443", "192.0.2.10", model.PublicListener.CONFIRMED),
+            ("[::ffff:192.0.2.10]:8443", "192.0.2.10", model.PublicListener.CONFIRMED),
+            ("127.0.0.1:8443", "127.0.0.1", model.PublicListener.ABSENT),
+        ):
+            with self.subTest(bind=bind, public_host=public_host):
+                route = model.SiteProxyRoute((bind,), frozenset({18100}), False)
+                self.assertEqual(route.public_listener(8443, public_host), expected)
+
+    def test_site_rename_routes_selects_host_and_listener(self) -> None:
+        def route(host, *handlers):
+            return {
+                "match": [{"host": [host]}],
+                "handle": [{"handler": "subroute", "routes": [{"handle": handlers}]}],
+            }
+
+        def proxy(*addresses):
+            return {"handler": "reverse_proxy", "upstreams": [{"dial": address} for address in addresses]}
+
+        local_proxy = proxy("127.0.0.1:18100", "tcp/127.0.0.1:18101")
+        routes = [
+            route("selected.example", local_proxy),
+            route("other.example", proxy("127.0.0.1:18102", "{vars.backend}")),
+        ]
+        adapted = {"apps": {"http": {"servers": {
+            "server": {"listen": [":8443"], "routes": routes},
+            "other_port": {
+                "listen": ["127.0.0.1:9443"], "routes": [route("selected.example", proxy("127.0.0.1:18103"))],
+            },
+        }}}}
+
+        with self.assertRaisesRegex(ValueError, "используется в нескольких блоках Caddy"):
+            model.site_rename_routes(adapted, "selected.example", "other.example")
+        selected, remaining = model.site_rename_routes(adapted, "selected.example", "other.example", public_port=8443)
+        self.assertEqual(selected, model.SiteProxyRoute((":8443",), frozenset({18100, 18101}), False))
+        self.assertEqual(remaining, (model.SiteProxyRoute((":8443",), frozenset({18102}), True),))
+        local_proxy["dynamic_upstreams"] = {"source": "a"}
+        selected, _ = model.site_rename_routes(adapted, "selected.example", "other.example", public_port=8443)
+        self.assertTrue(selected.incomplete)
+        selected, _ = model.site_rename_routes(adapted, "missing.example", "other.example")
+        self.assertEqual(selected, model.SiteProxyRoute((), frozenset(), True))
+
     def test_site_block_terminates_tls_and_proxies_h2c_to_local_xhttp(self) -> None:
         block = model.caddy_site_block(
             "api.example.com",

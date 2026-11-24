@@ -105,6 +105,7 @@ save_traffic_limit_fields = sqlite_clients.save_traffic_limit_fields
 get_connection = sqlite_connections.get_connection
 save_connection = sqlite_connections.upsert_connection
 list_connections = sqlite_connections.list_connections
+connections_for_public_host = sqlite_connections.connections_for_public_host
 delete_connection = sqlite_connections.delete_connection
 get_route = sqlite_cascades.get_route
 save_route = sqlite_cascades.upsert_route

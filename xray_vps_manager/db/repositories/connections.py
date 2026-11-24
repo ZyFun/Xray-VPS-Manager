@@ -97,6 +97,21 @@ def list_connections(connection: sqlite3.Connection) -> dict[str, dict[str, Any]
     return {row["tag"]: _record_from_row(row) for row in rows}
 
 
+def connections_for_public_host(connection: sqlite3.Connection, domain: str) -> dict[str, dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT * FROM reality_connections
+        WHERE COALESCE(
+            NULLIF(CASE WHEN json_valid(extra_json) THEN json_extract(extra_json, '$.publicHost') END, ''),
+            sni
+        ) = ? COLLATE NOCASE
+        ORDER BY tag
+        """,
+        (domain,),
+    )
+    return {row["tag"]: _record_from_row(row) for row in rows}
+
+
 def delete_connection(connection: sqlite3.Connection, tag: str) -> bool:
     with database.transaction(connection):
         result = connection.execute("DELETE FROM reality_connections WHERE tag = ?", (tag,))

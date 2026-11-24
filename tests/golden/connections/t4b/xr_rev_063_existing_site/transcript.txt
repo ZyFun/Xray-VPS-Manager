@@ -12,86 +12,17 @@ stdout:
 |2|b.example|<ROOT>/etc/caddy/conf.d/b.example.caddy|18101|tls1.2|tls1.3|
 |0|Назад|||||
 +-+-+-+-+-+-+
-Site: NEW_DOMAIN [a.example]: Valid configuration
-Caddy site domain changed: a.example -> b.example
-Важно: это не меняет VLESS-подключение в manager.db и не перевыпускает клиентские ссылки.
-
+Site: NEW_DOMAIN [a.example]:
 ============================================================
 stderr:
+ERROR: Caddy site config already exists for b.example: <ROOT>/etc/caddy/conf.d/b.example.caddy (127.0.0.1:18101, transport=http, path=/ws). Creating a new TLS connection would overwrite this site and may break existing traffic. Review, update, or delete the existing site config through Caddy / TLS -> Site configs first.
 processes:
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
-["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
-["systemctl", "enable", "--now", "caddy"]
-["systemctl", "reload", "caddy"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 state:
---- before/etc/caddy/conf.d/a.example.caddy
-+++ after/etc/caddy/conf.d/a.example.caddy
-@@ -1,7 +0,0 @@
--a.example {
--    tls {
--        protocols tls1.2 tls1.2
--    }
--
--    reverse_proxy h2c://127.0.0.1:18100
--}
---- before/etc/caddy/conf.d/a.example.caddy.bak.20261006120000000000
-+++ after/etc/caddy/conf.d/a.example.caddy.bak.20261006120000000000
-@@ -0,0 +1,7 @@
-+a.example {
-+    tls {
-+        protocols tls1.2 tls1.2
-+    }
-+
-+    reverse_proxy h2c://127.0.0.1:18100
-+}
---- before/etc/caddy/conf.d/b.example.caddy
-+++ after/etc/caddy/conf.d/b.example.caddy
-@@ -3 +3 @@
--        protocols tls1.2 tls1.3
-+        protocols tls1.2 tls1.2
-@@ -6,14 +6 @@
--    @xray_path {
--        path /ws
--        header Connection *Upgrade*
--        header Upgrade websocket
--    }
--    handle @xray_path {
--        reverse_proxy 127.0.0.1:18101
--    }
--
--    handle {
--        root * /usr/share/caddy
--        try_files {path} /index.html
--        file_server
--    }
-+    reverse_proxy h2c://127.0.0.1:18100
---- before/etc/caddy/conf.d/b.example.caddy.bak.20261006120000000000
-+++ after/etc/caddy/conf.d/b.example.caddy.bak.20261006120000000000
-@@ -0,0 +1,20 @@
-+b.example {
-+    tls {
-+        protocols tls1.2 tls1.3
-+    }
-+
-+    @xray_path {
-+        path /ws
-+        header Connection *Upgrade*
-+        header Upgrade websocket
-+    }
-+    handle @xray_path {
-+        reverse_proxy 127.0.0.1:18101
-+    }
-+
-+    handle {
-+        root * /usr/share/caddy
-+        try_files {path} /index.html
-+        file_server
-+    }
-+}

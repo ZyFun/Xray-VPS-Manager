@@ -6,7 +6,7 @@ stdout:
 
 NEW_DOMAIN [old.example]: Valid configuration
 Caddy site domain changed: old.example -> new.example
-Важно: это не меняет VLESS-подключение в manager.db и не перевыпускает клиентские ссылки.
+Важно: перевыпустите и выдайте клиентам новые ссылки VLESS/TLS/xHTTP и Trojan-WS для изменённых подключений.
 
 ============================================================
 stderr:
@@ -15,7 +15,9 @@ processes:
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
+["caddy", "adapt", "--config", "<CADDY_CANDIDATE>/Caddyfile", "--validate"]
 ["caddy", "validate", "--config", "<ROOT>/etc/caddy/Caddyfile"]
+["systemctl", "show", "--property=ActiveState,UnitFileState", "caddy"]
 ["systemctl", "enable", "--now", "caddy"]
 ["systemctl", "reload", "caddy"]
 ["/usr/local/bin/xray", "version"]
@@ -23,6 +25,11 @@ processes:
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 state:
+--- before/SQLite
++++ after/SQLite
+@@ -8 +8 @@
+-["vless-tls", "TLS", 1443, "old.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"security\":\"tls\",\"publicPort\":1443,\"localPort\":18100,\"publicHost\":\"old.example\",\"caddy\":true,\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\",\"transport\":\"xhttp\",\"xhttpPath\":\"/vless-xhttp\",\"xhttpMode\":\"auto\"}"]
++["vless-tls", "TLS", 1443, "new.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"security\":\"tls\",\"publicPort\":1443,\"localPort\":18100,\"publicHost\":\"new.example\",\"caddy\":true,\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\",\"transport\":\"xhttp\",\"xhttpPath\":\"/vless-xhttp\",\"xhttpMode\":\"auto\"}"]
 --- before/etc/caddy/conf.d/new.example.caddy
 +++ after/etc/caddy/conf.d/new.example.caddy
 @@ -0,0 +1,7 @@
