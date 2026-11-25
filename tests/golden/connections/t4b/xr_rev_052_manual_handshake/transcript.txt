@@ -1,16 +1,16 @@
 
-["2", "4", "1", "5", "direct.example"]
+["2", "4", "1", "5", "direct.example", "9443"]
 exit: 0
 stdout:
 ================= Проверить TLS handshake ==================
 
 Caddy site configs not found.
-DOMAIN:
+DOMAIN: PORT [443]:
 Проверка tls1.2:
-Connection refused
+Protocol version: TLSv1.2
 
 Проверка tls1.3:
-Connection refused
+Protocol version not supported
 
 ============================================================
 stderr:
@@ -19,8 +19,8 @@ processes:
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
-["timeout", "10", "openssl", "s_client", "-connect", "direct.example:443", "-servername", "direct.example", "-tls1_2", "-brief"]
-["timeout", "10", "openssl", "s_client", "-connect", "direct.example:443", "-servername", "direct.example", "-tls1_3", "-brief"]
+["timeout", "10", "openssl", "s_client", "-connect", "direct.example:9443", "-servername", "direct.example", "-tls1_2", "-brief"]
+["timeout", "10", "openssl", "s_client", "-connect", "direct.example:9443", "-servername", "direct.example", "-tls1_3", "-brief"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]
 ["/usr/local/bin/xray", "version"]

@@ -242,6 +242,31 @@ def _site_candidate(result, *, trojan=False, previous_domain=None):
     return caddy_service.SiteCandidate(result.public_host, content, previous_domain)
 
 
+def update_caddy_site_from_connection(
+    selected: dict,
+    *,
+    tls_min_version: str,
+    tls_max_version: str,
+    runner: caddy_service.CaddyCommandRunner | None = None,
+) -> caddy_model.SiteWriteResult:
+    with manager_lock(purpose="write Caddy site from TLS connection"):
+        tag = selected["tag"]
+        current = next((item for item in service.caddy_connection_options() if item["tag"] == tag), None)
+        if current != selected:
+            raise ConflictError("TLS connection has changed. Select it again.")
+
+        connections.validate_managed_caddy_public_port(current["publicPort"])
+        return caddy_service.update_site_config(
+            current["domain"],
+            current["localPort"],
+            tls_min_version=tls_min_version,
+            tls_max_version=tls_max_version,
+            upstream_transport=current["upstreamTransport"],
+            route_path=current["routePath"],
+            runner=runner,
+        )
+
+
 def add_connection(name, port, sni, fingerprint, **transport):
     def edit(config, db):
         return _Edit(connections.add_connection(config, db, name, port, sni, fingerprint, **transport))
@@ -250,6 +275,9 @@ def add_connection(name, port, sni, fingerprint, **transport):
 
 
 def add_tls_xhttp_connection(name, domain, *, local_port, public_port, install_caddy, **options):
+    if install_caddy:
+        connections.validate_managed_caddy_public_port(public_port)
+
     def edit(config, db):
         tls_domain = caddy_model.validate_domain(domain)
         if install_caddy:
@@ -274,6 +302,9 @@ def add_trojan_tls_connection(name, port, domain, cert_file, key_file, fingerpri
 
 
 def add_trojan_caddy_connection(name, domain, *, local_port, public_port, install_caddy, **options):
+    if install_caddy:
+        connections.validate_managed_caddy_public_port(public_port)
+
     def edit(config, db):
         tls_domain = caddy_model.validate_domain(domain)
         if install_caddy:

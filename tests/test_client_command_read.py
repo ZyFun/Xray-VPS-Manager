@@ -5,7 +5,9 @@ from unittest import mock
 
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
-from tests.test_client_characterization import ALICE_KEY, script_connection_caddy_checks, script_processes, write_config
+from tests.test_client_characterization import (
+    ALICE_KEY, free_https_port, script_connection_caddy_checks, script_processes, write_config,
+)
 from xray_vps_manager.clients import links, repository
 from xray_vps_manager.commands import client_arguments
 from xray_vps_manager.db import database
@@ -32,8 +34,11 @@ class ClientCommandReadTests(unittest.TestCase):
     def add_trojan(self, box, *options):
         script_processes(box)
         script_caddy(box)
+        public_port = "1443" if "--no-caddy" in options else "443"
+        if public_port == "443":
+            free_https_port(box)
         return self.run_client(
-            box, "add-trojan-connection", "Trojan", "9443", "vpn.example.com", "--public-port", "1443", *options,
+            box, "add-trojan-connection", "Trojan", "9443", "vpn.example.com", "--public-port", public_port, *options,
         )
 
     def test_parse_add_args_supports_protocol_sugar(self) -> None:
@@ -348,7 +353,7 @@ class ClientCommandReadTests(unittest.TestCase):
                 result = self.run_client(
                     box, "update-trojan-connection", "trojan-tls",
                     "--domain", "vpn.example.com", "--local-port", "10101",
-                    "--public-port", "1443", "--ws-path", "/trojan2", "--fingerprint", "firefox",
+                    "--public-port", "443", "--ws-path", "/trojan2", "--fingerprint", "firefox",
                     "--tls-min-version", "tls1.2", "--tls-max-version", "tls1.3",
                 )
             site = box.paths.caddy_conf_dir / "vpn.example.com.caddy"
@@ -365,8 +370,7 @@ class ClientCommandReadTests(unittest.TestCase):
             before = box.paths.config.read_bytes()
             db_before = box.db_rows("reality_connections")
             calls = len(box.processes.calls)
-            result = box.run_cli("client", "add-trojan-connection", "New", "10100", "vpn.example.com",
-                                 "--public-port", "1443")
+            result = box.run_cli("client", "add-trojan-connection", "New", "10100", "vpn.example.com")
             self.assertEqual(result.exit_code, 1)
             self.assertIn("already exists", result.stderr)
             self.assertEqual(box.paths.config.read_bytes(), before)
@@ -379,10 +383,11 @@ class TrojanCaddySiteBackupRotationTests(unittest.TestCase):
 
     def test_update_trojan_caddy_site_domain_change_prunes_copies(self) -> None:
         with Sandbox() as box, running_xray(box):
+            free_https_port(box)
             script_processes(box)
             script_caddy(box)
             setup = box.run_cli(
-                "client", "add-trojan-connection", "Trojan", "10100", "old.example.com", "--public-port", "1443",
+                "client", "add-trojan-connection", "Trojan", "10100", "old.example.com",
             )
             self.assertEqual((setup.exit_code, setup.stderr), (0, ""))
             conf_dir = box.paths.caddy_conf_dir

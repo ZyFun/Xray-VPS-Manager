@@ -9,6 +9,7 @@ from typing import Callable
 from xray_vps_manager.clients import credentials as client_credentials
 from xray_vps_manager.clients.repository import db_clients, db_managed_connections
 from xray_vps_manager.clients.settings import FINGERPRINTS, fingerprint, server_env_values
+from xray_vps_manager.core.errors import ValidationError
 from xray_vps_manager.core.time import utc_stamp
 from xray_vps_manager.caddy import model as caddy_model
 from xray_vps_manager.xray import crypto as xray_crypto
@@ -344,6 +345,14 @@ def next_local_port(config: dict[str, Any], start: int = DEFAULT_XHTTP_TLS_LOCAL
         if port > 65535:
             raise ValueError("No free local port found.")
     return port
+
+
+def validate_managed_caddy_public_port(public_port: int) -> None:
+    if public_port != 443:
+        raise ValidationError(
+            f"Managed Caddy requires PUBLIC_PORT 443 (received {public_port}). "
+            "Use --public-port 443, or configure TLS manually for a different public port."
+        )
 
 
 def public_port_conflicts(config: dict[str, Any], public_port: int) -> list[dict[str, Any]]:
@@ -1053,6 +1062,9 @@ def update_trojan_connection(
 
     next_public_host = caddy_model.validate_domain(domain or previous_public_host)
     next_public_port = public_port if public_port is not None else previous_public_port
+    caddy_enabled = bool(entry.get("caddy", True))
+    if caddy_enabled:
+        validate_managed_caddy_public_port(next_public_port)
     next_local_port = local_port if local_port is not None else previous_local_port
     next_ws_path = normalize_trojan_ws_path(ws_path) if ws_path is not None else previous_ws_path
     next_fingerprint = (
@@ -1066,8 +1078,7 @@ def update_trojan_connection(
 
     if port_used_by_other_inbound(config, tag, next_local_port):
         raise ValueError(f"LOCAL_PORT is already used by another inbound: {next_local_port}")
-    conflicts = public_port_conflicts(config, next_public_port)
-    if conflicts:
+    if caddy_enabled and (conflicts := public_port_conflicts(config, next_public_port)):
         tags = ", ".join(inbound.get("tag") or "(no-tag)" for inbound in conflicts)
         raise ValueError(
             f"Caddy cannot listen on public port {next_public_port}: "
@@ -1103,7 +1114,7 @@ def update_trojan_connection(
         fingerprint=next_fingerprint,
         tls_min_version=next_tls_min,
         tls_max_version=next_tls_max,
-        caddy_enabled=bool(entry.get("caddy", True)),
+        caddy_enabled=caddy_enabled,
         previous_public_host=previous_public_host,
         previous_public_port=previous_public_port,
         previous_local_port=previous_local_port,

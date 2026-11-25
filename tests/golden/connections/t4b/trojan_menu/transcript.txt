@@ -17,16 +17,16 @@ processes:
 ["/usr/local/bin/xray", "version"]
 state:
 
-["2", "2", "2", "Trojan", "18101", "trojan.example", "", "/tunnel", "3", "2", ""]
+["2", "2", "2", "Trojan", "18101", "trojan.example", "/tunnel", "3", "2", ""]
 exit: 0
 stdout:
 ============== Создать Trojan TLS подключение ==============
 
 Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.
-Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.
+При автоматической настройке Caddy клиенты подключаются к DOMAIN:443.
 Имя Trojan-подключения: LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.
 LOCAL_PORT для Xray [10100]: TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.
-TLS_DOMAIN: PUBLIC_PORT для Caddy [443]: WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.
+TLS_DOMAIN: WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.
 WS_PATH [/trojan]:
 Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.
 Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.
@@ -126,16 +126,16 @@ state:
 @@ -9 +12,0 @@
 -MANAGER_TIMEZONE=Europe/Moscow
 
-["2", "2", "2", "Trojan", "18101", "trojan.example", "", "/tunnel", "3", "2", ""]
+["2", "2", "2", "Trojan", "18101", "trojan.example", "/tunnel", "3", "2", ""]
 exit: 0
 stdout:
 ============== Создать Trojan TLS подключение ==============
 
 Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.
-Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.
+При автоматической настройке Caddy клиенты подключаются к DOMAIN:443.
 Имя Trojan-подключения: LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.
 LOCAL_PORT для Xray [10100]: TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.
-TLS_DOMAIN: PUBLIC_PORT для Caddy [443]: WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.
+TLS_DOMAIN: WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.
 WS_PATH [/trojan]:
 Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.
 Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.

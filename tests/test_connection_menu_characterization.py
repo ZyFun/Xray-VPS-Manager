@@ -18,12 +18,14 @@ from urllib.parse import parse_qs, urlsplit
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
 from tests.test_client_characterization import (
-    is_caddy_candidate_validation, normalize_caddy_candidate_call, script_connection_caddy_checks,
+    free_https_port, is_caddy_candidate_validation, normalize_caddy_candidate_call, script_connection_caddy_checks,
     script_processes, snapshot as client_snapshot, write_config,
 )
 from xray_vps_manager.caddy import model as caddy_model
 from xray_vps_manager.caddy import sites as caddy_sites
 from xray_vps_manager.commands import test as test_command
+from xray_vps_manager.clients import repository
+from xray_vps_manager.db import database
 
 
 REALITY = ("2", "1")
@@ -240,16 +242,30 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
         self.assertEqual((result.exit_code, result.stderr), (0, ""), (args, result.stdout, result.stderr))
         return result.stdout
 
-    def script_tls_probe(self, box, domain, *, available=True):
+    def seed_legacy_caddy_connection(self, box, command, name, local_port, domain, *options, public_port):
+        """Состояние после старой версии, допускавшей любой публичный порт."""
+        trojan = command == "add-trojan-connection"
+        external_tls = ("--no-caddy",) if trojan else ()
+        self.seed_cli(box, command, name, local_port, domain, *options, *external_tls, "--public-port", public_port)
+        tag = "trojan-tls" if trojan else "vless-tls"
+        with database.write_session() as conn:
+            record = repository.get_connection(conn, tag)
+            record["caddy"] = True
+            repository.save_connection(conn, tag, record)
+        caddy_sites.write_site_config(
+            domain, int(local_port), upstream_transport="http" if trojan else "xhttp",
+            route_path=record.get("wsPath", ""), tls_min_version=record["tlsMinVersion"],
+            tls_max_version=record["tlsMaxVersion"],
+        )
+
+    def script_tls_probe(self, box, domain, *, port=443):
         responses = (
-            box.processes.ok("Protocol version: TLSv1.2\n") if available
-            else box.processes.result(1, stderr="Connection refused\n"),
-            box.processes.result(1, stderr="Protocol version not supported\n") if available
-            else box.processes.result(1, stderr="Connection refused\n"),
+            box.processes.ok("Protocol version: TLSv1.2\n"),
+            box.processes.result(1, stderr="Protocol version not supported\n"),
         )
         for version, response in zip(("tls1_2", "tls1_3"), responses, strict=True):
             box.processes.script({
-                ("timeout", "10", "openssl", "s_client", "-connect", f"{domain}:443",
+                ("timeout", "10", "openssl", "s_client", "-connect", f"{domain}:{port}",
                  "-servername", domain, f"-{version}", "-brief"): response,
             })
 
@@ -281,11 +297,12 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
             action(CONNECTIONS, "3")
 
     def test_trojan_menu(self):
+        """XR-REV-064: настройка Caddy использует 443 без запроса PUBLIC_PORT."""
         with self.scenario("trojan_menu") as (box, action):
             action(TROJAN, "1")
-            action(TROJAN, "2", "Trojan", "18101", "trojan.example", "", "/tunnel", "3", "2", "")
+            action(TROJAN, "2", "Trojan", "18101", "trojan.example", "/tunnel", "3", "2", "")
             action(REALITY, "3", "5443")
-            action(TROJAN, "2", "Trojan", "18101", "trojan.example", "", "/tunnel", "3", "2", "")
+            action(TROJAN, "2", "Trojan", "18101", "trojan.example", "/tunnel", "3", "2", "")
             self.seed_cli(box, "add", "alice", "--connection", "trojan-tls")
             action(TROJAN, "1")
             action(TROJAN, "4", "1", "Renamed Trojan")
@@ -293,15 +310,20 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
             action(TROJAN, "3", "1", "y")
 
     def test_menu_can_create_tls_connections_without_caddy(self):
+        """XR-REV-064: публичный порт можно ввести при ручной настройке TLS."""
         with self.scenario("no_caddy") as (box, action):
-            action(REALITY, "2", "2", "TLS", "tls.example", "18100", "", "1", "/secure", "", "n", "2", "n")
-            action(TROJAN, "2", "Trojan", "18101", "trojan.example", "", "/tunnel", "1", "2", "n")
+            action(REALITY, "2", "2", "TLS", "tls.example", "18100", "1", "/secure", "", "n", "2", "n", "8443")
+            action(TROJAN, "2", "Trojan", "18101", "trojan.example", "/tunnel", "1", "2", "n", "")
             inbounds = {item["tag"]: item for item in box.config()["inbounds"]}
             self.assertEqual(inbounds["vless-reality"]["port"], 443)
             self.assertEqual((inbounds["vless-tls"]["listen"], inbounds["vless-tls"]["port"]), ("127.0.0.1", 18100))
             self.assertEqual((inbounds["trojan-tls"]["listen"], inbounds["trojan-tls"]["port"]), ("127.0.0.1", 18101))
             self.assertFalse(box.paths.caddyfile.exists())
             self.assertFalse(box.paths.caddy_conf_dir.exists())
+            for tag in ("vless-tls", "trojan-tls"):
+                self.seed_cli(box, "add", "alice", "--connection", tag)
+            self.assert_site_link(box, "vless-tls", "tls.example", 8443)
+            self.assert_site_link(box, "trojan-tls", "trojan.example", 443)
 
     def test_multi_protocol_initial_link(self):
         """Текущее поведение, баг XR-REV-029."""
@@ -326,24 +348,44 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
             ))
             action(CONNECTIONS, "3")
 
-    def test_caddy_keeps_default_listener_with_custom_public_port(self):
-        """Текущее поведение, баг XR-REV-064."""
+    def test_managed_caddy_uses_443_in_metadata_links_and_tls_diagnostics(self):
+        """XR-REV-064: порт ссылки совпадает с публичным портом управляемого Caddy."""
         with self.scenario("xr_rev_064_public_port") as (box, action):
-            action(REALITY, "2", "2", "TLS", "tls.example", "18100", "1443", "1", "/secure", "", "n", "2", "")
-            action(TROJAN, "2", "Trojan", "18101", "trojan.example", "2443", "/tunnel", "1", "2", "")
-            for tag, domain, port in (("vless-tls", "tls.example", 1443), ("trojan-tls", "trojan.example", 2443)):
+            free_https_port(box)
+            output = action(REALITY, "2", "2", "TLS", "tls.example", "18100", "1", "/secure", "", "n", "2", "")
+            self.assertNotIn("PUBLIC_PORT [", output)
+            output = action(TROJAN, "2", "Trojan", "18101", "trojan.example", "/tunnel", "1", "2", "")
+            self.assertNotIn("PUBLIC_PORT [", output)
+            for tag, domain in (("vless-tls", "tls.example"), ("trojan-tls", "trojan.example")):
                 with self.subTest(tag=tag):
                     self.seed_cli(box, "add", "alice", "--connection", tag)
                     link = urlsplit(self.seed_cli(box, "link", "alice", "--connection", tag).strip())
-                    self.assertEqual((link.hostname, link.port), (domain, port))
+                    self.assertEqual((link.hostname, link.port), (domain, 443))
                     site = (box.paths.caddy_conf_dir / f"{domain}.caddy").read_text()
                     self.assertEqual(site.splitlines()[0], f"{domain} {{")
                     with closing(sqlite3.connect(box.paths.manager_db)) as connection:
                         row, = connection.execute(
                             "SELECT extra_json FROM reality_connections WHERE tag = ?", (tag,),
                         ).fetchone()
-                    self.assertEqual(json.loads(row)["publicPort"], port)
+                    self.assertEqual(json.loads(row)["publicPort"], 443)
             self.assertNotIn("https_port", box.paths.caddyfile.read_text())
+            diag = test_command.Diagnostics()
+            test_command.check_client_db(diag)
+
+            with (
+                mock.patch("socket.create_connection") as connect,
+                mock.patch("ssl.create_default_context") as tls_context,
+            ):
+                certificate = tls_context.return_value.wrap_socket.return_value.__enter__.return_value.getpeercert
+                certificate.return_value = {
+                    "subjectAltName": (("DNS", "tls.example"), ("DNS", "trojan.example")),
+                    "notAfter": "Dec 31 23:59:59 2027 GMT",
+                }
+                diag.check("TLS certificate diagnostics", lambda: test_command.check_tls_diagnostics(diag), fatal=False)
+            self.assertCountEqual(connect.call_args_list, [
+                mock.call(("trojan.example", 443), timeout=6), mock.call(("tls.example", 443), timeout=6),
+            ])
+            self.assertNotIn("TLS handshake/certificate check failed", "\n".join(diag.warnings))
 
     def assert_site_link(self, box, tag, domain, port):
         link = urlsplit(self.seed_cli(box, "link", "alice", "--connection", tag).strip())
@@ -380,9 +422,9 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
         """XR-REV-053 исправлен: домен и SNI VLESS меняются вместе со штатным site."""
         with self.scenario("xr_rev_053_stale_domain") as (box, action):
             configure_caddy_https_port(box, 1443)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
             self.assert_site_link(box, "vless-tls", "old.example", 1443)
@@ -403,9 +445,9 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
             configure_caddy_https_port(box, 1443)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             self.seed_cli(
                 box, "add-trojan-connection", "WS", "18101", "old.example", "--ws-path", "/ws",
@@ -459,7 +501,7 @@ old.example {
                 ):
                     script_menu_processes(box)
                     configure_caddy_https_port(box, 1443)
-                    self.seed_cli(box, *args, "--install-caddy", "--public-port", "1443")
+                    self.seed_legacy_caddy_connection(box, *args, public_port="1443")
                     self.seed_cli(box, "add", "alice", "--connection", tag)
                     with closing(sqlite3.connect(box.paths.manager_db)) as conn, conn:
                         conn.execute(
@@ -478,13 +520,13 @@ old.example {
     def test_caddy_domain_change_refuses_existing_site(self):
         """XR-REV-063 исправлен: занятый домен отклоняется до записи и reload."""
         with self.scenario("xr_rev_063_existing_site") as (box, action):
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "a.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-trojan-connection", "WS", "18101", "b.example",
-                "--ws-path", "/ws", "--install-caddy", "--public-port", "2443",
+                "--ws-path", "/ws", public_port="2443",
             )
             state = snapshot(box)
             offset = len(box.processes.calls)
@@ -502,9 +544,9 @@ old.example {
         for location in ("Caddyfile", "second_block", "selected_file"):
             with self.subTest(location=location), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
                 script_menu_processes(box)
-                self.seed_cli(
+                self.seed_legacy_caddy_connection(
                     box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                    "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                    "--transport", "xhttp", public_port="1443",
                 )
                 conflict = 'new.example {\n    respond "existing"\n}\n'
                 if location == "Caddyfile":
@@ -556,9 +598,9 @@ old.example {
         """140-R03: вложенный glob должен видеть будущие файлы, а не рабочие."""
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             main = box.paths.caddyfile
             nested = main.parent / "snippets" / "extra.caddy"
@@ -604,9 +646,9 @@ old.example {
         for import_type in ("outside", "symlink", "environment"):
             with self.subTest(import_type=import_type), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
                 script_menu_processes(box)
-                self.seed_cli(
+                self.seed_legacy_caddy_connection(
                     box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                    "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                    "--transport", "xhttp", public_port="1443",
                 )
                 main = box.paths.caddyfile
                 directory = box.paths.caddy_conf_dir
@@ -633,9 +675,9 @@ old.example {
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
             configure_caddy_https_port(box, 1443)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
             original = box.paths.caddy_conf_dir / "old.example.caddy"
@@ -669,9 +711,9 @@ old.example {
             with self.subTest(edit_during=edit_during), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
                 script_menu_processes(box)
                 configure_caddy_https_port(box, 1443)
-                self.seed_cli(
+                self.seed_legacy_caddy_connection(
                     box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                    "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                    "--transport", "xhttp", public_port="1443",
                 )
                 self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
                 main = box.paths.caddyfile
@@ -753,9 +795,9 @@ old.example {
                 ):
                     script_menu_processes(box)
                     configure_caddy_https_port(box, 1443)
-                    self.seed_cli(
+                    self.seed_legacy_caddy_connection(
                         box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                        "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                        "--transport", "xhttp", public_port="1443",
                     )
                     self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
                     directory = box.paths.caddy_conf_dir
@@ -789,9 +831,9 @@ old.example {
     def test_caddy_domain_change_preserves_an_explicit_public_port(self):
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "8443",
+                "--transport", "xhttp", public_port="8443",
             )
             self.seed_cli(
                 box, "add-trojan-connection", "WS", "18101", "old.example", "--ws-path", "/ws",
@@ -851,9 +893,9 @@ old.example {
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
             configure_caddy_https_port(box, 2443)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-trojan-connection", "WS", "18101", "old.example",
-                "--ws-path", "/ws", "--install-caddy", "--public-port", "2443",
+                "--ws-path", "/ws", public_port="2443",
             )
             self.seed_cli(box, "add", "alice", "--connection", "trojan-tls")
             before = client_snapshot(box)
@@ -894,9 +936,9 @@ old.example {
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
             configure_caddy_https_port(box, 1443)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
             directory = box.paths.caddy_conf_dir
@@ -928,9 +970,9 @@ old.example {
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
             configure_caddy_https_port(box, 1443)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
             directory = box.paths.caddy_conf_dir
@@ -960,9 +1002,9 @@ old.example {
     def test_caddy_domain_change_validates_candidate_before_working_writes(self):
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             before = snapshot(box)
 
@@ -985,9 +1027,9 @@ old.example {
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
             configure_caddy_https_port(box, 1443)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             self.seed_cli(
                 box, "add-connection", "Second", "18101", "old.example", "--security", "tls",
@@ -1028,9 +1070,9 @@ old.example {
             with self.subTest(address=address), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
                 script_menu_processes(box)
                 configure_caddy_https_port(box, 1443)
-                self.seed_cli(
+                self.seed_legacy_caddy_connection(
                     box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                    "--transport", "xhttp", "--install-caddy", "--public-port", "2443",
+                    "--transport", "xhttp", public_port="2443",
                 )
                 self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
                 site = box.paths.caddy_conf_dir / "old.example.caddy"
@@ -1074,9 +1116,9 @@ old.example {
                 mock.patch("socket.socket"),
             ):
                 script_menu_processes(box)
-                self.seed_cli(
+                self.seed_legacy_caddy_connection(
                     box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                    "--transport", "xhttp", "--install-caddy", "--public-port", "8443",
+                    "--transport", "xhttp", public_port="8443",
                 )
                 self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
                 directory = box.paths.caddy_conf_dir
@@ -1129,9 +1171,9 @@ old.example {
                 mock.patch("socket.socket"),
             ):
                 script_menu_processes(box)
-                self.seed_cli(
+                self.seed_legacy_caddy_connection(
                     box, "add-connection", "TLS", "18100", old_host, "--security", "tls",
-                    "--transport", "xhttp", "--install-caddy", "--public-port", "8443",
+                    "--transport", "xhttp", public_port="8443",
                 )
                 self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
                 directory = box.paths.caddy_conf_dir
@@ -1174,9 +1216,9 @@ old.example {
                 reality, = (inbound for inbound in config["inbounds"] if inbound.get("tag") == "vless-reality")
                 reality["port"] = 4443
                 write_config(box, config)
-                self.seed_cli(
+                self.seed_legacy_caddy_connection(
                     box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                    "--transport", "xhttp", "--install-caddy", "--public-port", str(port),
+                    "--transport", "xhttp", public_port=str(port),
                 )
                 self.seed_cli(box, "add", "alice", "--connection", "vless-tls")
                 sites_dir = box.paths.caddy_conf_dir
@@ -1202,9 +1244,9 @@ old.example {
     def test_caddy_domain_change_rejects_new_domain_on_another_listener(self):
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             self.seed_cli(
                 box, "add-trojan-connection", "WS", "18101", "old.example", "--ws-path", "/ws",
@@ -1232,9 +1274,9 @@ old.example {
         """140-R12: динамический маршрут выбранного site не мешает сохранить доказанную отдельную ссылку."""
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "8443",
+                "--transport", "xhttp", public_port="8443",
             )
             self.seed_cli(
                 box, "add-trojan-connection", "WS", "18101", "old.example", "--ws-path", "/ws",
@@ -1276,9 +1318,9 @@ old.example {
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
             configure_caddy_https_port(box, 1443)
-            self.seed_cli(
+            self.seed_legacy_caddy_connection(
                 box, "add-connection", "TLS", "18100", "old.example", "--security", "tls",
-                "--transport", "xhttp", "--install-caddy", "--public-port", "1443",
+                "--transport", "xhttp", public_port="1443",
             )
             self.seed_cli(
                 box, "add-trojan-connection", "WS", "18101", "old.example", "--ws-path", "/ws",
@@ -1372,8 +1414,8 @@ old.example {
                     self.assertIn("restart rejected", result.stderr)
                     self.assertEqual(client_snapshot(box), before)
 
-    def test_manual_tls_check_uses_443_for_direct_trojan(self):
-        """Текущее поведение, баг XR-REV-052."""
+    def test_manual_tls_check_uses_entered_port_for_direct_trojan(self):
+        """XR-REV-052: обе TLS-пробы идут на порт, введённый вручную."""
         with self.scenario("xr_rev_052_manual_handshake") as (box, action):
             self.seed_cli(
                 box, "add-trojan-connection", "Direct", "9443", "direct.example",
@@ -1381,9 +1423,74 @@ old.example {
             )
             self.assertFalse(list(box.paths.caddy_conf_dir.glob("*.caddy")))
             self.assertIn("9443", box.db_rows("reality_connections"))
-            self.script_tls_probe(box, "direct.example", available=False)
-            output = action(CADDY_STATUS, "5", "direct.example")
-            self.assertEqual(output.count("Connection refused"), 2)
+            self.script_tls_probe(box, "direct.example", port=9443)
+            output = action(CADDY_STATUS, "5", "direct.example", "9443")
+            self.assertIn("Protocol version: TLSv1.2", output)
+            self.assertIn("Protocol version not supported", output)
+
+    def test_manual_tls_check_defaults_to_443_and_rejects_invalid_ports(self):
+        with Sandbox() as box:
+            script_menu_processes(box)
+            self.script_tls_probe(box, "direct.example")
+            answers = (*CADDY_STATUS, "5", "direct.example")
+            back = ("0",) * (len(CADDY_STATUS) + 1)
+            for port in ("no-port", "0", "65536"):
+                with self.subTest(port=port):
+                    result = box.run_menu((*answers, port, *back))
+                    self.assertEqual(result.exit_code, 0)
+                    self.assertIn("PORT must be a number from 1 to 65535.", result.stderr)
+                    self.assertFalse(any(call[:3] == ("timeout", "10", "openssl") for call in box.processes.calls))
+
+            result = box.run_menu((*answers, "", *back))
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            self.assertIn("Protocol version: TLSv1.2", result.stdout)
+            probes = [call for call in box.processes.calls if call[:3] == ("timeout", "10", "openssl")]
+            self.assertEqual(len(probes), 2)
+
+    def test_tls_check_uses_explicit_port_of_selected_site(self):
+        for port in (443, 8443):
+            with self.subTest(port=port), Sandbox() as box:
+                script_menu_processes(box)
+                domain = "vpn.example"
+                site = caddy_sites.write_site_config(domain, 18100)
+                site.write_text(site.read_text().replace(f"{domain} {{", f"{domain}:{port} {{", 1))
+                self.script_tls_probe(box, domain, port=port)
+
+                result = box.run_menu((*CADDY_STATUS, "5", "0", "0", "0", "0"))
+
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                self.assertIn("Protocol version: TLSv1.2", result.stdout)
+                self.assertIn("Protocol version not supported", result.stdout)
+                self.assertNotIn("PORT [", result.stdout)
+
+    def test_site_from_tls_connection_rejects_custom_public_port_before_writes(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), Sandbox() as box, running_xray(box):
+                script_menu_processes(box)
+                site = box.paths.caddy_conf_dir / "vpn.example.caddy"
+                if legacy:
+                    self.seed_legacy_caddy_connection(
+                        box, "add-connection", "VLESS", "18100", "vpn.example",
+                        "--security", "tls", "--transport", "xhttp", public_port="8443",
+                    )
+                    site.write_text(site.read_text().replace("vpn.example {", "vpn.example:8443 {", 1))
+                else:
+                    self.seed_cli(
+                        box, "add-trojan-connection", "Trojan", "18101", "vpn.example",
+                        "--no-caddy", "--public-port", "8443",
+                    )
+                before = snapshot(box)
+                db_before = box.paths.manager_db.read_bytes()
+                offset = len(box.processes.calls)
+
+                result = box.run_menu((*CADDY_SITES, "3", "1", "", "0", "0", "0", "0"))
+
+                self.assertEqual(result.exit_code, 0)
+                self.assertIn("Managed Caddy requires PUBLIC_PORT 443 (received 8443).", result.stderr)
+                self.assertNotIn("Caddy site updated", result.stdout)
+                self.assertEqual(snapshot(box), before)
+                self.assertEqual(box.paths.manager_db.read_bytes(), db_before)
+                self.assertFalse(any(call[0] in ("caddy", "systemctl") for call in box.processes.calls[offset:]))
 
     def test_caddy_site_management(self):
         with self.scenario("caddy_sites") as (box, action):

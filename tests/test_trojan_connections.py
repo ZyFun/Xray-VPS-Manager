@@ -399,7 +399,7 @@ class TrojanConnectionTests(unittest.TestCase):
         self.assertEqual(params["host"], ["vpn.example.com"])
         self.assertEqual(params["sni"], ["vpn.example.com"])
 
-    def test_update_trojan_caddy_connection_updates_inbound_metadata_and_link(self) -> None:
+    def test_update_trojan_ws_with_manual_tls_updates_inbound_metadata_and_link(self) -> None:
         config = {"inbounds": [base_vless_inbound()], "outbounds": []}
         db = {"connections": {}, "clients": {}}
         connection = client_connections.add_trojan_caddy_connection(
@@ -411,6 +411,7 @@ class TrojanConnectionTests(unittest.TestCase):
             public_port=443,
             fingerprint_value="chrome",
             ws_path="/trojan-private",
+            caddy_enabled=False,
         )
         client_crud.add_client(
             config,

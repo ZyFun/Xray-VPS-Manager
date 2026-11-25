@@ -120,7 +120,7 @@ XRAY_MENU_DEBUG=1 xray-menu
 3 Удалить Trojan-подключение
 4 Переименовать Trojan-подключение
 
-Создание Trojan TLS подключения открывает production-сценарий: локальный Xray Trojan/WebSocket inbound, публичный Caddy site на домене и TLS 1.2+1.3 по умолчанию. Caddy выпускает и обновляет сертификат, а клиенты получают `trojan://` ссылку с `security=tls`, `type=ws`, `path=WS_PATH`, `sni=DOMAIN` и выбранным fingerprint.
+Мастера VLESS TLS/xHTTP и Trojan-WS при автоматической настройке Caddy используют публичный порт `443` без вопроса, а при ручной настройке TLS спрашивают публичный порт. Создание Trojan TLS подключения открывает production-сценарий: локальный Xray Trojan/WebSocket inbound, публичный Caddy site на домене и TLS 1.2+1.3 по умолчанию. Caddy выпускает и обновляет сертификат, а клиенты получают `trojan://` ссылку с `security=tls`, `type=ws`, `path=WS_PATH`, `sni=DOMAIN` и выбранным fingerprint.
 
 Подключения и TLS -> Caddy / TLS:
 1 Состояние и проверка
@@ -136,6 +136,8 @@ XRAY_MENU_DEBUG=1 xray-menu
 5 Проверить TLS handshake
 6 Показать логи Caddy
 
+При проверке TLS handshake вручную введённого домена меню спрашивает `PORT` (по умолчанию `443`) и использует его для TLS 1.2 и TLS 1.3. При выборе сохранённого site с адресом `DOMAIN` меню запускает обе пробы на `443` без вопроса о порте. Для адреса `DOMAIN:PORT` обе пробы используют указанный порт, а в SNI передаётся домен без порта.
+
 Подключения и TLS -> Caddy / TLS -> Site configs:
 1 Показать TLS site configs
 2 Показать site config
@@ -146,6 +148,8 @@ XRAY_MENU_DEBUG=1 xray-menu
 7 Изменить домен site
 8 Удалить site config
 9 Убрать дефолтный site :80
+
+Пункт «Создать/обновить site из TLS-подключения» принимает только подключения с публичным портом `443`. Другой порт отклоняется до создания backup, записи и reload Caddy. Для нестандартного порта TLS можно настроить вручную.
 
 При создании или изменении TLS site config выбор TLS version открывается как список профилей: Caddy default, TLS 1.2, TLS 1.2 + TLS 1.3, TLS 1.3.
 

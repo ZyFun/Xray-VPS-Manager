@@ -418,16 +418,19 @@ def create_site_from_tls_connection() -> None:
     item = choose_tls_connection()
     if not item:
         return
-    domain = caddy_model.validate_domain(item["domain"])
     tls_min, tls_max = prompt_tls_versions(item["tlsMin"], item["tlsMax"])
-    apply_site_write(
-        domain,
-        item["localPort"],
-        tls_min,
-        tls_max,
-        upstream_transport=item["upstreamTransport"],
-        route_path=item["routePath"],
-    )
+    try:
+        result = connections_service.update_caddy_site_from_connection(
+            item,
+            tls_min_version=tls_min,
+            tls_max_version=tls_max,
+            runner=process.run_stream,
+        )
+    except ManagerError as exc:
+        die(str(exc))
+    except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError) as exc:
+        die(f"Caddy config failed. Previous site config was restored. Detail: {exc}")
+    print(f"Caddy site updated: {result.path}")
 
 
 def create_site_manual() -> None:
@@ -525,15 +528,19 @@ def show_logs() -> None:
 
 def tls_handshake_check() -> None:
     site = choose_site("проверки TLS handshake", auto_single=True)
-    domain = site.domain if site else input("DOMAIN: ").strip()
     try:
-        domain = caddy_model.validate_domain(domain)
+        if site:
+            domain, site_port = caddy_model.parse_site_address(site.domain)
+            port = site_port or 443
+        else:
+            domain = caddy_model.validate_domain(input("DOMAIN: ").strip())
+            port = validate_port(prompt(443, "PORT"))
     except ValueError as exc:
         die(str(exc))
     for version in ("tls1_2", "tls1_3"):
         print()
         print(f"Проверка {version.replace('_', '.')}:")
-        result = caddy_service.check_tls_handshake(domain, version)
+        result = caddy_service.check_tls_handshake(domain, version, port=port)
         output = (result.stdout or "") + (result.stderr or "")
         print(output.strip() or f"exit {result.returncode}")
 
