@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 from tests.support.sandbox import Sandbox
 from tests.test_apply_characterization import running_xray
 from tests.test_client_characterization import (
-    CADDY_ACTIVATION_STATE, is_caddy_candidate_validation, script_processes, write_config,
+    CADDY_ACTIVATION_STATE, free_https_port, is_caddy_candidate_validation, script_processes, write_config,
 )
 from tests.test_client_command_read import script_caddy
 from tests.test_client_manager_lock import lock_is_free
@@ -27,8 +27,8 @@ from xray_vps_manager.xray.config import INBOUND_TAG, TROJAN_INBOUND_TAG, find_i
 
 
 TLS = ("add-connection", "TLS", "18100", "tls.example", "--security", "tls",
-       "--transport", "xhttp", "--install-caddy", "--public-port", "1443")
-TROJAN = ("add-trojan-connection", "Trojan", "18101", "trojan.example", "--public-port", "2443")
+       "--transport", "xhttp", "--install-caddy")
+TROJAN = ("add-trojan-connection", "Trojan", "18101", "trojan.example")
 RELOAD = ("systemctl", "reload", "caddy")
 ENABLE_NOW = ("systemctl", "enable", "--now", "caddy")
 START = ("systemctl", "start", "caddy")
@@ -278,10 +278,91 @@ class RealityMenuConnectionTests(unittest.TestCase):
 
 class ConnectionCaddyCompensationTests(unittest.TestCase):
     def start(self, box):
+        free_https_port(box)
         script_processes(box)
         script_caddy(box)
         box.paths.initial_link.parent.mkdir(parents=True, exist_ok=True)
         box.paths.initial_link.write_text("CLIENT_URI=starter\n")
+
+    def test_managed_caddy_add_rejects_custom_public_port_before_writes(self):
+        for args in (TLS, (*TROJAN, "--install-caddy")):
+            with self.subTest(protocol=args[0]), Sandbox() as box, running_xray(box):
+                self.start(box)
+                before = state(box)
+                db_before = box.paths.manager_db.read_bytes()
+
+                result = box.run_cli("client", *args, "--public-port", "8443")
+
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn("Managed Caddy requires PUBLIC_PORT 443 (received 8443).", result.stderr)
+                self.assertIn("Use --public-port 443", result.stderr)
+                self.assertEqual(state(box), before)
+                self.assertEqual(box.paths.manager_db.read_bytes(), db_before)
+                self.assertFalse(box.paths.caddy_conf_dir.exists())
+                self.assertFalse(list(box.paths.config_dir.glob("config.json.bak.*")))
+                self.assertEqual(box.processes.calls, [])
+
+    def test_trojan_update_requires_443_when_it_rebuilds_the_managed_site(self):
+        with Sandbox() as box, running_xray(box):
+            self.start(box)
+            created = box.run_cli("client", *TROJAN)
+            self.assertEqual((created.exit_code, created.stderr), (0, ""))
+            occupied = box.run_cli("client", "add-connection", "Reality 8443", "8443", "cdn.example")
+            self.assertEqual((occupied.exit_code, occupied.stderr), (0, ""))
+            for legacy in (False, True):
+                with self.subTest(legacy=legacy):
+                    site = box.paths.caddy_conf_dir / "trojan.example.caddy"
+                    if legacy:
+                        site.write_text(site.read_text().replace("trojan.example {", "trojan.example:8443 {", 1))
+                        with database.write_session() as conn:
+                            record = repository.get_connection(conn, TROJAN_INBOUND_TAG)
+                            record.update(port=8443, publicPort=8443)
+                            repository.save_connection(conn, TROJAN_INBOUND_TAG, record)
+                    before = state(box)
+                    backups = sorted(box.paths.config_dir.glob("config.json.bak.*"))
+                    db_before = box.paths.manager_db.read_bytes()
+                    box.processes.calls.clear()
+
+                    options = () if legacy else ("--public-port", "8443")
+                    result = box.run_cli("client", "update-trojan-connection", "Trojan", "--ws-path", "/new", *options)
+
+                    self.assertEqual(result.exit_code, 1)
+                    self.assertIn("Managed Caddy requires PUBLIC_PORT 443 (received 8443).", result.stderr)
+                    self.assertIn("Use --public-port 443", result.stderr)
+                    self.assertEqual(state(box), before)
+                    self.assertEqual(box.paths.manager_db.read_bytes(), db_before)
+                    self.assertEqual(sorted(box.paths.config_dir.glob("config.json.bak.*")), backups)
+                    self.assertEqual(box.processes.calls, [])
+
+    def test_external_trojan_tls_update_allows_custom_public_port(self):
+        with Sandbox() as box, running_xray(box):
+            self.start(box)
+            self.assertEqual(box.run_cli("client", *TROJAN, "--no-caddy", "--public-port", "8443").exit_code, 0)
+            result = box.run_cli("client", "update-trojan-connection", "Trojan", "--public-port", "9443")
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            self.assertIn("PUBLIC_PORT: 9443", result.stdout)
+            self.assertFalse(box.paths.caddyfile.exists())
+
+    def test_external_trojan_tls_update_allows_public_port_used_by_local_reality(self):
+        with Sandbox() as box, running_xray(box):
+            script_processes(box)
+            self.assertEqual(find_inbound_by_tag(box.config(), INBOUND_TAG)["port"], 443)
+            created = box.run_cli("client", *TROJAN, "--no-caddy", "--public-port", "443")
+            self.assertEqual((created.exit_code, created.stderr), (0, ""))
+
+            result = box.run_cli("client", "update-trojan-connection", "Trojan", "--fingerprint", "firefox")
+
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            record = repository.load_db_sql()["connections"][TROJAN_INBOUND_TAG]
+            self.assertEqual((record["fingerprint"], record["publicPort"], record["localPort"]), ("firefox", 443, 18101))
+            self.assertFalse(box.paths.caddyfile.exists())
+
+            before = state(box)
+            rejected = box.run_cli("client", "update-trojan-connection", "Trojan", "--local-port", "443")
+
+            self.assertEqual(rejected.exit_code, 1)
+            self.assertIn("LOCAL_PORT is already used by another inbound: 443", rejected.stderr)
+            self.assertEqual(state(box), before)
 
     def test_site_candidate_rejected_before_any_working_write(self):
         for args, domain in ((TLS, "tls.example"), (TROJAN, "trojan.example")):
@@ -805,6 +886,7 @@ class ConnectionCaddyCompensationTests(unittest.TestCase):
             box.processes.script({"systemctl restart xray": restart})
             result = box.run_cli(
                 "client", "update-trojan-connection", TROJAN_INBOUND_TAG, "--domain", "replacement.example",
+                "--public-port", "443",
             )
 
             self.assertEqual(result.exit_code, 1, result.stderr)

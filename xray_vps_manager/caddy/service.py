@@ -528,9 +528,9 @@ def show_logs(*, runner: CaddyCommandRunner | None = None) -> None:
     _run(["journalctl", "-u", "caddy", "-n", "120", "--no-pager"], runner=runner)
 
 
-def check_tls_handshake(domain: str, version: str) -> subprocess.CompletedProcess[str]:
+def check_tls_handshake(domain: str, version: str, *, port: int = 443) -> subprocess.CompletedProcess[str]:
     return process.run(
-        ["timeout", "10", "openssl", "s_client", "-connect", f"{domain}:443",
+        ["timeout", "10", "openssl", "s_client", "-connect", f"{domain}:{port}",
          "-servername", domain, f"-{version}", "-brief"],
         timeout=15,
     )

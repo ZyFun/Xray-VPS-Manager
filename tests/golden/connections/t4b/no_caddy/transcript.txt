@@ -1,5 +1,5 @@
 
-["2", "1", "2", "2", "TLS", "tls.example", "18100", "", "1", "/secure", "", "n", "2", "n"]
+["2", "1", "2", "2", "TLS", "tls.example", "18100", "1", "/secure", "", "n", "2", "n", "8443"]
 exit: 0
 stdout:
 =================== Создать подключение ====================
@@ -8,8 +8,8 @@ stdout:
 SECURITY: тип входящего подключения.
   1) reality - текущая схема без своего домена и сертификата
   2) tls     - XHTTP через Caddy с доменом и автоматическим сертификатом
-SECURITY [reality] (номер или значение): Имя подключения: TLS-XHTTP подключение работает через Caddy: публично api.domain:443, внутри Xray слушает 127.0.0.1:LOCAL_PORT.
-TLS domain/SNI: LOCAL_PORT для Xray [10000]: PUBLIC_PORT для Caddy [443]:
+SECURITY [reality] (номер или значение): Имя подключения: TLS-XHTTP: управляемый Caddy слушает DOMAIN:443, Xray слушает 127.0.0.1:LOCAL_PORT.
+TLS domain/SNI: LOCAL_PORT для Xray [10000]:
 Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.
 Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.
   1) chrome
@@ -34,11 +34,11 @@ TLS: выбери версию протокола для Caddy site.
   2) TLS 1.2 (текущий)
   3) TLS 1.2 + TLS 1.3
   4) TLS 1.3
-TLS [TLS 1.2] (номер из списка): Установить и настроить Caddy сейчас [Y/n]: Added connection: TLS
+TLS [TLS 1.2] (номер из списка): Установить и настроить Caddy сейчас [Y/n]: PUBLIC_PORT для ручной настройки TLS [443]: Added connection: TLS
 Tag: vless-tls
 SECURITY: tls
 PUBLIC_HOST: tls.example
-PUBLIC_PORT: 443
+PUBLIC_PORT: 8443
 LOCAL_PORT: 18100
 FINGERPRINT: chrome
 TLS_MIN_VERSION: tls1.2
@@ -69,7 +69,7 @@ state:
 @@ -6 +6,2 @@
 -["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
 +["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
-+["vless-tls", "TLS", 443, "tls.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"security\":\"tls\",\"publicPort\":443,\"localPort\":18100,\"publicHost\":\"tls.example\",\"caddy\":false,\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\",\"transport\":\"xhttp\",\"xhttpPath\":\"/secure\",\"xhttpMode\":\"auto\"}"]
++["vless-tls", "TLS", 8443, "tls.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"security\":\"tls\",\"publicPort\":8443,\"localPort\":18100,\"publicHost\":\"tls.example\",\"caddy\":false,\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\",\"transport\":\"xhttp\",\"xhttpPath\":\"/secure\",\"xhttpMode\":\"auto\"}"]
 --- before/config backups
 +++ after/config backups
 @@ -0,0 +1 @@
@@ -106,16 +106,16 @@ state:
 @@ -74,0 +101 @@
 +    "balancers": [],
 
-["2", "2", "2", "Trojan", "18101", "trojan.example", "", "/tunnel", "1", "2", "n"]
+["2", "2", "2", "Trojan", "18101", "trojan.example", "/tunnel", "1", "2", "n", ""]
 exit: 0
 stdout:
 ============== Создать Trojan TLS подключение ==============
 
 Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.
-Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.
+При автоматической настройке Caddy клиенты подключаются к DOMAIN:443.
 Имя Trojan-подключения: LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.
 LOCAL_PORT для Xray [10100]: TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.
-TLS_DOMAIN: PUBLIC_PORT для Caddy [443]: WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.
+TLS_DOMAIN: WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.
 WS_PATH [/trojan]:
 Новый FINGERPRINT: маскировка браузера/uTLS в клиентской VLESS-ссылке.
 Обычно оставляют chrome. Если нужно, выбери другой профиль из списка.
@@ -135,7 +135,7 @@ TLS: выбери версию протокола для Caddy site.
   2) TLS 1.2
   3) TLS 1.2 + TLS 1.3 (текущий)
   4) TLS 1.3
-TLS [TLS 1.2 + TLS 1.3] (номер из списка): Установить и настроить Caddy сейчас (production default) [Y/n]: Added Trojan connection: Trojan
+TLS [TLS 1.2 + TLS 1.3] (номер из списка): Установить и настроить Caddy сейчас (production default) [Y/n]: PUBLIC_PORT для ручной настройки TLS [443]: Added Trojan connection: Trojan
 Tag: trojan-tls
 PROTOCOL: trojan
 SECURITY: tls

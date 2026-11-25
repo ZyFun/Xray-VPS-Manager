@@ -571,14 +571,13 @@ def create_connection() -> None:
 def create_trojan_connection() -> None:
     config = load_config()
     print("Trojan через Caddy создаёт локальный Xray inbound protocol=trojan + WebSocket.")
-    print("Публично клиенты подключаются к DOMAIN:443, TLS-сертификат выпускает и обслуживает Caddy.")
+    print("При автоматической настройке Caddy клиенты подключаются к DOMAIN:443.")
     name = input("Имя Trojan-подключения: ").strip()
     default_local_port = connection_store.next_local_port(config, DEFAULT_TROJAN_TLS_LOCAL_PORT)
     print("LOCAL_PORT: локальный порт Xray на 127.0.0.1. Он не публикуется наружу.")
     local_port = validate_port(prompt(default_local_port, "LOCAL_PORT для Xray"))
     print("TLS_DOMAIN: домен/SNI для Trojan-ссылки без https:// и без порта.")
     domain = validate_host(input("TLS_DOMAIN: ").strip(), "TLS_DOMAIN")
-    public_port = validate_port(prompt(DEFAULT_TROJAN_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy"))
     print("WS_PATH: WebSocket path для Trojan. Этот path попадёт в trojan:// ссылку и Caddy route.")
     ws_path = validate_trojan_ws_path(prompt(DEFAULT_TROJAN_WS_PATH, "WS_PATH"))
     fp = choose_fingerprint(fingerprint_or_default())
@@ -587,6 +586,7 @@ def create_trojan_connection() -> None:
         DEFAULT_TROJAN_TLS_MAX_VERSION,
     )
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас (production default)", True)
+    public_port = DEFAULT_TROJAN_TLS_PUBLIC_PORT
     if install_caddy:
         conflicts = connection_store.public_port_conflicts(config, public_port)
         if conflicts:
@@ -600,6 +600,8 @@ def create_trojan_connection() -> None:
             print(str(exc))
             print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
             return
+    else:
+        public_port = validate_port(prompt(public_port, "PUBLIC_PORT для ручной настройки TLS"))
     with client_change_errors():
         change = connections_service.add_trojan_caddy_connection(
             validate_connection_name(name), domain, local_port=local_port, public_port=public_port,
@@ -611,17 +613,17 @@ def create_trojan_connection() -> None:
 
 def create_tls_xhttp_connection(name: str) -> None:
     config = load_config()
-    print("TLS-XHTTP подключение работает через Caddy: публично api.domain:443, внутри Xray слушает 127.0.0.1:LOCAL_PORT.")
+    print("TLS-XHTTP: управляемый Caddy слушает DOMAIN:443, Xray слушает 127.0.0.1:LOCAL_PORT.")
     domain = validate_host(input("TLS domain/SNI: ").strip(), "TLS_DOMAIN")
     default_local_port = connection_store.next_local_port(config)
     local_port = validate_port(prompt(default_local_port, "LOCAL_PORT для Xray"))
-    public_port = validate_port(prompt(DEFAULT_XHTTP_TLS_PUBLIC_PORT, "PUBLIC_PORT для Caddy"))
     fp = choose_fingerprint(fingerprint_or_default())
     path = validate_xhttp_path(prompt(DEFAULT_XHTTP_PATH, "XHTTP path"))
     mode = choose_xhttp_mode(DEFAULT_XHTTP_MODE)
     xhttp_extra = maybe_prompt_xhttp_advanced_settings(default_xhttp_path=path, default_xhttp_mode=mode)
     tls_min, tls_max = choose_tls_versions("tls1.2", "tls1.2")
     install_caddy = ask_yes_no("Установить и настроить Caddy сейчас", True)
+    public_port = DEFAULT_XHTTP_TLS_PUBLIC_PORT
     if install_caddy:
         conflicts = connection_store.public_port_conflicts(config, public_port)
         if conflicts:
@@ -635,6 +637,8 @@ def create_tls_xhttp_connection(name: str) -> None:
             print(str(exc))
             print("Открой Caddy / TLS -> Site configs, чтобы обновить или удалить существующий site config.")
             return
+    else:
+        public_port = validate_port(prompt(public_port, "PUBLIC_PORT для ручной настройки TLS"))
     with client_change_errors():
         change = connections_service.add_tls_xhttp_connection(
             validate_connection_name(name), domain, local_port=local_port, public_port=public_port,

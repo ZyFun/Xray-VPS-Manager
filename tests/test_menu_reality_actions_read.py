@@ -64,7 +64,7 @@ class MenuRealityActionsReadTests(unittest.TestCase):
         )
 
     def test_create_trojan_connection_applies_selected_settings(self) -> None:
-        answers = ["2", "2", "2", "trojan-main", "", "vpn.example.com", "", "/private-trojan",
+        answers = ["2", "2", "2", "trojan-main", "", "vpn.example.com", "/private-trojan",
                    "1", "", "y", "0", "0", "0"]
         with Sandbox() as box, running_xray(box):
             script_menu_processes(box)
@@ -85,7 +85,7 @@ class MenuRealityActionsReadTests(unittest.TestCase):
             self.assertFalse(any(call[:2] == ("xray-client", "add-trojan-connection") for call in box.processes.calls))
 
     def test_create_trojan_connection_refuses_existing_caddy_site(self) -> None:
-        answers = ["2", "2", "2", "trojan-main", "", "vpn.example.com", "", "/private-trojan",
+        answers = ["2", "2", "2", "trojan-main", "", "vpn.example.com", "/private-trojan",
                    "1", "", "y", "0", "0", "0"]
         with Sandbox() as box:
             script_menu_processes(box)

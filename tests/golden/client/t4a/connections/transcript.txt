@@ -5,7 +5,7 @@ stdout:
 +---------+---------------+----------+----------+------+-----------------+-----------+-------------+----------------------+
 | NAME    | TAG           | PROTOCOL | SECURITY | PORT | SNI             | TRANSPORT | FINGERPRINT | CREATED              |
 +---------+---------------+----------+----------+------+-----------------+-----------+-------------+----------------------+
-| Reality | vless-reality | vless    | reality  | 443  | www.example.com | tcp       | chrome      | 2026-10-06T12:00:00Z |
+| Reality | vless-reality | vless    | reality  | 5443 | www.example.com | tcp       | chrome      | 2026-10-06T12:00:00Z |
 +---------+---------------+----------+----------+------+-----------------+-----------+-------------+----------------------+
 
 stderr:
@@ -40,8 +40,8 @@ state:
 --- before/SQLite
 +++ after/SQLite
 @@ -6 +6,2 @@
--["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
-+["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+-["vless-reality", "Reality", 5443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
++["vless-reality", "Reality", 5443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
 +["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\"}"]
 --- before/config backups
 +++ after/config backups
@@ -213,14 +213,14 @@ state:
 -["vless-reality-2", "Second", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
 +["vless-reality-2", "Alternate", 8443, "cdn.example", "cdn.example:443", "firefox", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", "fedcba9876543210", "2026-10-06T12:00:00Z", "{\"security\":\"reality\",\"transport\":\"xhttp\",\"xhttpPath\":\"/alternate\",\"xhttpMode\":\"packet-up\"}"]
 
-["add-connection", "TLS", "18080", "tls.example", "--security", "tls", "--transport", "xhttp", "--xhttp-path", "/secure", "--public-port", "1443", "--install-caddy"]
+["add-connection", "TLS", "18080", "tls.example", "--security", "tls", "--transport", "xhttp", "--xhttp-path", "/secure", "--public-port", "443", "--install-caddy"]
 exit: 0
 stdout:
 Added connection: TLS
 Tag: vless-tls
 SECURITY: tls
 PUBLIC_HOST: tls.example
-PUBLIC_PORT: 1443
+PUBLIC_PORT: 443
 LOCAL_PORT: 18080
 FINGERPRINT: chrome
 TLS_MIN_VERSION: tls1.2
@@ -249,7 +249,7 @@ state:
 --- before/SQLite
 +++ after/SQLite
 @@ -7,0 +8 @@
-+["vless-tls", "TLS", 1443, "tls.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"security\":\"tls\",\"publicPort\":1443,\"localPort\":18080,\"publicHost\":\"tls.example\",\"caddy\":true,\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\",\"transport\":\"xhttp\",\"xhttpPath\":\"/secure\",\"xhttpMode\":\"auto\"}"]
++["vless-tls", "TLS", 443, "tls.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"security\":\"tls\",\"publicPort\":443,\"localPort\":18080,\"publicHost\":\"tls.example\",\"caddy\":true,\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.2\",\"transport\":\"xhttp\",\"xhttpPath\":\"/secure\",\"xhttpMode\":\"auto\"}"]
 --- before/config backups
 +++ after/config backups
 @@ -4,0 +5 @@
@@ -298,7 +298,7 @@ state:
 +    reverse_proxy h2c://127.0.0.1:18080
 +}
 
-["add-trojan-connection", "Trojan", "9443", "trojan.example", "--ws-path", "/tunnel", "--public-port", "1443"]
+["add-trojan-connection", "Trojan", "9443", "trojan.example", "--ws-path", "/tunnel", "--public-port", "443"]
 exit: 0
 stdout:
 Added Trojan connection: Trojan
@@ -308,7 +308,7 @@ SECURITY: tls
 TLS_DOMAIN: trojan.example
 FINGERPRINT: chrome
 TRANSPORT: ws
-PUBLIC_PORT: 1443
+PUBLIC_PORT: 443
 LOCAL_PORT: 9443
 WS_PATH: /tunnel
 TLS_MIN_VERSION: tls1.2
@@ -333,7 +333,7 @@ state:
 --- before/SQLite
 +++ after/SQLite
 @@ -5,0 +6 @@
-+["trojan-tls", "Trojan", 1443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":1443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/tunnel\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
++["trojan-tls", "Trojan", 443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/tunnel\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
 --- before/config backups
 +++ after/config backups
 @@ -5,0 +6 @@
@@ -395,7 +395,7 @@ stdout:
 Trojan connection updated: Trojan
 Tag: trojan-tls
 TLS_DOMAIN: trojan.example
-PUBLIC_PORT: 1443
+PUBLIC_PORT: 443
 LOCAL_PORT: 9443
 WS_PATH: /new
 FINGERPRINT: firefox
@@ -422,8 +422,8 @@ state:
 --- before/SQLite
 +++ after/SQLite
 @@ -6 +6 @@
--["trojan-tls", "Trojan", 1443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":1443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/tunnel\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
-+["trojan-tls", "Trojan", 1443, "trojan.example", "", "firefox", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":1443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/new\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
+-["trojan-tls", "Trojan", 443, "trojan.example", "", "chrome", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/tunnel\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
++["trojan-tls", "Trojan", 443, "trojan.example", "", "firefox", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"ws\",\"publicPort\":443,\"localPort\":9443,\"publicHost\":\"trojan.example\",\"caddy\":true,\"wsPath\":\"/new\",\"tlsMinVersion\":\"tls1.2\",\"tlsMaxVersion\":\"tls1.3\"}"]
 --- before/config backups
 +++ after/config backups
 @@ -6,0 +7 @@
@@ -510,11 +510,11 @@ stdout:
 +-----------+-----------------+----------+----------+-------+-----------------+-----------+-------------+----------------------+
 | NAME      | TAG             | PROTOCOL | SECURITY | PORT  | SNI             | TRANSPORT | FINGERPRINT | CREATED              |
 +-----------+-----------------+----------+----------+-------+-----------------+-----------+-------------+----------------------+
-| Trojan    | trojan-tls      | trojan   | tls      | 1443  | trojan.example  | ws        | firefox     | 2026-10-06T12:00:00Z |
+| Trojan    | trojan-tls      | trojan   | tls      | 443   | trojan.example  | ws        | firefox     | 2026-10-06T12:00:00Z |
 | TCP       | trojan-tls-2    | trojan   | tls      | 10443 | tcp.example     | tcp       | safari      | 2026-10-06T12:00:00Z |
-| Reality   | vless-reality   | vless    | reality  | 443   | www.example.com | tcp       | chrome      | 2026-10-06T12:00:00Z |
+| Reality   | vless-reality   | vless    | reality  | 5443  | www.example.com | tcp       | chrome      | 2026-10-06T12:00:00Z |
 | Alternate | vless-reality-2 | vless    | reality  | 8443  | cdn.example     | xhttp     | firefox     | 2026-10-06T12:00:00Z |
-| TLS       | vless-tls       | vless    | tls      | 1443  | tls.example     | xhttp     | chrome      | 2026-10-06T12:00:00Z |
+| TLS       | vless-tls       | vless    | tls      | 443   | tls.example     | xhttp     | chrome      | 2026-10-06T12:00:00Z |
 +-----------+-----------------+----------+----------+-------+-----------------+-----------+-------------+----------------------+
 
 stderr:
@@ -549,7 +549,7 @@ state:
 -["alice", "vless-reality", "00000000-0000-4000-8000-000000000001", "vless", "reality", "tcp", 1, "2026-10-06T12:00:00Z", "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"flow\":\"xtls-rprx-vision\",\"email\":\"alice|created=2026-10-06T12:00:00Z|connection=vless-reality\"}", "{}", "{}"]
 @@ -7,2 +5 @@
 -["trojan-tls-2", "TCP", 10443, "tcp.example", "", "safari", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"tcp\",\"certFile\":\"/fixture/cert.pem\",\"keyFile\":\"/fixture/key.pem\"}"]
--["vless-reality", "Reality", 443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
+-["vless-reality", "Reality", 5443, "www.example.com", "www.example.com:443", "chrome", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{\"transport\":\"tcp\",\"security\":\"reality\"}"]
 +["trojan-tls-2", "TCP", 10443, "tcp.example", "", "safari", "", "", "2026-10-06T12:00:00Z", "{\"protocol\":\"trojan\",\"security\":\"tls\",\"transport\":\"tcp\",\"certFile\":\"/fixture/cert.pem\",\"keyFile\":\"/fixture/key.pem\",\"publicPort\":10443,\"publicHost\":\"tcp.example\",\"caddy\":false}"]
 --- before/config backups
 +++ after/config backups
@@ -561,7 +561,7 @@ state:
 -    },
 -    {
 -      "listen": "0.0.0.0",
--      "port": 443,
+-      "port": 5443,
 -      "protocol": "vless",
 -      "settings": {
 -        "clients": [
@@ -593,7 +593,7 @@ state:
 --- before/server.env
 +++ after/server.env
 @@ -3,5 +3,9 @@
--PORT=443
+-PORT=5443
 -REALITY_SNI=www.example.com
 -REALITY_DEST=www.example.com:443
 -FINGERPRINT=chrome

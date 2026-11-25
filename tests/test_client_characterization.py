@@ -190,6 +190,17 @@ def write_config(box, config):
     box.paths.config.write_text(json.dumps(config) + "\n")
 
 
+def free_https_port(box):
+    config = box.config()
+    reality = next(inbound for inbound in config["inbounds"] if inbound.get("tag") == "vless-reality")
+    reality["port"] = 5443
+    write_config(box, config)
+    with closing(sqlite3.connect(box.paths.manager_db)) as conn, conn:
+        conn.execute("UPDATE reality_connections SET port = 5443 WHERE tag = 'vless-reality'")
+    env = box.paths.server_env
+    env.write_text(env.read_text().replace("PORT=443\n", "PORT=5443\n"))
+
+
 def seed_traffic(box):
     with closing(sqlite3.connect(box.paths.manager_db)) as conn, conn:
         conn.executescript("""
@@ -294,6 +305,8 @@ class ClientCharacterizationTests(unittest.TestCase):
         self.check(self.connections)
 
     def connections(self, box, run):
+        """XR-REV-064: новые управляемые подключения используют публичный 443."""
+        free_https_port(box)
         box.processes.executables["caddy"] = "/usr/bin/caddy"
         script_connection_caddy_checks(box)
         ok = box.processes.ok()
@@ -309,8 +322,8 @@ class ClientCharacterizationTests(unittest.TestCase):
         run("connection-xhttp-extra", "Second", "--clear-xhttp-extra")
         run("connection-rename", "Second", "Alternate")
         run("add-connection", "TLS", "18080", "tls.example", "--security", "tls", "--transport", "xhttp",
-            "--xhttp-path", "/secure", "--public-port", "1443", "--install-caddy")
-        add_trojan(run, "--ws-path", "/tunnel", "--public-port", "1443")
+            "--xhttp-path", "/secure", "--public-port", "443", "--install-caddy")
+        add_trojan(run, "--ws-path", "/tunnel", "--public-port", "443")
         run("update-trojan-connection", "Trojan", "--ws-path", "/new", "--fingerprint", "firefox")
         run("add-trojan-connection", "TCP", "10443", "tcp.example", "/fixture/cert.pem", "/fixture/key.pem",
             "safari")

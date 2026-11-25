@@ -56,6 +56,9 @@ def usage():
   xray-client enforce-limits [--quiet] [--sync]
   xray-client timezone
   xray-client set-timezone TIMEZONE|server
+
+  Managed Caddy requires --public-port 443 (default) for VLESS TLS/xHTTP and Trojan-WS.
+  For a different public port, configure TLS manually: omit --install-caddy for VLESS or use --no-caddy for Trojan-WS.
 """)
 
 
