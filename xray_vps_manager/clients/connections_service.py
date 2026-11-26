@@ -27,7 +27,7 @@ class ConnectionChange[T]:
     result: T
     backup: Path | None = None
     site: Path | None = None
-    link_error: OSError | None = None
+    link_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,7 @@ class RealityEndpoint:
 class CaddySiteDomainChange:
     address: str
     updated_connections: int
+    link_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,9 +197,7 @@ def _change(purpose, edit, *, refresh_link=False, retires_traffic=False, prechec
         link_error = None
         try:
             if refresh_link:
-                _write_initial_link(config, db, fingerprint=env.get("FINGERPRINT") if env else None)
-        except OSError as exc:
-            link_error = exc
+                link_error = _refresh_initial_link(config, db, pending_env=env)
         finally:
             if env is not None:
                 _update_connection_env(env)
@@ -319,19 +318,19 @@ def add_trojan_caddy_connection(name, domain, *, local_port, public_port, instal
     return _change("add-trojan-connection", edit, precheck_caddy=install_caddy)
 
 
-def update_transport(identifier, transport, *, refresh_link=False, **options):
+def update_transport(identifier, transport, **options):
     def edit(config, db):
         result = connections.update_connection_transport(config, db, identifier, transport, **options)
         return _Edit(result, env_tag=result.tag if result.tag == xray.INBOUND_TAG else "")
 
-    return _change("connection-transport", edit, refresh_link=refresh_link)
+    return _change("connection-transport", edit, refresh_link=True)
 
 
-def update_xhttp_extra(identifier, extra, *, refresh_link=False):
+def update_xhttp_extra(identifier, extra):
     def edit(config, db):
         return _Edit(connections.update_connection_xhttp_extra(config, db, identifier, extra))
 
-    return _change("connection-xhttp-extra", edit, refresh_link=refresh_link)
+    return _change("connection-xhttp-extra", edit, refresh_link=True)
 
 
 def check_reality_port(config: dict, tag: str, port: int) -> None:
@@ -355,14 +354,14 @@ def update_reality_endpoint(tag: str, *, port: int | None = None, sni: str | Non
     return _update_reality(purpose, tag, port=port, sni=sni)
 
 
-def update_reality_fingerprint(tag: str, fingerprint: str) -> None:
+def update_reality_fingerprint(tag: str, fingerprint: str) -> ConnectionChange[RealityEndpoint]:
     try:
         fingerprint = connections.validate_connection_fingerprint(fingerprint)
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
     if not fingerprint:
         raise ValidationError("FINGERPRINT must not be empty.")
-    _update_reality("update-fingerprint", tag, fingerprint=fingerprint)
+    return _update_reality("update-fingerprint", tag, fingerprint=fingerprint)
 
 
 def _update_reality(purpose: str, tag: str, *, port: int | None = None, sni: str | None = None,
@@ -430,15 +429,12 @@ def _update_reality(purpose: str, tag: str, *, port: int | None = None, sni: str
             actions.append(("Данные подключения SQLite", restore_connection))
             compensate(error, actions)
 
-        # Ссылка для первого клиента строится по сохранённому состоянию, в том
-        # числе при редактировании дополнительного подключения этого клиента.
         try:
-            pending_fingerprint = env["FINGERPRINT"] if env else None
-            _write_initial_link(config, pending_env_fingerprint=pending_fingerprint)
+            link_error = _refresh_initial_link(config, pending_env=env)
         finally:
             if env is not None:
                 _update_connection_env(env, metadata_only=fingerprint is not None)
-        return ConnectionChange(result, applied.backup if applied else None)
+        return ConnectionChange(result, applied.backup if applied else None, link_error=link_error)
 
 
 def update_trojan_connection(identifier, **options):
@@ -458,7 +454,7 @@ def update_trojan_connection(identifier, **options):
             site = _site_candidate(result, trojan=True, previous_domain=result.previous_public_host)
         return _Edit(result, caddy_site=site)
 
-    return _change("update-trojan-connection", edit, precheck_caddy=True)
+    return _change("update-trojan-connection", edit, refresh_link=True, precheck_caddy=True)
 
 
 def _connections_routed_by_site(
@@ -586,7 +582,8 @@ def rename_caddy_site(
             compensate(error, actions)
 
         site_update.prune_backups()
-        return CaddySiteDomainChange(new_address, len(linked))
+        link_error = _refresh_initial_link(config) if linked else None
+        return CaddySiteDomainChange(new_address, len(linked), link_error)
 
 
 def rename_connection(identifier, new_name):
@@ -639,31 +636,107 @@ def _values_for_connection(config, db, tag):
     return values
 
 
-def _write_initial_link(config, db=None, *, fingerprint=None, pending_env_fingerprint=None):
-    inbound = xray.find_inbound(config)
-    clients = inbound.get("settings", {}).get("clients", [])
-    if not clients:
-        return
-    name = clients[0].get("email", "starter").split("|created=", 1)[0]
+def _initial_link_env_fields(env):
+    fields = {
+        key: env[key] for key in (
+            "PORT", "FINGERPRINT", "GRPC_SERVICE_NAME", "XHTTP_PATH", "XHTTP_MODE",
+            "TROJAN_DOMAIN", "TROJAN_LOCAL_PORT", "TROJAN_PUBLIC_PORT", "TROJAN_WS_PATH",
+        ) if key in env
+    }
+    for key in ("SNI", "DEST"):
+        if f"REALITY_{key}" in env:
+            fields[key] = env[f"REALITY_{key}"]
+    if env.get("TROJAN_TLS_MIN_VERSION") and env.get("TROJAN_TLS_MAX_VERSION"):
+        fields["TROJAN_TLS"] = f"{env['TROJAN_TLS_MIN_VERSION']}..{env['TROJAN_TLS_MAX_VERSION']}"
+    return fields
+
+
+def _write_initial_link(content):
+    fs.replace_file(paths().initial_link, content.encode(), staging_mode=0o600,
+                    prepare=lambda path: path.chmod(0o600))
+
+
+def write_install_initial_link(install_env):
+    """Запись стартового файла при чистой установке с известным именем клиента."""
+    name = install_env.get("INSTALL_CLIENT_NAME", "")
+    service.validate_name(name)
+    with manager_lock(purpose="install-initial-link"):
+        config = service.load_working_config()
+        db = repository.load_db_sql()
+        env = settings.server_env_values()
+        mode = env.get("INITIAL_PROTOCOL")
+        if mode not in links.INITIAL_PROTOCOLS:
+            raise ValidationError("Неизвестный INITIAL_PROTOCOL стартовой установки.")
+        fields = _initial_link_env_fields(env)
+        for key in ("UUID", "PUBLIC_KEY", "SHORT_ID", "CREATED"):
+            if not install_env.get(f"INSTALL_{key}"):
+                raise ValidationError(f"Отсутствует параметр установщика INSTALL_{key}.")
+            fields[key] = install_env[f"INSTALL_{key}"]
+        try:
+            selected = links.initial_link_credentials(config, db, mode, name=name)
+            _write_initial_link(links.initial_link_content(config, db, mode, selected, fields))
+        except (OSError, ValueError, RuntimeError, ManagerError) as exc:
+            raise StateError(f"Не удалось записать стартовые ссылки в {paths().initial_link}.") from exc
+
+
+def _refresh_initial_link(config, db=None, *, pending_env=None):
+    """Обновляет существующий файл после применения подключения под manager.lock."""
+    path = paths().initial_link
     try:
-        service.validate_name(name)
-    except ValidationError:
-        return
-    if db is None:
-        active_tags = {tag for tag, _, _ in credentials.active_items_for_client(config, name)}
-        db = repository.load_client_link_state(name, active_tags)
+        previous = path.read_text()
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError):
+        return f"Не удалось прочитать файл стартовых ссылок {path}."
     try:
-        uri = "\n".join(links.client_link_lines(
-            config, db, name, default_fingerprint=pending_env_fingerprint,
-        )).strip()
-    except (ValueError, RuntimeError, ManagerError):
-        return
-    if pending_env_fingerprint is not None:
-        fingerprint = pending_env_fingerprint
-    elif fingerprint is None:
-        fingerprint = settings.server_env_value("FINGERPRINT", "chrome").lower()
-    if fingerprint not in settings.FINGERPRINTS:
-        fingerprint = "chrome"
-    transport = xray.connection_settings_from_inbound(inbound)
-    content = links.initial_reality_link_content(uri, transport, fingerprint)
-    fs.replace_file(paths().initial_link, content.encode(), prepare=lambda path: path.chmod(0o600))
+        fields, identities, legacy_multiline = links.read_initial_link_content(previous)
+        file_mode = fields.get("INITIAL_PROTOCOL")
+        # Старый рендерер выбирал первого активного клиента и не сохранял UUID.
+        # Совпадение URI из такого файла с SQLite не подтверждает исходного клиента.
+        if not file_mode and not fields.get("UUID"):
+            return (f"Не удалось подтвердить исходного стартового клиента по файлу {path}. "
+                    "Проверьте ссылки через xray-client link.")
+        env = settings.server_env_values()
+        if pending_env:
+            env.update(pending_env)
+        mode = file_mode or env.get("INITIAL_PROTOCOL")
+        if not mode and identities["vless"] and not identities["trojan"]:
+            mode = "vless"  # Исторический установщик до появления INITIAL_PROTOCOL.
+        if mode not in links.INITIAL_PROTOCOLS:
+            raise ValueError("Неизвестный INITIAL_PROTOCOL стартовой установки.")
+        protocols = links.INITIAL_PROTOCOLS[mode]
+        uri_fields = {f"{protocol.upper()}_CLIENT_URI": protocol for protocol in identities}
+        if file_mode and not legacy_multiline:
+            uri_fields["CLIENT_URI"] = protocols[0]
+        for key, protocol in uri_fields.items():
+            uri = fields.get(key)
+            if uri and (protocol not in protocols or not uri.startswith(f"{protocol}://")):
+                return (f"Поле {key} в файле {path} противоречит формату INITIAL_PROTOCOL={mode}. "
+                        "Проверьте ссылки через xray-client link.")
+        if mode != "trojan" and fields.get("UUID"):
+            if identities["vless"] - {fields["UUID"]}:
+                raise ValueError("UUID расходится со стартовой VLESS-ссылкой.")
+            identities["vless"] = {fields["UUID"]}
+        identities = {protocol: identities[protocol] for protocol in protocols}
+        # В Trojan-only INSTALL_UUID принадлежит единственному credential и
+        # сохраняется при ротации его пароля. В both UUID принадлежит VLESS.
+        trojan_uuid = fields.get("UUID") if mode == "trojan" else None
+        if any(len(values) > 1 or not values and not trojan_uuid for values in identities.values()):
+            raise ValueError("В стартовом файле нет однозначного credential.")
+        if db is None:
+            db = repository.load_initial_link_state(config, identities, trojan_uuid=trojan_uuid)
+        fingerprint = env.get("FINGERPRINT") or None
+        selected = links.initial_link_credentials(
+            config, db, mode, identities=identities, trojan_uuid=trojan_uuid, default_fingerprint=fingerprint,
+        )
+        content = links.initial_link_content(
+            config, db, mode, selected, _initial_link_env_fields(env) | fields,
+            default_fingerprint=fingerprint,
+        )
+    except (OSError, ValueError, RuntimeError, ManagerError):
+        return f"Не удалось восстановить стартовые ссылки в {path}. Проверьте их через xray-client link."
+    try:
+        _write_initial_link(content)
+    except OSError:
+        return f"Не удалось записать стартовые ссылки в {path}."
+    return None

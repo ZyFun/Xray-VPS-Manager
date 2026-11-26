@@ -18,7 +18,7 @@ from xray_vps_manager.commands.client_arguments import (
     validate_xhttp_path,
 )
 from xray_vps_manager.commands.client_output import client_change_errors, ensure_connections
-from xray_vps_manager.commands.presenters import backup_text
+from xray_vps_manager.commands.presenters import backup_text, print_initial_link_error
 from xray_vps_manager.core.terminal import print_table
 from xray_vps_manager.runner import fail
 from xray_vps_manager.caddy import model as caddy_model
@@ -209,6 +209,7 @@ def print_transport_change(change):
     print("Updated clients: " + (", ".join(result.updated_clients or []) if result.updated_clients else "none"))
     print(f"Backup: {backup_text(backup)}")
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
+    print_initial_link_error(change.link_error)
 
 
 def cmd_connection_xhttp_extra(identifier, xhttp_extra_json=None, clear=False):
@@ -225,6 +226,7 @@ def print_xhttp_extra_change(change):
     print("XHTTP_EXTRA: " + (extra_json if extra_json else "default"))
     print(f"Backup: {backup_text(backup)}")
     print("Выведи клиентам новые ссылки через xray-client link NAME.")
+    print_initial_link_error(change.link_error)
 
 
 def cmd_trojan_connection_update(
@@ -281,6 +283,7 @@ def print_trojan_connection_change(change):
         print("CADDY_SITE: disabled for this connection")
     print(f"Backup: {backup_text(backup)}")
     print("Выведи клиентам новые Trojan-ссылки через xray-client link NAME: параметры подключения изменились.")
+    print_initial_link_error(change.link_error)
 
 
 def cmd_connection_rename(identifier, new_name):

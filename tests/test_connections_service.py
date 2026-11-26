@@ -18,7 +18,7 @@ from tests.test_client_manager_lock import lock_is_free
 from tests.test_connection_menu_characterization import script_menu_processes
 from xray_vps_manager.caddy import model as caddy_model, sites as caddy_sites
 from xray_vps_manager.clients import connections, connections_service, links, repository
-from xray_vps_manager.core import locks
+from xray_vps_manager.core import fs, locks
 from xray_vps_manager.core.errors import ValidationError
 from xray_vps_manager.db import database
 from xray_vps_manager.db.repositories import client_traffic_handoff, client_undo
@@ -46,6 +46,15 @@ def state(box):
         {path: path.read_bytes() for path in files if path.exists()},
         box.db_rows("reality_connections", "clients", "client_credentials"),
     )
+
+
+def seed_starter_file(box, tag=INBOUND_TAG):
+    result = box.run_cli("client", "link", "alice", "--connection", tag)
+    assert (result.exit_code, result.stderr) == (0, "")
+    uri = result.stdout.strip()
+    box.paths.initial_link.parent.mkdir(parents=True, exist_ok=True)
+    box.paths.initial_link.write_text(f"INITIAL_PROTOCOL=vless\nCLIENT_URI={uri}\n")
+    return uri
 
 
 class RealityMenuConnectionTests(unittest.TestCase):
@@ -94,7 +103,7 @@ class RealityMenuConnectionTests(unittest.TestCase):
             self.assertEqual(box.env()["FINGERPRINT"], "firefox")
             self.assertEqual(repository.load_db_sql()["connections"][INBOUND_TAG]["fingerprint"], "firefox")
 
-    def test_starter_link_reads_only_first_client_and_linked_connections(self):
+    def test_starter_link_reads_only_the_saved_client_and_linked_connections(self):
         config_only = "vless-reality-2"
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
             script_menu_processes(box)
@@ -111,25 +120,464 @@ class RealityMenuConnectionTests(unittest.TestCase):
             with database.write_session() as conn:
                 repository.delete_connection(conn, config_only)
                 repository.save_connection(conn, "unused", {"name": "Unused", "port": 8444})
-            trojan = box.run_cli("client", "link", "alice", "--connection", TROJAN_INBOUND_TAG)
-            self.assertEqual((trojan.exit_code, trojan.stderr), (0, ""))
+            seed_starter_file(box)
+            config = box.config()
+            inbound = find_inbound_by_tag(config, INBOUND_TAG)
+            inbound["settings"]["clients"].reverse()
+            write_config(box, config)
 
             with mock.patch.object(repository, "load_db_sql", wraps=repository.load_db_sql) as full_read, \
                     mock.patch.object(repository, "get_client", wraps=repository.get_client) as read_client, \
                     mock.patch.object(repository, "get_connection", wraps=repository.get_connection) as read_connection:
-                connections_service.update_reality_fingerprint(INBOUND_TAG, "firefox")
+                change = connections_service.update_reality_fingerprint(INBOUND_TAG, "firefox")
 
+            self.assertIsNone(change.link_error)
             full_read.assert_not_called()
             self.assertEqual([call.args[1] for call in read_client.call_args_list], ["alice"])
-            self.assertEqual({call.args[1] for call in read_connection.call_args_list},
-                             {INBOUND_TAG, TROJAN_INBOUND_TAG, config_only})
-            lines = box.paths.initial_link.read_text().splitlines()
-            self.assertEqual(lines[:3], [f"CLIENT_URI=[trojan {TROJAN_INBOUND_TAG}]", trojan.stdout.strip(),
-                                         f"[vless {INBOUND_TAG}]"])
-            self.assertEqual(lines[4], f"[vless {config_only}]")
-            self.assertEqual(urlsplit(lines[5]).port, 8443)
-            self.assertEqual(parse_qs(urlsplit(lines[5]).query)["fp"], ["firefox"])
+            read_tags = {call.args[1] for call in read_connection.call_args_list}
+            self.assertIn(INBOUND_TAG, read_tags)
+            self.assertNotIn("unused", read_tags)
+            fields = dict(line.split("=", 1) for line in box.paths.initial_link.read_text().splitlines())
+            current = box.run_cli("client", "link", "alice", "--connection", INBOUND_TAG)
+            self.assertEqual(fields["CLIENT_URI"], current.stdout.strip())
+            self.assertEqual(fields["VLESS_CLIENT_URI"], current.stdout.strip())
+            self.assertEqual(fields["TROJAN_CLIENT_URI"], "")
+            self.assertEqual(fields["FINGERPRINT"], "firefox")
             self.assertNotIn(config_only, repository.load_db_sql()["connections"])
+
+    def test_initial_link_selection_visits_active_trojan_clients_linearly(self):
+        class CountedClients(list):
+            visits = 0
+
+            def __iter__(self):
+                for item in super().__iter__():
+                    self.visits += 1
+                    yield item
+
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            for args in (
+                ("add-trojan-connection", "Trojan", "18101", "trojan.example", "--no-caddy"),
+                ("add", "alice", "--connection", TROJAN_INBOUND_TAG),
+            ):
+                result = box.run_cli("client", *args)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            saved = repository.load_db_sql()["clients"]["alice"]["credentials"]
+            identities = {
+                "vless": {saved[INBOUND_TAG]["id"]},
+                "trojan": {saved[TROJAN_INBOUND_TAG]["client"]["password"]},
+            }
+            for count, from_sqlite in ((1000, True), (2000, False)):
+                with self.subTest(count=count, from_sqlite=from_sqlite):
+                    config = box.config()
+                    inbound = find_inbound_by_tag(config, TROJAN_INBOUND_TAG)
+                    starter, = inbound["settings"]["clients"]
+                    if from_sqlite:
+                        starter["password"] = "fixture-active-password"
+                    measured = CountedClients([starter, *(
+                        {"email": f"fixture-{i}", "password": f"fixture-password-{i}"}
+                        for i in range(count - 1)
+                    )])
+                    inbound["settings"]["clients"] = measured
+                    db = repository.load_initial_link_state(config, identities)
+                    if not from_sqlite:
+                        del db["clients"]["alice"]["credentials"][TROJAN_INBOUND_TAG]
+                    measured.visits = 0
+
+                    selected = links.initial_link_credentials(config, db, "both", identities=identities)
+
+                    self.assertEqual({row["name"] for row in selected.values()}, {"alice"})
+                    self.assertLessEqual(measured.visits, 6 * count)
+
+    def test_refresh_keeps_previous_trojan_link_without_confirmed_public_endpoint(self):
+        for remove_record in (True, False):
+            with self.subTest(remove_record=remove_record), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+                script_menu_processes(box)
+                for args in (
+                    ("add-trojan-connection", "Trojan", "18101", "trojan.example", "--no-caddy"),
+                    ("add", "alice", "--connection", TROJAN_INBOUND_TAG),
+                ):
+                    result = box.run_cli("client", *args)
+                    self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                vless = seed_starter_file(box)
+                trojan = box.run_cli("client", "link", "alice", "--connection", TROJAN_INBOUND_TAG)
+                self.assertEqual((trojan.exit_code, trojan.stderr), (0, ""))
+                self.assertEqual(urlsplit(trojan.stdout.strip()).port, 443)
+                path = box.paths.initial_link
+                path.write_text(
+                    f"INITIAL_PROTOCOL=both\nCLIENT_URI={vless}\nVLESS_CLIENT_URI={vless}\n"
+                    f"TROJAN_CLIENT_URI={trojan.stdout}UUID={urlsplit(vless).username}\n"
+                    "TROJAN_DOMAIN=trojan.example\nTROJAN_LOCAL_PORT=18101\nTROJAN_PUBLIC_PORT=443\n"
+                )
+                before = path.read_bytes()
+                with database.write_session() as conn:
+                    if remove_record:
+                        repository.delete_connection(conn, TROJAN_INBOUND_TAG)
+                    else:
+                        record = repository.get_connection(conn, TROJAN_INBOUND_TAG)
+                        repository.save_connection(conn, TROJAN_INBOUND_TAG, dict(record, publicHost="", sni=""))
+                inbound = find_inbound_by_tag(box.config(), TROJAN_INBOUND_TAG)
+                self.assertEqual((inbound["listen"], inbound["port"]), ("127.0.0.1", 18101))
+
+                changed = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+                self.assertEqual(changed.exit_code, 0)
+                self.assertIn("PORT обновлён: 5443", changed.stdout)
+                self.assertIn("Не удалось восстановить стартовые ссылки", changed.stderr)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(box.env()["PORT"], "5443")
+
+    def test_conflicting_protocol_fields_keep_the_start_file(self):
+        for mode, swapped in (("vless", False), ("both", True)):
+            with self.subTest(mode=mode, swapped=swapped), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+                script_menu_processes(box)
+                for args in (
+                    ("add-trojan-connection", "Trojan", "18101", "trojan.example", "--no-caddy"),
+                    ("add", "alice", "--connection", TROJAN_INBOUND_TAG),
+                ):
+                    result = box.run_cli("client", *args)
+                    self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                vless = seed_starter_file(box)
+                result = box.run_cli("client", "link", "alice", "--connection", TROJAN_INBOUND_TAG)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                trojan = result.stdout.strip()
+                vless_field, trojan_field = (trojan, vless) if swapped else (vless, trojan)
+                path = box.paths.initial_link
+                path.write_text(
+                    f"INITIAL_PROTOCOL={mode}\nCLIENT_URI={vless}\nVLESS_CLIENT_URI={vless_field}\n"
+                    f"TROJAN_CLIENT_URI={trojan_field}\nUUID={urlsplit(vless).username}\n",
+                )
+                before = path.read_bytes()
+
+                changed = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+                self.assertEqual(changed.exit_code, 0)
+                self.assertIn("PORT обновлён: 5443", changed.stdout)
+                self.assertIn(f"противоречит формату INITIAL_PROTOCOL={mode}", changed.stderr)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(box.env()["PORT"], "5443")
+
+    def test_conflicting_primary_uri_keeps_the_start_file(self):
+        for mode in ("vless", "both"):
+            with self.subTest(mode=mode), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+                script_menu_processes(box)
+                for args in (
+                    ("add-trojan-connection", "Trojan", "18101", "trojan.example", "--no-caddy"),
+                    ("add", "alice", "--connection", TROJAN_INBOUND_TAG),
+                ):
+                    result = box.run_cli("client", *args)
+                    self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                vless = seed_starter_file(box)
+                result = box.run_cli("client", "link", "alice", "--connection", TROJAN_INBOUND_TAG)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                trojan = result.stdout.strip()
+                named_trojan = trojan if mode == "both" else ""
+                path = box.paths.initial_link
+                path.write_text(
+                    f"INITIAL_PROTOCOL={mode}\nCLIENT_URI={trojan}\nVLESS_CLIENT_URI={vless}\n"
+                    f"TROJAN_CLIENT_URI={named_trojan}\nUUID={urlsplit(vless).username}\n"
+                )
+                before = path.read_bytes()
+
+                changed = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+                self.assertEqual(changed.exit_code, 0)
+                self.assertIn("PORT обновлён: 5443", changed.stdout)
+                self.assertIn(f"противоречит формату INITIAL_PROTOCOL={mode}", changed.stderr)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(box.env()["PORT"], "5443")
+
+    def test_repairs_historical_multiline_file_with_saved_starter_uuid(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            name = "first.custom"
+            for args in (
+                ("add-trojan-connection", "Trojan", "18101", "trojan.example", "--no-caddy"),
+                ("add", name, "--connection", INBOUND_TAG),
+                ("add", name, "--connection", TROJAN_INBOUND_TAG),
+                ("disable", name),
+            ):
+                result = box.run_cli("client", *args)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            old = box.run_cli("client", "link", name)
+            self.assertEqual((old.exit_code, old.stderr), (0, ""))
+            vless = box.run_cli("client", "link", name, "--connection", INBOUND_TAG)
+            self.assertEqual((vless.exit_code, vless.stderr), (0, ""))
+            starter_uuid = urlsplit(vless.stdout.strip()).username
+            box.paths.initial_link.parent.mkdir(parents=True, exist_ok=True)
+            path = box.paths.initial_link
+            legacy = f"CLIENT_URI={old.stdout}PROTOCOL=VLESS\nUUID={starter_uuid}\nCUSTOM=keep=value\n"
+            path.write_text(legacy)
+            box.paths.server_env.write_text(box.paths.server_env.read_text() + "INITIAL_PROTOCOL=both\n")
+
+            result = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            lines = box.paths.initial_link.read_text().splitlines()
+            fields = dict(line.split("=", 1) for line in lines)
+            self.assertEqual(len(lines), len(fields))
+            for tag, field in ((INBOUND_TAG, "VLESS_CLIENT_URI"), (TROJAN_INBOUND_TAG, "TROJAN_CLIENT_URI")):
+                uri = box.run_cli("client", "link", name, "--connection", tag)
+                self.assertEqual((uri.exit_code, uri.stderr), (0, ""))
+                self.assertEqual(fields[field], uri.stdout.strip())
+            self.assertEqual(fields["CLIENT_URI"], fields["VLESS_CLIENT_URI"])
+            self.assertEqual(fields["INITIAL_PROTOCOL"], "both")
+            self.assertEqual(fields["UUID"], starter_uuid)
+            self.assertEqual(fields["CUSTOM"], "keep=value")
+            self.assertEqual(fields["CREATED"], "")
+
+            path.write_text(f"INITIAL_PROTOCOL=both\n{legacy}")
+            result = box.run_menu(["2", "1", "5", "6443", "updated.example", "0", "0", "0"])
+            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            fields = dict(line.split("=", 1) for line in path.read_text().splitlines())
+            self.assertEqual(fields["CLIENT_URI"], fields["VLESS_CLIENT_URI"])
+            self.assertEqual(urlsplit(fields["CLIENT_URI"]).port, 6443)
+
+    def test_truncated_file_with_another_client_is_not_rewritten_as_installer_file(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            for args in (("add", "second", "--connection", INBOUND_TAG), ("disable", "alice")):
+                result = box.run_cli("client", *args)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            inbound = find_inbound_by_tag(box.config(), INBOUND_TAG)
+            client, = inbound["settings"]["clients"]
+            self.assertTrue(client["email"].startswith("second|"))
+            link = box.run_cli("client", "link", "second", "--connection", INBOUND_TAG)
+            self.assertEqual((link.exit_code, link.stderr), (0, ""))
+            path = box.paths.initial_link
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                f"CLIENT_URI={link.stdout}PORT=443\nPROTOCOL=VLESS\nSECURITY=REALITY\n"
+                "TRANSPORT=tcp\nFLOW=xtls-rprx-vision\n"
+                "SNI=www.example.com\nDEST=www.example.com:443\nFINGERPRINT=chrome\n"
+            )
+            before = path.read_bytes()
+            box.paths.server_env.write_text(box.paths.server_env.read_text() + "INITIAL_PROTOCOL=vless\n")
+            box.processes.calls.clear()
+
+            result = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("PORT обновлён: 5443", result.stdout)
+            self.assertIn("Не удалось подтвердить исходного стартового клиента", result.stderr)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(box.env()["PORT"], "5443")
+            box.assert_restarted(times=1)
+
+    def test_conflicting_identity_keeps_the_link_and_reports_applied_endpoint(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            seed_starter_file(box)
+            path = box.paths.initial_link
+            path.write_text(path.read_text() + "UUID=00000000-0000-4000-8000-000000000099\n")
+            before = path.read_bytes()
+            result = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("PORT обновлён: 5443", result.stdout)
+            self.assertIn("Не удалось восстановить стартовые ссылки", result.stderr)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(box.env()["PORT"], "5443")
+            box.assert_restarted(times=1)
+
+    def test_historical_file_does_not_switch_to_surviving_vless_credential(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            for args in (
+                ("add-connection", "Second", "8443", "second.example"),
+                ("add", "alice", "--connection", "vless-reality-2"),
+            ):
+                result = box.run_cli("client", *args)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            old = box.run_cli("client", "link", "alice")
+            self.assertEqual((old.exit_code, old.stderr), (0, ""))
+            path = box.paths.initial_link
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"CLIENT_URI={old.stdout}PORT=443\nPROTOCOL=VLESS\n")
+            before = path.read_bytes()
+            removed = box.run_cli("client", "remove-connection", INBOUND_TAG)
+            self.assertEqual((removed.exit_code, removed.stderr), (0, ""))
+
+            result = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("PORT обновлён: 5443", result.stdout)
+            self.assertIn("Не удалось подтвердить исходного стартового клиента", result.stderr)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_endpoint_updates_link_for_disabled_client_with_legacy_credential(self):
+        for keep_json_id in (True, False):
+            with self.subTest(keep_json_id=keep_json_id), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+                script_menu_processes(box)
+                original = seed_starter_file(box)
+                path = box.paths.initial_link
+                path.write_text(path.read_text() + f"UUID={urlsplit(original).username}\n")
+                disabled = box.run_cli("client", "disable", "alice")
+                self.assertEqual((disabled.exit_code, disabled.stderr), (0, ""))
+                with database.write_session() as conn:
+                    conn.execute(
+                        "DELETE FROM client_credentials WHERE client_name = ? AND connection_tag = ?",
+                        ("alice", INBOUND_TAG),
+                    )
+                    if not keep_json_id:
+                        conn.execute(
+                            "UPDATE clients SET xray_client_json = json_remove(xray_client_json, '$.id') WHERE name = ?",
+                            ("alice",),
+                        )
+                clients_before = box.db_rows("clients", "client_credentials")
+                self.assertFalse(find_inbound_by_tag(box.config(), INBOUND_TAG)["settings"]["clients"])
+                listed = box.run_cli("client", "link", "alice", "--connection", INBOUND_TAG)
+                self.assertEqual((listed.exit_code, listed.stderr, listed.stdout.strip()), (0, "", original))
+
+                changed = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+                self.assertEqual((changed.exit_code, changed.stderr), (0, ""))
+                current = box.run_cli("client", "link", "alice", "--connection", INBOUND_TAG)
+                self.assertEqual((current.exit_code, current.stderr), (0, ""))
+                fields = dict(line.split("=", 1) for line in path.read_text().splitlines())
+                self.assertEqual(fields["CLIENT_URI"], current.stdout.strip())
+                self.assertEqual((fields["PORT"], fields["SNI"]), ("5443", "updated.example"))
+                self.assertEqual(box.db_rows("clients", "client_credentials"), clients_before)
+
+    def test_cli_transport_and_xhttp_extra_refresh_starter_file(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            seed_starter_file(box)
+            for args in (
+                ("connection-transport", INBOUND_TAG, "xhttp", "--xhttp-path", "/first"),
+                ("connection-xhttp-extra", INBOUND_TAG, "--xhttp-extra-json", '{"noGRPCHeader":true}'),
+            ):
+                with self.subTest(action=args[0]):
+                    changed = box.run_cli("client", *args)
+                    self.assertEqual((changed.exit_code, changed.stderr), (0, ""))
+                    current = box.run_cli("client", "link", "alice", "--connection", INBOUND_TAG)
+                    self.assertEqual((current.exit_code, current.stderr), (0, ""))
+                    fields = dict(line.split("=", 1) for line in box.paths.initial_link.read_text().splitlines())
+                    self.assertEqual(fields["CLIENT_URI"], current.stdout.strip())
+                    self.assertEqual(fields["VLESS_CLIENT_URI"], current.stdout.strip())
+                    self.assertEqual(fields["TRANSPORT"], "xhttp")
+                    self.assertEqual(fields["XHTTP_PATH"], "/first")
+            self.assertIn("extra", parse_qs(urlsplit(current.stdout.strip()).query))
+
+    def test_xhttp_extra_refreshes_starter_file_after_vless_move_to_tls(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            original = seed_starter_file(box)
+            change = connections_service.update_reality_fingerprint(INBOUND_TAG, "chrome")
+            self.assertIsNone(change.link_error)
+            path = box.paths.initial_link
+            before = dict(line.split("=", 1) for line in path.read_text().splitlines())
+            reality_fields = ("PUBLIC_KEY", "SHORT_ID", "DEST", "FLOW")
+            self.assertTrue(all(before[key] for key in reality_fields))
+            for args in (
+                ("add-connection", "TLS", "18100", "site.example", "--security", "tls",
+                 "--transport", "xhttp", "--public-port", "8443", "--xhttp-path", "/tls",
+                 "--xhttp-mode", "packet-up"),
+                ("move-connection", "alice", "vless-tls"),
+            ):
+                result = box.run_cli("client", *args)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+
+            changed = box.run_cli(
+                "client", "connection-xhttp-extra", "vless-tls", "--xhttp-extra-json", '{"noGRPCHeader":true}',
+            )
+
+            self.assertEqual((changed.exit_code, changed.stderr), (0, ""))
+            current = box.run_cli("client", "link", "alice", "--connection", "vless-tls")
+            self.assertEqual((current.exit_code, current.stderr), (0, ""))
+            fields = dict(line.split("=", 1) for line in path.read_text().splitlines())
+            self.assertEqual(fields["CLIENT_URI"], current.stdout.strip())
+            self.assertEqual(fields["VLESS_CLIENT_URI"], current.stdout.strip())
+            self.assertEqual(fields["UUID"], urlsplit(original).username)
+            self.assertIn("extra", parse_qs(urlsplit(fields["CLIENT_URI"]).query))
+            expected = {
+                "INITIAL_PROTOCOL": "vless", "PROTOCOL": "vless", "SECURITY": "TLS", "TRANSPORT": "xhttp",
+                "SERVER": "site.example", "PORT": "8443", "SNI": "site.example",
+                "XHTTP_PATH": "/tls", "XHTTP_MODE": "packet-up", **dict.fromkeys(reality_fields, ""),
+            }
+            self.assertEqual({key: fields[key] for key in expected}, expected)
+
+    def test_start_file_transport_fields_match_server_env_after_transport_switches(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            seed_starter_file(box)
+            keys = ("GRPC_SERVICE_NAME", "XHTTP_PATH", "XHTTP_MODE")
+            scenarios = (
+                (("grpc", "--grpc-service-name", "fixture-grpc"), ("fixture-grpc", "", "")),
+                (("xhttp", "--xhttp-path", "/fixture", "--xhttp-mode", "packet-up"), ("", "/fixture", "packet-up")),
+                (("tcp",), ("", "", "")),
+            )
+            for args, expected in scenarios:
+                with self.subTest(transport=args[0]):
+                    changed = box.run_cli("client", "connection-transport", INBOUND_TAG, *args)
+                    self.assertEqual((changed.exit_code, changed.stderr), (0, ""))
+                    fields = dict(line.split("=", 1) for line in box.paths.initial_link.read_text().splitlines())
+                    self.assertEqual(fields["TRANSPORT"], args[0])
+                    self.assertEqual(tuple(fields[key] for key in keys), expected)
+                    env = box.env()
+                    self.assertEqual(tuple(env[key] for key in keys), expected)
+                    current = box.run_cli("client", "link", "alice", "--connection", INBOUND_TAG)
+                    self.assertEqual((current.exit_code, current.stderr, current.stdout.strip()),
+                                     (0, "", fields["CLIENT_URI"]))
+
+    def test_initial_link_rename_error_preserves_the_file_after_endpoint_change(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_menu_processes(box)
+            seed_starter_file(box)
+            path = box.paths.initial_link
+            path.chmod(0o600)
+            before = path.read_bytes()
+            real_replace = os.replace
+
+            def reject_initial_link(source, destination):
+                if destination == path:
+                    self.assertEqual(source.stat().st_mode & 0o777, 0o600)
+                    raise PermissionError("test rename failure")
+                real_replace(source, destination)
+
+            with mock.patch.object(fs.os, "replace", side_effect=reject_initial_link):
+                result = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("PORT обновлён: 5443", result.stdout)
+            self.assertIn("Не удалось записать стартовые ссылки", result.stderr)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertFalse(path.with_name("." + path.name + ".new").exists())
+            self.assertEqual(box.env()["PORT"], "5443")
+            box.assert_restarted(times=1)
+
+    def test_applied_connection_writes_server_env_on_link_refresh_interrupt(self):
+        for scenario in ("endpoint", "transport"):
+            with self.subTest(scenario=scenario), Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+                script_menu_processes(box)
+                seed_starter_file(box)
+                file_before = box.paths.initial_link.read_bytes()
+
+                with mock.patch.object(connections_service, "_refresh_initial_link", side_effect=KeyboardInterrupt) as interrupt:
+                    if scenario == "endpoint":
+                        result = box.run_menu(["2", "1", "5", "5443", "updated.example", "0", "0", "0"])
+                    else:
+                        result = box.run_cli("client", "connection-transport", INBOUND_TAG,
+                                             "grpc", "--grpc-service-name", "fixture-grpc")
+
+                interrupt.assert_called_once()
+                self.assertEqual(result.exit_code, 130)
+                self.assertEqual(box.paths.initial_link.read_bytes(), file_before)
+                box.assert_restarted(times=1)
+                inbound = find_inbound_by_tag(box.config(), INBOUND_TAG)
+                record = repository.load_db_sql()["connections"][INBOUND_TAG]
+                env = box.env()
+                if scenario == "endpoint":
+                    reality = inbound["streamSettings"]["realitySettings"]
+                    self.assertEqual(inbound["port"], 5443)
+                    self.assertEqual(reality["serverNames"], ["updated.example"])
+                    self.assertEqual((record["port"], record["sni"]), (5443, "updated.example"))
+                    self.assertEqual((env["PORT"], env["REALITY_SNI"], env["REALITY_DEST"]),
+                                     ("5443", "updated.example", "updated.example:443"))
+                else:
+                    self.assertEqual(inbound["streamSettings"]["network"], "grpc")
+                    self.assertEqual((record["transport"], record["grpcServiceName"]), ("grpc", "fixture-grpc"))
+                    self.assertEqual((env.get("REALITY_TRANSPORT"), env.get("GRPC_SERVICE_NAME")), ("grpc", "fixture-grpc"))
 
     def test_endpoint_without_port_or_sni_is_rejected_before_lock_and_writes(self):
         with Sandbox() as box, running_xray(box):
@@ -178,6 +626,7 @@ class RealityMenuConnectionTests(unittest.TestCase):
                     # Старая строка без собственного fingerprint берёт его из server.env.
                     conn.execute("UPDATE reality_connections SET fingerprint = '' WHERE tag = ?", (secondary,))
                 original_env = box.paths.server_env.read_bytes()
+                seed_starter_file(box, tag)
                 other_tag = secondary if tag == INBOUND_TAG else INBOUND_TAG
                 other = find_inbound_by_tag(box.config(), other_tag)
                 other_record = repository.load_db_sql()["connections"][other_tag]
@@ -216,13 +665,12 @@ class RealityMenuConnectionTests(unittest.TestCase):
                         else:
                             self.assertEqual(box.paths.server_env.read_bytes(), original_env)
 
-                        starter = box.paths.initial_link.read_text()
-                        uris = (urlsplit(line) for line in starter.splitlines() if line.startswith("vless://"))
-                        links = {uri.port: parse_qs(uri.query) for uri in uris}
-                        self.assertEqual(links[port]["sni"], [sni])
-                        self.assertEqual(links[port]["fp"], [fingerprint])
-                        if tag == INBOUND_TAG:
-                            self.assertEqual(links[other["port"]]["fp"], [fingerprint])
+                        fields = dict(line.split("=", 1) for line in box.paths.initial_link.read_text().splitlines())
+                        uri = urlsplit(fields["CLIENT_URI"])
+                        self.assertEqual(uri.port, port)
+                        query = parse_qs(uri.query)
+                        self.assertEqual(query["sni"], [sni])
+                        self.assertEqual(query["fp"], [fingerprint])
 
     def test_rejected_candidate_compensates_committed_record_before_touching_env_and_link(self):
         with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
@@ -281,8 +729,7 @@ class ConnectionCaddyCompensationTests(unittest.TestCase):
         free_https_port(box)
         script_processes(box)
         script_caddy(box)
-        box.paths.initial_link.parent.mkdir(parents=True, exist_ok=True)
-        box.paths.initial_link.write_text("CLIENT_URI=starter\n")
+        seed_starter_file(box)
 
     def test_managed_caddy_add_rejects_custom_public_port_before_writes(self):
         for args in (TLS, (*TROJAN, "--install-caddy")):
@@ -342,6 +789,95 @@ class ConnectionCaddyCompensationTests(unittest.TestCase):
             self.assertEqual((result.exit_code, result.stderr), (0, ""))
             self.assertIn("PUBLIC_PORT: 9443", result.stdout)
             self.assertFalse(box.paths.caddyfile.exists())
+
+    def test_recovered_trojan_file_keeps_credential_uuid_through_password_rotation(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_processes(box)
+            name = "starter.trojan"
+            for args in ((*TROJAN, "--no-caddy"), ("add", name, "--connection", TROJAN_INBOUND_TAG)):
+                result = box.run_cli("client", *args)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            credential = repository.load_db_sql()["clients"][name]["credentials"][TROJAN_INBOUND_TAG]
+            original = box.run_cli("client", "link", name, "--connection", TROJAN_INBOUND_TAG)
+            self.assertEqual((original.exit_code, original.stderr), (0, ""))
+            path = box.paths.initial_link
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"INITIAL_PROTOCOL=trojan\nCLIENT_URI={original.stdout}TROJAN_CLIENT_URI={original.stdout}")
+
+            recovered = box.run_cli("client", "update-trojan-connection", "Trojan", "--ws-path", "/recovered")
+
+            self.assertEqual((recovered.exit_code, recovered.stderr), (0, ""))
+            before_rotation = dict(line.split("=", 1) for line in path.read_text().splitlines())
+            self.assertEqual(before_rotation["UUID"], credential["id"])
+            rotated = box.run_cli("client", "rotate-trojan-password", name, "--connection", TROJAN_INBOUND_TAG)
+            self.assertEqual((rotated.exit_code, rotated.stderr), (0, ""))
+            changed = box.run_cli("client", "update-trojan-connection", "Trojan", "--ws-path", "/rotated")
+            self.assertEqual((changed.exit_code, changed.stderr), (0, ""))
+            current = box.run_cli("client", "link", name, "--connection", TROJAN_INBOUND_TAG)
+            self.assertEqual((current.exit_code, current.stderr), (0, ""))
+            fields = dict(line.split("=", 1) for line in path.read_text().splitlines())
+            self.assertEqual(fields["TROJAN_CLIENT_URI"], current.stdout.strip())
+            self.assertEqual(fields["CLIENT_URI"], fields["TROJAN_CLIENT_URI"])
+            self.assertNotEqual(urlsplit(fields["CLIENT_URI"]).username,
+                                urlsplit(before_rotation["CLIENT_URI"]).username)
+            self.assertEqual(fields["TROJAN_WS_PATH"], "/rotated")
+            self.assertEqual(fields["UUID"], credential["id"])
+
+    def test_trojan_only_updates_starter_file_with_configured_name(self):
+        with Sandbox() as box, running_xray(box), mock.patch("socket.socket"):
+            script_processes(box)
+            name = "first.custom"
+            for args in (
+                (*TROJAN, "--no-caddy"),
+                ("add", name, "--connection", TROJAN_INBOUND_TAG),
+            ):
+                result = box.run_cli("client", *args)
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+            config = box.config()
+            config["inbounds"].remove(find_inbound_by_tag(config, INBOUND_TAG))
+            write_config(box, config)
+            with database.write_session() as conn:
+                repository.delete_connection(conn, INBOUND_TAG)
+            box.paths.server_env.write_text(box.paths.server_env.read_text() + "INITIAL_PROTOCOL=trojan\n")
+            install_env = {
+                "INSTALL_CLIENT_NAME": name,
+                "INSTALL_UUID": repository.load_db_sql()["clients"][name]["id"],
+                "INSTALL_PUBLIC_KEY": "A" * 43,
+                "INSTALL_SHORT_ID": "aabbccdd",
+                "INSTALL_CREATED": "2026-10-01T00:00:00Z",
+            }
+            with mock.patch.dict(os.environ, install_env):
+                installed = box.run_cli("client", "link", "--initial-file")
+            self.assertEqual((installed.exit_code, installed.stderr), (0, ""))
+            original = box.paths.initial_link.read_bytes()
+            rotated = box.run_cli("client", "rotate-trojan-password", name, "--connection", TROJAN_INBOUND_TAG)
+            self.assertEqual((rotated.exit_code, rotated.stderr), (0, ""))
+            self.assertEqual(box.paths.initial_link.read_bytes(), original)
+
+            changed = box.run_cli(
+                "client", "update-trojan-connection", "Trojan", "--domain", "changed.example",
+                "--public-port", "9443", "--ws-path", "/new", "--fingerprint", "firefox",
+            )
+
+            self.assertEqual((changed.exit_code, changed.stderr), (0, ""))
+            current = box.run_cli("client", "link", name, "--connection", TROJAN_INBOUND_TAG)
+            self.assertEqual((current.exit_code, current.stderr), (0, ""))
+            fields = dict(line.split("=", 1) for line in box.paths.initial_link.read_text().splitlines())
+            self.assertEqual(fields["CLIENT_URI"], current.stdout.strip())
+            self.assertEqual(fields["TROJAN_CLIENT_URI"], current.stdout.strip())
+            self.assertEqual(fields["VLESS_CLIENT_URI"], "")
+            self.assertEqual(fields["INITIAL_PROTOCOL"], "trojan")
+            self.assertEqual(fields["SECURITY"], "TLS")
+            self.assertEqual(fields["TRANSPORT"], "ws")
+            self.assertEqual(fields["TROJAN_DOMAIN"], "changed.example")
+            self.assertEqual(fields["TROJAN_LOCAL_PORT"], "18101")
+            self.assertEqual(fields["TROJAN_PUBLIC_PORT"], "9443")
+            self.assertEqual(fields["TROJAN_WS_PATH"], "/new")
+            self.assertEqual(fields["FINGERPRINT"], "firefox")
+            self.assertEqual(fields["UUID"], install_env["INSTALL_UUID"])
+            self.assertEqual(fields["PUBLIC_KEY"], install_env["INSTALL_PUBLIC_KEY"])
+            self.assertEqual(fields["SHORT_ID"], install_env["INSTALL_SHORT_ID"])
+            self.assertEqual(fields["CREATED"], install_env["INSTALL_CREATED"])
 
     def test_external_trojan_tls_update_allows_public_port_used_by_local_reality(self):
         with Sandbox() as box, running_xray(box):
@@ -1106,8 +1642,7 @@ class ConnectionSettingsTests(unittest.TestCase):
                     prepared = box.run_cli("client", *args)
                     self.assertEqual((prepared.exit_code, prepared.stderr), (0, ""))
                 link = box.paths.initial_link
-                link.parent.mkdir(parents=True, exist_ok=True)
-                link.write_text("CLIENT_URI=starter-before-removal\n")
+                seed_starter_file(box)
                 before = state(box)
                 write_session = database.write_session
                 interrupted = False
@@ -1137,8 +1672,7 @@ class ConnectionSettingsTests(unittest.TestCase):
                     self.assertEqual(inbounds["vless-reality-2"], 8443)
                     self.assertNotIn('"vless-reality",', box.db_rows("reality_connections"))
                     self.assertEqual(box.env()["PORT"], "8443")
-                    self.assertIn("PORT=8443", link.read_text())
-                    self.assertIn(":8443?", link.read_text())
+                    self.assertEqual(link.read_bytes(), before[0][link])
                 else:
                     self.assertEqual(state(box), before)
                 with database.session() as conn:
@@ -1149,6 +1683,7 @@ class ConnectionSettingsTests(unittest.TestCase):
             with self.subTest(debug=debug), Sandbox() as box, running_xray(box), \
                     mock.patch.dict(os.environ, {"XRAY_MENU_DEBUG": debug}):
                 script_menu_processes(box)
+                original = seed_starter_file(box)
                 inbound = next(item for item in box.config()["inbounds"] if item.get("tag") == "vless-reality")
                 marker = inbound["streamSettings"]["realitySettings"]["privateKey"]
                 with database.write_session() as conn:
@@ -1156,16 +1691,13 @@ class ConnectionSettingsTests(unittest.TestCase):
                 box.processes.script({
                     ("/usr/local/bin/xray", "x25519", "-i", marker): box.processes.result(1, stdout=marker, stderr=marker),
                 })
-                box.paths.initial_link.parent.mkdir(parents=True, exist_ok=True)
-                box.paths.initial_link.write_text("CLIENT_URI=starter\n")
-
                 changed = box.run_menu(["2", "1", "7", "2", "fixture-grpc", "0", "0", "0"])
 
                 self.assertEqual(changed.exit_code, 0)
                 self.assertNotIn(marker, changed.stdout + changed.stderr)
                 self.assertIn("TRANSPORT: grpc", changed.stdout)
                 self.assertIn("REALITY_TRANSPORT=grpc", box.paths.server_env.read_text())
-                self.assertEqual(box.paths.initial_link.read_text(), "CLIENT_URI=starter\n")
+                self.assertEqual(box.paths.initial_link.read_text(), f"INITIAL_PROTOCOL=vless\nCLIENT_URI={original}\n")
                 box.assert_restarted(times=1)
 
     def test_legacy_fingerprint_stops_transport_change_and_removal_before_writes(self):

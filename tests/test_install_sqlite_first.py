@@ -69,10 +69,9 @@ class InstallSQLiteFirstTests(unittest.TestCase):
         self.assertIn('"security": "none"', content)
         self.assertIn('caddy.setup_caddy_for_trojan_ws(', content)
         self.assertIn('"protocol": "trojan"', content)
-        self.assertIn("TROJAN_CLIENT_URI=", content)
-        self.assertIn("VLESS_CLIENT_URI=", content)
-        self.assertIn('client_uri_security="TLS"', content)
-        self.assertIn('client_uri_transport="ws"', content)
+        self.assertIn('/usr/local/sbin/xray-client link --initial-file', content)
+        self.assertIn('INSTALL_CLIENT_NAME="$CLIENT_NAME"', content.split("PY\nfi\n")[-1])
+        self.assertNotIn('cat >/root/xray-reality-client.txt', content)
         self.assertIn('if initial_has_vless; then\n  case "$REALITY_TRANSPORT" in', content)
 
     def test_install_script_supports_alternative_xray_sources(self) -> None:

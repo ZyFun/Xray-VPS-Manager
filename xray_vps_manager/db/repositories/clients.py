@@ -169,6 +169,36 @@ def get_client(connection: sqlite3.Connection, name: str) -> dict[str, Any] | No
     return _entry_from_row(connection, row)
 
 
+def client_names_by_link_identity(
+    connection: sqlite3.Connection, protocol: str, identities: set[str], *, by_uuid: bool = False,
+) -> set[str]:
+    """Находит кандидатов для проверки credential после нормализации записи клиента."""
+    if not identities:
+        return set()
+    lookup_uuid = protocol == "vless" or by_uuid
+    field = "id" if lookup_uuid else "password"
+    json_identity = f"CASE WHEN json_valid(xray_client_json) THEN json_extract(xray_client_json, '$.{field}') END"
+    credential_identity = "credential_uuid" if lookup_uuid else json_identity
+    legacy_identity = f"COALESCE(NULLIF({json_identity}, ''), uuid)" if lookup_uuid else json_identity
+    placeholders = ", ".join("?" for _ in identities)
+    rows = connection.execute(
+        f"""
+        SELECT client_name
+        FROM client_credentials
+        WHERE protocol = ? AND {credential_identity} IN ({placeholders})
+        UNION
+        SELECT name
+        FROM clients
+        WHERE {legacy_identity} IN ({placeholders})
+          AND NOT EXISTS (
+              SELECT 1 FROM client_credentials WHERE client_name = clients.name
+          )
+        """,
+        (protocol, *identities, *identities),
+    )
+    return {row["client_name"] for row in rows}
+
+
 def list_clients(connection: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     rows = connection.execute("SELECT * FROM clients ORDER BY name").fetchall()
     return {row["name"]: _entry_from_row(connection, row) for row in rows}

@@ -64,16 +64,33 @@ state:
 +      "port": 5443,
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -0,0 +1,9 @@
+@@ -1 +1,10 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++INITIAL_PROTOCOL=vless
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++TROJAN_CLIENT_URI=
++SERVER=server.example
 +PORT=5443
-+PROTOCOL=VLESS
++PROTOCOL=vless
 +SECURITY=REALITY
 +TRANSPORT=tcp
 +FLOW=xtls-rprx-vision
+@@ -2,0 +12,14 @@
++PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
++SHORT_ID=0123456789abcdef
 +SNI=www.example.com
 +DEST=www.example.com:443
 +FINGERPRINT=chrome
++GRPC_SERVICE_NAME=
++XHTTP_PATH=
++XHTTP_MODE=
++TROJAN_DOMAIN=
++TROJAN_LOCAL_PORT=
++TROJAN_PUBLIC_PORT=
++TROJAN_WS_PATH=
++TROJAN_TLS=
++CREATED=
 --- before/server.env
 +++ after/server.env
 @@ -3 +3 @@
@@ -133,10 +150,12 @@ state:
 +            "sni.example"
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -1 +1 @@
+@@ -2,2 +2,2 @@
 -CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
-@@ -7,2 +7,2 @@
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+@@ -14,2 +14,2 @@
 -SNI=www.example.com
 -DEST=www.example.com:443
 +SNI=sni.example
@@ -199,12 +218,15 @@ state:
 +            "other-sni.example"
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -1,2 +1,2 @@
+@@ -2,2 +2,2 @@
 -CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
--PORT=5443
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+@@ -6 +6 @@
+-PORT=5443
 +PORT=6443
-@@ -7,2 +7,2 @@
+@@ -14,2 +14,2 @@
 -SNI=sni.example
 -DEST=sni.example:443
 +SNI=other-sni.example
@@ -257,10 +279,12 @@ state:
 +["vless-reality", "Reality", 6443, "other-sni.example", "other-sni.example:443", "firefox", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "0123456789abcdef", "2026-10-06T12:00:00Z", "{}"]
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -1 +1 @@
+@@ -2,2 +2,2 @@
 -CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
-@@ -9 +9 @@
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+@@ -16 +16 @@
 -FINGERPRINT=chrome
 +FINGERPRINT=firefox
 --- before/server.env
@@ -333,14 +357,19 @@ state:
 +    "balancers": [],
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -1 +1 @@
+@@ -2,2 +2,2 @@
 -CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=grpc&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&serviceName=fixture-grpc#fixture
-@@ -5,2 +5,2 @@
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=grpc&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&serviceName=fixture-grpc#fixture
+@@ -9,2 +9,2 @@
 -TRANSPORT=tcp
 -FLOW=xtls-rprx-vision
 +TRANSPORT=grpc
 +FLOW=
+@@ -17 +17 @@
+-GRPC_SERVICE_NAME=
++GRPC_SERVICE_NAME=fixture-grpc
 --- before/server.env
 +++ after/server.env
 @@ -7,2 +7,2 @@
@@ -421,12 +450,21 @@ state:
 +        }
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -1 +1 @@
+@@ -2,2 +2,2 @@
 -CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=grpc&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&serviceName=fixture-grpc#fixture
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=grpc&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&serviceName=fixture-grpc#fixture
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
-@@ -5 +5 @@
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
+@@ -9 +9 @@
 -TRANSPORT=grpc
 +TRANSPORT=xhttp
+@@ -17,3 +17,3 @@
+-GRPC_SERVICE_NAME=fixture-grpc
+-XHTTP_PATH=
+-XHTTP_MODE=
++GRPC_SERVICE_NAME=
++XHTTP_PATH=/upload
++XHTTP_MODE=packet-up
 --- before/server.env
 +++ after/server.env
 @@ -7,4 +7,4 @@
@@ -520,9 +558,11 @@ state:
 +          },
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -1 +1 @@
+@@ -2,2 +2,2 @@
 -CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up&extra=%7B%22downloadSettings%22%3A%7B%22address%22%3A%22download.example%22%2C%22network%22%3A%22xhttp%22%2C%22port%22%3A443%2C%22security%22%3A%22tls%22%2C%22tlsSettings%22%3A%7B%22alpn%22%3A%5B%22h2%22%5D%2C%22fingerprint%22%3A%22chrome%22%2C%22serverName%22%3A%22download.example%22%7D%2C%22xhttpSettings%22%3A%7B%22mode%22%3A%22packet-up%22%2C%22path%22%3A%22%2Fdownload%22%7D%7D%2C%22noGRPCHeader%22%3Atrue%2C%22noSSEHeader%22%3Afalse%2C%22scMaxBufferedPosts%22%3A12%2C%22scMaxEachPostBytes%22%3A512000%2C%22scMinPostsIntervalMs%22%3A50%2C%22scStreamUpServerSecs%22%3A%2220-80%22%2C%22xPaddingBytes%22%3A%22150-300%22%2C%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22hKeepAlivePeriod%22%3A15%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%2C%22maxConcurrency%22%3A%228-12%22%2C%22maxConnections%22%3A0%7D%7D#fixture
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up&extra=%7B%22downloadSettings%22%3A%7B%22address%22%3A%22download.example%22%2C%22network%22%3A%22xhttp%22%2C%22port%22%3A443%2C%22security%22%3A%22tls%22%2C%22tlsSettings%22%3A%7B%22alpn%22%3A%5B%22h2%22%5D%2C%22fingerprint%22%3A%22chrome%22%2C%22serverName%22%3A%22download.example%22%7D%2C%22xhttpSettings%22%3A%7B%22mode%22%3A%22packet-up%22%2C%22path%22%3A%22%2Fdownload%22%7D%7D%2C%22noGRPCHeader%22%3Atrue%2C%22noSSEHeader%22%3Afalse%2C%22scMaxBufferedPosts%22%3A12%2C%22scMaxEachPostBytes%22%3A512000%2C%22scMinPostsIntervalMs%22%3A50%2C%22scStreamUpServerSecs%22%3A%2220-80%22%2C%22xPaddingBytes%22%3A%22150-300%22%2C%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22hKeepAlivePeriod%22%3A15%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%2C%22maxConcurrency%22%3A%228-12%22%2C%22maxConnections%22%3A0%7D%7D#fixture
 
 ["2", "1", "8", "1", "1"]
 exit: 0
@@ -582,9 +622,11 @@ state:
 -          },
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -1 +1 @@
+@@ -2,2 +2,2 @@
 -CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up&extra=%7B%22downloadSettings%22%3A%7B%22address%22%3A%22download.example%22%2C%22network%22%3A%22xhttp%22%2C%22port%22%3A443%2C%22security%22%3A%22tls%22%2C%22tlsSettings%22%3A%7B%22alpn%22%3A%5B%22h2%22%5D%2C%22fingerprint%22%3A%22chrome%22%2C%22serverName%22%3A%22download.example%22%7D%2C%22xhttpSettings%22%3A%7B%22mode%22%3A%22packet-up%22%2C%22path%22%3A%22%2Fdownload%22%7D%7D%2C%22noGRPCHeader%22%3Atrue%2C%22noSSEHeader%22%3Afalse%2C%22scMaxBufferedPosts%22%3A12%2C%22scMaxEachPostBytes%22%3A512000%2C%22scMinPostsIntervalMs%22%3A50%2C%22scStreamUpServerSecs%22%3A%2220-80%22%2C%22xPaddingBytes%22%3A%22150-300%22%2C%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22hKeepAlivePeriod%22%3A15%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%2C%22maxConcurrency%22%3A%228-12%22%2C%22maxConnections%22%3A0%7D%7D#fixture
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up&extra=%7B%22downloadSettings%22%3A%7B%22address%22%3A%22download.example%22%2C%22network%22%3A%22xhttp%22%2C%22port%22%3A443%2C%22security%22%3A%22tls%22%2C%22tlsSettings%22%3A%7B%22alpn%22%3A%5B%22h2%22%5D%2C%22fingerprint%22%3A%22chrome%22%2C%22serverName%22%3A%22download.example%22%7D%2C%22xhttpSettings%22%3A%7B%22mode%22%3A%22packet-up%22%2C%22path%22%3A%22%2Fdownload%22%7D%7D%2C%22noGRPCHeader%22%3Atrue%2C%22noSSEHeader%22%3Afalse%2C%22scMaxBufferedPosts%22%3A12%2C%22scMaxEachPostBytes%22%3A512000%2C%22scMinPostsIntervalMs%22%3A50%2C%22scStreamUpServerSecs%22%3A%2220-80%22%2C%22xPaddingBytes%22%3A%22150-300%22%2C%22xmux%22%3A%7B%22cMaxReuseTimes%22%3A0%2C%22hKeepAlivePeriod%22%3A15%2C%22hMaxRequestTimes%22%3A%22600-900%22%2C%22hMaxReusableSecs%22%3A%221800-3000%22%2C%22maxConcurrency%22%3A%228-12%22%2C%22maxConnections%22%3A0%7D%7D#fixture
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
 
 ["2", "1", "7", "1"]
 exit: 0
@@ -651,14 +693,21 @@ state:
 +        "security": "reality"
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -1 +1 @@
+@@ -2,2 +2,2 @@
 -CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
+-VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=xhttp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&path=%2Fupload&mode=packet-up#fixture
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
-@@ -5,2 +5,2 @@
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+@@ -9,2 +9,2 @@
 -TRANSPORT=xhttp
 -FLOW=
 +TRANSPORT=tcp
 +FLOW=xtls-rprx-vision
+@@ -18,2 +18,2 @@
+-XHTTP_PATH=/upload
+-XHTTP_MODE=packet-up
++XHTTP_PATH=
++XHTTP_MODE=
 --- before/server.env
 +++ after/server.env
 @@ -7 +7 @@
@@ -957,15 +1006,31 @@ exit: 0
 stdout:
 ================= Вывести стартовую ссылку =================
 
+INITIAL_PROTOCOL=vless
 CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:6443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=firefox&type=tcp&sni=other-sni.example&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
+TROJAN_CLIENT_URI=
+SERVER=server.example
 PORT=6443
-PROTOCOL=VLESS
+PROTOCOL=vless
 SECURITY=REALITY
 TRANSPORT=tcp
 FLOW=xtls-rprx-vision
+UUID=00000000-0000-4000-8000-000000000001
+PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+SHORT_ID=0123456789abcdef
 SNI=other-sni.example
 DEST=other-sni.example:443
 FINGERPRINT=firefox
+GRPC_SERVICE_NAME=
+XHTTP_PATH=
+XHTTP_MODE=
+TROJAN_DOMAIN=
+TROJAN_LOCAL_PORT=
+TROJAN_PUBLIC_PORT=
+TROJAN_WS_PATH=
+TROJAN_TLS=
+CREATED=
 
 
 ============================================================

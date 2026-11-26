@@ -15,7 +15,7 @@ from xray_vps_manager.commands.client_output import client_change_errors
 from xray_vps_manager.clients.repository import db_managed_connections, load_db_sql
 from xray_vps_manager.clients.settings import fingerprint_or_default
 from xray_vps_manager.core.errors import ApplyConfigError, LockTimeout, ManagerError
-from xray_vps_manager.commands.presenters import apply_error_text, backup_text
+from xray_vps_manager.commands.presenters import apply_error_text, backup_text, print_initial_link_error
 from xray_vps_manager.core.terminal import table_border, table_row
 from xray_vps_manager.caddy import model as caddy_model
 from xray_vps_manager.caddy import sites as caddy_sites
@@ -665,6 +665,7 @@ def update_port() -> None:
     print(f"PORT обновлён: {change.result.port}")
     print(f"REALITY_DEST обновлён: {change.result.dest}")
     print(f"Backup: {backup_text(change.backup)}")
+    print_initial_link_error(change.link_error)
 
 
 def update_sni() -> None:
@@ -684,6 +685,7 @@ def update_sni() -> None:
     print(f"REALITY_SNI обновлён: {change.result.sni}")
     print(f"REALITY_DEST обновлён: {change.result.dest}")
     print(f"Backup: {backup_text(change.backup)}")
+    print_initial_link_error(change.link_error)
 
 
 def update_port_and_sni() -> None:
@@ -706,6 +708,7 @@ def update_port_and_sni() -> None:
     print(f"REALITY_SNI обновлён: {change.result.sni}")
     print(f"REALITY_DEST обновлён: {change.result.dest}")
     print(f"Backup: {backup_text(change.backup)}")
+    print_initial_link_error(change.link_error)
 
 
 def choose_fingerprint(default: str) -> str:
@@ -771,15 +774,10 @@ def update_fingerprint() -> None:
         return
     fp = choose_fingerprint(fingerprint_or_default())
     with _reality_change_errors():
-        connections_service.update_reality_fingerprint(tag, fp)
+        change = connections_service.update_reality_fingerprint(tag, fp)
     print(f"FINGERPRINT обновлён: {fp}")
     print("Xray перезапускать не нужно. Выведи клиенту новую ссылку через xray-client link ИМЯ.")
-
-
-def show_change_and_link_error(change, present) -> None:
-    present(change)
-    if change.link_error is not None:
-        raise change.link_error
+    print_initial_link_error(change.link_error)
 
 
 def update_transport() -> None:
@@ -796,8 +794,8 @@ def update_transport() -> None:
         str(current.get("xhttpMode") or DEFAULT_XHTTP_MODE),
     )
     with client_change_errors():
-        change = connections_service.update_transport(tag, refresh_link=True, **settings)
-    show_change_and_link_error(change, connection_output.print_transport_change)
+        change = connections_service.update_transport(tag, **settings)
+    connection_output.print_transport_change(change)
 
 
 def current_xhttp_extra(tag: str) -> dict:
@@ -847,8 +845,8 @@ def update_xhttp_advanced() -> None:
         print("Неизвестное действие.")
         return
     with client_change_errors():
-        change = connections_service.update_xhttp_extra(tag, extra, refresh_link=True)
-    show_change_and_link_error(change, connection_output.print_xhttp_extra_change)
+        change = connections_service.update_xhttp_extra(tag, extra)
+    connection_output.print_xhttp_extra_change(change)
 
 
 def delete_connection(
@@ -877,7 +875,8 @@ def delete_connection(
         return
     with client_change_errors():
         change = connections_service.remove_connection(tag, refresh_link=True)
-    show_change_and_link_error(change, connection_output.print_removed_connection)
+    connection_output.print_removed_connection(change)
+    print_initial_link_error(change.link_error)
 
 
 def delete_trojan_connection(confirm: ConfirmCallback) -> None:
