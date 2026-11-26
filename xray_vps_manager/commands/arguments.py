@@ -158,6 +158,8 @@ UPDATE = table([
 def validate(command, args):
     """Возвращает None либо поднимает UsageError; файловых операций нет."""
     args = list(args)
+    if command == 'client' and args == ['link', '--initial-file']:
+        return
     if command == 'manager-update':
         # argparse остаётся владельцем преобразования Namespace; проверка формы
         # здесь также запрещает смешивать действия и параметры чужого действия.

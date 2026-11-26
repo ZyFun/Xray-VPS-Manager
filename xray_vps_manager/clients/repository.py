@@ -20,6 +20,7 @@ from xray_vps_manager.db.repositories import connections as sqlite_connections
 from xray_vps_manager.db.repositories import traffic as sqlite_traffic
 from xray_vps_manager.db.repositories.client_undo import ClientUndo
 from xray_vps_manager.db.storage import SQLiteReadUnavailable
+from xray_vps_manager.xray.config import client_name, clients, inbound_tag, managed_connection_inbounds
 
 
 def db_clients(db: dict[str, Any]) -> dict[str, Any]:
@@ -251,20 +252,37 @@ def load_db_from_sqlite(connection) -> dict[str, Any]:
     }
 
 
-def load_client_link_state(name: str, active_tags: set[str]) -> dict[str, Any]:
-    """Прочитать данные одного клиента для ссылки в согласованном снимке SQLite."""
+def load_initial_link_state(config, identities: dict[str, set[str]], *, trojan_uuid=None) -> dict[str, Any]:
+    """Читает только возможных владельцев сохранённых ссылок и их подключения."""
+    active_names = set()
+    tags = set()
+    for inbound in managed_connection_inbounds(config):
+        protocol = inbound["protocol"]
+        identity_field = "id" if protocol == "vless" else "password"
+        for item in clients(inbound):
+            if item.get(identity_field) in identities.get(protocol, ()):
+                active_names.add(client_name(item))
+                tags.add(inbound_tag(inbound))
+
     with database.report_errors(message="SQLite clients cannot be read"), \
             database.session(read_snapshot=True) as conn, database.transaction(conn):
-        entry = get_client(conn, name)
-        tags = set(active_tags)
-        if entry is not None:
-            tags.update(client_credentials.db_credentials(entry))
+        names = active_names
+        for protocol, values in identities.items():
+            names.update(sqlite_clients.client_names_by_link_identity(conn, protocol, values))
+        if trojan_uuid:
+            names.update(sqlite_clients.client_names_by_link_identity(conn, "trojan", {trojan_uuid}, by_uuid=True))
+        entries = {}
+        for name in sorted(names):
+            entry = get_client(conn, name)
+            if entry is not None:
+                entries[name] = entry
+                tags.update(client_credentials.db_credentials(entry))
         connections = {}
         for tag in sorted(tags):
             record = get_connection(conn, tag)
             if record is not None:
                 connections[tag] = record
-        return {"clients": {name: entry} if entry is not None else {}, "connections": connections}
+        return {"clients": entries, "connections": connections}
 
 
 def _write_records(conn, db, deletions):

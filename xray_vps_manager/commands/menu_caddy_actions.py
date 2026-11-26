@@ -11,6 +11,7 @@ from pathlib import Path
 from xray_vps_manager.system import units as system_units
 from xray_vps_manager.clients import connections_service
 from xray_vps_manager.clients import service as client_service
+from xray_vps_manager.commands.presenters import print_initial_link_error
 from xray_vps_manager.core.errors import ManagerError
 from xray_vps_manager.core import process
 from xray_vps_manager.core.terminal import print_table
@@ -488,6 +489,7 @@ def update_site_domain() -> None:
     if change.updated_connections:
         print("Важно: перевыпустите и выдайте клиентам новые ссылки VLESS/TLS/xHTTP и Trojan-WS "
               "для изменённых подключений.")
+    print_initial_link_error(change.link_error)
 
 
 def delete_site(confirm: ConfirmCallback) -> None:

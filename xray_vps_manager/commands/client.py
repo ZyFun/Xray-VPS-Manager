@@ -1,8 +1,10 @@
 """Диспетчер xray-client и адаптер сценариев изменения клиентов."""
 
+import os
 import sys
 
 from xray_vps_manager.clients import access as client_access
+from xray_vps_manager.clients import connections_service
 from xray_vps_manager.clients import limits as client_limits
 from xray_vps_manager.clients import payments as client_payments
 from xray_vps_manager.clients import service as client_service
@@ -324,6 +326,8 @@ def main():
         cmd_move_connection(sys.argv[2], sys.argv[3])
     elif command in ("remove", "delete", "del", "rm") and len(sys.argv) == 3:
         cmd_remove(sys.argv[2])
+    elif command == "link" and sys.argv[2:] == ["--initial-file"]:
+        connections_service.write_install_initial_link(os.environ)
     elif command == "link":
         name, connection_tag = args.parse_name_connection_args(sys.argv[2:])
         reports.cmd_link(name, connection_tag)

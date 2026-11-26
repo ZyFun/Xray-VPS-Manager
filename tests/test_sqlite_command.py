@@ -16,7 +16,7 @@ def install_environment(protocol, transport, client_name="first"):
     env = {
         "INITIAL_PROTOCOL": protocol, "REALITY_TRANSPORT": transport, "CLIENT_NAME": client_name,
         "CREATED": "2026-10-06T12:00:00Z", "PORT": "8443", "REALITY_SNI": "example.com",
-        "REALITY_DEST": "example.com:443", "FINGERPRINT": "chrome", "PUBLIC_KEY": "fixture",
+        "REALITY_DEST": "example.com:443", "FINGERPRINT": "chrome", "PUBLIC_KEY": "A" * 43,
         "SHORT_ID": "1234", "GRPC_SERVICE_NAME": "service", "XHTTP_PATH": "/example",
         "XHTTP_MODE": "auto", "TROJAN_CONNECTION_NAME": "trojan", "TROJAN_LOCAL_PORT": "5050",
         "TROJAN_DOMAIN": "example.org", "TROJAN_WS_PATH": "/ws", "TROJAN_TLS_MIN_VERSION": "1.2",
@@ -235,8 +235,10 @@ class SQLiteCommandTests(unittest.TestCase):
             self.assertEqual(box.db_rows(*tables), rows)
 
     def test_install_seeds_config_and_database_using_the_same_credentials(self):
-        for protocol, transport in (("vless", "grpc"), ("trojan", "tcp"), ("both", "xhttp")):
-            with self.subTest(protocol=protocol), Sandbox(db=None) as box:
+        cases = (("vless", "grpc", "first"), ("trojan", "tcp", "first"),
+                 ("both", "xhttp", "first"), ("vless", "grpc", "--ops"))
+        for protocol, transport, name in cases:
+            with self.subTest(protocol=protocol, name=name), Sandbox(db=None) as box:
                 box.paths.manager_db.unlink()
                 config = box.config()
                 vless = config["inbounds"].pop()
@@ -251,7 +253,7 @@ class SQLiteCommandTests(unittest.TestCase):
                                                "streamSettings": {"network": "ws", "security": "none",
                                                                   "wsSettings": {"path": "/ws"}}})
                 box.paths.config.write_text(json.dumps(config))
-                env = install_environment(protocol, transport)
+                env = install_environment(protocol, transport, name)
                 with mock.patch.dict(os.environ, env):
                     if protocol == "both":
                         original_config = box.paths.config.read_bytes()
@@ -268,7 +270,7 @@ class SQLiteCommandTests(unittest.TestCase):
                 self.assertEqual((result.exit_code, result.stderr), (0, ""))
                 with database.session() as conn:
                     stored = connections.list_connections(conn)
-                    credentials = clients.list_client_credentials(conn, "first")
+                    credentials = clients.list_client_credentials(conn, name)
                     self.assertEqual(settings.get_metadata(conn, "jsonImport.completed"), "true")
                 expected = {inbound["tag"] for inbound in config["inbounds"] if inbound["tag"] != "api"}
                 self.assertEqual(set(stored), expected)
@@ -293,6 +295,44 @@ class SQLiteCommandTests(unittest.TestCase):
                             self.assertEqual(stored[tag]["xhttpPath"], "/example")
                 self.assertEqual(box.paths.config.stat().st_mode & 0o777, 0o640)
                 self.assertEqual(box.paths.manager_db.stat().st_mode & 0o777, 0o640)
+                box.paths.server_env.write_text(box.paths.server_env.read_text() + "".join(
+                    f"{key}={env[f'INSTALL_{key}']}\n" for key in (
+                        "INITIAL_PROTOCOL", "PORT", "REALITY_SNI", "REALITY_DEST", "FINGERPRINT",
+                        "GRPC_SERVICE_NAME", "XHTTP_PATH", "XHTTP_MODE",
+                        "TROJAN_DOMAIN", "TROJAN_LOCAL_PORT", "TROJAN_WS_PATH",
+                        "TROJAN_TLS_MIN_VERSION", "TROJAN_TLS_MAX_VERSION",
+                    )
+                ) + "TROJAN_PUBLIC_PORT=443\n")
+                with mock.patch.dict(os.environ, env):
+                    result = box.run_cli("client", "link", "--initial-file")
+                self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                lines = box.paths.initial_link.read_text().splitlines()
+                fields = dict(line.split("=", 1) for line in lines)
+                self.assertEqual(len(fields), len(lines))
+                self.assertEqual(set(fields), set((
+                    "INITIAL_PROTOCOL CLIENT_URI VLESS_CLIENT_URI TROJAN_CLIENT_URI SERVER PORT PROTOCOL SECURITY "
+                    "TRANSPORT FLOW UUID PUBLIC_KEY SHORT_ID SNI DEST FINGERPRINT GRPC_SERVICE_NAME XHTTP_PATH "
+                    "XHTTP_MODE TROJAN_DOMAIN TROJAN_LOCAL_PORT TROJAN_PUBLIC_PORT TROJAN_WS_PATH TROJAN_TLS CREATED"
+                ).split()))
+                for tag, field in (("vless-reality", "VLESS_CLIENT_URI"), ("trojan-tls", "TROJAN_CLIENT_URI")):
+                    if tag in expected:
+                        if name == "--ops":
+                            self.assertTrue(fields[field].startswith(f"vless://{env['INSTALL_UUID']}@"))
+                        else:
+                            result = box.run_cli("client", "link", name, "--connection", tag)
+                            self.assertEqual((result.exit_code, result.stderr), (0, ""))
+                            self.assertEqual(fields[field], result.stdout.strip())
+                    else:
+                        self.assertEqual(fields[field], "")
+                self.assertEqual(fields["INITIAL_PROTOCOL"], protocol)
+                primary = "TROJAN_CLIENT_URI" if protocol == "trojan" else "VLESS_CLIENT_URI"
+                self.assertEqual(fields["CLIENT_URI"], fields[primary])
+                self.assertEqual(fields["PROTOCOL"], "vless+trojan" if protocol == "both" else protocol)
+                self.assertEqual(fields["SECURITY"], "TLS" if protocol == "trojan" else "REALITY")
+                self.assertEqual(fields["TRANSPORT"], "ws" if protocol == "trojan" else transport)
+                self.assertEqual(fields["CREATED"], env["INSTALL_CREATED"])
+                self.assertEqual(fields["UUID"], env["INSTALL_UUID"])
+                self.assertEqual(box.paths.initial_link.stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

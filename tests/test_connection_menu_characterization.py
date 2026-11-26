@@ -242,6 +242,10 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
         self.assertEqual((result.exit_code, result.stderr), (0, ""), (args, result.stdout, result.stderr))
         return result.stdout
 
+    def seed_legacy_vless_file(self, box):
+        uri = self.seed_cli(box, "link", "alice", "--connection", "vless-reality").strip()
+        box.paths.initial_link.write_text(f"CLIENT_URI={uri}\nUUID={urlsplit(uri).username}\n")
+
     def seed_legacy_caddy_connection(self, box, command, name, local_port, domain, *options, public_port):
         """Состояние после старой версии, допускавшей любой публичный порт."""
         trojan = command == "add-trojan-connection"
@@ -271,6 +275,7 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
 
     def test_reality_menu(self):
         with self.scenario("reality_menu") as (box, action):
+            self.seed_legacy_vless_file(box)
             action(REALITY, "1")
             action(REALITY, "3", "5443")
             action(REALITY, "4", "sni.example")
@@ -299,6 +304,7 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
     def test_trojan_menu(self):
         """XR-REV-064: настройка Caddy использует 443 без запроса PUBLIC_PORT."""
         with self.scenario("trojan_menu") as (box, action):
+            self.seed_legacy_vless_file(box)
             action(TROJAN, "1")
             action(TROJAN, "2", "Trojan", "18101", "trojan.example", "/tunnel", "3", "2", "")
             action(REALITY, "3", "5443")
@@ -326,7 +332,7 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
             self.assert_site_link(box, "trojan-tls", "trojan.example", 443)
 
     def test_multi_protocol_initial_link(self):
-        """Текущее поведение, баг XR-REV-029."""
+        """XR-REV-029: PORT и SNI обновляют VLESS в файле установщика с двумя ссылками."""
         with self.scenario("xr_rev_029_initial_link") as (box, action):
             self.seed_cli(box, "add-trojan-connection", "Trojan", "18101", "trojan.example", "--no-caddy")
             self.seed_cli(box, "add", "alice", "--connection", "trojan-tls")
@@ -341,11 +347,16 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
             action(REALITY, "5", "5443", "updated.example")
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
             lines = path.read_text().splitlines()
-            self.assertEqual(lines[:3], ["CLIENT_URI=[trojan trojan-tls]", trojan, "[vless vless-reality]"])
-            self.assertEqual(urlsplit(lines[3]).port, 5443)
-            self.assertTrue({"INITIAL_PROTOCOL", "VLESS_CLIENT_URI", "TROJAN_CLIENT_URI", "UUID"}.isdisjoint(
-                line.partition("=")[0] for line in lines
-            ))
+            fields = dict(line.split("=", 1) for line in lines)
+            self.assertEqual(len(lines), len(fields))
+            current = self.seed_cli(box, "link", "alice", "--connection", "vless-reality").strip()
+            self.assertEqual(fields["INITIAL_PROTOCOL"], "both")
+            self.assertEqual(fields["PROTOCOL"], "vless+trojan")
+            self.assertEqual(fields["CLIENT_URI"], current)
+            self.assertEqual(fields["VLESS_CLIENT_URI"], current)
+            self.assertEqual(fields["TROJAN_CLIENT_URI"], trojan)
+            self.assertEqual(fields["PORT"], "5443")
+            self.assertEqual(fields["SNI"], "updated.example")
             action(CONNECTIONS, "3")
 
     def test_managed_caddy_uses_443_in_metadata_links_and_tls_diagnostics(self):
@@ -455,6 +466,14 @@ class ConnectionMenuCharacterizationTests(unittest.TestCase):
             )
             for tag in ("vless-tls", "trojan-tls"):
                 self.seed_cli(box, "add", "alice", "--connection", tag)
+            vless = self.seed_cli(box, "link", "alice", "--connection", "vless-reality").strip()
+            trojan = self.seed_cli(box, "link", "alice", "--connection", "trojan-tls").strip()
+            path = box.paths.initial_link
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                f"INITIAL_PROTOCOL=both\nCLIENT_URI={vless}\nVLESS_CLIENT_URI={vless}\n"
+                f"TROJAN_CLIENT_URI={trojan}\n"
+            )
 
             before = """# TLS endpoint old.example
 old.example {
@@ -483,6 +502,11 @@ old.example {
             )
             for tag in ("vless-tls", "trojan-tls"):
                 self.assert_site_link(box, tag, "new.example", 1443)
+            fields = dict(line.split("=", 1) for line in path.read_text().splitlines())
+            self.assertEqual(fields["CLIENT_URI"], vless)
+            self.assertEqual(fields["TROJAN_DOMAIN"], "new.example")
+            self.assertEqual(fields["TROJAN_CLIENT_URI"],
+                             self.seed_cli(box, "link", "alice", "--connection", "trojan-tls").strip())
 
     def test_caddy_domain_change_updates_older_tls_records(self):
         connection_args = {

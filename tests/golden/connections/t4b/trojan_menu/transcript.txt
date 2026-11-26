@@ -103,16 +103,33 @@ state:
 +      "port": 5443,
 --- before/root/xray-reality-client.txt
 +++ after/root/xray-reality-client.txt
-@@ -0,0 +1,9 @@
+@@ -1 +1,10 @@
+-CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++INITIAL_PROTOCOL=vless
 +CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++VLESS_CLIENT_URI=vless://00000000-0000-4000-8000-000000000001@server.example:5443?security=reality&encryption=none&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&fp=chrome&type=tcp&sni=www.example.com&sid=0123456789abcdef&spx=%2F&flow=xtls-rprx-vision#fixture
++TROJAN_CLIENT_URI=
++SERVER=server.example
 +PORT=5443
-+PROTOCOL=VLESS
++PROTOCOL=vless
 +SECURITY=REALITY
 +TRANSPORT=tcp
 +FLOW=xtls-rprx-vision
+@@ -2,0 +12,14 @@
++PUBLIC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
++SHORT_ID=0123456789abcdef
 +SNI=www.example.com
 +DEST=www.example.com:443
 +FINGERPRINT=chrome
++GRPC_SERVICE_NAME=
++XHTTP_PATH=
++XHTTP_MODE=
++TROJAN_DOMAIN=
++TROJAN_LOCAL_PORT=
++TROJAN_PUBLIC_PORT=
++TROJAN_WS_PATH=
++TROJAN_TLS=
++CREATED=
 --- before/server.env
 +++ after/server.env
 @@ -3 +3 @@

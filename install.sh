@@ -980,18 +980,9 @@ if [[ -z "$uuid" || -z "$trojan_uuid" || -z "$private_key" || -z "$public_key" |
   exit 1
 fi
 
-client_flow_json=""
-client_flow_query=""
-starter_flow=""
 transport_settings_json=""
-transport_link_query=""
 if initial_has_vless; then
   case "$REALITY_TRANSPORT" in
-    tcp)
-      client_flow_json='              "flow": "xtls-rprx-vision",'
-      client_flow_query="&flow=xtls-rprx-vision"
-      starter_flow="xtls-rprx-vision"
-      ;;
     grpc)
       transport_settings_json=$(cat <<JSON
 ,
@@ -1000,10 +991,8 @@ if initial_has_vless; then
         }
 JSON
 )
-      transport_link_query="&serviceName=${GRPC_SERVICE_NAME}"
       ;;
     xhttp)
-      xhttp_path_query="${XHTTP_PATH//\//%2F}"
       transport_settings_json=$(cat <<JSON
 ,
         "xhttpSettings": {
@@ -1012,7 +1001,6 @@ JSON
         }
 JSON
 )
-      transport_link_query="&path=${xhttp_path_query}&mode=${XHTTP_MODE}"
       ;;
   esac
 fi
@@ -1303,59 +1291,12 @@ print(f"Caddy Trojan site config: {site_path}")
 PY
 fi
 
-vless_client_uri=""
-trojan_client_uri=""
-client_uri=""
-if initial_has_vless; then
-  vless_client_uri="vless://${uuid}@${server_addr}:${PORT}?security=reality&encryption=none&pbk=${public_key}&fp=${FINGERPRINT}&type=${REALITY_TRANSPORT}${client_flow_query}&sni=${REALITY_SNI}&sid=${short_id}&spx=%2F${transport_link_query}#${SERVER_NAME}"
-  client_uri="$vless_client_uri"
-fi
-if initial_has_trojan; then
-  trojan_path_query="${TROJAN_WS_PATH//\//%2F}"
-  trojan_client_uri="trojan://${trojan_password}@${TROJAN_DOMAIN}:443?security=tls&type=ws&path=${trojan_path_query}&host=${TROJAN_DOMAIN}&sni=${TROJAN_DOMAIN}&fp=${FINGERPRINT}#${SERVER_NAME}"
-  if [[ -z "$client_uri" ]]; then
-    client_uri="$trojan_client_uri"
-  fi
-fi
-client_uri_protocol="$INITIAL_PROTOCOL"
-client_uri_security="REALITY"
-client_uri_transport="$REALITY_TRANSPORT"
-if ! initial_has_vless; then
-  client_uri_protocol="trojan"
-  client_uri_security="TLS"
-  client_uri_transport="ws"
-elif initial_has_trojan; then
-  client_uri_protocol="vless+trojan"
-fi
-
-cat >/root/xray-reality-client.txt <<EOF
-INITIAL_PROTOCOL=${INITIAL_PROTOCOL}
-CLIENT_URI=${client_uri}
-VLESS_CLIENT_URI=${vless_client_uri}
-TROJAN_CLIENT_URI=${trojan_client_uri}
-SERVER=${server_addr}
-PORT=${PORT}
-PROTOCOL=${client_uri_protocol}
-SECURITY=${client_uri_security}
-TRANSPORT=${client_uri_transport}
-FLOW=${starter_flow}
-UUID=${uuid}
-PUBLIC_KEY=${public_key}
-SHORT_ID=${short_id}
-SNI=${REALITY_SNI}
-DEST=${REALITY_DEST}
-FINGERPRINT=${FINGERPRINT}
-GRPC_SERVICE_NAME=${GRPC_SERVICE_NAME}
-XHTTP_PATH=${XHTTP_PATH}
-XHTTP_MODE=${XHTTP_MODE}
-TROJAN_DOMAIN=${TROJAN_DOMAIN}
-TROJAN_LOCAL_PORT=${TROJAN_LOCAL_PORT}
-TROJAN_PUBLIC_PORT=443
-TROJAN_WS_PATH=${TROJAN_WS_PATH}
-TROJAN_TLS=${TROJAN_TLS_MIN_VERSION}..${TROJAN_TLS_MAX_VERSION}
-CREATED=${created}
-EOF
-chmod 0600 /root/xray-reality-client.txt
+INSTALL_CLIENT_NAME="$CLIENT_NAME" \
+INSTALL_UUID="$uuid" \
+INSTALL_PUBLIC_KEY="$public_key" \
+INSTALL_SHORT_ID="$short_id" \
+INSTALL_CREATED="$created" \
+/usr/local/sbin/xray-client link --initial-file
 
 xray-vps-manager units sync --no-systemctl
 

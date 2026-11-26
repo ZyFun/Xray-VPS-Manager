@@ -1,6 +1,7 @@
 """Общее представление результатов применения конфигурации в адаптерах."""
 
 from contextlib import contextmanager
+import sys
 
 from xray_vps_manager.core.errors import ApplyConfigError, ManagerError
 
@@ -16,6 +17,11 @@ def apply_error_text(error: ApplyConfigError) -> str:
 
 def backup_text(backup) -> str:
     return str(backup) if backup is not None else "not created; config is unchanged."
+
+
+def print_initial_link_error(error: str | None) -> None:
+    if error:
+        print(f"WARN: {error}", file=sys.stderr)
 
 
 def exception_text(error: BaseException) -> str:
