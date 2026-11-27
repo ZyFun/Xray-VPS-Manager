@@ -53,6 +53,24 @@ class _Edit[T]:
     env_tag: str = ""
 
 
+@dataclass(frozen=True)
+class _NewInboundPort:
+    port: int
+    listen: str
+    field: str
+    managed_caddy_site: tuple[str, int] | None = None
+
+    def check(self, config: dict) -> None:
+        if self.managed_caddy_site is not None:
+            _require_caddy_site_available(config, *self.managed_caddy_site)
+        if self.port in connections.used_ports(config):
+            raise ValidationError(f"{self.field} is already used by another inbound: {self.port}")
+        if process.tcp_port_in_use(self.port, self.listen):
+            raise ValidationError(
+                f"{self.field} is already in use on this server by another process: {self.port}"
+            )
+
+
 def _retire_connection_traffic(conn, config, previous, result, owner):
     def emails(names):
         retired = {}
@@ -101,9 +119,13 @@ def _prepare_edit(edit, config, db, *, preview=False):
         raise ValidationError(str(exc)) from exc
 
 
-def _change(purpose, edit, *, refresh_link=False, retires_traffic=False, precheck_caddy=False):
+def _change(purpose, edit, *, refresh_link=False, retires_traffic=False, precheck_caddy=False,
+            new_inbound_port: _NewInboundPort | None = None):
     with manager_lock(purpose=purpose), ExitStack() as guards:
         config = service.load_working_config()
+        if new_inbound_port is not None:
+            # Первое открытие SQLite может запустить восстановление журнала или миграцию.
+            new_inbound_port.check(config)
         validated_site = None
         caddy_package = None
         parser_locked = False
@@ -226,7 +248,10 @@ def _require_caddy_site_available(config, domain, public_port):
             f"Caddy cannot listen on public port {public_port}: it is already used by Xray inbound(s): {tags}. "
             "Move those connections to another port before installing Caddy."
         )
-    caddy_sites.require_site_config_absent(domain)
+    try:
+        caddy_sites.require_site_config_absent(domain)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise ValidationError(str(exc)) from exc
 
 
 def _site_candidate(result, *, trojan=False, previous_domain=None):
@@ -270,7 +295,9 @@ def add_connection(name, port, sni, fingerprint, **transport):
     def edit(config, db):
         return _Edit(connections.add_connection(config, db, name, port, sni, fingerprint, **transport))
 
-    return _change("add-connection", edit)
+    return _change("add-connection", edit, new_inbound_port=_NewInboundPort(
+        port, connections.PUBLIC_CONNECTION_LISTEN, "PORT",
+    ))
 
 
 def add_tls_xhttp_connection(name, domain, *, local_port, public_port, install_caddy, **options):
@@ -280,7 +307,7 @@ def add_tls_xhttp_connection(name, domain, *, local_port, public_port, install_c
     def edit(config, db):
         tls_domain = caddy_model.validate_domain(domain)
         if install_caddy:
-            _require_caddy_site_available(config, tls_domain, public_port)
+            caddy_sites.require_site_config_absent(tls_domain)
         result = connections.add_tls_xhttp_connection(
             config, db, name, tls_domain, local_port=local_port, public_port=public_port,
             caddy_enabled=install_caddy, **options,
@@ -288,7 +315,10 @@ def add_tls_xhttp_connection(name, domain, *, local_port, public_port, install_c
         return _Edit(result, caddy_site=_site_candidate(result) if install_caddy else None,
                      install_caddy=install_caddy)
 
-    return _change("add-connection", edit, precheck_caddy=install_caddy)
+    return _change("add-connection", edit, precheck_caddy=install_caddy, new_inbound_port=_NewInboundPort(
+        local_port, connections.LOCAL_CONNECTION_LISTEN, "LOCAL_PORT",
+        managed_caddy_site=(domain, public_port) if install_caddy else None,
+    ))
 
 
 def add_trojan_tls_connection(name, port, domain, cert_file, key_file, fingerprint):
@@ -297,7 +327,9 @@ def add_trojan_tls_connection(name, port, domain, cert_file, key_file, fingerpri
             config, db, name, port, domain, cert_file, key_file, fingerprint,
         ))
 
-    return _change("add-trojan-connection", edit)
+    return _change("add-trojan-connection", edit, new_inbound_port=_NewInboundPort(
+        port, connections.PUBLIC_CONNECTION_LISTEN, "PORT",
+    ))
 
 
 def add_trojan_caddy_connection(name, domain, *, local_port, public_port, install_caddy, **options):
@@ -307,7 +339,7 @@ def add_trojan_caddy_connection(name, domain, *, local_port, public_port, instal
     def edit(config, db):
         tls_domain = caddy_model.validate_domain(domain)
         if install_caddy:
-            _require_caddy_site_available(config, tls_domain, public_port)
+            caddy_sites.require_site_config_absent(tls_domain)
         result = connections.add_trojan_caddy_connection(
             config, db, name, tls_domain, local_port=local_port, public_port=public_port,
             caddy_enabled=install_caddy, **options,
@@ -315,7 +347,10 @@ def add_trojan_caddy_connection(name, domain, *, local_port, public_port, instal
         return _Edit(result, caddy_site=_site_candidate(result, trojan=True) if install_caddy else None,
                      install_caddy=install_caddy)
 
-    return _change("add-trojan-connection", edit, precheck_caddy=install_caddy)
+    return _change("add-trojan-connection", edit, precheck_caddy=install_caddy, new_inbound_port=_NewInboundPort(
+        local_port, connections.LOCAL_CONNECTION_LISTEN, "LOCAL_PORT",
+        managed_caddy_site=(domain, public_port) if install_caddy else None,
+    ))
 
 
 def update_transport(identifier, transport, **options):

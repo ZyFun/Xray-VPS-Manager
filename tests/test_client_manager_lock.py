@@ -25,7 +25,7 @@ from xray_vps_manager.core import paths as core_paths
 from xray_vps_manager.db import database
 from tests.support.sandbox import Sandbox
 from tests.test_restart_verification import FakeClock, FakeSocket, show_output
-from xray_vps_manager.core import systemd
+from xray_vps_manager.core import process, systemd
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
@@ -259,7 +259,8 @@ def writer_worker(argv: list) -> int:
     if not wait_for_file(root / "slow-loaded", WORKER_TIMEOUT):
         print("slow writer did not load the snapshot", file=sys.stderr)
         return 2
-    with signal_lock_contention(root), sandbox_patches(root, config_suffix=f".{action}") as box:
+    with signal_lock_contention(root), sandbox_patches(root, config_suffix=f".{action}") as box, \
+            mock.patch.object(process, "tcp_port_in_use", return_value=False):
         result = box.run_cli("client", *P1_001_WRITERS[action])
         if result.exit_code:
             print(result.stderr, file=sys.stderr)

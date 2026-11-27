@@ -77,7 +77,6 @@
   ["telegram/subscriptions.py", "credential_options_for_entry", "/", 1],
   ["traffic/limits.py", "format_traffic_limit", "/", 1],
   ["xray/config.py", "_normalize_host_like", "/", 1],
-  ["xray/config.py", "inbound_listen_endpoints", "/", 1],
   ["xray/config.py", "normalize_trojan_ws_path", "/", 1],
   ["xray/config.py", "normalize_xhttp_path", "/", 1],
   ["xray/crypto.py", "reality_public_key", "/usr/local/bin/xray", 1],
