@@ -115,13 +115,13 @@ def tcp_endpoint_open(host: str, port: int, timeout: float = 0.5) -> bool:
 
 
 def tcp_port_in_use(port: int, host: str = "") -> bool:
-    """Занят ли TCP-порт в системе: пробный bind без listen перед сменой порта inbound (XR-REV-010).
+    """Занят ли TCP-порт в системе: пробный bind без listen перед созданием inbound или сменой порта (XR-REV-010).
 
     Пустой или wildcard `host` проверяет все адреса: `::` в dual-stack режиме, как слушает Xray, и `0.0.0.0`
     на случай выключенного IPv6; конкретный адрес — только его. SO_REUSEADDR убирает ложную занятость
     из-за TIME_WAIT, а bind на Linux всё равно отказывает, если порт слушает другой процесс (Caddy, другой
-    сервис). Занятым считается только EADDRINUSE: недоступное семейство адресов и прочие ошибки bind смену
-    не блокируют — фактический старт проверит `restart_systemd_unit`. Unix-сокеты TCP-порт не занимают.
+    сервис). Занятым считается только EADDRINUSE. Фактический старт проверит `restart_systemd_unit`.
+    Unix-сокеты TCP-порт не занимают.
     """
     host = str(host or "").strip()
     if host.startswith("/") or host.startswith("@"):

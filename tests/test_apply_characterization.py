@@ -39,7 +39,8 @@ def running_xray(box):
         ),
     })
     with mock.patch("time.monotonic", side_effect=count(0, 4).__next__), \
-            mock.patch("time.sleep"), mock.patch("socket.create_connection") as connect:
+            mock.patch("time.sleep"), mock.patch("socket.create_connection") as connect, \
+            mock.patch.object(process, "tcp_port_in_use", return_value=False):
         yield connect
 
 

@@ -33,6 +33,7 @@ from xray_vps_manager.xray.config import (
     connection_transport_settings_from_inbound,
     default_connection_tag,
     find_inbound_by_tag,
+    inbound_port_ranges,
     inbound_tag,
     managed_connection_inbounds,
     normalize_xhttp_extra,
@@ -44,6 +45,10 @@ from xray_vps_manager.xray.config import (
     vless_connection_inbounds,
 )
 from xray_vps_manager.clients.models import client_name
+
+
+PUBLIC_CONNECTION_LISTEN = "0.0.0.0"
+LOCAL_CONNECTION_LISTEN = "127.0.0.1"
 
 
 @dataclass
@@ -329,11 +334,11 @@ def connection_rows(config: dict[str, Any], db: dict[str, Any]) -> list[list[Any
 
 
 def used_ports(config: dict[str, Any]) -> set[int]:
+    """TCP-порты, указанные у существующих inbound Xray."""
     ports = set()
-    for inbound in config.get("inbounds", []):
-        port = inbound.get("port")
-        if isinstance(port, int):
-            ports.add(port)
+    for start, end in inbound_port_ranges(config, require_tcp=True):
+        if 0 <= start <= end <= 65535:
+            ports.update(range(start, end + 1))
     return ports
 
 
@@ -438,7 +443,7 @@ def make_reality_inbound(
     )
     return {
         "tag": tag,
-        "listen": "0.0.0.0",
+        "listen": PUBLIC_CONNECTION_LISTEN,
         "port": port,
         "protocol": "vless",
         "settings": {
@@ -456,7 +461,7 @@ def make_reality_inbound(
 def make_trojan_tls_inbound(tag: str, port: int, cert_file: str, key_file: str) -> dict[str, Any]:
     return {
         "tag": tag,
-        "listen": "0.0.0.0",
+        "listen": PUBLIC_CONNECTION_LISTEN,
         "port": port,
         "protocol": "trojan",
         "settings": {
@@ -484,7 +489,7 @@ def make_trojan_tls_inbound(tag: str, port: int, cert_file: str, key_file: str) 
 def make_trojan_ws_inbound(tag: str, local_port: int, ws_path: str = "") -> dict[str, Any]:
     return {
         "tag": tag,
-        "listen": "127.0.0.1",
+        "listen": LOCAL_CONNECTION_LISTEN,
         "port": local_port,
         "protocol": "trojan",
         "settings": {
@@ -525,7 +530,7 @@ def make_tls_xhttp_inbound(
     )
     return {
         "tag": tag,
-        "listen": "127.0.0.1",
+        "listen": LOCAL_CONNECTION_LISTEN,
         "port": local_port,
         "protocol": "vless",
         "settings": {

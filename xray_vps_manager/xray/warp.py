@@ -5,6 +5,7 @@ from copy import deepcopy
 import re
 
 from xray_vps_manager.core.errors import ConflictError
+from xray_vps_manager.xray.config import inbound_port_ranges
 
 SOCKS_HOST = "127.0.0.1"
 TEST_SOCKS_PORT = 10809
@@ -47,12 +48,7 @@ def disabled_probe_config(config: dict) -> dict:
 
 def endpoint_probe_ports(config: dict) -> Iterator[int]:
     """Порты вне текущих inbound (включая диапазоны) и порта verify-disabled."""
-    ranges = [(VERIFY_SOCKS_PORT, VERIFY_SOCKS_PORT)]
-    for inbound in config.get("inbounds", []):
-        for part in str(inbound.get("port", "")).split(","):
-            start, _, end = part.strip().partition("-")
-            if start.isdecimal() and (not end or end.isdecimal()):
-                ranges.append((int(start), int(end or start)))
+    ranges = [(VERIFY_SOCKS_PORT, VERIFY_SOCKS_PORT), *inbound_port_ranges(config)]
     for port in range(TEST_SOCKS_PORT, 65536):
         if not any(start <= port <= end for start, end in ranges):
             yield port

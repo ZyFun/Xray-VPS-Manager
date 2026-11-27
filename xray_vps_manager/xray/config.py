@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
+from collections.abc import Iterator
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from xray_vps_manager.xray.email import client_name
@@ -189,6 +190,34 @@ def _protocol_serves_tcp(inbound: dict[str, Any]) -> bool:
     return not networks or "tcp" in networks
 
 
+def _tcp_listen_host(inbound: dict[str, Any]) -> str | None:
+    protocol = str(inbound.get("protocol", "")).lower()
+    if protocol in NON_TCP_PROTOCOLS or not _protocol_serves_tcp(inbound):
+        return None
+    stream = inbound.get("streamSettings") or {}
+    network = str(stream.get("network", "tcp") or "tcp").lower() if isinstance(stream, dict) else "tcp"
+    if network in NON_TCP_NETWORKS:
+        return None
+    listen = str(inbound.get("listen", "") or "").strip()
+    return None if listen.startswith("@") or PurePosixPath(listen).is_absolute() else listen
+
+
+def inbound_port_ranges(config: dict[str, Any], *, require_tcp: bool = False) -> Iterator[tuple[int, int]]:
+    """Литеральные порты inbound из конфига в виде включительных диапазонов."""
+    for inbound in config.get("inbounds", []):
+        if require_tcp and _tcp_listen_host(inbound) is None:
+            continue
+        for part in str(inbound.get("port", "")).split(","):
+            start, _, end = part.strip().partition("-")
+            if not start.isdecimal() or (end and not end.isdecimal()):
+                continue
+            try:
+                bounds = int(start), int(end or start)
+            except ValueError:
+                continue
+            yield bounds
+
+
 def inbound_listen_endpoints(config: dict[str, Any]) -> list[tuple[str, int]]:
     """TCP-адреса (host, port), которые Xray должен слушать по config: для пробы после рестарта.
 
@@ -202,16 +231,8 @@ def inbound_listen_endpoints(config: dict[str, Any]) -> list[tuple[str, int]]:
         port = inbound.get("port")
         if isinstance(port, bool) or not isinstance(port, int) or port < 1 or port > 65535:
             continue
-        if str(inbound.get("protocol", "")).lower() in NON_TCP_PROTOCOLS:
-            continue
-        if not _protocol_serves_tcp(inbound):
-            continue
-        stream = inbound.get("streamSettings") or {}
-        network = str(stream.get("network", "tcp") or "tcp").lower() if isinstance(stream, dict) else "tcp"
-        if network in NON_TCP_NETWORKS:
-            continue
-        listen = str(inbound.get("listen", "") or "").strip()
-        if listen.startswith("/") or listen.startswith("@"):
+        listen = _tcp_listen_host(inbound)
+        if listen is None:
             continue
         host = WILDCARD_LISTEN_LOOPBACK.get(listen, listen)
         endpoints.append((host, port))
